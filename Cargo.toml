@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "black-hole-ray",
+    "black-hole-beam",
+    "black-hole-core",
+    "black-hole-flux",
+    "black-hole-sun",
+    "black-hole-void",
+    "black-hole-warp",
+]
+
+[workspace.dependencies]
+jungle-sdk = { path = "../jungle/jungle-sdk" }
+
+[workspace.lints.clippy]
+type_complexity = "allow"
