@@ -1,9 +1,10 @@
 //! Shared types for the black-hole workspace.
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-/// A UUID as a hyphenated string (e.g. "550e8400-e29b-41d4-a716-446655440000").
-pub type ObjectId = String;
+/// Opaque identifier for objects stored in void.
+pub type ObjectId = Uuid;
 
 // ---------------------------------------------------------------------------
 // QuZO wire protocol (black-hole-quark <-> client)

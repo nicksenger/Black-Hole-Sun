@@ -22,13 +22,13 @@ const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 #[derive(Debug, Serialize, Deserialize)]
 enum VoidIn {
     Upload { data: Vec<u8> },
-    Download { id: String },
+    Download { id: ObjectId },
 }
 
 /// Wire response from the void service.
 #[derive(Debug, Serialize, Deserialize)]
 enum VoidOut {
-    Uploaded { id: String },
+    Uploaded { id: ObjectId },
     Downloaded { data: Vec<u8> },
     Error { message: String },
 }
@@ -132,8 +132,8 @@ impl VoidClient {
     }
 
     /// Download an object from void by its ID. Returns the raw bytes.
-    pub async fn download(&self, id: &str) -> Result<Vec<u8>> {
-        let resp = self.call(VoidIn::Download { id: id.to_string() }).await?;
+    pub async fn download(&self, id: ObjectId) -> Result<Vec<u8>> {
+        let resp = self.call(VoidIn::Download { id }).await?;
         match resp {
             VoidOut::Downloaded { data } => Ok(data),
             VoidOut::Error { message } => Err(ServerError::VoidError(message)),
@@ -479,7 +479,7 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuzoOut>
     })?;
 
     // Download input object from void.
-    let input_bytes = void.download(&input_id).await?;
+    let input_bytes = void.download(input_id).await?;
 
     // Decode the inference request (QuzoInferRequest -> ModelInput list).
     let infer_req: QuzoInferRequest =

@@ -22,14 +22,14 @@ pub enum VoidIn {
     /// Upload data to object storage. Server responds with VoidOut::Uploaded(id).
     Upload { data: Vec<u8> },
     /// Download an object by its opaque ID. Server responds with VoidOut::Downloaded(data).
-    Download { id: String },
+    Download { id: uuid::Uuid },
 }
 
 /// Wire response sent by the server.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VoidOut {
     /// Confirms upload; contains the opaque ID.
-    Uploaded { id: String },
+    Uploaded { id: uuid::Uuid },
     /// Returns downloaded data.
     Downloaded { data: Vec<u8> },
     /// Error message for any failure.
@@ -257,7 +257,7 @@ async fn handle_upload(context: &VoidContext, data: Vec<u8>) -> VoidOut {
             }
 
             info!(%id, "uploaded");
-            VoidOut::Uploaded { id: id.to_string() }
+            VoidOut::Uploaded { id }
         }
         Err(e) => {
             error!(error = %e, "s3 put_object failed");
@@ -268,13 +268,7 @@ async fn handle_upload(context: &VoidContext, data: Vec<u8>) -> VoidOut {
     }
 }
 
-async fn handle_download(context: &VoidContext, id_str: String) -> VoidOut {
-    let id = match uuid::Uuid::parse_str(&id_str) {
-        Ok(u) => u,
-        Err(_) => return VoidOut::Error {
-            message: format!("invalid object id: {id_str}"),
-        },
-    };
+async fn handle_download(context: &VoidContext, id: uuid::Uuid) -> VoidOut {
 
     // Look up the object in postgres to get bucket+key.
     #[cfg(feature = "postgres")]
