@@ -1,5 +1,6 @@
 [package]
 name = "black-hole-sun"
+description = "A Resilient Orchestration System for Blackbox Co-Optimization of Static-Topology Neurosymbolic Agent Swarms"
 version = "0.1.0"
 edition = "2021"
 [lints]
