@@ -3,7 +3,30 @@ name = "black-hole-void"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["postgres"]
+postgres = ["dep:sqlx", "dep:async-trait", "dep:dyn-clone"]
+
 [dependencies]
+aws-sdk-s3 = "1.140"
+clap = { version = "4", features = ["derive"] }
+directories-next = "2"
+futures = "0.3"
+postcard = { version = "1", features = ["alloc"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Postgres feature dependencies
+sqlx = { version = "0.8", optional = true, features = ["postgres", "runtime-tokio-rustls", "uuid"] }
+async-trait = { version = "0.1", optional = true }
+dyn-clone = { version = "1", optional = true }
 
 [lints]
 workspace = true
