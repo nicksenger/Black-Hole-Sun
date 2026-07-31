@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
 
-use black_hole_type::{ObjectId, QuzoIn, QuzoInferRequest, QuzoOut};
+use black_hole_spec::{ObjectId, QuzoIn, QuzoInferRequest, QuzoOut};
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -489,13 +489,13 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuzoOut>
         .inputs
         .into_iter()
         .map(|inp| match inp {
-            black_hole_type::QuzoInferInput::Text(t) => {
+            black_hole_spec::QuzoInferInput::Text(t) => {
                 paramecia_engine::ModelInput::Text(t)
             }
-            black_hole_type::QuzoInferInput::Tokens(ids) => {
+            black_hole_spec::QuzoInferInput::Tokens(ids) => {
                 paramecia_engine::ModelInput::Tokens(ids)
             }
-            black_hole_type::QuzoInferInput::Soft(entries) => {
+            black_hole_spec::QuzoInferInput::Soft(entries) => {
                 paramecia_engine::ModelInput::Soft(
                     entries.into_iter().map(|e| paramecia_engine::LogitEntry {
                         token_id: e.token_id,

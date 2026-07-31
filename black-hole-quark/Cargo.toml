@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-black-hole-type = { path = "../black-hole-type" }
+black-hole-spec = { path = "../black-hole-spec" }
 clap = { version = "4", features = ["derive"] }
 directories-next = "2"
 paramecia-engine = { git = "https://github.com/nicksenger/paramecia.git", branch = "blackholesun" }

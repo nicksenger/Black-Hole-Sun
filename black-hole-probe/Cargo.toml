@@ -1,10 +1,10 @@
 [package]
-name = "black-hole-type"
+name = "black-hole-probe"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+black-hole-spec = { path = "../black-hole-spec" }
 
 [lints]
 workspace = true

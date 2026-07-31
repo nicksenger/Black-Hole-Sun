@@ -854,10 +854,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "black-hole-probe"
+version = "0.1.0"
+dependencies = [
+ "black-hole-spec",
+]
+
+[[package]]
 name = "black-hole-quark"
 version = "0.1.0"
 dependencies = [
- "black-hole-type",
+ "black-hole-spec",
  "clap",
  "directories-next",
  "paramecia-engine",
@@ -873,22 +880,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "black-hole-sun"
-version = "0.1.0"
-
-[[package]]
-name = "black-hole-test"
-version = "0.1.0"
-dependencies = [
- "black-hole-type",
-]
-
-[[package]]
-name = "black-hole-type"
+name = "black-hole-spec"
 version = "0.1.0"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "black-hole-sun"
+version = "0.1.0"
 
 [[package]]
 name = "black-hole-void"
