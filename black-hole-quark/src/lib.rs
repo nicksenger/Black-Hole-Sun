@@ -435,7 +435,7 @@ async fn handle_request(
     ctx: &QuarkContext,
 ) -> Result<QuzoOut> {
     match req {
-        QuzoIn::PerturbUp => handle_perturb_up(ctx).await,
+        QuzoIn::PerturbUp { seed } => handle_perturb_up(seed, ctx).await,
         QuzoIn::Infer { input_id } => handle_infer(input_id, ctx).await,
         QuzoIn::PerturbDown => handle_perturb_down(ctx).await,
         QuzoIn::Optimize { loss_up, loss_down } => handle_optimize(loss_up, loss_down, ctx).await,
@@ -446,7 +446,7 @@ async fn handle_request(
 // QuZO step handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_perturb_up(ctx: &QuarkContext) -> Result<QuzoOut> {
+async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuzoOut> {
     let mut session = ctx.quzo.lock().await;
     if session.state != QuzoState::Idle {
         return Err(ServerError::InvalidQuzoState(
@@ -454,7 +454,7 @@ async fn handle_perturb_up(ctx: &QuarkContext) -> Result<QuzoOut> {
         ));
     }
 
-    ctx.engine.perturb_up().await.map_err(|e| {
+    ctx.engine.perturb_up(Some(seed)).await.map_err(|e| {
         ServerError::ModelError(e.to_string())
     })?;
 

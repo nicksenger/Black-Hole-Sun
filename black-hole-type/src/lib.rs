@@ -13,7 +13,7 @@ pub type ObjectId = String;
 #[derive(Debug, Serialize, Deserialize)]
 pub enum QuzoIn {
     /// Perturb model weights in the positive direction.
-    PerturbUp,
+    PerturbUp { seed: u64 },
     /// Run inference on the input object stored in void.
     /// Returns QuzoOut::Inferred(output_id).
     Infer { input_id: ObjectId },

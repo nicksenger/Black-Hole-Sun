@@ -3220,7 +3220,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -4996,7 +4996,7 @@ dependencies = [
 [[package]]
 name = "paramecia-arrow"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#532c3223c8a8e9572dedfd406451473469206eea"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#3b0471db981b472d425dc3020b74d8ace0324007"
 dependencies = [
  "glowstick",
  "inception",
@@ -5008,7 +5008,7 @@ dependencies = [
 [[package]]
 name = "paramecia-core"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#532c3223c8a8e9572dedfd406451473469206eea"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#3b0471db981b472d425dc3020b74d8ace0324007"
 dependencies = [
  "byteorder",
  "float8",
@@ -5030,7 +5030,7 @@ dependencies = [
 [[package]]
 name = "paramecia-engine"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#532c3223c8a8e9572dedfd406451473469206eea"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#3b0471db981b472d425dc3020b74d8ace0324007"
 dependencies = [
  "anyhow",
  "clap",
@@ -5051,7 +5051,7 @@ dependencies = [
 [[package]]
 name = "paramecia-model"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#532c3223c8a8e9572dedfd406451473469206eea"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#3b0471db981b472d425dc3020b74d8ace0324007"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -5077,7 +5077,7 @@ dependencies = [
 [[package]]
 name = "paramecia-nn"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#532c3223c8a8e9572dedfd406451473469206eea"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#3b0471db981b472d425dc3020b74d8ace0324007"
 dependencies = [
  "half",
  "num-traits",
@@ -5089,7 +5089,7 @@ dependencies = [
 [[package]]
 name = "paramecia-opt"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#532c3223c8a8e9572dedfd406451473469206eea"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#3b0471db981b472d425dc3020b74d8ace0324007"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5110,7 +5110,7 @@ dependencies = [
 [[package]]
 name = "paramecia-tensor"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#532c3223c8a8e9572dedfd406451473469206eea"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#3b0471db981b472d425dc3020b74d8ace0324007"
 dependencies = [
  "glowstick",
  "inception",
@@ -5474,7 +5474,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.3",
  "rustls 0.23.43",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -5512,7 +5512,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -8166,7 +8166,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
