@@ -5,7 +5,6 @@ use crate::persist::{ObjectRecord, PersistenceError, Result, VoidStore};
 use async_trait::async_trait;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct PgStore {

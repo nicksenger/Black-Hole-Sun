@@ -11,9 +11,9 @@ members = [
 ]
 
 [workspace.dependencies]
-jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "master" }
-jungle-vision = { git = "https://github.com/nicksenger/Jungle.git", branch = "master" }
-jungle-zoo = { git = "https://github.com/nicksenger/Jungle.git", branch = "master" }
+jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun" }
+jungle-vision = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun" }
+jungle-zoo = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun" }
 
 [workspace.lints.clippy]
 type_complexity = "allow"

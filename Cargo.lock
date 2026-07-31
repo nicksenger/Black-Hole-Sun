@@ -3282,7 +3282,7 @@ dependencies = [
 [[package]]
 name = "iced-sugiyama"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/iced-sugiyama.git?branch=jungle#b9522c122e3bf14cc2bc567d7a73e8c9314820ca"
+source = "git+https://github.com/nicksenger/iced-sugiyama.git?branch=blackholesun#dd07b85b739791c32d3a7d85b007c0b0a82ee7f1"
 dependencies = [
  "iced",
  "iced-sugiyama-core",
@@ -3293,7 +3293,7 @@ dependencies = [
 [[package]]
 name = "iced-sugiyama-core"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/iced-sugiyama.git?branch=jungle#b9522c122e3bf14cc2bc567d7a73e8c9314820ca"
+source = "git+https://github.com/nicksenger/iced-sugiyama.git?branch=blackholesun#dd07b85b739791c32d3a7d85b007c0b0a82ee7f1"
 dependencies = [
  "log",
  "petgraph",
@@ -3768,7 +3768,7 @@ dependencies = [
 [[package]]
 name = "jungle-client"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/Jungle.git?branch=master#9d242b4509d81cf43cb4536b8871aa01a5d19eb8"
+source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#9d7bb827f2efe07906c61542cc316e4356ce4bc2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3789,7 +3789,7 @@ dependencies = [
 [[package]]
 name = "jungle-core"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/Jungle.git?branch=master#9d242b4509d81cf43cb4536b8871aa01a5d19eb8"
+source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#9d7bb827f2efe07906c61542cc316e4356ce4bc2"
 dependencies = [
  "chrono",
  "futures",
@@ -3806,7 +3806,7 @@ dependencies = [
 [[package]]
 name = "jungle-macros"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/Jungle.git?branch=master#9d242b4509d81cf43cb4536b8871aa01a5d19eb8"
+source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#9d7bb827f2efe07906c61542cc316e4356ce4bc2"
 dependencies = [
  "inception-derive-gen",
  "proc-macro-crate",
@@ -3818,7 +3818,7 @@ dependencies = [
 [[package]]
 name = "jungle-sdk"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/Jungle.git?branch=master#9d242b4509d81cf43cb4536b8871aa01a5d19eb8"
+source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#9d7bb827f2efe07906c61542cc316e4356ce4bc2"
 dependencies = [
  "inception",
  "jungle-client",
@@ -3831,7 +3831,7 @@ dependencies = [
 [[package]]
 name = "jungle-types"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/Jungle.git?branch=master#9d242b4509d81cf43cb4536b8871aa01a5d19eb8"
+source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#9d7bb827f2efe07906c61542cc316e4356ce4bc2"
 dependencies = [
  "futures",
  "inception",
@@ -3846,7 +3846,7 @@ dependencies = [
 [[package]]
 name = "jungle-vision"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/Jungle.git?branch=master#9d242b4509d81cf43cb4536b8871aa01a5d19eb8"
+source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#9d7bb827f2efe07906c61542cc316e4356ce4bc2"
 dependencies = [
  "iced",
  "iced-sugiyama",
@@ -3863,7 +3863,7 @@ dependencies = [
 [[package]]
 name = "jungle-zoo"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/Jungle.git?branch=master#9d242b4509d81cf43cb4536b8871aa01a5d19eb8"
+source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#9d7bb827f2efe07906c61542cc316e4356ce4bc2"
 dependencies = [
  "jungle-sdk",
  "reqwest",
