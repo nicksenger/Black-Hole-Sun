@@ -3,5 +3,10 @@ name = "black-hole-sun"
 description = "A Fault-Tolerant Orchestrator for Co-Optimization of Neurosymbolic Multi-Agent Systems"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+black-hole-quark = { path = "../black-hole-quark" }
+black-hole-void = { path = "../black-hole-void" }
+
 [lints]
 workspace = true

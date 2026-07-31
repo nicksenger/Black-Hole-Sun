@@ -89,7 +89,10 @@ impl ServerBuilder {
         self
     }
 
-    pub async fn run(self) -> Result<()> {
+    /// Build the server endpoint and context, returning them for reuse.
+    async fn setup(
+        self,
+    ) -> Result<(quinn::Endpoint, SocketAddr, Arc<VoidContext>)> {
         // Run migrations before accepting connections.
         self.store.migrate().await.map_err(|e| {
             ServerError::Store(persist::PersistenceError::Message(format!(
@@ -135,6 +138,31 @@ impl ServerBuilder {
             store: self.store,
         });
 
+        Ok((endpoint, local_addr, context))
+    }
+
+    /// Start the server in a background task. Returns the bound address and
+    /// a handle that can be used to await or abort the server.
+    pub async fn serve(self) -> Result<(SocketAddr, tokio::task::JoinHandle<Result<()>>)> {
+        let stateless_retry = self.stateless_retry;
+        let (endpoint, local_addr, context) = self.setup().await?;
+        let handle = tokio::spawn(Self::accept_loop(endpoint, context, stateless_retry));
+        Ok((local_addr, handle))
+    }
+
+    /// Run the server, blocking until the endpoint is closed.
+    pub async fn run(self) -> Result<()> {
+        let stateless_retry = self.stateless_retry;
+        let (endpoint, _local_addr, context) = self.setup().await?;
+        Self::accept_loop(endpoint, context, stateless_retry).await
+    }
+
+    /// Accept-loop shared by both `run()` and `serve()`.
+    async fn accept_loop(
+        endpoint: quinn::Endpoint,
+        context: Arc<VoidContext>,
+        stateless_retry: bool,
+    ) -> Result<()> {
         loop {
             let conn = tokio::select! {
                 incoming = endpoint.accept() => match incoming {
@@ -143,7 +171,7 @@ impl ServerBuilder {
                 },
             };
 
-            if self.stateless_retry && !conn.remote_address_validated() {
+            if stateless_retry && !conn.remote_address_validated() {
                 info!("requiring connection to validate its address");
                 let _ = conn.retry();
                 continue;

@@ -3,6 +3,9 @@ name = "black-hole-quark"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+qwen35_0p8b = ["paramecia-engine/qwen35_0p8b"]
+
 [dependencies]
 black-hole-spec = { path = "../black-hole-spec" }
 clap = { version = "4", features = ["derive"] }

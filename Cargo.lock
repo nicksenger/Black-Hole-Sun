@@ -857,7 +857,17 @@ dependencies = [
 name = "black-hole-probe"
 version = "0.1.0"
 dependencies = [
+ "black-hole-quark",
  "black-hole-spec",
+ "black-hole-void",
+ "postcard",
+ "quinn",
+ "rustls 0.23.43",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -891,6 +901,10 @@ dependencies = [
 [[package]]
 name = "black-hole-sun"
 version = "0.1.0"
+dependencies = [
+ "black-hole-quark",
+ "black-hole-void",
+]
 
 [[package]]
 name = "black-hole-void"
