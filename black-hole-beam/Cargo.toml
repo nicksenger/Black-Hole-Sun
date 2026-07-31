@@ -2,5 +2,10 @@
 name = "black-hole-beam"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+jungle-sdk = { workspace = true }
+jungle-vision = { workspace = true }
+
 [lints]
 workspace = true
