@@ -30,3 +30,8 @@ dyn-clone = { version = "1", optional = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

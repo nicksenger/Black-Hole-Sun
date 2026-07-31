@@ -10,6 +10,8 @@ use tokio::io::AsyncReadExt;
 use tracing::{error, info, warn};
 
 pub mod persist;
+#[cfg(feature = "postgres")]
+pub mod migrate;
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4434";
 const S3_MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB

@@ -1,0 +1,3 @@
+# SQLx offline query cache.
+# Regenerate by running:
+#   cargo test -p black-hole-void --features postgres --test sqlx_offline_schema -- --ignored
