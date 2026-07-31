@@ -1,6 +1,5 @@
 use std::{fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
-use aws_sdk_s3::Client as S3Client;
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -9,6 +8,7 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{error, info, warn};
 
+pub mod object_store;
 pub mod persist;
 #[cfg(feature = "postgres")]
 pub mod migrate;
@@ -36,23 +36,19 @@ pub enum VoidOut {
     Error { message: String },
 }
 
-#[cfg(feature = "postgres")]
 pub struct ServerBuilder {
     keylog: bool,
     key: Option<PathBuf>,
     cert: Option<PathBuf>,
     stateless_retry: bool,
     listen: SocketAddr,
-    s3_client: S3Client,
-    s3_bucket: String,
+    object_store: Box<dyn object_store::ObjectStore>,
     store: Box<dyn persist::VoidStore>,
 }
 
-#[cfg(feature = "postgres")]
 impl ServerBuilder {
     pub fn new(
-        s3_client: S3Client,
-        s3_bucket: impl Into<String>,
+        object_store: Box<dyn object_store::ObjectStore>,
         store: Box<dyn persist::VoidStore>,
     ) -> Self {
         Self {
@@ -63,8 +59,7 @@ impl ServerBuilder {
             listen: DEFAULT_LISTEN_ADDR
                 .parse()
                 .expect("default listen address must be valid"),
-            s3_client,
-            s3_bucket: s3_bucket.into(),
+            object_store,
             store,
         }
     }
@@ -133,11 +128,10 @@ impl ServerBuilder {
         ).map_err(ServerError::BindEndpoint)?;
 
         let local_addr = endpoint.local_addr().map_err(ServerError::LocalAddr)?;
-        info!(%local_addr, bucket = %self.s3_bucket, "listening");
+        info!(%local_addr, "listening");
 
         let context = Arc::new(VoidContext {
-            s3_client: self.s3_client,
-            s3_bucket: self.s3_bucket,
+            object_store: self.object_store,
             store: self.store,
         });
 
@@ -165,9 +159,7 @@ impl ServerBuilder {
 }
 
 struct VoidContext {
-    s3_client: S3Client,
-    s3_bucket: String,
-    #[cfg(feature = "postgres")]
+    object_store: Box<dyn object_store::ObjectStore>,
     store: Box<dyn persist::VoidStore>,
 }
 
@@ -237,19 +229,12 @@ async fn handle_upload(context: &VoidContext, data: Vec<u8>) -> VoidOut {
     let key = id.to_string();
     let size_bytes = i64::try_from(data.len()).unwrap_or(i64::MAX);
 
-    match context.s3_client.put_object()
-        .bucket(&context.s3_bucket)
-        .key(&key)
-        .body(data.into())
-        .send()
-        .await
-    {
+    match context.object_store.put(key.clone(), data).await {
         Ok(_) => {
-            // Persist the object metadata to postgres.
-            #[cfg(feature = "postgres")]
+            // Persist the object metadata.
             if let Err(e) = context.store.insert_object(
                 id,
-                context.s3_bucket.clone(),
+                "memory".to_string(),
                 key.clone(),
                 size_bytes,
             ).await {
@@ -260,7 +245,7 @@ async fn handle_upload(context: &VoidContext, data: Vec<u8>) -> VoidOut {
             VoidOut::Uploaded { id }
         }
         Err(e) => {
-            error!(error = %e, "s3 put_object failed");
+            error!(error = %e, "put_object failed");
             VoidOut::Error {
                 message: format!("upload failed: {e}"),
             }
@@ -269,9 +254,7 @@ async fn handle_upload(context: &VoidContext, data: Vec<u8>) -> VoidOut {
 }
 
 async fn handle_download(context: &VoidContext, id: uuid::Uuid) -> VoidOut {
-
-    // Look up the object in postgres to get bucket+key.
-    #[cfg(feature = "postgres")]
+    // Look up the object to get bucket+key.
     let record = match context.store.get_object(id).await {
         Ok(Some(r)) => r,
         Ok(None) => return VoidOut::Error {
@@ -285,44 +268,16 @@ async fn handle_download(context: &VoidContext, id: uuid::Uuid) -> VoidOut {
         }
     };
 
-    #[cfg(feature = "postgres")]
-    match context.s3_client.get_object()
-        .bucket(&record.bucket)
-        .key(&record.key)
-        .send()
-        .await
-    {
-        Ok(output) => {
-            let body = output.body.collect().await;
-            match body {
-                Ok(aggregated) => {
-                    let data = aggregated.into_bytes();
-                    info!(%id, bytes = data.len(), "downloaded");
-                    VoidOut::Downloaded {
-                        data: data.to_vec(),
-                    }
-                }
-                Err(e) => {
-                    error!(error = %e, "failed to read s3 body");
-                    VoidOut::Error {
-                        message: format!("download failed: {e}"),
-                    }
-                }
-            }
+    match context.object_store.get(&record.key).await {
+        Ok(data) => {
+            info!(%id, bytes = data.len(), "downloaded");
+            VoidOut::Downloaded { data }
         }
         Err(e) => {
-            warn!(%id, error = %e, "s3 get_object failed (object may not exist)");
+            warn!(%id, error = %e, "get_object failed (object may not exist)");
             VoidOut::Error {
                 message: format!("not found: {e}"),
             }
-        }
-    }
-
-    #[cfg(not(feature = "postgres"))]
-    {
-        let _ = id;
-        VoidOut::Error {
-            message: "postgres feature not enabled".to_string(),
         }
     }
 }
@@ -463,7 +418,6 @@ pub enum ServerError {
     EncodeResponse(postcard::Error),
     #[error("failed to write frame: {0}")]
     WriteFrame(quinn::WriteError),
-    #[cfg(feature = "postgres")]
     #[error("persistence error: {0}")]
     Store(#[source] persist::PersistenceError),
 }

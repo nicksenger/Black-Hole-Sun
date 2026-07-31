@@ -6,6 +6,9 @@
 #[cfg(feature = "postgres")]
 pub mod pg;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -26,10 +29,9 @@ pub struct ObjectRecord {
 }
 
 /// Trait for persistence backends that track void objects.
-#[cfg(feature = "postgres")]
 #[async_trait::async_trait]
 pub trait VoidStore: dyn_clone::DynClone + Send + Sync {
-    /// Run schema migrations.
+    /// Run schema migrations (no-op for in-memory stores).
     async fn migrate(&self) -> Result<()>;
 
     /// Record a newly uploaded object.
@@ -48,8 +50,56 @@ pub trait VoidStore: dyn_clone::DynClone + Send + Sync {
     async fn delete_object(&self, id: Uuid) -> Result<()>;
 }
 
-#[cfg(feature = "postgres")]
 dyn_clone::clone_trait_object!(VoidStore);
+
+/// In-memory relational store using a HashMap.
+#[derive(Clone)]
+pub struct InMemoryStore {
+    map: Arc<RwLock<HashMap<Uuid, ObjectRecord>>>,
+}
+
+impl InMemoryStore {
+    pub fn new() -> Self {
+        Self {
+            map: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl VoidStore for InMemoryStore {
+    async fn migrate(&self) -> Result<()> {
+        // No migrations needed for in-memory store.
+        Ok(())
+    }
+
+    async fn insert_object(
+        &self,
+        id: Uuid,
+        bucket: String,
+        key: String,
+        size_bytes: i64,
+    ) -> Result<()> {
+        let record = ObjectRecord {
+            id,
+            bucket,
+            key,
+            size_bytes,
+        };
+        self.map.write().await.insert(id, record);
+        Ok(())
+    }
+
+    async fn get_object(&self, id: Uuid) -> Result<Option<ObjectRecord>> {
+        let record = self.map.read().await.get(&id).cloned();
+        Ok(record)
+    }
+
+    async fn delete_object(&self, id: Uuid) -> Result<()> {
+        self.map.write().await.remove(&id);
+        Ok(())
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum PersistenceError {
