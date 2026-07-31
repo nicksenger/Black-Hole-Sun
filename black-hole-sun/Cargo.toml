@@ -5,8 +5,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-black-hole-quark = { path = "../black-hole-quark" }
-black-hole-void = { path = "../black-hole-void" }
+black-hole-spec = { path = "../black-hole-spec" }
+black-hole-void = { path = "../black-hole-void", default-features = false }
+black-hole-quark = { path = "../black-hole-quark", features = ["qwen35_0p8b"] }
 
 [lints]
 workspace = true

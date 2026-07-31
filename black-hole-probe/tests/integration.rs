@@ -2,11 +2,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use black_hole_quark::ServerBuilder as QuarkServerBuilder;
-use black_hole_spec::{ObjectId, QuarkIn, QuarkInferenceInput, QuarkInferenceRequest, QuarkOut};
-use black_hole_void::object_store::InMemoryObjectStore;
-use black_hole_void::persist::InMemoryStore;
-use black_hole_void::ServerBuilder as VoidServerBuilder;
+use black_hole_sun::object_store::InMemoryObjectStore;
+use black_hole_sun::persist::InMemoryStore;
+use black_hole_sun::QuarkServerBuilder;
+use black_hole_sun::VoidServerBuilder;
+use black_hole_sun::{ObjectId, QuarkIn, QuarkInferenceInput, QuarkInferenceRequest, QuarkOut};
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
@@ -133,14 +133,20 @@ async fn quark_infer(endpoint: &quinn::Endpoint, addr: SocketAddr, input_id: Obj
 async fn send_frame(send: &mut quinn::SendStream, msg: &impl Serialize) {
     let payload = to_allocvec(msg).expect("failed to encode frame");
     let len = u32::try_from(payload.len()).expect("frame too large");
-    send.write_all(&len.to_be_bytes()).await.expect("failed to write frame len");
-    send.write_all(&payload).await.expect("failed to write frame payload");
+    send.write_all(&len.to_be_bytes())
+        .await
+        .expect("failed to write frame len");
+    send.write_all(&payload)
+        .await
+        .expect("failed to write frame payload");
 }
 
 async fn read_frame<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) -> T {
     let len = recv.read_u32().await.expect("failed to read frame len") as usize;
     let mut payload = vec![0u8; len];
-    recv.read_exact(&mut payload).await.expect("failed to read frame payload");
+    recv.read_exact(&mut payload)
+        .await
+        .expect("failed to read frame payload");
     from_bytes(&payload).expect("failed to decode frame")
 }
 
@@ -148,7 +154,7 @@ async fn read_frame<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) 
 
 #[tokio::test]
 async fn quark_inference_via_void() {
-    black_hole_void::init_tracing().ok();
+    black_hole_sun::init_tracing().ok();
 
     // 1. Start void server on a random port with in-memory store.
     let object_store = Box::new(InMemoryObjectStore::new());
@@ -179,8 +185,10 @@ async fn quark_inference_via_void() {
     let quark_client = make_client_endpoint().await;
 
     // 4. Upload inference input to void.
+    let input_text = "Won't you come?";
+    println!("Input text: {input_text}");
     let request = QuarkInferenceRequest {
-        inputs: vec![QuarkInferenceInput::Text("Won't you come?".into())],
+        inputs: vec![QuarkInferenceInput::Text(input_text.into())],
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_upload(&void_client, void_local, request_bytes).await;
@@ -190,7 +198,7 @@ async fn quark_inference_via_void() {
 
     // 6. Download inference output from void and assert we got predictions.
     let output_bytes = void_download(&void_client, void_local, output_id).await;
-    let output: black_hole_spec::QuarkInferenceOutput =
+    let output: black_hole_sun::QuarkInferenceOutput =
         from_bytes(&output_bytes).expect("failed to decode inference output");
 
     assert!(
@@ -204,7 +212,12 @@ async fn quark_inference_via_void() {
         .iter()
         .filter_map(|p| p.text.as_deref())
         .collect();
-    assert!(!output_text.is_empty(), "predicted tokens had no decoded text");
+
+    println!("Output text: {output_text}");
+    assert!(
+        !output_text.is_empty(),
+        "predicted tokens had no decoded text"
+    );
 
     // Cleanup: drop endpoints to close QUIC connections, then abort server tasks.
     drop(void_client);
