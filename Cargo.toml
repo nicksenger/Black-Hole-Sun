@@ -5,6 +5,8 @@ members = [
     "black-hole-flux",
     "black-hole-quark",
     "black-hole-sun",
+    "black-hole-test",
+    "black-hole-type",
 ]
 
 [workspace.dependencies]

@@ -1,0 +1,10 @@
+[package]
+name = "black-hole-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+black-hole-type = { path = "../black-hole-type" }
+
+[lints]
+workspace = true
