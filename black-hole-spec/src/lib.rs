@@ -74,3 +74,27 @@ pub enum QuzoInferInput {
 pub struct QuzoInferRequest {
     pub inputs: Vec<QuzoInferInput>,
 }
+
+// ---------------------------------------------------------------------------
+// Inference output format (stored in void objects)
+// ---------------------------------------------------------------------------
+
+/// A single predicted token with its top-K distribution from a model forward pass.
+/// Stored as a soft token so downstream models can use it for dark-knowledge transfer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PredictedToken {
+    /// The predicted (committed) token ID.
+    pub token_id: u32,
+    /// Decoded text for this token, if available.
+    pub text: Option<String>,
+    /// Top-K logit entries representing the model's distribution at this position.
+    pub top_k: Vec<LogitEntry>,
+}
+
+/// Serializable inference output stored in void objects.
+/// Contains the sequence of predicted tokens with their distributions,
+/// suitable for use as soft inputs to a subsequent forward pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuzoInferOutput {
+    pub predictions: Vec<PredictedToken>,
+}

@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
 
-use black_hole_spec::{ObjectId, QuzoIn, QuzoInferRequest, QuzoOut};
+use black_hole_spec::{ObjectId, PredictedToken, QuzoIn, QuzoInferOutput, QuzoInferRequest, QuzoOut};
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -291,6 +291,7 @@ impl ServerBuilder {
         let model_path_str = self.model_path.to_string_lossy().to_string();
         info!(model_path = %model_path_str, "loading model");
         let engine = paramecia_engine::ModelEngineBuilder::new(&self.model_path)
+            .top_k(256)
             .build()
             .map_err(|e| ServerError::ModelError(e.to_string()))?;
         info!("model loaded");
@@ -510,15 +511,22 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuzoOut>
         .collect();
 
     // Run inference: fill context then predict completion.
-    let predicted_tokens = run_inference(&ctx.engine, &inputs).await?;
+    let predicted = run_inference(&ctx.engine, &inputs).await?;
 
-    // Decode output text via tokenizer.
-    let tokenizer = ctx.engine.tokenizer();
-    let output_text = tokenizer.decode(&predicted_tokens, false)
-        .map_err(|e| ServerError::ModelError(e.to_string()))?;
+    // Convert predictions to serializable output with top-K distributions.
+    let output = QuzoInferOutput {
+        predictions: predicted.into_iter().map(|p| PredictedToken {
+            token_id: p.token_id,
+            text: p.text,
+            top_k: p.top_k.into_iter().map(|e| black_hole_spec::LogitEntry {
+                token_id: e.token_id,
+                log_prob: e.log_prob,
+            }).collect(),
+        }).collect(),
+    };
 
     // Upload output to void.
-    let output_bytes = to_allocvec(&output_text).map_err(ServerError::EncodeFrame)?;
+    let output_bytes = to_allocvec(&output).map_err(ServerError::EncodeFrame)?;
     let output_id = void.upload(output_bytes).await?;
 
     // Advance state.
@@ -573,7 +581,7 @@ async fn handle_optimize(loss_up: f32, loss_down: f32, ctx: &QuarkContext) -> Re
 async fn run_inference(
     engine: &ModelEngine,
     inputs: &[paramecia_engine::ModelInput],
-) -> Result<Vec<u32>> {
+) -> Result<Vec<paramecia_engine::Predicted>> {
     // Fill context with the provided inputs. Returns a progress receiver.
     let _progress_rx = engine.fill_context_inputs(inputs).await
         .map_err(|e| ServerError::ModelError(e.to_string()))?;
@@ -582,10 +590,10 @@ async fn run_inference(
     let (mut result_rx, _cancel_tx) = engine.predict_completion().await
         .map_err(|e| ServerError::ModelError(e.to_string()))?;
 
-    let mut tokens = Vec::new();
+    let mut predictions = Vec::new();
     while let Some(result) = result_rx.recv().await {
         match result {
-            Ok(predicted) => tokens.push(predicted.token_id),
+            Ok(predicted) => predictions.push(predicted),
             Err(e) => {
                 // Non-fatal errors (e.g. max length) are fine.
                 warn!(error = %e, "prediction ended with error");
@@ -594,7 +602,7 @@ async fn run_inference(
         }
     }
 
-    Ok(tokens)
+    Ok(predictions)
 }
 
 // ---------------------------------------------------------------------------
