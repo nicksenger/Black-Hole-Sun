@@ -4,6 +4,7 @@ members = [
     "black-hole-beam",
     "black-hole-flux",
     "black-hole-quark",
+    "black-hole-void",
     "black-hole-sun",
     "black-hole-test",
     "black-hole-type",
