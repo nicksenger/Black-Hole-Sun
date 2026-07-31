@@ -46,6 +46,16 @@ pub struct LogitEntry {
     pub log_prob: f32,
 }
 
+/// A soft token position for dark-knowledge transfer between model forward passes.
+/// Carries the predicted (committed) token ID and a top-K distribution from a teacher model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SoftToken {
+    /// The predicted (committed) token ID for this position.
+    pub predicted: u32,
+    /// Top-K logit entries representing the teacher model's distribution at this position.
+    pub dark_knowledge: Vec<LogitEntry>,
+}
+
 /// Serializable inference input, mirroring paramecia-engine's ModelInput.
 /// Stored inside void objects and converted to ModelInput by the quark service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,9 +64,9 @@ pub enum QuzoInferInput {
     Text(String),
     /// Specific token IDs.
     Tokens(Vec<u32>),
-    /// Soft prompt: a weighted distribution over tokens (top-k probabilities).
-    /// The host converts this into an input embedding via weighted index selection.
-    Soft(Vec<LogitEntry>),
+    /// Soft prompt: a sequence of soft tokens carrying predicted token IDs and
+    /// dark-knowledge distributions.
+    Soft(Vec<SoftToken>),
 }
 
 /// Serializable list of inference inputs for a single forward pass.
