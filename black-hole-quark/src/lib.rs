@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
 
-use black_hole_spec::{ObjectId, PredictedToken, QuzoIn, QuzoInferOutput, QuzoInferRequest, QuzoOut};
+use black_hole_spec::{ObjectId, PredictedToken, QuarkIn, QuarkInferenceOutput, QuarkInferenceRequest, QuarkOut};
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -192,7 +192,7 @@ async fn read_frame<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) 
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QuzoState {
+enum QuarkState {
     /// Initial or post-update: next expected step is PerturbUp.
     Idle,
     /// After PerturbUp: waiting for Infer (up).
@@ -205,14 +205,14 @@ enum QuzoState {
     AwaitingOptimize,
 }
 
-struct QuzoSession {
-    state: QuzoState,
+struct QuarkSession {
+    state: QuarkState,
 }
 
-impl QuzoSession {
+impl QuarkSession {
     fn new() -> Self {
         Self {
-            state: QuzoState::Idle,
+            state: QuarkState::Idle,
         }
     }
 }
@@ -224,7 +224,7 @@ impl QuzoSession {
 struct QuarkContext {
     engine: Arc<ModelEngine>,
     void_client: Option<Arc<VoidClient>>,
-    quzo: tokio::sync::Mutex<QuzoSession>,
+    quark: tokio::sync::Mutex<QuarkSession>,
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +342,7 @@ impl ServerBuilder {
         let context = Arc::new(QuarkContext {
             engine: Arc::new(engine),
             void_client,
-            quzo: tokio::sync::Mutex::new(QuzoSession::new()),
+            quark: tokio::sync::Mutex::new(QuarkSession::new()),
         });
 
         loop {
@@ -411,10 +411,10 @@ async fn handle_stream(
     (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
     context: Arc<QuarkContext>,
 ) {
-    let req: QuzoIn = match read_frame(&mut recv).await {
+    let req: QuarkIn = match read_frame(&mut recv).await {
         Ok(r) => r,
         Err(e) => {
-            let _ = write_frame(&mut send, &QuzoOut::Error { message: e.to_string() }).await;
+            let _ = write_frame(&mut send, &QuarkOut::Error { message: e.to_string() }).await;
             return;
         }
     };
@@ -423,7 +423,7 @@ async fn handle_stream(
 
     let out = match handle_request(req, &context).await {
         Ok(o) => o,
-        Err(e) => QuzoOut::Error { message: e.to_string() },
+        Err(e) => QuarkOut::Error { message: e.to_string() },
     };
 
     if write_frame(&mut send, &out).await.is_err() {
@@ -432,14 +432,14 @@ async fn handle_stream(
 }
 
 async fn handle_request(
-    req: QuzoIn,
+    req: QuarkIn,
     ctx: &QuarkContext,
-) -> Result<QuzoOut> {
+) -> Result<QuarkOut> {
     match req {
-        QuzoIn::PerturbUp { seed } => handle_perturb_up(seed, ctx).await,
-        QuzoIn::Infer { input_id } => handle_infer(input_id, ctx).await,
-        QuzoIn::PerturbDown => handle_perturb_down(ctx).await,
-        QuzoIn::Optimize { loss_up, loss_down } => handle_optimize(loss_up, loss_down, ctx).await,
+        QuarkIn::PerturbUp { seed } => handle_perturb_up(seed, ctx).await,
+        QuarkIn::Infer { input_id } => handle_infer(input_id, ctx).await,
+        QuarkIn::PerturbDown => handle_perturb_down(ctx).await,
+        QuarkIn::Optimize { loss_up, loss_down } => handle_optimize(loss_up, loss_down, ctx).await,
     }
 }
 
@@ -447,10 +447,10 @@ async fn handle_request(
 // QuZO step handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuzoOut> {
-    let mut session = ctx.quzo.lock().await;
-    if session.state != QuzoState::Idle {
-        return Err(ServerError::InvalidQuzoState(
+async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
+    let mut session = ctx.quark.lock().await;
+    if session.state != QuarkState::Idle {
+        return Err(ServerError::InvalidQuarkState(
             format!("expected Idle, got {:?}", session.state),
         ));
     }
@@ -459,15 +459,15 @@ async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuzoOut> {
         ServerError::ModelError(e.to_string())
     })?;
 
-    session.state = QuzoState::PostPerturbUp;
-    Ok(QuzoOut::Ack)
+    session.state = QuarkState::PostPerturbUp;
+    Ok(QuarkOut::Ack)
 }
 
-async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuzoOut> {
+async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut> {
     let state = {
-        let session = ctx.quzo.lock().await;
-        if session.state != QuzoState::PostPerturbUp && session.state != QuzoState::PostPerturbDown {
-            return Err(ServerError::InvalidQuzoState(
+        let session = ctx.quark.lock().await;
+        if session.state != QuarkState::PostPerturbUp && session.state != QuarkState::PostPerturbDown {
+            return Err(ServerError::InvalidQuarkState(
                 format!("inference requires PostPerturbUp or PostPerturbDown state, got {:?}", session.state),
             ));
         }
@@ -482,21 +482,21 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuzoOut>
     // Download input object from void.
     let input_bytes = void.download(input_id).await?;
 
-    // Decode the inference request (QuzoInferRequest -> ModelInput list).
-    let infer_req: QuzoInferRequest =
+    // Decode the inference request (QuarkInferenceRequest -> ModelInput list).
+    let infer_req: QuarkInferenceRequest =
         from_bytes(&input_bytes).map_err(ServerError::DecodeFrame)?;
 
     let inputs: Vec<paramecia_engine::ModelInput> = infer_req
         .inputs
         .into_iter()
         .map(|inp| match inp {
-            black_hole_spec::QuzoInferInput::Text(t) => {
+            black_hole_spec::QuarkInferenceInput::Text(t) => {
                 paramecia_engine::ModelInput::Text(t)
             }
-            black_hole_spec::QuzoInferInput::Tokens(ids) => {
+            black_hole_spec::QuarkInferenceInput::Tokens(ids) => {
                 paramecia_engine::ModelInput::Tokens(ids)
             }
-            black_hole_spec::QuzoInferInput::Soft(tokens) => {
+            black_hole_spec::QuarkInferenceInput::Darkness(tokens) => {
                 paramecia_engine::ModelInput::Soft(
                     tokens.into_iter().map(|t| paramecia_engine::SoftToken {
                         predicted: t.predicted,
@@ -514,7 +514,7 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuzoOut>
     let predicted = run_inference(&ctx.engine, &inputs).await?;
 
     // Convert predictions to serializable output with top-K distributions.
-    let output = QuzoInferOutput {
+    let output = QuarkInferenceOutput {
         predictions: predicted.into_iter().map(|p| PredictedToken {
             token_id: p.token_id,
             text: p.text,
@@ -531,21 +531,21 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuzoOut>
 
     // Advance state.
     {
-        let mut session = ctx.quzo.lock().await;
-        session.state = if state == QuzoState::PostPerturbUp {
-            QuzoState::AwaitingPerturbDown
+        let mut session = ctx.quark.lock().await;
+        session.state = if state == QuarkState::PostPerturbUp {
+            QuarkState::AwaitingPerturbDown
         } else {
-            QuzoState::AwaitingOptimize
+            QuarkState::AwaitingOptimize
         };
     }
 
-    Ok(QuzoOut::Inferred { output_id })
+    Ok(QuarkOut::Inferred { output_id })
 }
 
-async fn handle_perturb_down(ctx: &QuarkContext) -> Result<QuzoOut> {
-    let mut session = ctx.quzo.lock().await;
-    if session.state != QuzoState::AwaitingPerturbDown {
-        return Err(ServerError::InvalidQuzoState(
+async fn handle_perturb_down(ctx: &QuarkContext) -> Result<QuarkOut> {
+    let mut session = ctx.quark.lock().await;
+    if session.state != QuarkState::AwaitingPerturbDown {
+        return Err(ServerError::InvalidQuarkState(
             format!("expected AwaitingPerturbDown, got {:?}", session.state),
         ));
     }
@@ -554,14 +554,14 @@ async fn handle_perturb_down(ctx: &QuarkContext) -> Result<QuzoOut> {
         ServerError::ModelError(e.to_string())
     })?;
 
-    session.state = QuzoState::PostPerturbDown;
-    Ok(QuzoOut::Ack)
+    session.state = QuarkState::PostPerturbDown;
+    Ok(QuarkOut::Ack)
 }
 
-async fn handle_optimize(loss_up: f32, loss_down: f32, ctx: &QuarkContext) -> Result<QuzoOut> {
-    let mut session = ctx.quzo.lock().await;
-    if session.state != QuzoState::AwaitingOptimize {
-        return Err(ServerError::InvalidQuzoState(
+async fn handle_optimize(loss_up: f32, loss_down: f32, ctx: &QuarkContext) -> Result<QuarkOut> {
+    let mut session = ctx.quark.lock().await;
+    if session.state != QuarkState::AwaitingOptimize {
+        return Err(ServerError::InvalidQuarkState(
             format!("expected AwaitingOptimize, got {:?}", session.state),
         ));
     }
@@ -570,8 +570,8 @@ async fn handle_optimize(loss_up: f32, loss_down: f32, ctx: &QuarkContext) -> Re
         ServerError::ModelError(e.to_string())
     })?;
 
-    session.state = QuzoState::Idle;
-    Ok(QuzoOut::Ack)
+    session.state = QuarkState::Idle;
+    Ok(QuarkOut::Ack)
 }
 
 // ---------------------------------------------------------------------------
@@ -701,8 +701,8 @@ pub enum ServerError {
     LocalAddr(#[source] io::Error),
     #[error("model error: {0}")]
     ModelError(String),
-    #[error("invalid QuZO state machine transition: {0}")]
-    InvalidQuzoState(String),
+    #[error("invalid Quark state machine transition: {0}")]
+    InvalidQuarkState(String),
     #[error("void service not configured")]
     VoidNotConfigured,
     #[error("failed to bind void client endpoint: {0}")]

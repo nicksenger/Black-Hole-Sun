@@ -7,16 +7,16 @@ use uuid::Uuid;
 pub type ObjectId = Uuid;
 
 // ---------------------------------------------------------------------------
-// QuZO wire protocol (black-hole-quark <-> client)
+// Quark wire protocol (black-hole-quark <-> client)
 // ---------------------------------------------------------------------------
 
 /// Request sent by a client to the quark QUIC server.
 #[derive(Debug, Serialize, Deserialize)]
-pub enum QuzoIn {
+pub enum QuarkIn {
     /// Perturb model weights in the positive direction.
     PerturbUp { seed: u64 },
     /// Run inference on the input object stored in void.
-    /// Returns QuzoOut::Inferred(output_id).
+    /// Returns QuarkOut::Inferred(output_id).
     Infer { input_id: ObjectId },
     /// Perturb model weights in the negative direction.
     PerturbDown,
@@ -26,7 +26,7 @@ pub enum QuzoIn {
 
 /// Response sent by the quark server to the client.
 #[derive(Debug, Serialize, Deserialize)]
-pub enum QuzoOut {
+pub enum QuarkOut {
     /// Acknowledges a perturb or optimize step.
     Ack,
     /// Inference complete; contains the void object ID of the output.
@@ -39,17 +39,17 @@ pub enum QuzoOut {
 // Inference input format (stored in void objects)
 // ---------------------------------------------------------------------------
 
-/// A single logit entry (token ID + log probability) for soft prompting.
+/// A single logit entry (token ID + log probability) for dark prompting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogitEntry {
     pub token_id: u32,
     pub log_prob: f32,
 }
 
-/// A soft token position for dark-knowledge transfer between model forward passes.
+/// A dark token position for dark-knowledge transfer between model forward passes.
 /// Carries the predicted (committed) token ID and a top-K distribution from a teacher model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SoftToken {
+pub struct DarkToken {
     /// The predicted (committed) token ID for this position.
     pub predicted: u32,
     /// Top-K logit entries representing the teacher model's distribution at this position.
@@ -59,20 +59,20 @@ pub struct SoftToken {
 /// Serializable inference input, mirroring paramecia-engine's ModelInput.
 /// Stored inside void objects and converted to ModelInput by the quark service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum QuzoInferInput {
+pub enum QuarkInferenceInput {
     /// Text context (tokenized by the model host).
     Text(String),
     /// Specific token IDs.
     Tokens(Vec<u32>),
-    /// Soft prompt: a sequence of soft tokens carrying predicted token IDs and
+    /// Darkness prompt: a sequence of dark tokens carrying predicted token IDs and
     /// dark-knowledge distributions.
-    Soft(Vec<SoftToken>),
+    Darkness(Vec<DarkToken>),
 }
 
 /// Serializable list of inference inputs for a single forward pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuzoInferRequest {
-    pub inputs: Vec<QuzoInferInput>,
+pub struct QuarkInferenceRequest {
+    pub inputs: Vec<QuarkInferenceInput>,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ pub struct QuzoInferRequest {
 // ---------------------------------------------------------------------------
 
 /// A single predicted token with its top-K distribution from a model forward pass.
-/// Stored as a soft token so downstream models can use it for dark-knowledge transfer.
+/// Stored as a dark token so downstream models can use it for dark-knowledge transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredictedToken {
     /// The predicted (committed) token ID.
@@ -93,8 +93,8 @@ pub struct PredictedToken {
 
 /// Serializable inference output stored in void objects.
 /// Contains the sequence of predicted tokens with their distributions,
-/// suitable for use as soft inputs to a subsequent forward pass.
+/// suitable for use as dark inputs to a subsequent forward pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuzoInferOutput {
+pub struct QuarkInferenceOutput {
     pub predictions: Vec<PredictedToken>,
 }
