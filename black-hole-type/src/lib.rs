@@ -38,6 +38,13 @@ pub enum QuzoOut {
 // Inference input format (stored in void objects)
 // ---------------------------------------------------------------------------
 
+/// A single logit entry (token ID + log probability) for soft prompting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogitEntry {
+    pub token_id: u32,
+    pub log_prob: f32,
+}
+
 /// Serializable inference input, mirroring paramecia-engine's ModelInput.
 /// Stored inside void objects and converted to ModelInput by the quark service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +53,9 @@ pub enum QuzoInferInput {
     Text(String),
     /// Specific token IDs.
     Tokens(Vec<u32>),
+    /// Soft prompt: a weighted distribution over tokens (top-k probabilities).
+    /// The host converts this into an input embedding via weighted index selection.
+    Soft(Vec<LogitEntry>),
 }
 
 /// Serializable list of inference inputs for a single forward pass.

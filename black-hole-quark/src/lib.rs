@@ -495,6 +495,14 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuzoOut>
             black_hole_type::QuzoInferInput::Tokens(ids) => {
                 paramecia_engine::ModelInput::Tokens(ids)
             }
+            black_hole_type::QuzoInferInput::Soft(entries) => {
+                paramecia_engine::ModelInput::Soft(
+                    entries.into_iter().map(|e| paramecia_engine::LogitEntry {
+                        token_id: e.token_id,
+                        log_prob: e.log_prob,
+                    }).collect(),
+                )
+            }
         })
         .collect();
 
