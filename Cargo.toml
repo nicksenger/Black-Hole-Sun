@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "black-hole-beam",
-    "black-hole-flux",
-    "black-hole-quark",
-    "black-hole-void",
+    "_black_hole_beam",
+    "_black_hole_flux",
+    "_black_hole_quark",
+    "_black_hole_void",
     "black-hole-sun",
-    "black-hole-probe",
-    "black-hole-spec",
+    "_black_hole_probe",
+    "_black_hole_spec",
 ]
 
 [workspace.dependencies]

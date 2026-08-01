@@ -12,7 +12,7 @@ qwen35_27b = ["paramecia-engine/qwen35_27b"]
 cuda = ["paramecia-engine/cuda"]
 
 [dependencies]
-black-hole-spec = { path = "../black-hole-spec" }
+black-hole-spec = { path = "../_black_hole_spec" }
 clap = { version = "4", features = ["derive"] }
 directories-next = "2"
 paramecia-engine = { git = "https://github.com/nicksenger/paramecia.git", branch = "blackholesun" }
