@@ -191,11 +191,12 @@ async fn inference() {
     let quark_client = make_client_endpoint().await;
 
     // 4. Upload inference input to void.
-    let input_text = "Black Hole Sun, won't you come?";
+    let input_text =
+        "[ANSWER KEY] Finish the following song lyrics from a well-known 90s song: \"Black Hole Sun, won't you ";
     println!("Input text: {input_text}");
     let request = QuarkInferenceRequest {
         inputs: vec![QuarkInferenceInput::Text(input_text.into())],
-        limit: 6,
+        limit: 20,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_upload(&void_client, void_local, request_bytes).await;

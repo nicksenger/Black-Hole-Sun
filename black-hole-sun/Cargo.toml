@@ -6,11 +6,16 @@ edition = "2021"
 
 [features]
 cuda = ["black-hole-quark/cuda"]
+qwen35_0p8b = ["black-hole-quark/qwen35_0p8b"]
+qwen35_2b = ["black-hole-quark/qwen35_2b"]
+qwen35_4b = ["black-hole-quark/qwen35_4b"]
+qwen35_9b = ["black-hole-quark/qwen35_9b"]
+qwen35_27b = ["black-hole-quark/qwen35_27b"]
 
 [dependencies]
 black-hole-spec = { path = "../black-hole-spec" }
 black-hole-void = { path = "../black-hole-void", default-features = false }
-black-hole-quark = { path = "../black-hole-quark", features = ["qwen35_0p8b"] }
+black-hole-quark = { path = "../black-hole-quark" }
 
 [lints]
 workspace = true

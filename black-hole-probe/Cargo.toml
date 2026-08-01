@@ -5,6 +5,11 @@ edition = "2021"
 
 [features]
 cuda = ["black-hole-sun/cuda"]
+qwen35_0p8b = ["black-hole-sun/qwen35_0p8b"]
+qwen35_2b = ["black-hole-sun/qwen35_2b"]
+qwen35_4b = ["black-hole-sun/qwen35_4b"]
+qwen35_9b = ["black-hole-sun/qwen35_9b"]
+qwen35_27b = ["black-hole-sun/qwen35_27b"]
 
 [dependencies]
 black-hole-sun = { path = "../black-hole-sun" }
