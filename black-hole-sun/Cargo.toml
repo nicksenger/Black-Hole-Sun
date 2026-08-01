@@ -4,6 +4,9 @@ description = "A Fault-Tolerant Orchestrator for Co-Optimization of Neurosymboli
 version = "0.1.0"
 edition = "2021"
 
+[features]
+cuda = ["black-hole-quark/cuda"]
+
 [dependencies]
 black-hole-spec = { path = "../black-hole-spec" }
 black-hole-void = { path = "../black-hole-void", default-features = false }

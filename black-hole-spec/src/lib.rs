@@ -73,6 +73,7 @@ pub enum QuarkInferenceInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuarkInferenceRequest {
     pub inputs: Vec<QuarkInferenceInput>,
+    pub limit: u32,
 }
 
 // ---------------------------------------------------------------------------

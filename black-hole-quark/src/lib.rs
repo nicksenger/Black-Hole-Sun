@@ -494,9 +494,9 @@ async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
 async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut> {
     let state = {
         let session = ctx.quark.lock().await;
-        if session.state != QuarkState::PostPerturbUp && session.state != QuarkState::PostPerturbDown {
+        if !matches!(session.state, QuarkState::Idle | QuarkState::PostPerturbUp | QuarkState::PostPerturbDown) {
             return Err(ServerError::InvalidQuarkState(
-                format!("inference requires PostPerturbUp or PostPerturbDown state, got {:?}", session.state),
+                format!("inference requires Idle, PostPerturbUp, or PostPerturbDown state, got {:?}", session.state),
             ));
         }
         session.state
@@ -539,7 +539,8 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
         .collect();
 
     // Run inference: fill context then predict completion.
-    let predicted = run_inference(&ctx.engine, &inputs).await?;
+    let limit = infer_req.limit;
+    let predicted = run_inference(&ctx.engine, &inputs, limit).await?;
 
     // Convert predictions to serializable output with top-K distributions.
     let output = QuarkInferenceOutput {
@@ -609,13 +610,14 @@ async fn handle_optimize(loss_up: f32, loss_down: f32, ctx: &QuarkContext) -> Re
 async fn run_inference(
     engine: &ModelEngine,
     inputs: &[paramecia_engine::ModelInput],
+    limit: u32,
 ) -> Result<Vec<paramecia_engine::Predicted>> {
     // Fill context with the provided inputs. Returns a progress receiver.
     let _progress_rx = engine.fill_context_inputs(inputs).await
         .map_err(|e| ServerError::ModelError(e.to_string()))?;
 
     // Start streaming completion — returns (result_rx, cancel_tx).
-    let (mut result_rx, _cancel_tx) = engine.predict_completion().await
+    let (mut result_rx, _cancel_tx) = engine.predict_completion(limit).await
         .map_err(|e| ServerError::ModelError(e.to_string()))?;
 
     let mut predictions = Vec::new();

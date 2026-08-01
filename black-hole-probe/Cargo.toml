@@ -3,6 +3,9 @@ name = "black-hole-probe"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+cuda = ["black-hole-sun/cuda"]
+
 [dependencies]
 black-hole-sun = { path = "../black-hole-sun" }
 

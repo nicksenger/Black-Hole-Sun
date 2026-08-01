@@ -92,7 +92,7 @@ async fn make_client_endpoint() -> quinn::Endpoint {
 }
 
 async fn void_upload(endpoint: &quinn::Endpoint, addr: SocketAddr, data: Vec<u8>) -> ObjectId {
-    let server_name = addr.ip().to_string();
+    let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     send_frame(&mut send, &VoidIn::Upload { data }).await;
@@ -105,7 +105,7 @@ async fn void_upload(endpoint: &quinn::Endpoint, addr: SocketAddr, data: Vec<u8>
 }
 
 async fn void_download(endpoint: &quinn::Endpoint, addr: SocketAddr, id: ObjectId) -> Vec<u8> {
-    let server_name = addr.ip().to_string();
+    let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     send_frame(&mut send, &VoidIn::Download { id }).await;
@@ -118,7 +118,7 @@ async fn void_download(endpoint: &quinn::Endpoint, addr: SocketAddr, id: ObjectI
 }
 
 async fn quark_infer(endpoint: &quinn::Endpoint, addr: SocketAddr, input_id: ObjectId) -> ObjectId {
-    let server_name = addr.ip().to_string();
+    let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     send_frame(&mut send, &QuarkIn::Infer { input_id }).await;
@@ -152,14 +152,20 @@ async fn read_frame<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) 
 
 // ─── Integration test ─────────────────────────────────────────────────────────
 
+#[ignore = "Sanity check — performs real model inference"]
 #[tokio::test]
-async fn quark_inference_via_void() {
+async fn inference() {
+    // Install rustls default crypto provider before any TLS config.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     black_hole_sun::init_tracing().ok();
 
     // 1. Start void server on a random port with in-memory store.
     let object_store = Box::new(InMemoryObjectStore::new());
     let store = Box::new(InMemoryStore::new());
-    let void_addr: SocketAddr = "[::]:0".parse().unwrap();
+    let void_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let (void_local, void_handle) = VoidServerBuilder::new(object_store, store)
         .listen(void_addr)
         .serve()
@@ -169,7 +175,7 @@ async fn quark_inference_via_void() {
     // 2. Start quark server on a random port, pointing at void.
     let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
         .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to a Qwen 3.5 0.8B GGUF file");
-    let quark_addr: SocketAddr = "[::]:0".parse().unwrap();
+    let quark_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let (quark_local, quark_handle) = QuarkServerBuilder::new(PathBuf::from(&model_path))
         .listen(quark_addr)
         .void_addr(void_local)
@@ -185,10 +191,11 @@ async fn quark_inference_via_void() {
     let quark_client = make_client_endpoint().await;
 
     // 4. Upload inference input to void.
-    let input_text = "Won't you come?";
+    let input_text = "Black Hole Sun, won't you come?";
     println!("Input text: {input_text}");
     let request = QuarkInferenceRequest {
         inputs: vec![QuarkInferenceInput::Text(input_text.into())],
+        limit: 6,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_upload(&void_client, void_local, request_bytes).await;

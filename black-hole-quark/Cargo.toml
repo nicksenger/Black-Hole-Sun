@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 qwen35_0p8b = ["paramecia-engine/qwen35_0p8b"]
+cuda = ["paramecia-engine/cuda"]
 
 [dependencies]
 black-hole-spec = { path = "../black-hole-spec" }
