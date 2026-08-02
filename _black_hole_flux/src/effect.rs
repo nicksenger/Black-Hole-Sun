@@ -92,9 +92,8 @@ where
                     .results
                     .into_iter()
                     .map(|seq| {
-                        seq.predictions
-                            .into_iter()
-                            .map(|tok| InferenceInput::Tokens(vec![tok.token_id]))
+                        seq.0.into_iter()
+                            .map(|tok| InferenceInput::Tokens(vec![tok.predicted]))
                             .collect()
                     })
                     .collect(),

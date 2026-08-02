@@ -152,6 +152,14 @@ async fn read_frame<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) 
 
 // ─── Integration test ─────────────────────────────────────────────────────────
 
+/// Decode a sequence of DarkToken predicted IDs into text using a tokenizer.
+fn decode_dark_tokens(tokenizer: &tokenizers::Tokenizer, tokens: &[DarkToken]) -> String {
+    let ids: Vec<u32> = tokens.iter().map(|t| t.predicted).collect();
+    tokenizer
+        .decode(&ids, true)
+        .unwrap_or_else(|_| ids.iter().map(|id| id.to_string()).collect())
+}
+
 #[ignore = "Sanity check — performs real model inference"]
 #[tokio::test]
 async fn inference() {
@@ -190,6 +198,20 @@ async fn inference() {
     let void_client = make_client_endpoint().await;
     let quark_client = make_client_endpoint().await;
 
+    // Download tokenizer from HuggingFace for decoding output tokens.
+    let tokenizer_repo = "Qwen/Qwen3.5-0.8B".to_string();
+    let api = hf_hub::api::sync::Api::new().expect("failed to create hf hub api");
+    let repo = api.repo(hf_hub::Repo::with_revision(
+        tokenizer_repo.clone(),
+        hf_hub::RepoType::Model,
+        "main".to_string(),
+    ));
+    let tokenizer_file = repo
+        .get("tokenizer.json")
+        .expect("failed to download tokenizer.json from HuggingFace");
+    let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_file)
+        .expect("failed to load tokenizer");
+
     // 4. Upload inference input to void (batch size 2).
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -217,14 +239,10 @@ async fn inference() {
     for (i, seq_result) in output.results.iter().enumerate() {
         let label = i + 1;
         assert!(
-            !seq_result.predictions.is_empty(),
+            !seq_result.0.is_empty(),
             "output {label} has zero predictions"
         );
-        let output_text: String = seq_result
-            .predictions
-            .iter()
-            .filter_map(|p| p.text.as_deref())
-            .collect();
+        let output_text = decode_dark_tokens(&tokenizer, &seq_result.0);
 
         println!("Output {label}: {output_text}");
         assert!(
@@ -343,14 +361,10 @@ async fn dark_inference() {
     for (i, seq_result) in output.results.iter().enumerate() {
         let label = i + 1;
         assert!(
-            !seq_result.predictions.is_empty(),
+            !seq_result.0.is_empty(),
             "output {label} has zero predictions"
         );
-        let output_text: String = seq_result
-            .predictions
-            .iter()
-            .filter_map(|p| p.text.as_deref())
-            .collect();
+        let output_text = decode_dark_tokens(&tokenizer, &seq_result.0);
 
         println!("Output {label}: {output_text}");
         assert!(
@@ -410,12 +424,8 @@ async fn quark_optimize(
     }
 }
 
-fn print_inference_output(label: &str, output: &black_hole_sun::InferenceOutput, seq_idx: usize) {
-    let output_text: String = output.results[seq_idx]
-        .predictions
-        .iter()
-        .filter_map(|p| p.text.as_deref())
-        .collect();
+fn print_inference_output(label: &str, output: &black_hole_sun::InferenceOutput, seq_idx: usize, tokenizer: &tokenizers::Tokenizer) {
+    let output_text = decode_dark_tokens(tokenizer, &output.results[seq_idx].0);
     println!("{}: {}", label, output_text);
 }
 
@@ -459,6 +469,20 @@ async fn optimization() {
     let void_client = make_client_endpoint().await;
     let quark_client = make_client_endpoint().await;
 
+    // Download tokenizer from HuggingFace for decoding output tokens.
+    let tokenizer_repo = "Qwen/Qwen3.5-0.8B".to_string();
+    let api = hf_hub::api::sync::Api::new().expect("failed to create hf hub api");
+    let repo = api.repo(hf_hub::Repo::with_revision(
+        tokenizer_repo.clone(),
+        hf_hub::RepoType::Model,
+        "main".to_string(),
+    ));
+    let tokenizer_file = repo
+        .get("tokenizer.json")
+        .expect("failed to download tokenizer.json from HuggingFace");
+    let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_file)
+        .expect("failed to load tokenizer");
+
     // 4. Upload inference input to void (same input as the idle inference test).
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -487,14 +511,14 @@ async fn optimization() {
     let output_bytes_up = void_download(&void_client, void_local, output_id_up).await;
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
-    print_inference_output("PerturbUp Inference 1", &output_up, 0);
-    print_inference_output("PerturbUp Inference 2", &output_up, 1);
+    print_inference_output("PerturbUp Inference 1", &output_up, 0, &tokenizer);
+    print_inference_output("PerturbUp Inference 2", &output_up, 1, &tokenizer);
     assert!(
-        !output_up.results[0].predictions.is_empty(),
+        !output_up.results[0].0.is_empty(),
         "up inference returned zero predictions"
     );
     assert!(
-        !output_up.results[1].predictions.is_empty(),
+        !output_up.results[1].0.is_empty(),
         "up inference sequence 1 returned zero predictions"
     );
     assert_eq!(output_up.results.len(), 2, "up inference should have 2 results for batch size 2");
@@ -509,14 +533,14 @@ async fn optimization() {
     let output_bytes_down = void_download(&void_client, void_local, output_id_down).await;
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
-    print_inference_output("PerturbDown Inference 1", &output_down, 0);
-    print_inference_output("PerturbDown Inference 2", &output_down, 1);
+    print_inference_output("PerturbDown Inference 1", &output_down, 0, &tokenizer);
+    print_inference_output("PerturbDown Inference 2", &output_down, 1, &tokenizer);
     assert!(
-        !output_down.results[0].predictions.is_empty(),
+        !output_down.results[0].0.is_empty(),
         "down inference returned zero predictions"
     );
     assert!(
-        !output_down.results[1].predictions.is_empty(),
+        !output_down.results[1].0.is_empty(),
         "down inference sequence 1 returned zero predictions"
     );
     assert_eq!(output_down.results.len(), 2, "down inference should have 2 results for batch size 2");
@@ -536,29 +560,21 @@ async fn optimization() {
     let output_bytes_final = void_download(&void_client, void_local, output_id_final).await;
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
-    print_inference_output("Post-Optimize Inference 1", &output_final, 0);
-    print_inference_output("Post-Optimize Inference 2", &output_final, 1);
+    print_inference_output("Post-Optimize Inference 1", &output_final, 0, &tokenizer);
+    print_inference_output("Post-Optimize Inference 2", &output_final, 1, &tokenizer);
     assert!(
-        !output_final.results[0].predictions.is_empty(),
+        !output_final.results[0].0.is_empty(),
         "final inference returned zero predictions"
     );
     assert!(
-        !output_final.results[1].predictions.is_empty(),
+        !output_final.results[1].0.is_empty(),
         "final inference sequence 1 returned zero predictions"
     );
     assert_eq!(output_final.results.len(), 2, "final inference should have 2 results for batch size 2");
 
     // Verify the output contains plausible text.
-    let final_text: String = output_final.results[0]
-        .predictions
-        .iter()
-        .filter_map(|p| p.text.as_deref())
-        .collect();
-    let final_text_2: String = output_final.results[1]
-        .predictions
-        .iter()
-        .filter_map(|p| p.text.as_deref())
-        .collect();
+    let final_text = decode_dark_tokens(&tokenizer, &output_final.results[0].0);
+    let final_text_2 = decode_dark_tokens(&tokenizer, &output_final.results[1].0);
 
     println!("\n--- Summary ---");
     println!("All QuZO steps completed successfully.");
@@ -684,14 +700,14 @@ async fn dark_optimization() {
     let output_bytes_up = void_download(&void_client, void_local, output_id_up).await;
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
-    print_inference_output("PerturbUp Inference 1", &output_up, 0);
-    print_inference_output("PerturbUp Inference 2", &output_up, 1);
+    print_inference_output("PerturbUp Inference 1", &output_up, 0, &tokenizer);
+    print_inference_output("PerturbUp Inference 2", &output_up, 1, &tokenizer);
     assert!(
-        !output_up.results[0].predictions.is_empty(),
+        !output_up.results[0].0.is_empty(),
         "up inference returned zero predictions"
     );
     assert!(
-        !output_up.results[1].predictions.is_empty(),
+        !output_up.results[1].0.is_empty(),
         "up inference sequence 1 returned zero predictions"
     );
     assert_eq!(output_up.results.len(), 2, "up inference should have 2 results for batch size 2");
@@ -706,14 +722,14 @@ async fn dark_optimization() {
     let output_bytes_down = void_download(&void_client, void_local, output_id_down).await;
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
-    print_inference_output("PerturbDown Inference 1", &output_down, 0);
-    print_inference_output("PerturbDown Inference 2", &output_down, 1);
+    print_inference_output("PerturbDown Inference 1", &output_down, 0, &tokenizer);
+    print_inference_output("PerturbDown Inference 2", &output_down, 1, &tokenizer);
     assert!(
-        !output_down.results[0].predictions.is_empty(),
+        !output_down.results[0].0.is_empty(),
         "down inference returned zero predictions"
     );
     assert!(
-        !output_down.results[1].predictions.is_empty(),
+        !output_down.results[1].0.is_empty(),
         "down inference sequence 1 returned zero predictions"
     );
     assert_eq!(output_down.results.len(), 2, "down inference should have 2 results for batch size 2");
@@ -733,29 +749,21 @@ async fn dark_optimization() {
     let output_bytes_final = void_download(&void_client, void_local, output_id_final).await;
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
-    print_inference_output("Post-Optimize Inference 1", &output_final, 0);
-    print_inference_output("Post-Optimize Inference 2", &output_final, 1);
+    print_inference_output("Post-Optimize Inference 1", &output_final, 0, &tokenizer);
+    print_inference_output("Post-Optimize Inference 2", &output_final, 1, &tokenizer);
     assert!(
-        !output_final.results[0].predictions.is_empty(),
+        !output_final.results[0].0.is_empty(),
         "final inference returned zero predictions"
     );
     assert!(
-        !output_final.results[1].predictions.is_empty(),
+        !output_final.results[1].0.is_empty(),
         "final inference sequence 1 returned zero predictions"
     );
     assert_eq!(output_final.results.len(), 2, "final inference should have 2 results for batch size 2");
 
     // Verify the output contains plausible text.
-    let final_text: String = output_final.results[0]
-        .predictions
-        .iter()
-        .filter_map(|p| p.text.as_deref())
-        .collect();
-    let final_text_2: String = output_final.results[1]
-        .predictions
-        .iter()
-        .filter_map(|p| p.text.as_deref())
-        .collect();
+    let final_text = decode_dark_tokens(&tokenizer, &output_final.results[0].0);
+    let final_text_2 = decode_dark_tokens(&tokenizer, &output_final.results[1].0);
 
     println!("\n--- Summary ---");
     println!("All QuZO steps completed successfully.");

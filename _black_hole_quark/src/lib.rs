@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
 
-use black_hole_spec::{ObjectId, PredictedToken, QuarkIn, InferenceOutput, InferenceRequest, QuarkOut, SequenceOutput};
+use black_hole_spec::{ObjectId, DarkToken, QuarkIn, InferenceOutput, InferenceRequest, QuarkOut, SequenceOutput};
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -546,16 +546,15 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
 
     // Convert per-sequence predictions to serializable output.
     let output = InferenceOutput {
-        results: seq_results.into_iter().map(|predictions| SequenceOutput {
-            predictions: predictions.into_iter().map(|p| PredictedToken {
-                token_id: p.token_id,
-                text: p.text,
-                top_k: p.top_k.into_iter().map(|e| black_hole_spec::LogitEntry {
+        results: seq_results.into_iter().map(|predictions| SequenceOutput(
+            predictions.into_iter().map(|p| DarkToken {
+                predicted: p.token_id,
+                dark_knowledge: p.top_k.into_iter().map(|e| black_hole_spec::LogitEntry {
                     token_id: e.token_id,
                     log_prob: e.log_prob,
                 }).collect(),
             }).collect(),
-        }).collect(),
+        )).collect(),
     };
 
     // Upload output to void.

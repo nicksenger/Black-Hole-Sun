@@ -34,7 +34,7 @@ pub mod ops;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry,
-    ObjectId, PredictedToken, QuarkIn, QuarkOut, SequenceOutput,
+    ObjectId, QuarkIn, QuarkOut, SequenceOutput,
 };
 
 // Re-export key items from submodules so they're reachable from the crate root.

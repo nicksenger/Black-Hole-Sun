@@ -95,9 +95,7 @@ pub struct PredictedToken {
 
 /// Predictions for a single sequence within a batched inference result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SequenceOutput {
-    pub predictions: Vec<PredictedToken>,
-}
+pub struct SequenceOutput(pub Vec<DarkToken>);
 
 /// Serializable inference output stored in void objects.
 /// Contains per-sequence results from a batched forward pass.
