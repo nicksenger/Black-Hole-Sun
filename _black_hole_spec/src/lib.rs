@@ -106,8 +106,13 @@ pub struct InferenceOutput {
     pub results: Vec<SequenceOutput>,
 }
 
+/// Input / Output from a Cell
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emission<M> {
     pub metadata: M,
     pub sequences: Vec<Vec<InferenceInput>>,
 }
+
+/// Void ID for an Emission
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmissionId(pub Uuid);
