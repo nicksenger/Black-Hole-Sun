@@ -66,8 +66,8 @@ pub use action::{
     WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
 };
 pub use effect::{
-    QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp,
-    WaitForInitiation, WaitForPotentiation, WaitForPropagation,
+    QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, WaitForInitiation,
+    WaitForPotentiation, WaitForPropagation,
 };
 pub use ops::VoidInferOps;
 
@@ -141,7 +141,8 @@ const CELL_PERTURB_UP_SEED: u64 = 42;
 /// See module-level documentation for the full iteration sequence.
 #[derive(Flow)]
 pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
-    While<Always<(), ()>, CellBody<In, Out, M>>,
+    Step<WaitForInitiationAction_>,
+    While<Always<(), ObjectId>, CellBody<In, Out, M>>,
 );
 
 /// The body of one iteration of a [`Cell`] loop.
@@ -159,7 +160,7 @@ pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
 pub struct CellBody<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     // Perturb up, then wait for initiation to get first emission
     Step<PerturbUp_<CELL_PERTURB_UP_SEED>>,
-    Step<WaitForInitiationAction_>,
+    Step<WaitForPropagationAction_>,
     // Run nucleus on the emission from initiation
     Nucleus<In, Out, M>,
     // Discard emission output, perturb down

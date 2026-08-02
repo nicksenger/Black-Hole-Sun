@@ -9,8 +9,8 @@ use serde::Serialize;
 pub use black_hole_spec::{EmissionId, ObjectId};
 
 use crate::effect::{
-    QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp,
-    WaitForInitiation, WaitForPropagation, WaitForPotentiation,
+    QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, WaitForInitiation,
+    WaitForPotentiation, WaitForPropagation,
 };
 
 // ---------------------------------------------------------------------------
@@ -114,8 +114,8 @@ pub struct Optimize;
 #[jungle::action]
 impl Action for Optimize {
     type Effect = QuarkOptimize;
-    type Input = (f32, f32);
-    type Output = ();
+    type Input = Potentiation;
+    type Output = ObjectId;
 
     fn emit(_state: &(), input: Self::Input) -> (f32, f32) {
         input
@@ -144,7 +144,7 @@ pub struct WaitForInitiationAction;
 impl Action for WaitForInitiationAction {
     type Effect = WaitForInitiation;
     type Input = ();
-    type Output = EmissionId;
+    type Output = ObjectId;
     type Carry = ();
 
     fn emit(state: &CellState, _input: Self::Input) -> ObjectId {
@@ -155,9 +155,8 @@ impl Action for WaitForInitiationAction {
         state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (emission_id, next_id) = output.map_err(|e| {
-            Failure::Message(format!("wait for initiation failed: {e}"))
-        })?;
+        let (emission_id, next_id) =
+            output.map_err(|e| Failure::Message(format!("wait for initiation failed: {e}")))?;
         state.next_id = next_id;
         Ok(emission_id)
     }
@@ -186,9 +185,8 @@ impl Action for WaitForPropagationAction {
         state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (emission_id, next_id) = output.map_err(|e| {
-            Failure::Message(format!("wait for propagation failed: {e}"))
-        })?;
+        let (emission_id, next_id) =
+            output.map_err(|e| Failure::Message(format!("wait for propagation failed: {e}")))?;
         state.next_id = next_id;
         Ok(emission_id)
     }
@@ -217,9 +215,8 @@ impl Action for WaitForPotentiationAction {
         state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (loss, next_id) = output.map_err(|e| {
-            Failure::Message(format!("wait for potentiation failed: {e}"))
-        })?;
+        let (loss, next_id) =
+            output.map_err(|e| Failure::Message(format!("wait for potentiation failed: {e}")))?;
         state.next_id = next_id;
         Ok(loss)
     }
