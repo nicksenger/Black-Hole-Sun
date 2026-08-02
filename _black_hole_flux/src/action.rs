@@ -17,14 +17,26 @@ use crate::effect::{
 // CellState — holds the next transmission ID threaded across Cell iterations
 // ---------------------------------------------------------------------------
 
-/// State carried by a [`Cell`](crate::Cell) journey.
+/// State carried by a [`Cell`](crate::cell) journey.
 ///
-/// Animals that use [`Cell`](crate::Cell) as their Journey should use this as
+/// Animals that use [`Cell`](crate::cell) as their Journey should use this as
 /// their state type so the wait-for actions can read and write the next
 /// transmission ID.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct CellState {
     /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
+    pub next_id: ObjectId,
+}
+
+// ---------------------------------------------------------------------------
+// Potentiation — payload from a Transmission::Potentiation
+// ---------------------------------------------------------------------------
+
+/// Payload carried by a [`Transmission::Potentiation`].
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct Potentiation {
+    pub loss_up: f32,
+    pub loss_down: f32,
     pub next_id: ObjectId,
 }
 
@@ -115,9 +127,9 @@ pub struct Optimize;
 impl Action for Optimize {
     type Effect = QuarkOptimize;
     type Input = Potentiation;
-    type Output = ObjectId;
+    type Output = ();
 
-    fn emit(_state: &(), input: Self::Input) -> (f32, f32) {
+    fn emit(_state: &(), input: Self::Input) -> Potentiation {
         input
     }
 
@@ -136,15 +148,16 @@ impl Action for Optimize {
 /// Action that waits for an initiation transmission using the next_id from
 /// [`CellState`].
 ///
-/// Reads `next_id` from state, downloads the transmission, extracts the
-/// emission ID to process, and stores the new `next_id` back into state.
+/// Reads `next_id` from state, downloads the transmission, and stores the
+/// new `next_id` back into state. Returns unit — there is no data payload
+/// to thread downstream; the emission ID is embedded in the initiation.
 pub struct WaitForInitiationAction;
 
 #[jungle::action]
 impl Action for WaitForInitiationAction {
     type Effect = WaitForInitiation;
     type Input = ();
-    type Output = ObjectId;
+    type Output = ();
     type Carry = ();
 
     fn emit(state: &CellState, _input: Self::Input) -> ObjectId {
@@ -155,10 +168,10 @@ impl Action for WaitForInitiationAction {
         state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (emission_id, next_id) =
+        let ((), next_id) =
             output.map_err(|e| Failure::Message(format!("wait for initiation failed: {e}")))?;
         state.next_id = next_id;
-        Ok(emission_id)
+        Ok(())
     }
 }
 
@@ -168,6 +181,9 @@ impl Action for WaitForInitiationAction {
 
 /// Action that waits for a propagation transmission using the next_id from
 /// [`CellState`].
+///
+/// Reads `next_id` from state, downloads the transmission, stores the new
+/// `next_id` in state, and emits the [`EmissionId`] to process.
 pub struct WaitForPropagationAction;
 
 #[jungle::action]
@@ -198,13 +214,16 @@ impl Action for WaitForPropagationAction {
 
 /// Action that waits for a potentiation transmission using the next_id from
 /// [`CellState`].
+///
+/// Reads `next_id` from state, downloads the transmission, stores the new
+/// `next_id` in state, and emits the [`Potentiation`] payload.
 pub struct WaitForPotentiationAction;
 
 #[jungle::action]
 impl Action for WaitForPotentiationAction {
     type Effect = WaitForPotentiation;
     type Input = ();
-    type Output = (f32, f32);
+    type Output = Potentiation;
     type Carry = ();
 
     fn emit(state: &CellState, _input: Self::Input) -> ObjectId {
@@ -215,10 +234,10 @@ impl Action for WaitForPotentiationAction {
         state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (loss, next_id) =
+        let (potentiation, next_id) =
             output.map_err(|e| Failure::Message(format!("wait for potentiation failed: {e}")))?;
         state.next_id = next_id;
-        Ok(loss)
+        Ok(potentiation)
     }
 }
 

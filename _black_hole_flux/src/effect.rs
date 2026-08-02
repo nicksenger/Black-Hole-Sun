@@ -8,12 +8,12 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tracing::debug;
 
-use crate::ops::VoidInferOps;
-
 pub use black_hole_spec::{
     Emission, EmissionId, InferenceOutputId, ObjectId, Transmission,
 };
 
+use crate::action::Potentiation;
+use crate::ops::VoidInferOps;
 use crate::NucleusError;
 
 // ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ pub struct QuarkOptimize;
 
 impl<J> EffectSchema<J> for QuarkOptimize {
     type Id = u64;
-    type In = (f32, f32);
+    type In = Potentiation;
     type Out = ();
     type Err = NucleusError;
 }
@@ -157,12 +157,12 @@ where
 {
     fn effect(
         jungle: &J,
-        (loss_up, loss_down): Self::In,
+        potentiation: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(loss_up, loss_down, "applying quark optimization");
+            debug!(loss_up = potentiation.loss_up, loss_down = potentiation.loss_down, "applying quark optimization");
             jungle
-                .optimize(loss_up, loss_down)
+                .optimize(potentiation.loss_up, potentiation.loss_down)
                 .await
                 .map_err(NucleusError::Optimize)?;
             Ok(())
@@ -176,14 +176,15 @@ where
 
 /// Effect that waits for a [`Transmission::Initiation`] at the given [`ObjectId`].
 ///
-/// Downloads the transmission from void, extracts the emission ID to process
-/// and the next transmission ID for carry threading.
+/// Downloads the transmission from void and returns the next transmission ID
+/// for state threading. Returns unit as the data payload since initiation
+/// carries no emission to process downstream.
 pub struct WaitForInitiation;
 
 impl<J> EffectSchema<J> for WaitForInitiation {
     type Id = u64;
     type In = ObjectId;
-    type Out = (EmissionId, ObjectId);
+    type Out = ((), ObjectId);
     type Err = NucleusError;
 }
 
@@ -203,11 +204,8 @@ where
                 .map_err(NucleusError::Transmission)?;
             match transmission {
                 Transmission::Initiation { next_id } => {
-                    // The next_id from initiation is the first emission to process.
-                    // We treat it as the emission_id for the first nucleus pass,
-                    // and also as the carry for the next transmission.
                     debug!(%next_id, "initiation received");
-                    Ok((EmissionId(next_id), next_id))
+                    Ok(((), next_id))
                 }
                 other => {
                     let msg = format!("expected Initiation, got {:?}", other);
@@ -225,7 +223,7 @@ where
 /// Effect that waits for a [`Transmission::Propagation`] at the given [`ObjectId`].
 ///
 /// Downloads the transmission from void, extracts the emission ID to process
-/// and the next transmission ID for carry threading.
+/// and the next transmission ID for state threading.
 pub struct WaitForPropagation;
 
 impl<J> EffectSchema<J> for WaitForPropagation {
@@ -269,14 +267,14 @@ where
 
 /// Effect that waits for a [`Transmission::Potentiation`] at the given [`ObjectId`].
 ///
-/// Downloads the transmission from void, extracts the loss values for
-/// optimization and the next transmission ID for carry threading.
+/// Downloads the transmission from void, constructs a [`Potentiation`] payload
+/// and returns it alongside the next transmission ID for state threading.
 pub struct WaitForPotentiation;
 
 impl<J> EffectSchema<J> for WaitForPotentiation {
     type Id = u64;
     type In = ObjectId;
-    type Out = ((f32, f32), ObjectId);
+    type Out = (Potentiation, ObjectId);
     type Err = NucleusError;
 }
 
@@ -296,8 +294,9 @@ where
                 .map_err(NucleusError::Transmission)?;
             match transmission {
                 Transmission::Potentiation { loss_up, loss_down, next_id } => {
+                    let potentiation = Potentiation { loss_up, loss_down, next_id };
                     debug!(loss_up, loss_down, %next_id, "potentiation received");
-                    Ok(((loss_up, loss_down), next_id))
+                    Ok((potentiation, next_id))
                 }
                 other => {
                     let msg = format!("expected Potentiation, got {:?}", other);
