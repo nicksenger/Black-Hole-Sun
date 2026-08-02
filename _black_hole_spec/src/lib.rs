@@ -122,15 +122,16 @@ pub struct EmissionId(pub ObjectId);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Transmission {
     Initiation {
-        next_id: ObjectId,
+        recv: ObjectId,
     },
     Propagation {
         emission_id: EmissionId,
-        next_id: ObjectId,
+        recv: ObjectId,
+        send: ObjectId,
     },
     Potentiation {
         loss_up: f32,
         loss_down: f32,
-        next_id: ObjectId,
+        recv: ObjectId,
     },
 }

@@ -25,7 +25,9 @@ use crate::effect::{
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct CellState {
     /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
-    pub next_id: ObjectId,
+    pub recv_id: ObjectId,
+    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to upload.
+    pub send_id: ObjectId,
 }
 
 // ---------------------------------------------------------------------------
@@ -37,7 +39,19 @@ pub struct CellState {
 pub struct Potentiation {
     pub loss_up: f32,
     pub loss_down: f32,
-    pub next_id: ObjectId,
+    pub recv_id: ObjectId,
+}
+
+// ---------------------------------------------------------------------------
+// Propagation — payload from a Transmission::Propagation
+// ---------------------------------------------------------------------------
+
+/// Payload carried by a [`Transmission::Propagation`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Propagation {
+    pub emission_id: EmissionId,
+    pub recv_id: ObjectId,
+    pub send_id: ObjectId,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,11 +159,11 @@ impl Action for Optimize {
 // WaitForInitiationAction — await a Transmission::Initiation from void
 // ---------------------------------------------------------------------------
 
-/// Action that waits for an initiation transmission using the next_id from
+/// Action that waits for an initiation transmission using the recv_id from
 /// [`CellState`].
 ///
-/// Reads `next_id` from state, downloads the transmission, and stores the
-/// new `next_id` back into state. Returns unit — there is no data payload
+/// Reads `recv_id` from state, downloads the transmission, and stores the
+/// new `recv_id` back into state. Returns unit — there is no data payload
 /// to thread downstream; the emission ID is embedded in the initiation.
 pub struct WaitForInitiationAction;
 
@@ -161,16 +175,16 @@ impl Action for WaitForInitiationAction {
     type Carry = ();
 
     fn emit(state: &CellState, _input: Self::Input) -> ObjectId {
-        state.next_id
+        state.recv_id
     }
 
     fn absorb(
         state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let ((), next_id) =
+        let ((), recv_id) =
             output.map_err(|e| Failure::Message(format!("wait for initiation failed: {e}")))?;
-        state.next_id = next_id;
+        state.recv_id = recv_id;
         Ok(())
     }
 }
@@ -179,11 +193,11 @@ impl Action for WaitForInitiationAction {
 // WaitForPropagationAction — await a Transmission::Propagation from void
 // ---------------------------------------------------------------------------
 
-/// Action that waits for a propagation transmission using the next_id from
+/// Action that waits for a propagation transmission using the recv_id from
 /// [`CellState`].
 ///
-/// Reads `next_id` from state, downloads the transmission, stores the new
-/// `next_id` in state, and emits the [`EmissionId`] to process.
+/// Reads `recv_id` from state, downloads the transmission, stores the new
+/// `recv_id` and `send_id` in state, and emits the [`Propagation`] payload.
 pub struct WaitForPropagationAction;
 
 #[jungle::action]
@@ -194,17 +208,18 @@ impl Action for WaitForPropagationAction {
     type Carry = ();
 
     fn emit(state: &CellState, _input: Self::Input) -> ObjectId {
-        state.next_id
+        state.recv_id
     }
 
     fn absorb(
         state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (emission_id, next_id) =
+        let propagation =
             output.map_err(|e| Failure::Message(format!("wait for propagation failed: {e}")))?;
-        state.next_id = next_id;
-        Ok(emission_id)
+        state.recv_id = propagation.recv_id;
+        state.send_id = propagation.send_id;
+        Ok(propagation.emission_id)
     }
 }
 
@@ -212,11 +227,11 @@ impl Action for WaitForPropagationAction {
 // WaitForPotentiationAction — await a Transmission::Potentiation from void
 // ---------------------------------------------------------------------------
 
-/// Action that waits for a potentiation transmission using the next_id from
+/// Action that waits for a potentiation transmission using the recv_id from
 /// [`CellState`].
 ///
-/// Reads `next_id` from state, downloads the transmission, stores the new
-/// `next_id` in state, and emits the [`Potentiation`] payload.
+/// Reads `recv_id` from state, downloads the transmission, stores the new
+/// `recv_id` in state, and emits the [`Potentiation`] payload.
 pub struct WaitForPotentiationAction;
 
 #[jungle::action]
@@ -227,43 +242,44 @@ impl Action for WaitForPotentiationAction {
     type Carry = ();
 
     fn emit(state: &CellState, _input: Self::Input) -> ObjectId {
-        state.next_id
+        state.recv_id
     }
 
     fn absorb(
         state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (potentiation, next_id) =
+        let (potentiation, recv_id) =
             output.map_err(|e| Failure::Message(format!("wait for potentiation failed: {e}")))?;
-        state.next_id = next_id;
+        state.recv_id = recv_id;
         Ok(potentiation)
     }
 }
 
 // ---------------------------------------------------------------------------
-// DiscardEmission — converts EmissionId to () (no-op bridge action)
+// Transmit — propagates an emission to the next cell
 // ---------------------------------------------------------------------------
 
-/// Discards an [`EmissionId`] and produces `()`.
+/// Propagates an [`EmissionId`] to the next cell.
 ///
-/// Used to bridge between EmissionId-producing stages and unit-input stages
-/// in the Cell loop.
-pub struct DiscardEmission;
+/// Replaces the previous `DiscardEmission` action by actually transmitting
+/// the emission output rather than discarding it.
+pub struct Transmit;
 
 #[jungle::action]
-impl Action for DiscardEmission {
-    type Effect = NoEffect;
+impl Action for Transmit {
+    type Effect = crate::effect::Transmit;
     type Input = EmissionId;
     type Output = ();
 
-    fn emit(_state: &(), _input: Self::Input) -> () {}
+    fn emit(_state: &(), input: Self::Input) -> EmissionId {
+        input
+    }
 
     fn absorb(
         _state: &mut (),
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|e| Failure::Message(format!("discard failed: {e:?}")))?;
-        Ok(())
+        output.map_err(|e| Failure::Message(format!("transmit failed: {e}")))
     }
 }

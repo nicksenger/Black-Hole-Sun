@@ -59,4 +59,10 @@ pub trait VoidInferOps: Send + Sync {
         let data = self.download_raw(id).await?;
         postcard::from_bytes(&data).map_err(|e| format!("postcard deserialize: {e}"))
     }
+
+    /// Propagates the emission to the next cell - the implementor of
+    /// VoidInferOps is responsible for converting the EmissionId into a
+    /// Transmission::Propagation by supplying the recv and send void Ids
+    /// for the next node.
+    async fn transmit(&self, emission_id: EmissionId) -> Result<(), String>;
 }

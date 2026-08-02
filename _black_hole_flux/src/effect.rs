@@ -8,11 +8,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tracing::debug;
 
-pub use black_hole_spec::{
-    Emission, EmissionId, InferenceOutputId, ObjectId, Transmission,
-};
+pub use black_hole_spec::{Emission, EmissionId, InferenceOutputId, ObjectId, Transmission};
 
-use crate::action::Potentiation;
+use crate::action::{Potentiation, Propagation};
 use crate::ops::VoidInferOps;
 use crate::NucleusError;
 
@@ -160,7 +158,11 @@ where
         potentiation: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(loss_up = potentiation.loss_up, loss_down = potentiation.loss_down, "applying quark optimization");
+            debug!(
+                loss_up = potentiation.loss_up,
+                loss_down = potentiation.loss_down,
+                "applying quark optimization"
+            );
             jungle
                 .optimize(potentiation.loss_up, potentiation.loss_down)
                 .await
@@ -203,9 +205,9 @@ where
                 .await
                 .map_err(NucleusError::Transmission)?;
             match transmission {
-                Transmission::Initiation { next_id } => {
-                    debug!(%next_id, "initiation received");
-                    Ok(((), next_id))
+                Transmission::Initiation { recv } => {
+                    debug!(%recv, "initiation received");
+                    Ok(((), recv))
                 }
                 other => {
                     let msg = format!("expected Initiation, got {:?}", other);
@@ -222,14 +224,14 @@ where
 
 /// Effect that waits for a [`Transmission::Propagation`] at the given [`ObjectId`].
 ///
-/// Downloads the transmission from void, extracts the emission ID to process
-/// and the next transmission ID for state threading.
+/// Downloads the transmission from void, extracts the emission ID to process,
+/// the next receive transmission ID for state threading, and the send ID.
 pub struct WaitForPropagation;
 
 impl<J> EffectSchema<J> for WaitForPropagation {
     type Id = u64;
     type In = ObjectId;
-    type Out = (EmissionId, ObjectId);
+    type Out = Propagation;
     type Err = NucleusError;
 }
 
@@ -248,9 +250,13 @@ where
                 .await
                 .map_err(NucleusError::Transmission)?;
             match transmission {
-                Transmission::Propagation { emission_id, next_id } => {
-                    debug!(emission_id = %emission_id.0, next_id = %next_id, "propagation received");
-                    Ok((emission_id, next_id))
+                Transmission::Propagation {
+                    emission_id,
+                    recv,
+                    send,
+                } => {
+                    debug!(emission_id = %emission_id.0, recv = %recv, send = %send, "propagation received");
+                    Ok(Propagation { emission_id, recv_id: recv, send_id: send })
                 }
                 other => {
                     let msg = format!("expected Propagation, got {:?}", other);
@@ -293,16 +299,57 @@ where
                 .await
                 .map_err(NucleusError::Transmission)?;
             match transmission {
-                Transmission::Potentiation { loss_up, loss_down, next_id } => {
-                    let potentiation = Potentiation { loss_up, loss_down, next_id };
-                    debug!(loss_up, loss_down, %next_id, "potentiation received");
-                    Ok((potentiation, next_id))
+                Transmission::Potentiation {
+                    loss_up,
+                    loss_down,
+                    recv,
+                } => {
+                    let potentiation = Potentiation {
+                        loss_up,
+                        loss_down,
+                        recv_id: recv,
+                    };
+                    debug!(loss_up, loss_down, %recv, "potentiation received");
+                    Ok((potentiation, recv))
                 }
                 other => {
                     let msg = format!("expected Potentiation, got {:?}", other);
                     Err(NucleusError::Transmission(msg))
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transmit — propagate an emission to the next cell
+// ---------------------------------------------------------------------------
+
+/// Effect that propagates an [`EmissionId`] to the next cell.
+pub struct Transmit;
+
+impl<J> EffectSchema<J> for Transmit {
+    type Id = u64;
+    type In = EmissionId;
+    type Out = ();
+    type Err = NucleusError;
+}
+
+impl<J> Effect<J> for Transmit
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        emission_id: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            debug!(emission_id = %emission_id.0, "transmitting emission to next cell");
+            jungle
+                .transmit(emission_id)
+                .await
+                .map_err(NucleusError::Transmission)?;
+            Ok(())
         }
     }
 }

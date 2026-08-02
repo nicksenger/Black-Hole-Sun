@@ -12,32 +12,35 @@
 //! A **Cell** wraps a Nucleus in an infinite QuZO training loop driven by
 //! [`Transmission`] messages from void:
 //!
-//! 1. **WaitForInitiation** — reads `next_id` from [`CellState`], downloads a
-//!    `Transmission::Initiation`, stores the new `next_id` in state.
+//! 1. **WaitForInitiation** — reads `recv_id` from [`CellState`], downloads a
+//!    `Transmission::Initiation`, stores the new `recv_id` in state.
 //! 2. **PerturbUp** — perturbs the associated quark's weights upward.
-//! 3. **WaitForPropagation** — reads `next_id` from state, downloads a
-//!    `Transmission::Propagation`, stores the new `next_id`, emits the emission ID.
+//! 3. **WaitForPropagation** — reads `recv_id` from state, downloads a
+//!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
 //! 4. **In → Nucleus → Out** — runs the full Nucleus pipeline.
-//! 5. **PerturbDown** — perturbs the quark's weights downward.
-//! 6. **WaitForPropagation** — reads `next_id` from state, downloads another
-//!    `Transmission::Propagation`, stores the new `next_id`, emits the emission ID.
-//! 7. **In → Nucleus → Out** — runs the Nucleus pipeline again.
-//! 8. **WaitForPotentiation** — reads `next_id` from state, downloads a
-//!    `Transmission::Potentiation`, stores the new `next_id`, emits loss values.
-//! 9. **Optimize** — applies the QuZO optimization update.
+//! 5. **Transmit** — propagates the emission output to the next cell.
+//! 6. **PerturbDown** — perturbs the quark's weights downward.
+//! 7. **WaitForPropagation** — reads `recv_id` from state, downloads another
+//!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
+//! 8. **In → Nucleus → Out** — runs the Nucleus pipeline again.
+//! 9. **Transmit** — propagates the emission output to the next cell.
+//! 10. **WaitForPotentiation** — reads `recv_id` from state, downloads a
+//!     `Transmission::Potentiation`, stores the new `recv_id`, emits loss values.
+//! 11. **Optimize** — applies the QuZO optimization update.
 //!
 //! # State
 //!
-//! The [`CellState`] type holds the `next_id` (void key of the next
-//! [`Transmission`] to download).  Animals that use [`Cell`] as their Journey
+//! The [`CellState`] type holds `recv_id` (void key of the next
+//! [`Transmission`] to download) and `send_id` (void key of the last received
+//! send transmission).  Animals that use [`Cell`] as their Journey
 //! should use [`CellState`] (or a superset) as their state type.
 //!
 //! # Flow pattern
 //!
-//! The `next_id` is threaded through [`CellState`] (state-mediated), while
+//! The `recv_id` is threaded through [`CellState`] (state-mediated), while
 //! [`EmissionId`] and [`Potentiation`] are passed through action Output types.
 //! The Cell while loop operates over [`CellState`] so that wait-for actions
-//! can access and mutate `next_id`.
+//! can access and mutate `recv_id`.
 //!
 //! # Trait requirement
 //!
@@ -70,12 +73,12 @@ pub use black_hole_spec::{
 
 // Re-export key items from submodules so they're reachable from the crate root.
 pub use action::{
-    CellState, DiscardEmission, Optimize, PerturbDown, PerturbUp, Potentiation, QuarkInferStep,
-    WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
+    CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, QuarkInferStep,
+    Transmit, WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
 };
 pub use effect::{
-    QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, WaitForInitiation,
-    WaitForPotentiation, WaitForPropagation,
+    QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect,
+    WaitForInitiation, WaitForPotentiation, WaitForPropagation,
 };
 pub use ops::VoidInferOps;
 
@@ -134,8 +137,8 @@ pub struct Nucleus<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
 // ---------------------------------------------------------------------------
 
 use action::{
-    DiscardEmission as DiscardEmission_, Optimize as Optimize_, PerturbDown as PerturbDown_,
-    PerturbUp as PerturbUp_, WaitForInitiationAction as WaitForInitiationAction_,
+    Optimize as Optimize_, PerturbDown as PerturbDown_, PerturbUp as PerturbUp_,
+    Transmit as Transmit_, WaitForInitiationAction as WaitForInitiationAction_,
     WaitForPotentiationAction as WaitForPotentiationAction_,
     WaitForPropagationAction as WaitForPropagationAction_,
 };
@@ -157,11 +160,11 @@ pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
 ///
 /// Sequential stages (each iteration):
 ///
-/// PerturbUp → WaitForPropagation → In → QuarkInfer → Out → Discard →
-/// PerturbDown → WaitForPropagation → In → QuarkInfer → Out → Discard →
+/// PerturbUp → WaitForPropagation → In → QuarkInfer → Out → Transmit →
+/// PerturbDown → WaitForPropagation → In → QuarkInfer → Out → Transmit →
 /// WaitForPotentiation → Optimize
 ///
-/// The [`CellState`](action::CellState) holds `next_id` which is read by each
+/// The [`CellState`](action::CellState) holds `recv_id` which is read by each
 /// wait-for action to know which void key to download, and updated with the
 /// next transmission ID after each download completes.  Data payloads
 /// (EmissionId, Potentiation) flow through action Output types.
@@ -172,15 +175,15 @@ pub struct CellBody<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     Step<WaitForPropagationAction_>,
     // Run nucleus on the emission from propagation
     Nucleus<In, Out, M>,
-    // Discard emission output, perturb down
-    Step<DiscardEmission_>,
+    // Transmit emission output, perturb down
+    Step<Transmit_>,
     Step<PerturbDown_>,
     // Wait for propagation to get second emission
     Step<WaitForPropagationAction_>,
     // Run nucleus on the emission from propagation
     Nucleus<In, Out, M>,
-    // Discard emission output, wait for potentiation to get losses
-    Step<DiscardEmission_>,
+    // Transmit emission output, wait for potentiation to get losses
+    Step<Transmit_>,
     Step<WaitForPotentiationAction_>,
     // Optimize with the loss values (returns unit)
     Step<Optimize_>,
