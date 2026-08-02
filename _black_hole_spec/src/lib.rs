@@ -69,10 +69,11 @@ pub enum QuarkInferenceInput {
     Darkness(Vec<DarkToken>),
 }
 
-/// Serializable list of inference inputs for a single forward pass.
+/// Serializable batch of inference sequences for a single forward pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuarkInferenceRequest {
-    pub inputs: Vec<QuarkInferenceInput>,
+    /// Each element is one sequence (a list of inputs concatenated in order).
+    pub sequences: Vec<Vec<QuarkInferenceInput>>,
     pub limit: u32,
 }
 
@@ -92,10 +93,15 @@ pub struct PredictedToken {
     pub top_k: Vec<LogitEntry>,
 }
 
+/// Predictions for a single sequence within a batched inference result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceOutput {
+    pub predictions: Vec<PredictedToken>,
+}
+
 /// Serializable inference output stored in void objects.
-/// Contains the sequence of predicted tokens with their distributions,
-/// suitable for use as dark inputs to a subsequent forward pass.
+/// Contains per-sequence results from a batched forward pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuarkInferenceOutput {
-    pub predictions: Vec<PredictedToken>,
+    pub results: Vec<SequenceOutput>,
 }

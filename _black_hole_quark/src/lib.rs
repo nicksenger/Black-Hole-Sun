@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
 
-use black_hole_spec::{ObjectId, PredictedToken, QuarkIn, QuarkInferenceOutput, QuarkInferenceRequest, QuarkOut};
+use black_hole_spec::{ObjectId, PredictedToken, QuarkIn, QuarkInferenceOutput, QuarkInferenceRequest, QuarkOut, SequenceOutput};
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -510,46 +510,50 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
     // Download input object from void.
     let input_bytes = void.download(input_id).await?;
 
-    // Decode the inference request (QuarkInferenceRequest -> ModelInput list).
+    // Decode the inference request (QuarkInferenceRequest -> Vec<Vec<ModelInput>>).
     let infer_req: QuarkInferenceRequest =
         from_bytes(&input_bytes).map_err(ServerError::DecodeFrame)?;
 
-    let inputs: Vec<paramecia_engine::ModelInput> = infer_req
-        .inputs
+    let sequences: Vec<Vec<paramecia_engine::ModelInput>> = infer_req
+        .sequences
         .into_iter()
-        .map(|inp| match inp {
-            black_hole_spec::QuarkInferenceInput::Text(t) => {
-                paramecia_engine::ModelInput::Text(t)
-            }
-            black_hole_spec::QuarkInferenceInput::Tokens(ids) => {
-                paramecia_engine::ModelInput::Tokens(ids)
-            }
-            black_hole_spec::QuarkInferenceInput::Darkness(tokens) => {
-                paramecia_engine::ModelInput::Soft(
-                    tokens.into_iter().map(|t| paramecia_engine::SoftToken {
-                        predicted: t.predicted,
-                        dark_knowledge: t.dark_knowledge.into_iter().map(|e| paramecia_engine::LogitEntry {
-                            token_id: e.token_id,
-                            log_prob: e.log_prob,
+        .map(|seq_inputs| {
+            seq_inputs.into_iter().map(|inp| match inp {
+                black_hole_spec::QuarkInferenceInput::Text(t) => {
+                    paramecia_engine::ModelInput::Text(t)
+                }
+                black_hole_spec::QuarkInferenceInput::Tokens(ids) => {
+                    paramecia_engine::ModelInput::Tokens(ids)
+                }
+                black_hole_spec::QuarkInferenceInput::Darkness(tokens) => {
+                    paramecia_engine::ModelInput::Soft(
+                        tokens.into_iter().map(|t| paramecia_engine::SoftToken {
+                            predicted: t.predicted,
+                            dark_knowledge: t.dark_knowledge.into_iter().map(|e| paramecia_engine::LogitEntry {
+                                token_id: e.token_id,
+                                log_prob: e.log_prob,
+                            }).collect(),
                         }).collect(),
-                    }).collect(),
-                )
-            }
+                    )
+                }
+            }).collect()
         })
         .collect();
 
-    // Run inference: fill context then predict completion.
+    // Run batched inference.
     let limit = infer_req.limit;
-    let predicted = run_inference(&ctx.engine, &inputs, limit).await?;
+    let seq_results = run_batched_inference(&ctx.engine, &sequences, limit).await?;
 
-    // Convert predictions to serializable output with top-K distributions.
+    // Convert per-sequence predictions to serializable output.
     let output = QuarkInferenceOutput {
-        predictions: predicted.into_iter().map(|p| PredictedToken {
-            token_id: p.token_id,
-            text: p.text,
-            top_k: p.top_k.into_iter().map(|e| black_hole_spec::LogitEntry {
-                token_id: e.token_id,
-                log_prob: e.log_prob,
+        results: seq_results.into_iter().map(|predictions| SequenceOutput {
+            predictions: predictions.into_iter().map(|p| PredictedToken {
+                token_id: p.token_id,
+                text: p.text,
+                top_k: p.top_k.into_iter().map(|e| black_hole_spec::LogitEntry {
+                    token_id: e.token_id,
+                    log_prob: e.log_prob,
+                }).collect(),
             }).collect(),
         }).collect(),
     };
@@ -570,7 +574,6 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
 
     Ok(QuarkOut::Inferred { output_id })
 }
-
 async fn handle_perturb_down(ctx: &QuarkContext) -> Result<QuarkOut> {
     let mut session = ctx.quark.lock().await;
     if session.state != QuarkState::AwaitingPerturbDown {
@@ -607,35 +610,44 @@ async fn handle_optimize(loss_up: f32, loss_down: f32, ctx: &QuarkContext) -> Re
 // Inference helper
 // ---------------------------------------------------------------------------
 
-async fn run_inference(
+async fn run_batched_inference(
     engine: &ModelEngine,
-    inputs: &[paramecia_engine::ModelInput],
+    sequences: &[Vec<paramecia_engine::ModelInput>],
     limit: u32,
-) -> Result<Vec<paramecia_engine::Predicted>> {
-    // Fill context with the provided inputs. Returns a progress receiver.
-    let _progress_rx = engine.fill_context_inputs(inputs).await
+) -> Result<Vec<Vec<paramecia_engine::Predicted>>> {
+    // Start batched streaming completion — returns (result_rx, cancel_tx).
+    let (mut result_rx, _cancel_tx) = engine.predict_completions_batched(sequences).await
         .map_err(|e| ServerError::ModelError(e.to_string()))?;
 
-    // Start streaming completion — returns (result_rx, cancel_tx).
-    let (mut result_rx, _cancel_tx) = engine.predict_completion(limit).await
-        .map_err(|e| ServerError::ModelError(e.to_string()))?;
+    let n_seqs = sequences.len();
+    // Accumulate per-sequence predictions: seq_results[i] holds all Predicted for sequence i.
+    let mut seq_results: Vec<Vec<paramecia_engine::Predicted>> = vec![Vec::new(); n_seqs];
+    let mut done = false;
 
-    let mut predictions = Vec::new();
-    while let Some(result) = result_rx.recv().await {
+    while !done {
+        let Some(result) = result_rx.recv().await else { break };
         match result {
-            Ok(predicted) => predictions.push(predicted),
+            Ok(step_predictions) => {
+                // step_predictions has one Predicted per sequence for this decode step.
+                for (i, pred) in step_predictions.into_iter().enumerate() {
+                    if i < n_seqs && seq_results[i].len() < limit as usize {
+                        seq_results[i].push(pred);
+                    }
+                }
+                // Stop when all sequences have reached the limit.
+                done = seq_results.iter().all(|s| s.len() >= limit as usize);
+            }
             Err(e) => {
                 // Non-fatal errors (e.g. max length) are fine.
-                warn!(error = %e, "prediction ended with error");
+                warn!(error = %e, "batched prediction ended with error");
                 break;
             }
         }
     }
 
-    Ok(predictions)
+    Ok(seq_results)
 }
 
-// ---------------------------------------------------------------------------
 // Certificate helpers
 // ---------------------------------------------------------------------------
 

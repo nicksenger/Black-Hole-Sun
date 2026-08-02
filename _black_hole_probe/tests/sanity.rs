@@ -195,7 +195,7 @@ async fn inference() {
         "[ANSWER KEY] Finish the following song lyrics from a well-known 90s song: \"Black Hole Sun, won't you ";
     println!("Input text: {input_text}");
     let request = QuarkInferenceRequest {
-        inputs: vec![QuarkInferenceInput::Text(input_text.into())],
+        sequences: vec![vec![QuarkInferenceInput::Text(input_text.into())]],
         limit: 20,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
@@ -210,12 +210,12 @@ async fn inference() {
         from_bytes(&output_bytes).expect("failed to decode inference output");
 
     assert!(
-        !output.predictions.is_empty(),
+        !output.results[0].predictions.is_empty(),
         "expected at least one predicted token, got zero"
     );
 
     // Verify the output contains plausible text.
-    let output_text: String = output
+    let output_text: String = output.results[0]
         .predictions
         .iter()
         .filter_map(|p| p.text.as_deref())
@@ -274,7 +274,7 @@ async fn quark_optimize(endpoint: &quinn::Endpoint, addr: SocketAddr, loss_up: f
 }
 
 fn print_inference_output(label: &str, output: &black_hole_sun::QuarkInferenceOutput) {
-    let output_text: String = output.predictions.iter()
+    let output_text: String = output.results[0].predictions.iter()
         .filter_map(|p| p.text.as_deref())
         .collect();
     println!("{}: {}", label, output_text);
@@ -325,7 +325,7 @@ async fn optimization() {
         "[ANSWER KEY] Finish the following song lyrics from a well-known 90s song: \"Black Hole Sun, won't you ";
     println!("Input text: {input_text}");
     let request = QuarkInferenceRequest {
-        inputs: vec![QuarkInferenceInput::Text(input_text.into())],
+        sequences: vec![vec![QuarkInferenceInput::Text(input_text.into())]],
         limit: 20,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
@@ -344,7 +344,7 @@ async fn optimization() {
     let output_up: black_hole_sun::QuarkInferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
     print_inference_output("PerturbUp Inference", &output_up);
-    assert!(!output_up.predictions.is_empty(), "up inference returned zero predictions");
+    assert!(!output_up.results[0].predictions.is_empty(), "up inference returned zero predictions");
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
@@ -357,7 +357,7 @@ async fn optimization() {
     let output_down: black_hole_sun::QuarkInferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
     print_inference_output("PerturbDown Inference", &output_down);
-    assert!(!output_down.predictions.is_empty(), "down inference returned zero predictions");
+    assert!(!output_down.results[0].predictions.is_empty(), "down inference returned zero predictions");
 
     // Step 5: Optimize with fake loss values
     let fake_loss_up = 0.5f32;
@@ -372,10 +372,11 @@ async fn optimization() {
     let output_final: black_hole_sun::QuarkInferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
     print_inference_output("Post-Optimize Inference", &output_final);
-    assert!(!output_final.predictions.is_empty(), "final inference returned zero predictions");
+    assert!(!output_final.results[0].predictions.is_empty(), "final inference returned zero predictions");
 
     // Verify the output contains plausible text.
     let final_text: String = output_final
+        .results[0]
         .predictions
         .iter()
         .filter_map(|p| p.text.as_deref())

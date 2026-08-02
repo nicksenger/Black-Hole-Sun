@@ -1,6 +1,6 @@
 [package]
 name = "black-hole-sun"
-description = "A Fault-Tolerant Orchestrator for Co-Optimization of Neurosymbolic Multi-Agent Systems"
+description = "Zeroth-Order Co-Optimization of Multi-Agent Systems"
 version = "0.1.0"
 edition = "2021"
 
