@@ -8,7 +8,7 @@ use serde::Serialize;
 // Re-exports — keep common spec types handy alongside the trait
 // ---------------------------------------------------------------------------
 
-pub use black_hole_spec::{Emission, EmissionId, ObjectId};
+pub use black_hole_spec::{Emission, EmissionId, ObjectId, Transmission};
 
 /// Capability trait that guarantees a Jungle can talk to void and quark.
 ///
@@ -65,4 +65,12 @@ pub trait VoidInferOps: Send + Sync {
     /// Similar to [`claim_perturbation`][Self::claim_perturbation] but
     /// deserializes the payload as a loss tuple for QuZO optimization.
     async fn claim_loss_perturbation(&self) -> Result<(f32, f32), String>;
+    /// Wait for a Transmission from the void by object id.
+
+    ///
+    /// Downloads raw bytes and deserializes as `Transmission`.
+    async fn wait_for_transmission(&self, id: ObjectId) -> Result<Transmission, String> {
+        let data = self.download_raw(id).await?;
+        postcard::from_bytes(&data).map_err(|e| format!("postcard deserialize: {e}"))
+    }
 }
