@@ -28,6 +28,8 @@ pub struct CellState {
     pub recv_id: ObjectId,
     /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to upload.
     pub send_id: ObjectId,
+    /// Random seed passed to the perturb-up step each iteration.
+    pub perturbation_seed: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,20 +89,20 @@ where
 // PerturbUp — perturb quark weights upward (no carry)
 // ---------------------------------------------------------------------------
 
-pub struct PerturbUp<const SEED: u64>;
+pub struct PerturbUp;
 
 #[jungle::action]
-impl<const SEED: u64> Action for PerturbUp<SEED> {
+impl Action for PerturbUp {
     type Effect = QuarkPerturbUp;
     type Input = ();
     type Output = ();
 
-    fn emit(_state: &(), _input: Self::Input) -> u64 {
-        SEED
+    fn emit(state: &CellState, _input: Self::Input) -> u64 {
+        state.perturbation_seed
     }
 
     fn absorb(
-        _state: &mut (),
+        _: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("perturb up failed: {e}")))

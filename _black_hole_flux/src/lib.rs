@@ -143,8 +143,6 @@ use action::{
     WaitForPropagationAction as WaitForPropagationAction_,
 };
 
-/// Seed used for the perturb-up step in each Cell iteration.
-const CELL_PERTURB_UP_SEED: u64 = 42;
 
 /// A Cell wraps a [`Nucleus`] in an infinite QuZO training loop driven by
 /// [`Transmission`] messages from void.
@@ -153,7 +151,7 @@ const CELL_PERTURB_UP_SEED: u64 = 42;
 #[derive(Flow)]
 pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     Step<WaitForInitiationAction_>,
-    While<Always<CellState, ()>, CellBody<In, Out, M>>,
+    While<Always<CellState, ()>, Cytoplasm<In, Out, M>>,
 );
 
 /// The body of one iteration of a [`Cell`] loop.
@@ -169,9 +167,9 @@ pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
 /// next transmission ID after each download completes.  Data payloads
 /// (EmissionId, Potentiation) flow through action Output types.
 #[derive(Flow)]
-pub struct CellBody<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
+pub struct Cytoplasm<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     // Perturb up, then wait for propagation to get first emission
-    Step<PerturbUp_<CELL_PERTURB_UP_SEED>>,
+    Step<PerturbUp_>,
     Step<WaitForPropagationAction_>,
     // Run nucleus on the emission from propagation
     Nucleus<In, Out, M>,
