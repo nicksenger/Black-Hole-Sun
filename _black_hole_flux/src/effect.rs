@@ -11,17 +11,17 @@ use tracing::debug;
 use crate::ops::VoidInferOps;
 
 pub use black_hole_spec::{
-    Emission, EmissionId, InferenceInput, InferenceOutput, InferenceRequest, ObjectId,
+    Emission, EmissionId, InferenceOutputId, ObjectId,
 };
 
 use crate::CellError;
 
 /// Effect that performs one quark-inference step.
 ///
-/// Takes an [`EmissionId`] pointing to an `Emission<M>` in void, downloads it,
-/// runs inference on the contained sequences via quark, uploads the resulting
-/// `InferenceOutput` (wrapped as a new `Emission<M>`), and returns the new
-/// [`EmissionId`].
+/// Takes an [`EmissionId`] pointing to an `Emission<M>` in void, downloads it to
+/// obtain the `InferenceOutputId`, passes that ID directly to quark inference,
+/// wraps the returned output ID into a new `Emission<M>`, uploads it, and returns
+/// the new [`EmissionId`].
 ///
 /// The Jungle instance must implement [`VoidInferOps`].
 pub struct QuarkInfer<M>(PhantomData<fn() -> M>);
@@ -48,55 +48,25 @@ where
         async move {
             let obj_id = input_id.0;
 
-            // 1. Download the emission from void.
+            // 1. Download the emission to get the output_id and metadata.
             let emission: Emission<M> = jungle
                 .download_emission(obj_id)
                 .await
                 .map_err(CellError::Download)?;
-            debug!(
-                emission_id = %obj_id,
-                seq_count = emission.sequences.len(),
-                "downloaded emission for inference"
-            );
+            let input_output_id = emission.output_id.0;
+            debug!(emission_id = %obj_id, "downloaded emission for inference");
 
-            // 2. Build an InferenceRequest from the emission sequences and upload it.
-            let request = InferenceRequest {
-                sequences: emission.sequences,
-                limit: 256,
-            };
-            let request_bytes = postcard::to_allocvec(&request)?;
-            let request_id = jungle
-                .upload_to_void(request_bytes)
-                .await
-                .map_err(CellError::Upload)?;
-            debug!(request_id = %request_id, "uploaded inference request");
-
-            // 3. Run quark inference.
+            // 2. Run quark inference, passing the InferenceOutputId directly.
             let output_id = jungle
-                .infer(request_id)
+                .infer(input_output_id)
                 .await
                 .map_err(CellError::Inference)?;
             debug!(output_id = %output_id, "quark inference complete");
 
-            // 4. Download the InferenceOutput from void.
-            let output_bytes = jungle
-                .download_raw(output_id)
-                .await
-                .map_err(CellError::Download)?;
-            let inference_output: InferenceOutput = postcard::from_bytes(&output_bytes)?;
-
-            // 5. Wrap as a new Emission<M> (preserving metadata) and upload.
+            // 3. Wrap the output ID into a new Emission<M> (preserving metadata) and upload.
             let output_emission = Emission {
                 metadata: emission.metadata,
-                sequences: inference_output
-                    .results
-                    .into_iter()
-                    .map(|seq| {
-                        seq.0.into_iter()
-                            .map(|tok| InferenceInput::Tokens(vec![tok.predicted]))
-                            .collect()
-                    })
-                    .collect(),
+                output_id: InferenceOutputId(output_id),
             };
             let result_bytes = postcard::to_allocvec(&output_emission)?;
             let result_id = jungle

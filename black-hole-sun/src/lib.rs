@@ -8,7 +8,7 @@ pub use black_hole_quark;
 
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
-    ObjectId, QuarkIn, InferenceInput, InferenceOutput, InferenceRequest, QuarkOut, SequenceOutput, PredictedToken, DarkToken, LogitEntry,
+    ObjectId, QuarkIn, InferenceInput, InferenceOutput, InferenceRequest, QuarkOut, SequenceOutput, DarkToken, LogitEntry,
 };
 
 // Convenience re-exports — void types

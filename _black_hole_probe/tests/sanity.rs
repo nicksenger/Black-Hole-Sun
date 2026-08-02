@@ -216,7 +216,7 @@ async fn inference() {
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
     println!("Input text: {input_text}");
-    let request = InferenceRequest {
+    let request = InferenceRequest::Sequences {
         sequences: vec![
             vec![InferenceInput::Text(input_text.into())],
             vec![InferenceInput::Text(input_text.into())],
@@ -338,7 +338,7 @@ async fn dark_inference() {
         })
         .collect();
 
-    let request = InferenceRequest {
+    let request = InferenceRequest::Sequences {
         sequences: vec![
             vec![InferenceInput::Dark(dark_tokens.clone())],
             vec![InferenceInput::Dark(dark_tokens)],
@@ -489,7 +489,7 @@ async fn optimization() {
     let input_text_2 =
         "A starship traveling at constant velocity measures a distance of 1,200 light-years to a distant galaxy. After covering half the distance, it detects an anomaly and must divert, adding 300 light-years to its route. How many total light-years will the journey be?";
     println!("Input text: {input_text}");
-    let request = InferenceRequest {
+    let request = InferenceRequest::Sequences {
         sequences: vec![
             vec![InferenceInput::Text(input_text.into())],
             vec![InferenceInput::Text(input_text_2.into())],
@@ -678,7 +678,7 @@ async fn dark_optimization() {
     let dark_tokens_1 = fn_to_dark_tokens(input_text, &tokenizer);
     let dark_tokens_2 = fn_to_dark_tokens(input_text_2, &tokenizer);
 
-    let request = InferenceRequest {
+    let request = InferenceRequest::Sequences {
         sequences: vec![
             vec![InferenceInput::Dark(dark_tokens_1)],
             vec![InferenceInput::Dark(dark_tokens_2)],

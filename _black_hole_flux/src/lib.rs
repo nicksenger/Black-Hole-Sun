@@ -6,7 +6,7 @@
 //!
 //! 1. Runs the **In** flow to produce a (possibly transformed) `EmissionId`.
 //! 2. Downloads that emission from void, performs quark inference on the
-//!    contained sequences, uploads the result, and yields the new `EmissionId`.
+//!    contained output ID, uploads the result emission, and yields the new `EmissionId`.
 //! 3. Passes the resulting `EmissionId` through the **Out** flow.
 //!
 //! # Trait requirement
@@ -33,7 +33,7 @@ pub mod ops;
 // ---------------------------------------------------------------------------
 
 pub use black_hole_spec::{
-    DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry,
+    DarkToken, Emission, EmissionId, InferenceInput, InferenceOutputId, InferenceOutput, InferenceRequest, LogitEntry,
     ObjectId, QuarkIn, QuarkOut, SequenceOutput,
 };
 
@@ -73,7 +73,7 @@ use action::QuarkInferStep as QuarkInferStep_;
 /// 1. **In** flow — pre-processes the input [`EmissionId`] (e.g., transforms
 ///    or validates emission data).  Takes `EmissionId`, produces `EmissionId`.
 /// 2. **Quark inference** step — downloads the emission from void, runs quark
-///    inference on its sequences, uploads the result, yields a new `EmissionId`.
+///    inference on its output ID, uploads the result emission, and yields a new `EmissionId`.
 /// 3. **Out** flow — post-processes the output [`EmissionId`] (e.g., stores
 ///    references or triggers downstream work).  Takes `EmissionId`, produces
 ///    `EmissionId`.

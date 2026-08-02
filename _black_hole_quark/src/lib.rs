@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
 
-use black_hole_spec::{ObjectId, DarkToken, QuarkIn, InferenceOutput, InferenceRequest, QuarkOut, SequenceOutput};
+use black_hole_spec::{ObjectId, DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, QuarkIn, QuarkOut, SequenceOutput};
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -507,41 +507,60 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
         ServerError::VoidNotConfigured
     })?;
 
-    // Download input object from void.
+    // Download input object from void and decode the inference request.
     let input_bytes = void.download(input_id).await?;
-
-    // Decode the inference request (InferenceRequest -> Vec<Vec<ModelInput>>).
     let infer_req: InferenceRequest =
         from_bytes(&input_bytes).map_err(ServerError::DecodeFrame)?;
 
-    let sequences: Vec<Vec<paramecia_engine::ModelInput>> = infer_req
-        .sequences
-        .into_iter()
-        .map(|seq_inputs| {
-            seq_inputs.into_iter().map(|inp| match inp {
-                black_hole_spec::InferenceInput::Text(t) => {
-                    paramecia_engine::ModelInput::Text(t)
-                }
-                black_hole_spec::InferenceInput::Tokens(ids) => {
-                    paramecia_engine::ModelInput::Tokens(ids)
-                }
-                black_hole_spec::InferenceInput::Dark(tokens) => {
-                    paramecia_engine::ModelInput::Soft(
-                        tokens.into_iter().map(|t| paramecia_engine::SoftToken {
-                            predicted: t.predicted,
-                            dark_knowledge: t.dark_knowledge.into_iter().map(|e| paramecia_engine::LogitEntry {
+    // Resolve sequences and limit from the request variant.
+    let (sequences, limit) = match infer_req {
+        InferenceRequest::Sequences { sequences: raw_seqs, limit } => {
+            let seqs: Vec<Vec<paramecia_engine::ModelInput>> = raw_seqs
+                .into_iter()
+                .map(|seq_inputs| {
+                    seq_inputs.into_iter().map(|inp| match inp {
+                        InferenceInput::Text(t) => paramecia_engine::ModelInput::Text(t),
+                        InferenceInput::Tokens(ids) => paramecia_engine::ModelInput::Tokens(ids),
+                        InferenceInput::Dark(tokens) => paramecia_engine::ModelInput::Soft(
+                            tokens.into_iter().map(|t| paramecia_engine::SoftToken {
+                                predicted: t.predicted,
+                                dark_knowledge: t.dark_knowledge.into_iter().map(|e| paramecia_engine::LogitEntry {
+                                    token_id: e.token_id,
+                                    log_prob: e.log_prob,
+                                }).collect(),
+                            }).collect(),
+                        ),
+                    }).collect()
+                })
+                .collect();
+            (seqs, limit)
+        }
+        InferenceRequest::VoidId { id, limit } => {
+            // Download the InferenceOutput and convert to dark input sequences.
+            let output_bytes = void.download(id.0).await?;
+            let inference_output: InferenceOutput =
+                from_bytes(&output_bytes).map_err(ServerError::DecodeFrame)?;
+
+            let seqs: Vec<Vec<paramecia_engine::ModelInput>> = inference_output
+                .results
+                .into_iter()
+                .map(|seq_out| {
+                    vec![paramecia_engine::ModelInput::Soft(
+                        seq_out.0.into_iter().map(|tok| paramecia_engine::SoftToken {
+                            predicted: tok.predicted,
+                            dark_knowledge: tok.dark_knowledge.into_iter().map(|e| paramecia_engine::LogitEntry {
                                 token_id: e.token_id,
                                 log_prob: e.log_prob,
                             }).collect(),
                         }).collect(),
-                    )
-                }
-            }).collect()
-        })
-        .collect();
+                    )]
+                })
+                .collect();
+            (seqs, limit)
+        }
+    };
 
     // Run batched inference.
-    let limit = infer_req.limit;
     let seq_results = run_batched_inference(&ctx.engine, &sequences, limit).await?;
 
     // Convert per-sequence predictions to serializable output.
@@ -549,7 +568,7 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
         results: seq_results.into_iter().map(|predictions| SequenceOutput(
             predictions.into_iter().map(|p| DarkToken {
                 predicted: p.token_id,
-                dark_knowledge: p.top_k.into_iter().map(|e| black_hole_spec::LogitEntry {
+                dark_knowledge: p.top_k.into_iter().map(|e| LogitEntry {
                     token_id: e.token_id,
                     log_prob: e.log_prob,
                 }).collect(),
@@ -573,6 +592,7 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
 
     Ok(QuarkOut::Inferred { output_id })
 }
+
 async fn handle_perturb_down(ctx: &QuarkContext) -> Result<QuarkOut> {
     let mut session = ctx.quark.lock().await;
     if session.state != QuarkState::AwaitingPerturbDown {

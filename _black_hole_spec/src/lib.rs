@@ -69,31 +69,30 @@ pub enum InferenceInput {
     Dark(Vec<DarkToken>),
 }
 
-/// Serializable batch of inference sequences for a single forward pass.
+/// Serializable inference request stored in void objects.
+/// Either contains inline sequences or points to an existing InferenceOutput
+/// in void that should be converted to dark input for inference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InferenceRequest {
-    /// Each element is one sequence (a list of inputs concatenated in order).
-    pub sequences: Vec<Vec<InferenceInput>>,
-    pub limit: u32,
+pub enum InferenceRequest {
+    /// Inline sequences with explicit inputs.
+    Sequences {
+        /// Each element is one sequence (a list of inputs concatenated in order).
+        sequences: Vec<Vec<InferenceInput>>,
+        limit: u32,
+    },
+    /// Reference to an existing InferenceOutput in void.
+    /// Quark downloads it, converts the results to dark input, and proceeds.
+    VoidId {
+        /// Void object ID of the InferenceOutput to use as input.
+        id: InferenceOutputId,
+        limit: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------
 // Inference output format (stored in void objects)
 // ---------------------------------------------------------------------------
 
-/// A single predicted token with its top-K distribution from a model forward pass.
-/// Stored as a dark token so downstream models can use it for dark-knowledge transfer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PredictedToken {
-    /// The predicted (committed) token ID.
-    pub token_id: u32,
-    /// Decoded text for this token, if available.
-    pub text: Option<String>,
-    /// Top-K logit entries representing the model's distribution at this position.
-    pub top_k: Vec<LogitEntry>,
-}
-
-/// Predictions for a single sequence within a batched inference result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SequenceOutput(pub Vec<DarkToken>);
 
@@ -104,13 +103,17 @@ pub struct InferenceOutput {
     pub results: Vec<SequenceOutput>,
 }
 
+/// Void ID for an InferenceOutput
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InferenceOutputId(pub ObjectId);
+
 /// Input / Output from a Cell
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emission<M> {
     pub metadata: M,
-    pub sequences: Vec<Vec<InferenceInput>>,
+    pub output_id: InferenceOutputId,
 }
 
 /// Void ID for an Emission
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmissionId(pub Uuid);
+pub struct EmissionId(pub ObjectId);
