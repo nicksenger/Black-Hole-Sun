@@ -6,7 +6,7 @@ use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::QuarkServerBuilder;
 use black_hole_sun::VoidServerBuilder;
-use black_hole_sun::{ObjectId, QuarkIn, QuarkInferenceInput, QuarkInferenceRequest, QuarkOut};
+use black_hole_sun::{ObjectId, QuarkIn, InferenceInput, InferenceRequest, QuarkOut};
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
@@ -194,8 +194,8 @@ async fn inference() {
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
     println!("Input text: {input_text}");
-    let request = QuarkInferenceRequest {
-        sequences: vec![vec![QuarkInferenceInput::Text(input_text.into())]],
+    let request = InferenceRequest {
+        sequences: vec![vec![InferenceInput::Text(input_text.into())]],
         limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
@@ -206,7 +206,7 @@ async fn inference() {
 
     // 6. Download inference output from void and assert we got predictions.
     let output_bytes = void_download(&void_client, void_local, output_id).await;
-    let output: black_hole_sun::QuarkInferenceOutput =
+    let output: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes).expect("failed to decode inference output");
 
     assert!(
@@ -278,7 +278,7 @@ async fn quark_optimize(
     }
 }
 
-fn print_inference_output(label: &str, output: &black_hole_sun::QuarkInferenceOutput) {
+fn print_inference_output(label: &str, output: &black_hole_sun::InferenceOutput) {
     let output_text: String = output.results[0]
         .predictions
         .iter()
@@ -331,8 +331,8 @@ async fn optimization() {
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
     println!("Input text: {input_text}");
-    let request = QuarkInferenceRequest {
-        sequences: vec![vec![QuarkInferenceInput::Text(input_text.into())]],
+    let request = InferenceRequest {
+        sequences: vec![vec![InferenceInput::Text(input_text.into())]],
         limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
@@ -348,7 +348,7 @@ async fn optimization() {
     println!("--- Step 2: Infer (up) ---");
     let output_id_up = quark_infer(&quark_client, quark_local, input_id).await;
     let output_bytes_up = void_download(&void_client, void_local, output_id_up).await;
-    let output_up: black_hole_sun::QuarkInferenceOutput =
+    let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
     print_inference_output("PerturbUp Inference", &output_up);
     assert!(
@@ -364,7 +364,7 @@ async fn optimization() {
     println!("--- Step 4: Infer (down) ---");
     let output_id_down = quark_infer(&quark_client, quark_local, input_id).await;
     let output_bytes_down = void_download(&void_client, void_local, output_id_down).await;
-    let output_down: black_hole_sun::QuarkInferenceOutput =
+    let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
     print_inference_output("PerturbDown Inference", &output_down);
     assert!(
@@ -385,7 +385,7 @@ async fn optimization() {
     println!("--- Step 6: Infer (post-optimize) ---");
     let output_id_final = quark_infer(&quark_client, quark_local, input_id).await;
     let output_bytes_final = void_download(&void_client, void_local, output_id_final).await;
-    let output_final: black_hole_sun::QuarkInferenceOutput =
+    let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
     print_inference_output("Post-Optimize Inference", &output_final);
     assert!(

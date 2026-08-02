@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
 
-use black_hole_spec::{ObjectId, PredictedToken, QuarkIn, QuarkInferenceOutput, QuarkInferenceRequest, QuarkOut, SequenceOutput};
+use black_hole_spec::{ObjectId, PredictedToken, QuarkIn, InferenceOutput, InferenceRequest, QuarkOut, SequenceOutput};
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -510,8 +510,8 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
     // Download input object from void.
     let input_bytes = void.download(input_id).await?;
 
-    // Decode the inference request (QuarkInferenceRequest -> Vec<Vec<ModelInput>>).
-    let infer_req: QuarkInferenceRequest =
+    // Decode the inference request (InferenceRequest -> Vec<Vec<ModelInput>>).
+    let infer_req: InferenceRequest =
         from_bytes(&input_bytes).map_err(ServerError::DecodeFrame)?;
 
     let sequences: Vec<Vec<paramecia_engine::ModelInput>> = infer_req
@@ -519,13 +519,13 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
         .into_iter()
         .map(|seq_inputs| {
             seq_inputs.into_iter().map(|inp| match inp {
-                black_hole_spec::QuarkInferenceInput::Text(t) => {
+                black_hole_spec::InferenceInput::Text(t) => {
                     paramecia_engine::ModelInput::Text(t)
                 }
-                black_hole_spec::QuarkInferenceInput::Tokens(ids) => {
+                black_hole_spec::InferenceInput::Tokens(ids) => {
                     paramecia_engine::ModelInput::Tokens(ids)
                 }
-                black_hole_spec::QuarkInferenceInput::Darkness(tokens) => {
+                black_hole_spec::InferenceInput::Dark(tokens) => {
                     paramecia_engine::ModelInput::Soft(
                         tokens.into_iter().map(|t| paramecia_engine::SoftToken {
                             predicted: t.predicted,
@@ -545,7 +545,7 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
     let seq_results = run_batched_inference(&ctx.engine, &sequences, limit).await?;
 
     // Convert per-sequence predictions to serializable output.
-    let output = QuarkInferenceOutput {
+    let output = InferenceOutput {
         results: seq_results.into_iter().map(|predictions| SequenceOutput {
             predictions: predictions.into_iter().map(|p| PredictedToken {
                 token_id: p.token_id,

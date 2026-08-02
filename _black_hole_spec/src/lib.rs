@@ -59,21 +59,21 @@ pub struct DarkToken {
 /// Serializable inference input, mirroring paramecia-engine's ModelInput.
 /// Stored inside void objects and converted to ModelInput by the quark service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum QuarkInferenceInput {
+pub enum InferenceInput {
     /// Text context (tokenized by the model host).
     Text(String),
     /// Specific token IDs.
     Tokens(Vec<u32>),
-    /// Darkness prompt: a sequence of dark tokens carrying predicted token IDs and
+    /// Dark prompt: a sequence of dark tokens carrying predicted token IDs and
     /// dark-knowledge distributions.
-    Darkness(Vec<DarkToken>),
+    Dark(Vec<DarkToken>),
 }
 
 /// Serializable batch of inference sequences for a single forward pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuarkInferenceRequest {
+pub struct InferenceRequest {
     /// Each element is one sequence (a list of inputs concatenated in order).
-    pub sequences: Vec<Vec<QuarkInferenceInput>>,
+    pub sequences: Vec<Vec<InferenceInput>>,
     pub limit: u32,
 }
 
@@ -102,6 +102,6 @@ pub struct SequenceOutput {
 /// Serializable inference output stored in void objects.
 /// Contains per-sequence results from a batched forward pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuarkInferenceOutput {
+pub struct InferenceOutput {
     pub results: Vec<SequenceOutput>,
 }
