@@ -117,3 +117,14 @@ pub struct Emission<M> {
 /// Void ID for an Emission
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmissionId(pub ObjectId);
+
+/// Input / Output from a Cell
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transmission<M> {
+    pub emission_id: EmissionId,
+    pub next_id: ObjectId,
+}
+
+/// Void ID for a Transmission
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransmissionId(pub ObjectId);

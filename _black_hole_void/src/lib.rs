@@ -21,6 +21,8 @@ const S3_MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 pub enum VoidIn {
     /// Upload data to object storage. Server responds with VoidOut::Uploaded(id).
     Upload { data: Vec<u8> },
+    /// Upload data with a caller-supplied ID. Server responds with VoidOut::Uploaded(id).
+    UploadWith { id: uuid::Uuid, data: Vec<u8> },
     /// Download an object by its opaque ID. Server responds with VoidOut::Downloaded(data).
     Download { id: uuid::Uuid },
 }
@@ -233,7 +235,8 @@ async fn handle_stream(
     };
 
     let response = match request {
-        VoidIn::Upload { data } => handle_upload(&context, data).await,
+        VoidIn::Upload { data } => handle_upload(&context, None, data).await,
+        VoidIn::UploadWith { id, data } => handle_upload(&context, Some(id), data).await,
         VoidIn::Download { id } => handle_download(&context, id).await,
     };
 
@@ -242,7 +245,7 @@ async fn handle_stream(
     }
 }
 
-async fn handle_upload(context: &VoidContext, data: Vec<u8>) -> VoidOut {
+async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<u8>) -> VoidOut {
     if data.len() > S3_MAX_FRAME_SIZE {
         return VoidOut::Error {
             message: format!(
@@ -253,7 +256,7 @@ async fn handle_upload(context: &VoidContext, data: Vec<u8>) -> VoidOut {
         };
     }
 
-    let id = uuid::Uuid::new_v4();
+    let id = id.unwrap_or_else(|| uuid::Uuid::new_v4());
     let key = id.to_string();
     let size_bytes = i64::try_from(data.len()).unwrap_or(i64::MAX);
 
