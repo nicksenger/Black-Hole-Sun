@@ -9,11 +9,27 @@
 //!    contained output ID, uploads the result emission, and yields the new `EmissionId`.
 //! 3. Passes the resulting `EmissionId` through the **Out** flow.
 //!
-//! A **Cell** wraps a Nucleus in an infinite QuZO training loop: perturb up →
-//! infer → perturb down → infer → optimize, repeating indefinitely.  Between
-//! each inference step the Cell awaits an external jungle perturbation carrying
-//! the next [`EmissionId`], and after both inferences it awaits a perturbation
-//! carrying the `(loss_up, loss_down)` pair for optimization.
+//! A **Cell** wraps a Nucleus in an infinite QuZO training loop driven by
+//! [`Transmission`] messages from void:
+//!
+//! 1. **WaitForInitiation** — reads `next_id` from [`CellState`], downloads a
+//!    `Transmission::Initiation`, stores the new `next_id` in state, emits the
+//!    emission ID for processing.
+//! 2. **PerturbUp** — perturbs the associated quark's weights upward.
+//! 3. **In → Nucleus → Out** — runs the full Nucleus pipeline.
+//! 4. **PerturbDown** — perturbs the quark's weights downward.
+//! 5. **WaitForPropagation** — reads `next_id` from state, downloads a
+//!    `Transmission::Propagation`, stores the new `next_id`, emits the emission ID.
+//! 6. **In → Nucleus → Out** — runs the Nucleus pipeline again.
+//! 7. **WaitForPotentiation** — reads `next_id` from state, downloads a
+//!    `Transmission::Potentiation`, stores the new `next_id`, emits the loss values.
+//! 8. **Optimize** — applies the QuZO optimization update.
+//!
+//! # State
+//!
+//! The [`CellState`] type holds the `next_id` (void key of the next
+//! [`Transmission`] to download).  Animals that use [`Cell`] as their Journey
+//! should use [`CellState`] (or a superset) as their state type.
 //!
 //! # Trait requirement
 //!
@@ -41,15 +57,17 @@ pub mod ops;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkOut, SequenceOutput,
+    InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkOut, SequenceOutput, Transmission,
 };
 
 // Re-export key items from submodules so they're reachable from the crate root.
 pub use action::{
-    ClaimLossAction, ClaimPerturbationAction, Optimize, PerturbDown, PerturbUp, QuarkInferStep,
+    CellState, DiscardEmission, Optimize, PerturbDown, PerturbUp, QuarkInferStep,
+    WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
 };
 pub use effect::{
-    ClaimLoss, ClaimPerturbation, QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp,
+    QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp,
+    WaitForInitiation, WaitForPotentiation, WaitForPropagation,
 };
 pub use ops::VoidInferOps;
 
@@ -81,8 +99,8 @@ pub enum NucleusError {
     #[error("quark optimize failed: {0}")]
     Optimize(String),
 
-    #[error("failed to claim or deserialize perturbation: {0}")]
-    Claim(String),
+    #[error("transmission error: {0}")]
+    Transmission(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -93,18 +111,9 @@ use action::QuarkInferStep as QuarkInferStep_;
 
 /// A Nucleus composes three sequential stages:
 ///
-/// 1. **In** flow — pre-processes the input [`EmissionId`] (e.g., transforms
-///    or validates emission data).  Takes `EmissionId`, produces `EmissionId`.
-/// 2. **Quark inference** step — downloads the emission from void, runs quark
-///    inference on its output ID, uploads the result emission, and yields a new `EmissionId`.
-/// 3. **Out** flow — post-processes the output [`EmissionId`] (e.g., stores
-///    references or triggers downstream work).  Takes `EmissionId`, produces `EmissionId`.
-///
-/// # Type parameters
-///
-/// * `In` — the input flow (must accept `EmissionId` and produce `EmissionId`).
-/// * `Out` — the output flow (must accept `EmissionId` and produce `EmissionId`).
-/// * `M` — the metadata type stored inside each [`Emission<M>`].
+/// 1. **In** flow — pre-processes the input [`EmissionId`].
+/// 2. **Quark inference** step — downloads, infers, uploads, yields new `EmissionId`.
+/// 3. **Out** flow — post-processes the output [`EmissionId`].
 #[derive(Flow)]
 pub struct Nucleus<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     In,
@@ -117,34 +126,19 @@ pub struct Nucleus<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
 // ---------------------------------------------------------------------------
 
 use action::{
-    ClaimLossAction as ClaimLossAction_, ClaimPerturbationAction as ClaimPerturbationAction_,
-    Optimize as Optimize_, PerturbDown as PerturbDown_, PerturbUp as PerturbUp_,
+    DiscardEmission as DiscardEmission_, Optimize as Optimize_, PerturbDown as PerturbDown_,
+    PerturbUp as PerturbUp_, WaitForInitiationAction as WaitForInitiationAction_,
+    WaitForPotentiationAction as WaitForPotentiationAction_,
+    WaitForPropagationAction as WaitForPropagationAction_,
 };
 
 /// Seed used for the perturb-up step in each Cell iteration.
 const CELL_PERTURB_UP_SEED: u64 = 42;
 
-/// A Cell wraps a [`Nucleus`] in an infinite QuZO training loop.
+/// A Cell wraps a [`Nucleus`] in an infinite QuZO training loop driven by
+/// [`Transmission`] messages from void.
 ///
-/// Each iteration performs the following sequence:
-///
-/// 1. **PerturbUp** — perturbs the associated quark's weights upward.
-/// 2. **Claim** — awaits a jungle perturbation containing an [`EmissionId`].
-/// 3. **In → Nucleus → Out** — runs the full Nucleus pipeline with the received `EmissionId`.
-///    (Uses the same In/Out/M as provided to the outer Cell.)
-/// 4. **PerturbDown** — perturbs the quark's weights downward.
-/// 5. **Claim** — awaits another jungle perturbation containing an [`EmissionId`].
-/// 6. **In → Nucleus → Out** — runs the Nucleus pipeline again.
-/// 7. **ClaimLoss** — awaits a jungle perturbation containing `(loss_up, loss_down)`.
-/// 8. **Optimize** — applies the QuZO optimization update with the received losses.
-///
-/// The loop then repeats from step 1 indefinitely.
-///
-/// # Type parameters
-///
-/// * `In` — the input flow shared with [`Nucleus`] (must accept/produce `EmissionId`).
-/// * `Out` — the output flow shared with [`Nucleus`] (must accept/produce `EmissionId`).
-/// * `M` — the metadata type stored inside each [`Emission<M>`].
+/// See module-level documentation for the full iteration sequence.
 #[derive(Flow)]
 pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     While<Always<(), ()>, CellBody<In, Out, M>>,
@@ -152,47 +146,32 @@ pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
 
 /// The body of one iteration of a [`Cell`] loop.
 ///
-/// Each iteration is self-contained: it takes `()` and produces `()`.
-/// The [`EmissionId`] values are produced by internal Claim steps that await
-/// external perturbations.
-///
 /// Sequential stages (each iteration):
 ///
-/// PerturbUp → ClaimEmissionId → In → QuarkInfer → Out → Discard →
-/// PerturbDown → ClaimEmissionId → In → QuarkInfer → Out → Discard →
-/// ClaimLoss → Optimize
+/// PerturbUp → WaitForInitiation → In → QuarkInfer → Out → Discard →
+/// PerturbDown → WaitForPropagation → In → QuarkInfer → Out → Discard →
+/// WaitForPotentiation → Optimize
+///
+/// The [`CellState`](action::CellState) holds `next_id` which is read by each
+/// wait-for action to know which void key to download, and updated with the
+/// next transmission ID after each download completes.
 #[derive(Flow)]
 pub struct CellBody<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
+    // Perturb up, then wait for initiation to get first emission
     Step<PerturbUp_<CELL_PERTURB_UP_SEED>>,
-    Step<ClaimPerturbationAction_>,
+    Step<WaitForInitiationAction_>,
+    // Run nucleus on the emission from initiation
     Nucleus<In, Out, M>,
-    Step<DiscardEmission>,
+    // Discard emission output, perturb down
+    Step<DiscardEmission_>,
     Step<PerturbDown_>,
-    Step<ClaimPerturbationAction_>,
+    // Wait for propagation to get second emission
+    Step<WaitForPropagationAction_>,
+    // Run nucleus on the emission from propagation
     Nucleus<In, Out, M>,
-    Step<DiscardEmission>,
-    Step<ClaimLossAction_>,
+    // Discard emission output, wait for potentiation to get losses
+    Step<DiscardEmission_>,
+    Step<WaitForPotentiationAction_>,
+    // Optimize with the loss values
     Step<Optimize_>,
 );
-
-/// Discards an [`EmissionId`] and produces `()`.
-///
-/// Used to bridge between EmissionId-producing stages (In/Out flows) and
-/// unit-input stages (PerturbDown, ClaimLoss) in the Cell loop.
-pub struct DiscardEmission;
-
-#[jungle::action]
-impl Action for DiscardEmission {
-    type Effect = NoEffect;
-    type Input = EmissionId;
-    type Output = ();
-
-    fn emit(_state: &(), _input: Self::Input) -> () {}
-
-    fn absorb(
-        _state: &mut (),
-        _output: EffectCompletion<Self::Effect>,
-    ) -> Result<Self::Output, Failure> {
-        Ok(())
-    }
-}

@@ -52,21 +52,7 @@ pub trait VoidInferOps: Send + Sync {
     /// estimate a gradient and update its weights.
     async fn optimize(&self, loss_up: f32, loss_down: f32) -> Result<(), String>;
 
-    /// Await an external jungle perturbation containing an [`EmissionId`].
-    ///
-    /// This method should poll the Jungle runtime for a claimed perturbation
-    /// with backoff until one arrives, deserialize it as `EmissionId`, and
-    /// acknowledge it.  Implementors typically delegate to
-    /// [`JungleClient::claim_animal_perturbation`][jungle_sdk::JungleClient::claim_animal_perturbation].
-    async fn claim_perturbation(&self) -> Result<EmissionId, String>;
-
-    /// Await an external jungle perturbation containing `(loss_up, loss_down)`.
-    ///
-    /// Similar to [`claim_perturbation`][Self::claim_perturbation] but
-    /// deserializes the payload as a loss tuple for QuZO optimization.
-    async fn claim_loss_perturbation(&self) -> Result<(f32, f32), String>;
-    /// Wait for a Transmission from the void by object id.
-
+    /// Wait for a [`Transmission`] from the void by object id.
     ///
     /// Downloads raw bytes and deserializes as `Transmission`.
     async fn wait_for_transmission(&self, id: ObjectId) -> Result<Transmission, String> {

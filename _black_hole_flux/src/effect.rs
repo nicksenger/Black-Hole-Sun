@@ -1,4 +1,4 @@
-//! Effects for quark inference, perturbation, optimization, and perturbation claiming.
+//! Effects for quark inference, perturbation, optimization, and transmission waiting.
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -11,7 +11,7 @@ use tracing::debug;
 use crate::ops::VoidInferOps;
 
 pub use black_hole_spec::{
-    Emission, EmissionId, InferenceOutputId, ObjectId,
+    Emission, EmissionId, InferenceOutputId, ObjectId, Transmission,
 };
 
 use crate::NucleusError;
@@ -21,13 +21,6 @@ use crate::NucleusError;
 // ---------------------------------------------------------------------------
 
 /// Effect that performs one quark-inference step.
-///
-/// Takes an [`EmissionId`] pointing to an `Emission<M>` in void, downloads it to
-/// obtain the `InferenceOutputId`, passes that ID directly to quark inference,
-/// wraps the returned output ID into a new `Emission<M>`, uploads it, and returns
-/// the new [`EmissionId`].
-///
-/// The Jungle instance must implement [`VoidInferOps`].
 pub struct QuarkInfer<M>(PhantomData<fn() -> M>);
 
 impl<M, J> EffectSchema<J> for QuarkInfer<M>
@@ -52,7 +45,6 @@ where
         async move {
             let obj_id = input_id.0;
 
-            // 1. Download the emission to get the output_id and metadata.
             let emission: Emission<M> = jungle
                 .download_emission(obj_id)
                 .await
@@ -60,14 +52,12 @@ where
             let input_output_id = emission.output_id.0;
             debug!(emission_id = %obj_id, "downloaded emission for inference");
 
-            // 2. Run quark inference, passing the InferenceOutputId directly.
             let output_id = jungle
                 .infer(input_output_id)
                 .await
                 .map_err(NucleusError::Inference)?;
             debug!(output_id = %output_id, "quark inference complete");
 
-            // 3. Wrap the output ID into a new Emission<M> (preserving metadata) and upload.
             let output_emission = Emission {
                 metadata: emission.metadata,
                 output_id: InferenceOutputId(output_id),
@@ -88,9 +78,6 @@ where
 // QuarkPerturbUp — perturb quark weights in the positive direction
 // ---------------------------------------------------------------------------
 
-/// Effect that perturbs the associated quark's weights upward.
-///
-/// Takes a random `seed` for reproducibility and returns `()` on success.
 pub struct QuarkPerturbUp;
 
 impl<J> EffectSchema<J> for QuarkPerturbUp {
@@ -123,7 +110,6 @@ where
 // QuarkPerturbDown — perturb quark weights in the negative direction
 // ---------------------------------------------------------------------------
 
-/// Effect that perturbs the associated quark's weights downward.
 pub struct QuarkPerturbDown;
 
 impl<J> EffectSchema<J> for QuarkPerturbDown {
@@ -156,9 +142,6 @@ where
 // QuarkOptimize — apply QuZO optimization update
 // ---------------------------------------------------------------------------
 
-/// Effect that applies the QuZO optimization step using up/down loss values.
-///
-/// Takes `(loss_up, loss_down)` and returns `()` on success.
 pub struct QuarkOptimize;
 
 impl<J> EffectSchema<J> for QuarkOptimize {
@@ -188,77 +171,139 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// ClaimPerturbation — await an external jungle perturbation
+// WaitForInitiation — await a Transmission::Initiation from void
 // ---------------------------------------------------------------------------
 
-/// Effect that awaits an external jungle perturbation containing an [`EmissionId`].
+/// Effect that waits for a [`Transmission::Initiation`] at the given [`ObjectId`].
 ///
-/// Delegates to [`VoidInferOps::claim_perturbation`] which should poll the
-/// Jungle runtime for a claimed perturbation with backoff until one arrives.
-pub struct ClaimPerturbation;
+/// Downloads the transmission from void, extracts the emission ID to process
+/// and the next transmission ID for carry threading.
+pub struct WaitForInitiation;
 
-impl<J> EffectSchema<J> for ClaimPerturbation {
+impl<J> EffectSchema<J> for WaitForInitiation {
     type Id = u64;
-    type In = ();
-    type Out = EmissionId;
+    type In = ObjectId;
+    type Out = (EmissionId, ObjectId);
     type Err = NucleusError;
 }
 
-impl<J> Effect<J> for ClaimPerturbation
+impl<J> Effect<J> for WaitForInitiation
 where
     J: VoidInferOps,
 {
     fn effect(
         jungle: &J,
-        _input: Self::In,
+        id: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!("awaiting external perturbation (EmissionId)");
-            let emission_id = jungle
-                .claim_perturbation()
+            debug!(%id, "awaiting initiation transmission");
+            let transmission = jungle
+                .wait_for_transmission(id)
                 .await
-                .map_err(NucleusError::Claim)?;
-            debug!(emission_id = %emission_id.0, "perturbation claimed");
-            Ok(emission_id)
+                .map_err(NucleusError::Transmission)?;
+            match transmission {
+                Transmission::Initiation { next_id } => {
+                    // The next_id from initiation is the first emission to process.
+                    // We treat it as the emission_id for the first nucleus pass,
+                    // and also as the carry for the next transmission.
+                    debug!(%next_id, "initiation received");
+                    Ok((EmissionId(next_id), next_id))
+                }
+                other => {
+                    let msg = format!("expected Initiation, got {:?}", other);
+                    Err(NucleusError::Transmission(msg))
+                }
+            }
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// ClaimLoss — await an external jungle perturbation with loss values
+// WaitForPropagation — await a Transmission::Propagation from void
 // ---------------------------------------------------------------------------
 
-/// Effect that awaits an external jungle perturbation containing
-/// `(loss_up: f32, loss_down: f32)`.
+/// Effect that waits for a [`Transmission::Propagation`] at the given [`ObjectId`].
 ///
-/// Delegates to [`VoidInferOps::claim_loss_perturbation`] which should poll
-/// the Jungle runtime for a claimed perturbation with backoff, deserialize
-/// it as a loss tuple, and acknowledge it.
-pub struct ClaimLoss;
+/// Downloads the transmission from void, extracts the emission ID to process
+/// and the next transmission ID for carry threading.
+pub struct WaitForPropagation;
 
-impl<J> EffectSchema<J> for ClaimLoss {
+impl<J> EffectSchema<J> for WaitForPropagation {
     type Id = u64;
-    type In = ();
-    type Out = (f32, f32);
+    type In = ObjectId;
+    type Out = (EmissionId, ObjectId);
     type Err = NucleusError;
 }
 
-impl<J> Effect<J> for ClaimLoss
+impl<J> Effect<J> for WaitForPropagation
 where
     J: VoidInferOps,
 {
     fn effect(
         jungle: &J,
-        _input: Self::In,
+        id: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!("awaiting external perturbation (loss tuple)");
-            let loss = jungle
-                .claim_loss_perturbation()
+            debug!(%id, "awaiting propagation transmission");
+            let transmission = jungle
+                .wait_for_transmission(id)
                 .await
-                .map_err(NucleusError::Claim)?;
-            debug!(?loss, "loss perturbation claimed");
-            Ok(loss)
+                .map_err(NucleusError::Transmission)?;
+            match transmission {
+                Transmission::Propagation { emission_id, next_id } => {
+                    debug!(emission_id = %emission_id.0, next_id = %next_id, "propagation received");
+                    Ok((emission_id, next_id))
+                }
+                other => {
+                    let msg = format!("expected Propagation, got {:?}", other);
+                    Err(NucleusError::Transmission(msg))
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WaitForPotentiation — await a Transmission::Potentiation from void
+// ---------------------------------------------------------------------------
+
+/// Effect that waits for a [`Transmission::Potentiation`] at the given [`ObjectId`].
+///
+/// Downloads the transmission from void, extracts the loss values for
+/// optimization and the next transmission ID for carry threading.
+pub struct WaitForPotentiation;
+
+impl<J> EffectSchema<J> for WaitForPotentiation {
+    type Id = u64;
+    type In = ObjectId;
+    type Out = ((f32, f32), ObjectId);
+    type Err = NucleusError;
+}
+
+impl<J> Effect<J> for WaitForPotentiation
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        id: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            debug!(%id, "awaiting potentiation transmission");
+            let transmission = jungle
+                .wait_for_transmission(id)
+                .await
+                .map_err(NucleusError::Transmission)?;
+            match transmission {
+                Transmission::Potentiation { loss_up, loss_down, next_id } => {
+                    debug!(loss_up, loss_down, %next_id, "potentiation received");
+                    Ok(((loss_up, loss_down), next_id))
+                }
+                other => {
+                    let msg = format!("expected Potentiation, got {:?}", other);
+                    Err(NucleusError::Transmission(msg))
+                }
+            }
         }
     }
 }
