@@ -6,7 +6,7 @@ use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::QuarkServerBuilder;
 use black_hole_sun::VoidServerBuilder;
-use black_hole_sun::{ObjectId, QuarkIn, InferenceInput, InferenceRequest, QuarkOut};
+use black_hole_sun::{ObjectId, QuarkIn, InferenceInput, InferenceRequest, QuarkOut, DarkToken, LogitEntry};
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
@@ -240,6 +240,132 @@ async fn inference() {
     quark_handle.abort();
 }
 
+
+// ─── Dark inference integration test ──────────────────────────────────────
+
+#[ignore = "Sanity check — performs dark-prompt model inference"]
+#[tokio::test]
+async fn dark_inference() {
+    // Install rustls default crypto provider before any TLS config.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    black_hole_sun::init_tracing().ok();
+
+    // 1. Start void server on a random port with in-memory store.
+    let object_store = Box::new(InMemoryObjectStore::new());
+    let store = Box::new(InMemoryStore::new());
+    let void_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let (void_local, void_handle) = VoidServerBuilder::new(object_store, store)
+        .listen(void_addr)
+        .serve()
+        .await
+        .expect("failed to start void server");
+
+    // 2. Start quark server on a random port, pointing at void.
+    let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
+        .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to a compatible GGUF file");
+    let quark_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let (quark_local, quark_handle) = QuarkServerBuilder::new(PathBuf::from(&model_path))
+        .listen(quark_addr)
+        .void_addr(void_local)
+        .serve()
+        .await
+        .expect("failed to start quark server");
+
+    // Give servers a moment to be ready.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // 3. Create client endpoints for void and quark.
+    let void_client = make_client_endpoint().await;
+    let quark_client = make_client_endpoint().await;
+
+    // 4. Tokenize input text and convert to dark tokens.
+    let input_text =
+        "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
+    println!("Input text: {input_text}");
+
+    // Download tokenizer from HuggingFace.
+    let tokenizer_repo = "Qwen/Qwen3.5-0.8B".to_string();
+    let api = hf_hub::api::sync::Api::new().expect("failed to create hf hub api");
+    let repo = api.repo(hf_hub::Repo::with_revision(
+        tokenizer_repo.clone(),
+        hf_hub::RepoType::Model,
+        "main".to_string(),
+    ));
+    let tokenizer_file = repo
+        .get("tokenizer.json")
+        .expect("failed to download tokenizer.json from HuggingFace");
+    let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_file)
+        .expect("failed to load tokenizer");
+
+    let tokens: Vec<u32> = tokenizer
+        .encode(input_text, false)
+        .expect("failed to tokenize input")
+        .get_ids()
+        .iter()
+        .map(|&id| id as u32)
+        .collect();
+
+    // Build dark tokens: each token has probability 1.0 (log_prob = 0.0).
+    let dark_tokens: Vec<DarkToken> = tokens
+        .iter()
+        .map(|&token_id| DarkToken {
+            predicted: token_id,
+            dark_knowledge: vec![LogitEntry {
+                token_id,
+                log_prob: 0.0, // ln(1.0) = 0.0 → full probability on this token
+            }],
+        })
+        .collect();
+
+    let request = InferenceRequest {
+        sequences: vec![
+            vec![InferenceInput::Dark(dark_tokens.clone())],
+            vec![InferenceInput::Dark(dark_tokens)],
+        ],
+        limit: 100,
+    };
+    let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
+    let input_id = void_upload(&void_client, void_local, request_bytes).await;
+
+    // 5. Send Infer request to quark.
+    let output_id = quark_infer(&quark_client, quark_local, input_id).await;
+
+    // 6. Download inference output from void and assert we got predictions.
+    let output_bytes = void_download(&void_client, void_local, output_id).await;
+    let output: black_hole_sun::InferenceOutput =
+        from_bytes(&output_bytes).expect("failed to decode inference output");
+
+    assert_eq!(output.results.len(), 2, "expected 2 batch results");
+
+    for (i, seq_result) in output.results.iter().enumerate() {
+        let label = i + 1;
+        assert!(
+            !seq_result.predictions.is_empty(),
+            "output {label} has zero predictions"
+        );
+        let output_text: String = seq_result
+            .predictions
+            .iter()
+            .filter_map(|p| p.text.as_deref())
+            .collect();
+
+        println!("Output {label}: {output_text}");
+        assert!(
+            !output_text.is_empty(),
+            "output {label} has no decoded text"
+        );
+    }
+
+    // Cleanup: drop endpoints to close QUIC connections, then abort server tasks.
+    drop(void_client);
+    drop(quark_client);
+    void_handle.abort();
+    quark_handle.abort();
+}
+
 async fn quark_perturb_up(endpoint: &quinn::Endpoint, addr: SocketAddr, seed: u64) {
     let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
@@ -284,8 +410,8 @@ async fn quark_optimize(
     }
 }
 
-fn print_inference_output(label: &str, output: &black_hole_sun::InferenceOutput) {
-    let output_text: String = output.results[0]
+fn print_inference_output(label: &str, output: &black_hole_sun::InferenceOutput, seq_idx: usize) {
+    let output_text: String = output.results[seq_idx]
         .predictions
         .iter()
         .filter_map(|p| p.text.as_deref())
@@ -336,9 +462,14 @@ async fn optimization() {
     // 4. Upload inference input to void (same input as the idle inference test).
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
+    let input_text_2 =
+        "A starship traveling at constant velocity measures a distance of 1,200 light-years to a distant galaxy. After covering half the distance, it detects an anomaly and must divert, adding 300 light-years to its route. How many total light-years will the journey be?";
     println!("Input text: {input_text}");
     let request = InferenceRequest {
-        sequences: vec![vec![InferenceInput::Text(input_text.into())]],
+        sequences: vec![
+            vec![InferenceInput::Text(input_text.into())],
+            vec![InferenceInput::Text(input_text_2.into())],
+        ],
         limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
@@ -356,11 +487,17 @@ async fn optimization() {
     let output_bytes_up = void_download(&void_client, void_local, output_id_up).await;
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
-    print_inference_output("PerturbUp Inference", &output_up);
+    print_inference_output("PerturbUp Inference 1", &output_up, 0);
+    print_inference_output("PerturbUp Inference 2", &output_up, 1);
     assert!(
         !output_up.results[0].predictions.is_empty(),
         "up inference returned zero predictions"
     );
+    assert!(
+        !output_up.results[1].predictions.is_empty(),
+        "up inference sequence 1 returned zero predictions"
+    );
+    assert_eq!(output_up.results.len(), 2, "up inference should have 2 results for batch size 2");
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
@@ -372,11 +509,17 @@ async fn optimization() {
     let output_bytes_down = void_download(&void_client, void_local, output_id_down).await;
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
-    print_inference_output("PerturbDown Inference", &output_down);
+    print_inference_output("PerturbDown Inference 1", &output_down, 0);
+    print_inference_output("PerturbDown Inference 2", &output_down, 1);
     assert!(
         !output_down.results[0].predictions.is_empty(),
         "down inference returned zero predictions"
     );
+    assert!(
+        !output_down.results[1].predictions.is_empty(),
+        "down inference sequence 1 returned zero predictions"
+    );
+    assert_eq!(output_down.results.len(), 2, "down inference should have 2 results for batch size 2");
 
     // Step 5: Optimize with fake loss values
     let fake_loss_up = 0.5f32;
@@ -393,14 +536,25 @@ async fn optimization() {
     let output_bytes_final = void_download(&void_client, void_local, output_id_final).await;
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
-    print_inference_output("Post-Optimize Inference", &output_final);
+    print_inference_output("Post-Optimize Inference 1", &output_final, 0);
+    print_inference_output("Post-Optimize Inference 2", &output_final, 1);
     assert!(
         !output_final.results[0].predictions.is_empty(),
         "final inference returned zero predictions"
     );
+    assert!(
+        !output_final.results[1].predictions.is_empty(),
+        "final inference sequence 1 returned zero predictions"
+    );
+    assert_eq!(output_final.results.len(), 2, "final inference should have 2 results for batch size 2");
 
     // Verify the output contains plausible text.
     let final_text: String = output_final.results[0]
+        .predictions
+        .iter()
+        .filter_map(|p| p.text.as_deref())
+        .collect();
+    let final_text_2: String = output_final.results[1]
         .predictions
         .iter()
         .filter_map(|p| p.text.as_deref())
@@ -411,6 +565,10 @@ async fn optimization() {
     assert!(
         !final_text.is_empty(),
         "post-optimize predicted tokens had no decoded text"
+    );
+    assert!(
+        !final_text_2.is_empty(),
+        "post-optimize sequence 1 predicted tokens had no decoded text"
     );
 
     // Cleanup: drop endpoints to close QUIC connections, then abort server tasks.

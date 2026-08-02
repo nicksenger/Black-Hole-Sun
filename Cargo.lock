@@ -868,10 +868,12 @@ name = "black-hole-probe"
 version = "0.1.0"
 dependencies = [
  "black-hole-sun",
+ "hf-hub",
  "postcard",
  "quinn",
  "rustls 0.23.43",
  "serde",
+ "tokenizers",
  "tokio",
 ]
 
