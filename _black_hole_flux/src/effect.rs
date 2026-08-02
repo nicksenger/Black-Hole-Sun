@@ -14,7 +14,7 @@ pub use black_hole_spec::{
     Emission, EmissionId, InferenceOutputId, ObjectId,
 };
 
-use crate::CellError;
+use crate::NucleusError;
 
 /// Effect that performs one quark-inference step.
 ///
@@ -33,7 +33,7 @@ where
     type Id = u64;
     type In = EmissionId;
     type Out = EmissionId;
-    type Err = CellError;
+    type Err = NucleusError;
 }
 
 impl<M, J> Effect<J> for QuarkInfer<M>
@@ -52,7 +52,7 @@ where
             let emission: Emission<M> = jungle
                 .download_emission(obj_id)
                 .await
-                .map_err(CellError::Download)?;
+                .map_err(NucleusError::Download)?;
             let input_output_id = emission.output_id.0;
             debug!(emission_id = %obj_id, "downloaded emission for inference");
 
@@ -60,7 +60,7 @@ where
             let output_id = jungle
                 .infer(input_output_id)
                 .await
-                .map_err(CellError::Inference)?;
+                .map_err(NucleusError::Inference)?;
             debug!(output_id = %output_id, "quark inference complete");
 
             // 3. Wrap the output ID into a new Emission<M> (preserving metadata) and upload.
@@ -72,7 +72,7 @@ where
             let result_id = jungle
                 .upload_to_void(result_bytes)
                 .await
-                .map_err(CellError::Upload)?;
+                .map_err(NucleusError::Upload)?;
             debug!(result_id = %result_id, "uploaded inference result emission");
 
             Ok(EmissionId(result_id))

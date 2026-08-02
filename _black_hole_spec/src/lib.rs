@@ -107,7 +107,7 @@ pub struct InferenceOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceOutputId(pub ObjectId);
 
-/// Input / Output from a Cell
+/// Input / Output from a Nucleus
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emission<M> {
     pub metadata: M,

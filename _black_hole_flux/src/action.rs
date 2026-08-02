@@ -1,4 +1,4 @@
-//! QuarkInferStep — action wrapper for use inside Cell flows.
+//! QuarkInferStep — action wrapper for use inside Nucleus flows.
 
 use std::marker::PhantomData;
 

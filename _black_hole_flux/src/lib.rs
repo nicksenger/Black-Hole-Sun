@@ -1,8 +1,8 @@
-//! Higher-order Jungle flows for quark-inference cells.
+//! Higher-order Jungle flows for quark-inference nuclei.
 //!
-//! A **Cell** composes an input flow, a single quark-inference step, and an
+//! A **Nucleus** composes an input flow, a single quark-inference step, and an
 //! output flow into one sequential pipeline.  Given an [`EmissionId`] pointing
-//! to an [`Emission<M>`] stored in void, the Cell:
+//! to an [`Emission<M>`] stored in void, the Nucleus:
 //!
 //! 1. Runs the **In** flow to produce a (possibly transformed) `EmissionId`.
 //! 2. Downloads that emission from void, performs quark inference on the
@@ -46,9 +46,9 @@ pub use ops::VoidInferOps;
 // Error type
 // ---------------------------------------------------------------------------
 
-/// Errors that can occur during a quark-inference cell step.
+/// Errors that can occur during a quark-inference nucleus step.
 #[derive(Debug, Error)]
-pub enum CellError {
+pub enum NucleusError {
     #[error("void download failed: {0}")]
     Download(String),
 
@@ -63,12 +63,12 @@ pub enum CellError {
 }
 
 // ---------------------------------------------------------------------------
-// Cell higher-order flow
+// Nucleus higher-order flow
 // ---------------------------------------------------------------------------
 
 use action::QuarkInferStep as QuarkInferStep_;
 
-/// A Cell composes three sequential stages:
+/// A Nucleus composes three sequential stages:
 ///
 /// 1. **In** flow — pre-processes the input [`EmissionId`] (e.g., transforms
 ///    or validates emission data).  Takes `EmissionId`, produces `EmissionId`.
@@ -84,7 +84,7 @@ use action::QuarkInferStep as QuarkInferStep_;
 /// * `Out` — the output flow (must accept `EmissionId` and produce `EmissionId`).
 /// * `M` — the metadata type stored inside each [`Emission<M>`].
 #[derive(Flow)]
-pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
+pub struct Nucleus<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     In,
     Step<QuarkInferStep_<M>>,
     Out,
