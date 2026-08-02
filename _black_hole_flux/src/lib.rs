@@ -150,7 +150,7 @@ const CELL_PERTURB_UP_SEED: u64 = 42;
 #[derive(Flow)]
 pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     Step<WaitForInitiationAction_>,
-    While<Always<(), ()>, CellBody<In, Out, M>>,
+    While<Always<CellState, ()>, CellBody<In, Out, M>>,
 );
 
 /// The body of one iteration of a [`Cell`] loop.
