@@ -105,3 +105,9 @@ pub struct SequenceOutput {
 pub struct InferenceOutput {
     pub results: Vec<SequenceOutput>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Emission<M> {
+    pub metadata: M,
+    pub sequences: Vec<Vec<InferenceInput>>,
+}
