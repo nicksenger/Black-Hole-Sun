@@ -120,11 +120,17 @@ pub struct EmissionId(pub ObjectId);
 
 /// Input / Output from a Cell
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Transmission<M> {
-    pub emission_id: EmissionId,
-    pub next_id: ObjectId,
+pub enum Transmission {
+    Initiation {
+        next_id: ObjectId,
+    },
+    Propagation {
+        emission_id: EmissionId,
+        next_id: ObjectId,
+    },
+    Potentiation {
+        loss_up: f32,
+        loss_down: f32,
+        next_id: ObjectId,
+    },
 }
-
-/// Void ID for a Transmission
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransmissionId(pub ObjectId);
