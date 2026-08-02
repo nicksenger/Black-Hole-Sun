@@ -174,7 +174,7 @@ async fn inference() {
 
     // 2. Start quark server on a random port, pointing at void.
     let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
-        .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to a Qwen 3.5 0.8B GGUF file");
+        .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to a compatible GGUF file");
     let quark_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let (quark_local, quark_handle) = QuarkServerBuilder::new(PathBuf::from(&model_path))
         .listen(quark_addr)
@@ -192,11 +192,11 @@ async fn inference() {
 
     // 4. Upload inference input to void.
     let input_text =
-        "[ANSWER KEY] Finish the following song lyrics from a well-known 90s song: \"Black Hole Sun, won't you ";
+        "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
     println!("Input text: {input_text}");
     let request = QuarkInferenceRequest {
         sequences: vec![vec![QuarkInferenceInput::Text(input_text.into())]],
-        limit: 20,
+        limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_upload(&void_client, void_local, request_bytes).await;
@@ -241,7 +241,7 @@ async fn quark_perturb_up(endpoint: &quinn::Endpoint, addr: SocketAddr, seed: u6
     send_frame(&mut send, &QuarkIn::PerturbUp { seed }).await;
     let resp: QuarkOut = read_frame(&mut recv).await;
     match resp {
-        QuarkOut::Ack => {},
+        QuarkOut::Ack => {}
         QuarkOut::Error { message } => panic!("quark perturb_up error: {message}"),
         _ => panic!("unexpected quark response for perturb_up"),
     }
@@ -254,27 +254,34 @@ async fn quark_perturb_down(endpoint: &quinn::Endpoint, addr: SocketAddr) {
     send_frame(&mut send, &QuarkIn::PerturbDown).await;
     let resp: QuarkOut = read_frame(&mut recv).await;
     match resp {
-        QuarkOut::Ack => {},
+        QuarkOut::Ack => {}
         QuarkOut::Error { message } => panic!("quark perturb_down error: {message}"),
         _ => panic!("unexpected quark response for perturb_down"),
     }
 }
 
-async fn quark_optimize(endpoint: &quinn::Endpoint, addr: SocketAddr, loss_up: f32, loss_down: f32) {
+async fn quark_optimize(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    loss_up: f32,
+    loss_down: f32,
+) {
     let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     send_frame(&mut send, &QuarkIn::Optimize { loss_up, loss_down }).await;
     let resp: QuarkOut = read_frame(&mut recv).await;
     match resp {
-        QuarkOut::Ack => {},
+        QuarkOut::Ack => {}
         QuarkOut::Error { message } => panic!("quark optimize error: {message}"),
         _ => panic!("unexpected quark response for optimize"),
     }
 }
 
 fn print_inference_output(label: &str, output: &black_hole_sun::QuarkInferenceOutput) {
-    let output_text: String = output.results[0].predictions.iter()
+    let output_text: String = output.results[0]
+        .predictions
+        .iter()
         .filter_map(|p| p.text.as_deref())
         .collect();
     println!("{}: {}", label, output_text);
@@ -304,7 +311,7 @@ async fn optimization() {
 
     // 2. Start quark server on a random port, pointing at void.
     let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
-        .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to a Qwen 3.5 0.8B GGUF file");
+        .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to a compatible GGUF file");
     let quark_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let (quark_local, quark_handle) = QuarkServerBuilder::new(PathBuf::from(&model_path))
         .listen(quark_addr)
@@ -322,11 +329,11 @@ async fn optimization() {
 
     // 4. Upload inference input to void (same input as the idle inference test).
     let input_text =
-        "[ANSWER KEY] Finish the following song lyrics from a well-known 90s song: \"Black Hole Sun, won't you ";
+        "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
     println!("Input text: {input_text}");
     let request = QuarkInferenceRequest {
         sequences: vec![vec![QuarkInferenceInput::Text(input_text.into())]],
-        limit: 20,
+        limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_upload(&void_client, void_local, request_bytes).await;
@@ -344,7 +351,10 @@ async fn optimization() {
     let output_up: black_hole_sun::QuarkInferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
     print_inference_output("PerturbUp Inference", &output_up);
-    assert!(!output_up.results[0].predictions.is_empty(), "up inference returned zero predictions");
+    assert!(
+        !output_up.results[0].predictions.is_empty(),
+        "up inference returned zero predictions"
+    );
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
@@ -357,12 +367,18 @@ async fn optimization() {
     let output_down: black_hole_sun::QuarkInferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
     print_inference_output("PerturbDown Inference", &output_down);
-    assert!(!output_down.results[0].predictions.is_empty(), "down inference returned zero predictions");
+    assert!(
+        !output_down.results[0].predictions.is_empty(),
+        "down inference returned zero predictions"
+    );
 
     // Step 5: Optimize with fake loss values
     let fake_loss_up = 0.5f32;
     let fake_loss_down = 1.0f32;
-    println!("\n--- Step 5: Optimize (loss_up={}, loss_down={}) ---", fake_loss_up, fake_loss_down);
+    println!(
+        "\n--- Step 5: Optimize (loss_up={}, loss_down={}) ---",
+        fake_loss_up, fake_loss_down
+    );
     quark_optimize(&quark_client, quark_local, fake_loss_up, fake_loss_down).await;
 
     // Step 6: Final inference after optimization (back to Idle state)
@@ -372,11 +388,13 @@ async fn optimization() {
     let output_final: black_hole_sun::QuarkInferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
     print_inference_output("Post-Optimize Inference", &output_final);
-    assert!(!output_final.results[0].predictions.is_empty(), "final inference returned zero predictions");
+    assert!(
+        !output_final.results[0].predictions.is_empty(),
+        "final inference returned zero predictions"
+    );
 
     // Verify the output contains plausible text.
-    let final_text: String = output_final
-        .results[0]
+    let final_text: String = output_final.results[0]
         .predictions
         .iter()
         .filter_map(|p| p.text.as_deref())
