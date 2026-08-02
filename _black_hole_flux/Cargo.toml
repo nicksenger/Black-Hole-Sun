@@ -4,8 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+async-trait = "0.1"
+black-hole-spec = { path = "../_black_hole_spec" }
 jungle-sdk = { workspace = true }
 jungle-zoo = { workspace = true }
+postcard = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tracing = "0.1"
+uuid = { version = "1", features = ["serde"] }
 
 [lints]
 workspace = true

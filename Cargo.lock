@@ -859,8 +859,15 @@ dependencies = [
 name = "black-hole-flux"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "black-hole-spec",
  "jungle-sdk",
  "jungle-zoo",
+ "postcard",
+ "serde",
+ "thiserror 2.0.19",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
