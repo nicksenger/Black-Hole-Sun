@@ -190,12 +190,15 @@ async fn inference() {
     let void_client = make_client_endpoint().await;
     let quark_client = make_client_endpoint().await;
 
-    // 4. Upload inference input to void.
+    // 4. Upload inference input to void (batch size 2).
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
     println!("Input text: {input_text}");
     let request = InferenceRequest {
-        sequences: vec![vec![InferenceInput::Text(input_text.into())]],
+        sequences: vec![
+            vec![InferenceInput::Text(input_text.into())],
+            vec![InferenceInput::Text(input_text.into())],
+        ],
         limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
@@ -209,23 +212,26 @@ async fn inference() {
     let output: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes).expect("failed to decode inference output");
 
-    assert!(
-        !output.results[0].predictions.is_empty(),
-        "expected at least one predicted token, got zero"
-    );
+    assert_eq!(output.results.len(), 2, "expected 2 batch results");
 
-    // Verify the output contains plausible text.
-    let output_text: String = output.results[0]
-        .predictions
-        .iter()
-        .filter_map(|p| p.text.as_deref())
-        .collect();
+    for (i, seq_result) in output.results.iter().enumerate() {
+        let label = i + 1;
+        assert!(
+            !seq_result.predictions.is_empty(),
+            "output {label} has zero predictions"
+        );
+        let output_text: String = seq_result
+            .predictions
+            .iter()
+            .filter_map(|p| p.text.as_deref())
+            .collect();
 
-    println!("Output text: {output_text}");
-    assert!(
-        !output_text.is_empty(),
-        "predicted tokens had no decoded text"
-    );
+        println!("Output {label}: {output_text}");
+        assert!(
+            !output_text.is_empty(),
+            "output {label} has no decoded text"
+        );
+    }
 
     // Cleanup: drop endpoints to close QUIC connections, then abort server tasks.
     drop(void_client);
