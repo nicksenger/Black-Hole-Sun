@@ -37,4 +37,32 @@ pub trait VoidInferOps: Send + Sync {
     /// Run quark inference on an emission stored at `input_id` in void.
     /// Returns the void id of the resulting `InferenceOutput`.
     async fn infer(&self, input_id: ObjectId) -> Result<ObjectId, String>;
+
+    /// Perturb the associated quark's weights in the positive direction.
+    ///
+    /// The `seed` parameter controls the random perturbation for reproducibility.
+    async fn perturb_up(&self, seed: u64) -> Result<(), String>;
+
+    /// Perturb the associated quark's weights in the negative direction.
+    async fn perturb_down(&self) -> Result<(), String>;
+
+    /// Apply the QuZO optimization update using the up and down loss values.
+    ///
+    /// The quark uses the difference between `loss_up` and `loss_down` to
+    /// estimate a gradient and update its weights.
+    async fn optimize(&self, loss_up: f32, loss_down: f32) -> Result<(), String>;
+
+    /// Await an external jungle perturbation containing an [`EmissionId`].
+    ///
+    /// This method should poll the Jungle runtime for a claimed perturbation
+    /// with backoff until one arrives, deserialize it as `EmissionId`, and
+    /// acknowledge it.  Implementors typically delegate to
+    /// [`JungleClient::claim_animal_perturbation`][jungle_sdk::JungleClient::claim_animal_perturbation].
+    async fn claim_perturbation(&self) -> Result<EmissionId, String>;
+
+    /// Await an external jungle perturbation containing `(loss_up, loss_down)`.
+    ///
+    /// Similar to [`claim_perturbation`][Self::claim_perturbation] but
+    /// deserializes the payload as a loss tuple for QuZO optimization.
+    async fn claim_loss_perturbation(&self) -> Result<(f32, f32), String>;
 }
