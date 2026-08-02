@@ -40,7 +40,7 @@ pub mod ops;
 // ---------------------------------------------------------------------------
 
 pub use black_hole_spec::{
-    DarkToken, Emission, EmissionId, InferenceInput, InferenceOutputId, InferenceOutput,
+    DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
     InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkOut, SequenceOutput,
 };
 
@@ -117,11 +117,8 @@ pub struct Nucleus<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
 // ---------------------------------------------------------------------------
 
 use action::{
-    ClaimLossAction as ClaimLossAction_,
-    ClaimPerturbationAction as ClaimPerturbationAction_,
-    Optimize as Optimize_,
-    PerturbDown as PerturbDown_,
-    PerturbUp as PerturbUp_,
+    ClaimLossAction as ClaimLossAction_, ClaimPerturbationAction as ClaimPerturbationAction_,
+    Optimize as Optimize_, PerturbDown as PerturbDown_, PerturbUp as PerturbUp_,
 };
 
 /// Seed used for the perturb-up step in each Cell iteration.
@@ -166,36 +163,15 @@ pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
 /// ClaimLoss → Optimize
 #[derive(Flow)]
 pub struct CellBody<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
-    // --- Up phase ---
-    // Step 1: PerturbUp — () → ()
     Step<PerturbUp_<CELL_PERTURB_UP_SEED>>,
-    // Step 2: Claim EmissionId — () → EmissionId
     Step<ClaimPerturbationAction_>,
-    // Step 3: In flow — EmissionId → EmissionId
-    In,
-    // Step 4: Quark inference (up) — EmissionId → EmissionId
-    Step<QuarkInferStep_<M>>,
-    // Step 5: Out flow — EmissionId → EmissionId
-    Out,
-    // Step 6: Discard EmissionId, produce () for PerturbDown
+    Nucleus<In, Out, M>,
     Step<DiscardEmission>,
-    // --- Down phase ---
-    // Step 7: PerturbDown — () → ()
     Step<PerturbDown_>,
-    // Step 8: Claim EmissionId — () → EmissionId
     Step<ClaimPerturbationAction_>,
-    // Step 9: In flow — EmissionId → EmissionId
-    In,
-    // Step 10: Quark inference (down) — EmissionId → EmissionId
-    Step<QuarkInferStep_<M>>,
-    // Step 11: Out flow — EmissionId → EmissionId
-    Out,
-    // Step 12: Discard EmissionId, produce () for ClaimLoss
+    Nucleus<In, Out, M>,
     Step<DiscardEmission>,
-    // --- Optimize phase ---
-    // Step 13: Claim loss tuple — () → (f32, f32)
     Step<ClaimLossAction_>,
-    // Step 14: Optimize — (f32, f32) → ()
     Step<Optimize_>,
 );
 
