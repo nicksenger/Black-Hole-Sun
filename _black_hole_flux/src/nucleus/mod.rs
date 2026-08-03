@@ -16,9 +16,3 @@ pub struct Nucleus<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     Step<QuarkInferStep<M>>,
     Out,
 );
-
-#[derive(Flow)]
-pub struct Nucleoli<In, Out>(
-    In,
-    Out,
-);

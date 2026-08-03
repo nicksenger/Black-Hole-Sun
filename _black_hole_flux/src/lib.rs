@@ -76,7 +76,7 @@ pub use animal::Progenitor;
 pub use ops::VoidInferOps;
 
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
-pub use nucleus::{Nucleus, Nucleoli};
+pub use nucleus::Nucleus;
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum NucleusError {

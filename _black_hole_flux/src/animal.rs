@@ -4,7 +4,7 @@ use jungle_sdk::prelude::*;
 use jungle_zoo::Noop;
 
 use crate::cell::CellState;
-use crate::{Nucleoli, Nucleus, Primordium, WaitForInitiationAction};
+use crate::{Nucleus, Primordium};
 
 /// The Progenitor: the first and simplest cell — a bare quark-inference loop
 /// with no input/output processing and no metadata.
