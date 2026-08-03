@@ -69,13 +69,24 @@ pub struct C {
 
 /// Runtime state that tracks the topology and transmission endpoints
 /// for a sun of spawned animals.
+#[derive(Optic)]
 pub struct SunState {
+    /// State for the propagation branches
+    #[jungle(focus)]
+    pub propagation: SunPropagation,
+    /// State for potentiation branch
+    #[jungle(focus)]
+    pub c: C,
+}
+
+#[derive(Optic)]
+pub struct SunPropagation {
     /// State for propagation A branch
+    #[jungle(focus)]
     pub a: A,
     /// State for propagation B branch
+    #[jungle(focus)]
     pub b: B,
-    /// State for propagation C branch
-    pub c: C,
 }
 
 pub struct SunInner {
