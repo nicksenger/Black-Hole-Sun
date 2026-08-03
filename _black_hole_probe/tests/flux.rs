@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use black_hole_flux::{QuarkInfer, QuarkPerturbDown, QuarkPerturbUp, WaitForPropagation};
 use black_hole_flux::ops::VoidInferOps;
 use black_hole_flux::{CellState, Progenitor};
+use black_hole_flux::{QuarkInfer, QuarkPerturbDown, QuarkPerturbUp, WaitForPropagation};
 use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
@@ -362,12 +362,8 @@ async fn progenitor_flux_flow() {
         recv: propagation_void_id_3,
     };
     let potentiation_bytes = to_allocvec(&potentiation).expect("serialize potentiation");
-    let potentiation_void_id = void_upload(
-        &make_client_endpoint().await,
-        void_addr,
-        potentiation_bytes,
-    )
-    .await;
+    let potentiation_void_id =
+        void_upload(&make_client_endpoint().await, void_addr, potentiation_bytes).await;
 
     // ── Second propagation (points to potentiation) ──
     let dark_tokens_2 = text_to_dark_tokens(input_text, &tokenizer);
@@ -431,13 +427,8 @@ async fn progenitor_flux_flow() {
     let propagation_void_id =
         void_upload(&make_client_endpoint().await, void_addr, propagation_bytes).await;
 
-    let initiation = Transmission::Initiation {
-        recv: propagation_void_id,
-    };
-    let init_void_id = upload_transmission(void_addr, &initiation).await;
-
     // 5. Spawn the Progenitor with state pointing to the Initiation.
-    let spawn_result = client.spawn::<Progenitor>(&init_void_id).await;
+    let spawn_result = client.spawn::<Progenitor>(&propagation_void_id).await;
     assert!(
         spawn_result.is_ok(),
         "spawn should succeed: {:?}",
@@ -453,26 +444,31 @@ async fn progenitor_flux_flow() {
         let _ = worker.spawn().await;
     });
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(60),
-        async {
-            let (t1, t2, t3, t4) = tokio::join!(
-                wait_for_void_transmission(void_addr, listen_1),
-                wait_for_void_transmission(void_addr, listen_2),
-                wait_for_void_transmission(void_addr, listen_3),
-                wait_for_void_transmission(void_addr, listen_4),
-            );
-            (t1, t2, t3, t4)
-        },
-    )
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let (t1, t2, t3, t4) = tokio::join!(
+            wait_for_void_transmission(void_addr, listen_1),
+            wait_for_void_transmission(void_addr, listen_2),
+            wait_for_void_transmission(void_addr, listen_3),
+            wait_for_void_transmission(void_addr, listen_4),
+        );
+        (t1, t2, t3, t4)
+    })
     .await;
 
     match result {
         Ok((
-            Transmission::Propagation { emission_id: e1, .. },
-            Transmission::Propagation { emission_id: e2, .. },
-            Transmission::Propagation { emission_id: e3, .. },
-            Transmission::Propagation { emission_id: e4, .. },
+            Transmission::Propagation {
+                emission_id: e1, ..
+            },
+            Transmission::Propagation {
+                emission_id: e2, ..
+            },
+            Transmission::Propagation {
+                emission_id: e3, ..
+            },
+            Transmission::Propagation {
+                emission_id: e4, ..
+            },
         )) => {
             println!("Flux flow completed through full cell optimization loop:");
             println!("  propagation 1 emitted {}", e1.0);
