@@ -109,8 +109,7 @@ fn get_tokenizer() -> tokenizers::Tokenizer {
     let tokenizer_file = repo
         .get("tokenizer.json")
         .expect("failed to download tokenizer.json from HuggingFace");
-    tokenizers::Tokenizer::from_file(tokenizer_file)
-        .expect("failed to load tokenizer")
+    tokenizers::Tokenizer::from_file(tokenizer_file).expect("failed to load tokenizer")
 }
 
 /// Tokenize text into DarkTokens suitable for InferenceOutput.
@@ -249,16 +248,49 @@ async fn progenitor_flux_flow() {
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
     let tokenizer = get_tokenizer();
-    let dark_tokens = text_to_dark_tokens(input_text, &tokenizer);
 
+    // ── Second propagation (end of chain) ──
+    let dark_tokens_2 = text_to_dark_tokens(input_text, &tokenizer);
+    let inference_output_2 = InferenceOutput {
+        results: vec![SequenceOutput(dark_tokens_2)],
+    };
+    let inference_output_bytes_2 =
+        to_allocvec(&inference_output_2).expect("serialize inference output 2");
+    let inference_output_id_2 = void_upload(
+        &make_client_endpoint().await,
+        void_addr,
+        inference_output_bytes_2,
+    )
+    .await;
+    let emission_2 = Emission {
+        metadata: (),
+        output_id: InferenceOutputId(inference_output_id_2),
+    };
+    let emission_bytes_2 = to_allocvec(&emission_2).expect("serialize emission 2");
+    let emission_void_id_2 =
+        void_upload(&make_client_endpoint().await, void_addr, emission_bytes_2).await;
+    let propagation_2 = Transmission::Propagation {
+        emission_id: EmissionId(emission_void_id_2),
+        recv: ObjectId::nil(),
+        send: ObjectId::nil(),
+    };
+    let propagation_bytes_2 = to_allocvec(&propagation_2).expect("serialize propagation 2");
+    let propagation_void_id_2 =
+        void_upload(&make_client_endpoint().await, void_addr, propagation_bytes_2).await;
+
+    // ── First propagation (points to second) ──
+    let dark_tokens = text_to_dark_tokens(input_text, &tokenizer);
     let inference_output = InferenceOutput {
         results: vec![SequenceOutput(dark_tokens)],
     };
     let inference_output_bytes =
         to_allocvec(&inference_output).expect("serialize inference output");
-    let inference_output_id =
-        void_upload(&make_client_endpoint().await, void_addr, inference_output_bytes).await;
-
+    let inference_output_id = void_upload(
+        &make_client_endpoint().await,
+        void_addr,
+        inference_output_bytes,
+    )
+    .await;
     let emission = Emission {
         metadata: (),
         output_id: InferenceOutputId(inference_output_id),
@@ -266,10 +298,9 @@ async fn progenitor_flux_flow() {
     let emission_bytes = to_allocvec(&emission).expect("serialize emission");
     let emission_void_id =
         void_upload(&make_client_endpoint().await, void_addr, emission_bytes).await;
-
     let propagation = Transmission::Propagation {
         emission_id: EmissionId(emission_void_id),
-        recv: ObjectId::nil(),
+        recv: propagation_void_id_2,
         send: ObjectId::nil(),
     };
     let propagation_bytes = to_allocvec(&propagation).expect("serialize propagation");
