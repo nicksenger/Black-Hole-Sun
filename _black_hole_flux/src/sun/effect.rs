@@ -68,6 +68,19 @@ pub struct LayerTransmission {
     pub node_id: u32,
     /// The transmission received.
     pub transmission: black_hole_spec::Transmission,
+    /// For each downstream target: (node_id, new_tx_id, new_rx_id) generated
+    /// after forwarding — the caller must apply these to the shared maps.
+    pub new_downstream_endpoints: Vec<(u32, ObjectId, ObjectId)>,
+}
+
+/// Which propagation branch is currently running, to determine which tx/rx
+/// maps provide the recv/send values for forwarded transmissions.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub enum PropagationBranch {
+    /// Propagation A: forward using p2_tx (recv) and p2_rx (send).
+    A,
+    /// Propagation B: forward using po_tx (recv) and p1_rx (send).
+    B,
 }
 
 /// Input for [`WaitForLayerTransmission`]: rx endpoints to wait on plus
@@ -76,12 +89,12 @@ pub struct LayerTransmission {
 pub struct WaitForLayerTransmissionInput {
     /// (node_id, rx_object_id) pairs for the current layer nodes.
     pub rx_endpoints: Vec<(u32, ObjectId)>,
-    /// Map from source node id to its downstream (node_id, rx_object_id) targets.
-    pub downstream: HashMap<u32, Vec<(u32, ObjectId)>>,
-    /// Whether the current layer is the first topological layer (root nodes).
-    pub is_root_layer: bool,
-    /// Input transmission to upload to root nodes when is_root_layer is true.
-    pub input_transmission: Option<Transmission>,
+    /// Map from source node id to its downstream targets, each carrying
+    /// (target_node_id, tx_object_id, rx_object_id). The tx/rx ids come from
+    /// the maps determined by [`PropagationBranch`].
+    pub downstream: HashMap<u32, Vec<(u32, ObjectId, ObjectId)>>,
+    /// Which propagation branch is running, to select the correct tx/rx maps.
+    pub branch: PropagationBranch,
 }
 
 /// Effect that waits for the first available transmission from any of the
@@ -109,25 +122,8 @@ where
             let WaitForLayerTransmissionInput {
                 rx_endpoints,
                 downstream,
-                is_root_layer,
-                input_transmission,
+                branch: _branch,
             } = input;
-
-            // If this is the first topological layer (root nodes with no incoming
-            // edges), upload the Input Transmission to each root node's rx endpoint
-            // so propagation can begin.
-            if is_root_layer {
-                if let Some(transmission) = input_transmission {
-                    let data = postcard::to_allocvec(&transmission).map_err(|e| {
-                        NucleusError::Transmission(format!("serialize input transmission: {e}"))
-                    })?;
-                    let client_endpoint = make_client_endpoint().await;
-                    for (_node_id, rx_id) in &rx_endpoints {
-                        void_upload(&client_endpoint, *rx_id, data.clone()).await;
-                        debug!(%rx_id, "uploaded input transmission to root node rx");
-                    }
-                }
-            }
 
             if rx_endpoints.is_empty() {
                 return Err(NucleusError::Transmission(
@@ -150,6 +146,7 @@ where
                         Ok::<_, NucleusError>(LayerTransmission {
                             node_id,
                             transmission,
+                            new_downstream_endpoints: Vec::new(),
                         })
                     })
                 })
@@ -172,34 +169,41 @@ where
                         "layer transmission received, forwarding to downstream nodes"
                     );
 
-                    // Serialize the transmission for forwarding.
-                    let data = postcard::to_allocvec(&transmission.transmission).map_err(|e| {
-                        NucleusError::Transmission(format!("serialize for forward: {e}"))
-                    })?;
+                    // For each downstream target, customize the transmission with that target's
+                    // recv (tx id) and send (rx id), then upload. After sending,
+                    // immediately rotate both maps with newly generated ids.
+                    let mut new_downstream_endpoints: Vec<(u32, ObjectId, ObjectId)> = Vec::new();
 
-                    // Forward to all downstream nodes of this source in parallel.
-                    let forward_futures: Vec<_> = forward_targets
-                        .into_iter()
-                        .map(|(target_id, _rx_id)| {
-                            let jungle_ref = jungle;
-                            let data = data.clone();
-                            Box::pin(async move {
-                                jungle_ref.upload_to_void(data).await.map_err(|e| {
-                                    NucleusError::Transmission(format!(
-                                        "forward to downstream node {}: {e}",
-                                        target_id
-                                    ))
-                                })
-                            })
-                        })
-                        .collect();
+                    for &(target_id, target_tx_id, target_rx_id) in &forward_targets {
+                        // Deserialize, set recv/send, re-serialize.
+                        let mut fwd = transmission.transmission.clone();
+                        if let black_hole_spec::Transmission::Propagation { recv, send, .. } = &mut fwd {
+                            *recv = target_tx_id;
+                            *send = target_rx_id;
+                        }
+                        let data = postcard::to_allocvec(&fwd).map_err(|e| {
+                            NucleusError::Transmission(format!("serialize for forward: {e}"))
+                        })?;
 
-                    let results = join_all(forward_futures).await;
-                    for result in results {
-                        result?;
+                        jungle.upload_to_void(data).await.map_err(|e| {
+                            NucleusError::Transmission(format!(
+                                "forward to downstream node {}: {e}",
+                                target_id
+                            ))
+                        })?;
+
+                        // Immediately rotate: generate new ids for tx and rx after sending.
+                        let new_tx = Uuid::new_v4();
+                        let new_rx = Uuid::new_v4();
+                        new_downstream_endpoints.push((target_id, new_tx, new_rx));
+                        debug!(node_id = target_id, %new_tx, %new_rx, "rotated downstream endpoints after forward");
                     }
 
-                    Ok(transmission)
+                    Ok(LayerTransmission {
+                        node_id: transmission.node_id,
+                        transmission: transmission.transmission,
+                        new_downstream_endpoints,
+                    })
                 }
                 Err(e) => Err(e),
             }
@@ -337,8 +341,8 @@ impl<J> Effect<J> for ComputeLossEffect {
 /// Output from [`BroadcastPotentiationEffect`]: the new rx map for next epoch.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BroadcastPotentiationResult {
-    /// Map of node ids to their new recv ObjectIds for the next epoch.
-    pub new_rx_map: Vec<(u32, ObjectId)>,
+    /// Map of node ids to their new po_tx ObjectIds after broadcasting.
+    pub new_po_tx_map: Vec<(u32, ObjectId)>,
 }
 
 /// Effect that broadcasts `Transmission::Potentiation` with the given loss
@@ -366,19 +370,17 @@ where
             debug!(
                 loss_up = input.loss_up,
                 loss_down = input.loss_down,
-                node_count = input.node_ids.len(),
+                node_count = input.node_endpoints.len(),
                 "broadcasting potentiation to all nodes"
             );
 
-            let mut new_rx_map = Vec::new();
+            let mut new_po_tx_map = Vec::<(u32, ObjectId)>::new();
 
-            for &node_id in &input.node_ids {
-                let new_rx = Uuid::new_v4();
-
+            for &(node_id, p1_tx_id) in &input.node_endpoints {
                 let potentiation = black_hole_spec::Transmission::Potentiation {
                     loss_up: input.loss_up,
                     loss_down: input.loss_down,
-                    recv: new_rx,
+                    recv: p1_tx_id,
                 };
 
                 let data = postcard::to_allocvec(&potentiation)
@@ -391,11 +393,13 @@ where
                     ))
                 })?;
 
-                new_rx_map.push((node_id, new_rx));
-                debug!(node_id, %new_rx, "uploaded potentiation transmission");
+                // Immediately rotate po_tx after sending.
+                let new_po_tx = Uuid::new_v4();
+                new_po_tx_map.push((node_id, new_po_tx));
+                debug!(node_id, %new_po_tx, "rotated po_tx after potentiation send");
             }
 
-            Ok(BroadcastPotentiationResult { new_rx_map })
+            Ok(BroadcastPotentiationResult { new_po_tx_map })
         }
     }
 }

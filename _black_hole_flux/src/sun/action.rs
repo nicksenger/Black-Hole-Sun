@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::collections::HashMap;
 
 use super::effect::{
-    BroadcastPotentiationEffect, ComputeLossEffect, KickOffEffect, WaitForLayerTransmission,
+    BroadcastPotentiationEffect, ComputeLossEffect, KickOffEffect, PropagationBranch, WaitForLayerTransmission,
     WaitForLayerTransmissionInput,
 };
 use super::Tagged;
@@ -255,26 +255,34 @@ pub struct ProcessNode<S>(std::marker::PhantomData<fn() -> S>);
 #[jungle::action]
 impl<S> Action for ProcessNode<S>
 where
-    S: TopologyState,
+    S: TopologyState + 'static,
 {
     type Effect = WaitForLayerTransmission;
     type Input = Transmission;
     type Output = Transmission;
 
-    fn emit(state: &S, input: Self::Input) -> WaitForLayerTransmissionInput {
+    fn emit(state: &S, _input: Self::Input) -> WaitForLayerTransmissionInput {
         let current = state.get_current().clone();
         let inner = state.get_shared().lock().unwrap();
         let rx_map = state.get_rx(&inner);
+        let _tx_map = state.get_tx(&inner);
         let outgoing = &inner.outgoing;
 
-        // Determine if this is the first topological layer (root nodes).
-        let is_root_layer = {
-            let topo = state.get_topo();
-            if let Some(first_layer) = topo.first() {
-                current == *first_layer
+        // Also read the cross-branch maps needed for recv/send on forwarded transmissions.
+        // PropA: recv from p2_tx, send from p2_rx  |  PropB: recv from po_tx, send from p1_rx
+        let (fwd_tx_map, fwd_rx_map): (&HashMap<u32, black_hole_spec::ObjectId>, &HashMap<u32, black_hole_spec::ObjectId>) = {
+            if std::any::TypeId::of::<S>() == std::any::TypeId::of::<super::PropA>() {
+                (&inner.p2_tx, &inner.p2_rx)
             } else {
-                false
+                (&inner.po_tx, &inner.p1_rx)
             }
+        };
+
+        // Determine the propagation branch.
+        let branch = if std::any::TypeId::of::<S>() == std::any::TypeId::of::<super::PropA>() {
+            PropagationBranch::A
+        } else {
+            PropagationBranch::B
         };
 
         // Collect rx endpoints for all nodes in the current layer.
@@ -284,23 +292,27 @@ where
             .collect();
 
         // Build the downstream map: for each node in the current layer,
-        // collect its outgoing edges and their rx endpoints.
-        let mut downstream: HashMap<u32, Vec<(u32, black_hole_spec::ObjectId)>> = HashMap::new();
+        // collect its outgoing edges with both tx and rx endpoints from the
+        // cross-branch maps used for recv/send on forwarded transmissions.
+        let mut downstream: HashMap<u32, Vec<(u32, black_hole_spec::ObjectId, black_hole_spec::ObjectId)>> = HashMap::new();
         for &node_id in &current {
             if let Some(targets) = outgoing.get(&node_id) {
-                let targets_with_rx: Vec<_> = targets
+                let targets_with_endpoints: Vec<_> = targets
                     .iter()
-                    .filter_map(|&target_id| rx_map.get(&target_id).map(|rx| (target_id, *rx)))
+                    .filter_map(|&target_id| {
+                        fwd_tx_map.get(&target_id).and_then(|tx| {
+                            fwd_rx_map.get(&target_id).map(|rx| (target_id, *tx, *rx))
+                        })
+                    })
                     .collect();
-                downstream.insert(node_id, targets_with_rx);
+                downstream.insert(node_id, targets_with_endpoints);
             }
         }
 
         WaitForLayerTransmissionInput {
             rx_endpoints,
             downstream,
-            is_root_layer,
-            input_transmission: if is_root_layer { Some(input) } else { None },
+            branch,
         }
     }
 
@@ -313,11 +325,31 @@ where
 
         let node_id = layer_tx.node_id;
 
-        // Update the rx map with a new recv id for the processed node.
-        let new_rx = uuid::Uuid::new_v4();
+        // Extract the next rx (send) and tx (recv) from the received transmission.
+        let (new_rx, new_tx) = match &layer_tx.transmission {
+            black_hole_spec::Transmission::Propagation { recv, send, .. } => (*send, *recv),
+            _ => (black_hole_spec::ObjectId::nil(), black_hole_spec::ObjectId::nil()),
+        };
+
+        // Apply the extracted endpoints and rotate downstream maps.
         {
+            let is_branch_a = std::any::TypeId::of::<S>() == std::any::TypeId::of::<super::PropA>();
             let mut inner = state.get_shared().lock().unwrap();
+            // The processed node's rx map gets the send value from the transmission.
             state.get_rx_mut(&mut inner).insert(node_id, new_rx);
+            // The processed node's tx map gets the recv value from the transmission.
+            state.get_tx_mut(&mut inner).insert(node_id, new_tx);
+
+            // Apply the rotated endpoints for all downstream targets.
+            for &(target_id, new_tx_id, new_rx_id) in &layer_tx.new_downstream_endpoints {
+                if is_branch_a {
+                    inner.p2_tx.insert(target_id, new_tx_id);
+                    inner.p2_rx.insert(target_id, new_rx_id);
+                } else {
+                    inner.po_tx.insert(target_id, new_tx_id);
+                    inner.p1_rx.insert(target_id, new_rx_id);
+                }
+            }
         }
 
         // Remove the processed node from the current layer.
@@ -407,13 +439,19 @@ impl Action for BroadcastPotentiation {
 
     fn emit(state: &super::SunState, input: Self::Input) -> BroadcastPotentiationInput {
         let inner = state.a.shared.lock().unwrap();
-        let node_ids: Vec<u32> = inner.journey_ids.keys().cloned().collect();
+        let node_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = inner
+            .journey_ids
+            .keys()
+            .filter_map(|&node_id| {
+                inner.p1_tx.get(&node_id).map(|tx| (node_id, *tx))
+            })
+            .collect();
         drop(inner);
 
         BroadcastPotentiationInput {
             loss_up: input.0,
             loss_down: input.1,
-            node_ids,
+            node_endpoints,
         }
     }
 
@@ -425,9 +463,8 @@ impl Action for BroadcastPotentiation {
             output.map_err(|e| Failure::Message(format!("broadcast potentiation failed: {e}")))?;
 
         let mut inner = state.a.shared.lock().unwrap();
-        for (node_id, new_rx) in &result.new_rx_map {
-            inner.p1_rx.insert(*node_id, *new_rx);
-            inner.p2_rx.insert(*node_id, *new_rx);
+        for (node_id, new_po_tx) in &result.new_po_tx_map {
+            inner.po_tx.insert(*node_id, *new_po_tx);
         }
         drop(inner);
 
@@ -440,7 +477,8 @@ impl Action for BroadcastPotentiation {
 pub struct BroadcastPotentiationInput {
     pub loss_up: f32,
     pub loss_down: f32,
-    pub node_ids: Vec<u32>,
+    /// (node_id, p1_tx_object_id) pairs — used as recv on each Potentiation transmission.
+    pub node_endpoints: Vec<(u32, ObjectId)>,
 }
 
 // ---------------------------------------------------------------------------
