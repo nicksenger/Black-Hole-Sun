@@ -47,21 +47,23 @@ pub struct SunState {
     pub a: SunInner,
     pub b: SunInner,
     pub c: SunInner,
-    /// Topological layers of node journey IDs (outer-to-inner).
-    pub topo: Vec<HashSet<Uuid>>,
+    /// Topological layers of node IDs (outer-to-inner).
+    pub topo: Vec<HashSet<u32>>,
     /// Current layer being processed (popped from topo).
-    pub current: HashSet<Uuid>,
+    pub current: HashSet<u32>,
 }
 
 pub struct SunInner {
-    /// Maps an edge UUID to the list of node journey IDs that receive on that edge.
-    pub incoming: HashMap<Uuid, Vec<Uuid>>,
-    /// Maps a node journey ID to the list of outgoing edge UUIDs.
-    pub outgoing: HashMap<Uuid, Vec<Uuid>>,
-    /// Transmission send endpoints keyed by edge UUID.
-    pub tx: HashMap<Uuid, ObjectId>,
-    /// Transmission receive endpoints keyed by edge UUID.
-    pub rx: HashMap<Uuid, ObjectId>,
+    /// Maps the node u32 id the its associated journey ID
+    pub journey_ids: HashMap<u32, Uuid>,
+    /// Maps each node to the nodes of its incoming edges
+    pub incoming: HashMap<u32, Vec<u32>>,
+    /// Maps each node to the nodes of its outgoing edges
+    pub outgoing: HashMap<u32, Vec<u32>>,
+    /// Transmission send endpoints keyed by edge id.
+    pub tx: HashMap<u32, ObjectId>,
+    /// Transmission receive endpoints keyed by edge id.
+    pub rx: HashMap<u32, ObjectId>,
 }
 
 #[derive(Flow)]
