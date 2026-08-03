@@ -2,10 +2,9 @@
 
 use black_hole_spec::ObjectId;
 use jungle_sdk::prelude::*;
-use jungle_zoo::Noop;
 
 use crate::cell::CellState;
-use crate::{Nucleus, Primordium};
+use crate::Primordium;
 
 /// The Progenitor: the first and simplest cell — a bare quark-inference loop
 /// with no input/output processing and no metadata.

@@ -75,7 +75,11 @@ pub use ops::VoidInferOps;
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
 pub use nucleus::Nucleus;
 
-pub use sun::{NodeIdsFromList, Spawn, SpawnAnimal, SunState, Tag};
+pub use sun::{
+    BlackHole, InnerLoop, LayerFlow, NodeIdsFromList, PopLayer, ProcessNode,
+    PropagationFlows, PotentiationFlow, Spawn, SpawnAnimal, SunInner, SunPropagation,
+    SunState, Tag, TopologyState, BranchBody,
+};
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum NucleusError {

@@ -861,6 +861,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "black-hole-spec",
+ "futures",
  "jungle-sdk",
  "jungle-zoo",
  "postcard",
