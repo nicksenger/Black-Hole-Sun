@@ -12,21 +12,21 @@
 //! A **Cell** wraps a nucleus flow in an infinite QuZO training loop driven by
 //! [`Transmission`] messages from void:
 //!
-//! 1. **WaitForInitiation** — reads `recv_id` from [`CellState`], downloads a
+//! 1. **WaitForInitiation** - reads `recv_id` from [`CellState`], downloads a
 //!    `Transmission::Initiation`, stores the new `recv_id` in state.
-//! 2. **PerturbUp** — perturbs the associated quark's weights upward.
-//! 3. **WaitForPropagation** — reads `recv_id` from state, downloads a
+//! 2. **PerturbUp** - perturbs the associated quark's weights upward.
+//! 3. **WaitForPropagation** - reads `recv_id` from state, downloads a
 //!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 4. **Nucleus** — runs the nucleus pipeline.
-//! 5. **Transmit** — propagates the emission output to the next cell.
-//! 6. **PerturbDown** — perturbs the quark's weights downward.
-//! 7. **WaitForPropagation** — reads `recv_id` from state, downloads another
+//! 4. **Nucleus** - runs the nucleus pipeline.
+//! 5. **Transmit** - propagates the emission output to the next cell.
+//! 6. **PerturbDown** - perturbs the quark's weights downward.
+//! 7. **WaitForPropagation** - reads `recv_id` from state, downloads another
 //!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 8. **Nucleus** — runs the nucleus pipeline again.
-//! 9. **Transmit** — propagates the emission output to the next cell.
-//! 10. **WaitForPotentiation** — reads `recv_id` from state, downloads a
+//! 8. **Nucleus** - runs the nucleus pipeline again.
+//! 9. **Transmit** - propagates the emission output to the next cell.
+//! 10. **WaitForPotentiation** - reads `recv_id` from state, downloads a
 //!     `Transmission::Potentiation`, stores the new `recv_id`, emits loss values.
-//! 11. **Optimize** — applies the QuZO optimization update.
+//! 11. **Optimize** - applies the QuZO optimization update.
 //!
 //! # State
 //!
@@ -48,51 +48,36 @@
 //! which guarantees access to void (upload / download), quark inference, and
 //! quark perturbation / optimization.
 
-use jungle_sdk::prelude::*;
-use jungle_zoo::predicate::Always;
-use jungle_zoo::Noop;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-// ---------------------------------------------------------------------------
-// Submodules
-// ---------------------------------------------------------------------------
 
 pub mod cell;
 pub mod nucleus;
 pub mod animal;
 pub mod ops;
-
-// ---------------------------------------------------------------------------
-// Re-exports — keep common spec types handy at the crate root
-// ---------------------------------------------------------------------------
+pub mod sun;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
     InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkOut, SequenceOutput, Transmission,
 };
 
-// Re-export key items from submodules so they're reachable from the crate root.
 pub use cell::action::{
-    CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, Transmit,
-    WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
+    CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, QuarkInferStep,
+    Transmit, WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
 };
 pub use cell::effect::{
     QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp,
     Transmit as TransmitEffect,
     WaitForInitiation, WaitForPotentiation, WaitForPropagation,
 };
-pub use nucleus::action::QuarkInferStep;
 pub use nucleus::effect::QuarkInfer;
 pub use animal::Progenitor;
 pub use ops::VoidInferOps;
 
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
+pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
+pub use nucleus::{Nucleus, Nucleoli};
 
-/// Errors that can occur during a quark-inference nucleus step or cell loop.
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum NucleusError {
     #[error("void download failed: {0}")]
@@ -119,101 +104,3 @@ pub enum NucleusError {
     #[error("transmission error: {0}")]
     Transmission(String),
 }
-
-// ---------------------------------------------------------------------------
-// Nucleus higher-order flow
-// ---------------------------------------------------------------------------
-
-use nucleus::action::QuarkInferStep as QuarkInferStep_;
-
-/// A Nucleus composes three sequential stages:
-///
-/// 1. **In** flow — pre-processes the input [`EmissionId`].
-/// 2. **Quark inference** step — downloads, infers, uploads, yields new `EmissionId`.
-/// 3. **Out** flow — post-processes the output [`EmissionId`].
-#[derive(Flow)]
-pub struct Nucleus<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
-    In,
-    Step<QuarkInferStep_<M>>,
-    Out,
-);
-
-#[derive(Flow)]
-pub struct Nucleoli<In, Out>(
-    In,
-    //Step<QuarkInferStep_<M>>,
-    Out,
-);
-
-// ---------------------------------------------------------------------------
-// Cell higher-order flow
-// ---------------------------------------------------------------------------
-
-use cell::action::{
-    Optimize as Optimize_, PerturbDown as PerturbDown_, PerturbUp as PerturbUp_,
-    Transmit as Transmit_, WaitForInitiationAction as WaitForInitiationAction_,
-    WaitForPotentiationAction as WaitForPotentiationAction_,
-    WaitForPropagationAction as WaitForPropagationAction_,
-};
-
-/// A Cell wraps a nucleus flow in an infinite QuZO training loop driven by
-/// [`Transmission`] messages from void.
-///
-/// See module-level documentation for the full iteration sequence.
-#[derive(Flow)]
-pub struct Cell<N>(
-    Step<WaitForInitiationAction_>,
-    While<Always<CellState, ()>, Cytoplasm<N>>,
-);
-
-/// The body of one iteration of a [`Cell`] loop.
-///
-/// Sequential stages (each iteration):
-///
-/// PerturbUp -> WaitForPropagation -> Nucleus -> Transmit ->
-/// PerturbDown -> WaitForPropagation -> Nucleus -> Transmit ->
-/// WaitForPotentiation -> Optimize
-///
-/// The [`CellState`](cell::action::CellState) holds `recv_id` which is read by each
-/// wait-for action to know which void key to download, and updated with the
-/// next transmission ID after each download completes.  Data payloads
-/// (EmissionId, Potentiation) flow through action Output types. `N` is the
-/// nucleus flow invoked on each propagation.
-#[derive(Flow)]
-pub struct Cytoplasm<N>(
-    // Perturb up, then wait for propagation to get first emission
-    Step<PerturbUp_>,
-    Step<WaitForPropagationAction_>,
-    // Run nucleus on the emission from propagation
-    N,
-    // Transmit emission output, perturb down
-    Step<Transmit_>,
-    Step<PerturbDown_>,
-    // Wait for propagation to get second emission
-    Step<WaitForPropagationAction_>,
-    // Run nucleus on the emission from propagation
-    N,
-    // Transmit emission output, wait for potentiation to get losses
-    Step<Transmit_>,
-    Step<WaitForPotentiationAction_>,
-    // Optimize with the loss values (returns unit)
-    Step<Optimize_>,
-);
-
-// ---------------------------------------------------------------------------
-// Cell type aliases
-// ---------------------------------------------------------------------------
-
-/// A eukaryotic cell: a [`Cell`] with an arbitrarily complex nucleus
-/// containing input/output processing flows around genomic encapsulation.
-pub type Eukaryote<In, Out, M> = Cell<Nucleus<In, Out, M>>;
-
-/// A prokaryotic cell: a [`Cell`] whose nucleus has no input/output
-/// processing — essentially "just" a nucleus with metadata.
-pub type Prokaryote<M> =
-    Cell<Nucleus<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, M>>;
-
-/// A primordial cell: the simplest possible [`Cell`] with no input/output
-/// processing and no metadata — a bare quark-inference loop.
-pub type Primordium =
-    Cell<Nucleus<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, ()>>;

@@ -1,8 +1,30 @@
 //! Cell actions for perturbation, optimization, transmission, and waiting.
 
-use jungle_sdk::prelude::*;
+use std::marker::PhantomData;
 
-pub use super::CellState;
+use jungle_sdk::prelude::*;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// CellState — holds the next transmission ID threaded across Cell iterations
+// ---------------------------------------------------------------------------
+
+/// State carried by a [`Cell`](crate::Cell) journey.
+///
+/// Animals that use [`Cell`](crate::Cell) as their Journey should use this as
+/// their state type so the wait-for actions can read and write the next
+/// transmission ID.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct CellState {
+    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
+    pub recv_id: black_hole_spec::ObjectId,
+    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to upload.
+    pub send_id: black_hole_spec::ObjectId,
+    /// Random seed passed to the perturb-up step each iteration.
+    pub perturbation_seed: u64,
+}
+
 pub use black_hole_spec::EmissionId;
 
 use super::effect::{
@@ -15,7 +37,7 @@ use super::effect::{
 // ---------------------------------------------------------------------------
 
 /// Payload carried by a [`Transmission::Potentiation`](black_hole_spec::Transmission).
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Potentiation {
     pub loss_up: f32,
     pub loss_down: f32,
@@ -27,11 +49,40 @@ pub struct Potentiation {
 // ---------------------------------------------------------------------------
 
 /// Payload carried by a [`Transmission::Propagation`](black_hole_spec::Transmission).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Propagation {
     pub emission_id: EmissionId,
     pub recv_id: black_hole_spec::ObjectId,
     pub send_id: black_hole_spec::ObjectId,
+}
+
+// ---------------------------------------------------------------------------
+// QuarkInferStep — action wrapper for use inside Nucleus flows
+// ---------------------------------------------------------------------------
+
+/// Action that performs quark inference on an [`EmissionId`].
+pub struct QuarkInferStep<M>(PhantomData<fn() -> M>);
+
+#[jungle::action(carry = EmissionId)]
+impl<M> Action for QuarkInferStep<M>
+where
+    M: Serialize + DeserializeOwned + Send + 'static,
+{
+    type Effect = super::super::nucleus::effect::QuarkInfer<M>;
+    type Input = EmissionId;
+    type Output = EmissionId;
+
+    fn emit(_state: &CellState, input: Self::Input) -> (EmissionId, EmissionId) {
+        (input.clone(), input)
+    }
+
+    fn absorb(
+        _state: &mut CellState,
+        output: EffectCompletion<Self::Effect>,
+        _carry: EmissionId,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|e| Failure::Message(format!("quark inference failed: {e}")))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +176,7 @@ impl Action for WaitForInitiationAction {
     type Output = ();
     type Carry = ();
 
-    fn emit(state: &CellState, input: Self::Input) -> black_hole_spec::ObjectId {
+    fn emit(_state: &CellState, input: Self::Input) -> black_hole_spec::ObjectId {
         input
     }
 

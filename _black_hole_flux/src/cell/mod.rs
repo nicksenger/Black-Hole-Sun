@@ -1,23 +1,54 @@
-//! Cell state shared across cell and nucleus actions.
+//! Cell module - higher-order flows for cell training loops.
 
 pub mod action;
 pub mod effect;
 
-use serde::{Deserialize, Serialize};
+pub use action::CellState;
 
-pub use black_hole_spec::ObjectId;
+use action::{
+    Optimize as Optimize_, PerturbDown as PerturbDown_, PerturbUp as PerturbUp_,
+    Transmit as Transmit_, WaitForInitiationAction as WaitForInitiationAction_,
+    WaitForPotentiationAction as WaitForPotentiationAction_,
+    WaitForPropagationAction as WaitForPropagationAction_,
+};
+use black_hole_spec::EmissionId;
+use jungle_sdk::prelude::*;
+use jungle_zoo::Noop;
+use jungle_zoo::predicate::Always;
 
-/// State carried by a [`Cell`](crate::Cell) journey.
-///
-/// Animals that use [`Cell`](crate::Cell) as their Journey should use this as
-/// their state type so the wait-for actions can read and write the next
-/// transmission ID.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub struct CellState {
-    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
-    pub recv_id: ObjectId,
-    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to upload.
-    pub send_id: ObjectId,
-    /// Random seed passed to the perturb-up step each iteration.
-    pub perturbation_seed: u64,
-}
+use crate::Nucleus;
+
+/// A Cell wraps a nucleus flow in an infinite QuZO training loop driven by
+/// [`Transmission`](black_hole_spec::Transmission) messages from void.
+#[derive(Flow)]
+pub struct Cell<N>(
+    Step<WaitForInitiationAction_>,
+    While<Always<CellState, ()>, Cytoplasm<N>>,
+);
+
+/// The body of one iteration of a [`Cell`] loop.
+#[derive(Flow)]
+pub struct Cytoplasm<N>(
+    Step<PerturbUp_>,
+    Step<WaitForPropagationAction_>,
+    N,
+    Step<Transmit_>,
+    Step<PerturbDown_>,
+    Step<WaitForPropagationAction_>,
+    N,
+    Step<Transmit_>,
+    Step<WaitForPotentiationAction_>,
+    Step<Optimize_>,
+);
+
+/// A eukaryotic cell: a [`Cell`] with an arbitrarily complex nucleus.
+pub type Eukaryote<In, Out, M> = Cell<Nucleus<In, Out, M>>;
+
+/// A prokaryotic cell: a [`Cell`] whose nucleus has no input/output processing.
+pub type Prokaryote<M> =
+    Cell<Nucleus<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, M>>;
+
+/// A primordial cell: the simplest possible [`Cell`] with no input/output
+/// processing and no metadata.
+pub type Primordium =
+    Cell<Nucleus<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, ()>>;
