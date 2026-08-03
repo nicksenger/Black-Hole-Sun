@@ -207,13 +207,10 @@ pub type Eukaryote<In, Out, M> = Cell<Nucleus<In, Out, M>>;
 
 /// A prokaryotic cell: a [`Cell`] whose nucleus has no input/output
 /// processing — essentially "just" a nucleus with metadata.
-pub type Prokaryote<M> = Cell<Nucleus<Noop<M>, Noop<M>, M>>;
+pub type Prokaryote<M> =
+    Cell<Nucleus<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, M>>;
 
 /// A primordial cell: the simplest possible [`Cell`] with no input/output
 /// processing and no metadata — a bare quark-inference loop.
 pub type Primordium =
     Cell<Nucleus<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, ()>>;
-
-// ---------------------------------------------------------------------------
-// ProgenitorFlow — single-iteration flow without Cell wrapper
-// ---------------------------------------------------------------------------

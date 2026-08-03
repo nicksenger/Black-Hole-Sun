@@ -56,8 +56,19 @@ pub trait VoidInferOps: Send + Sync {
     ///
     /// Downloads raw bytes and deserializes as `Transmission`.
     async fn wait_for_transmission(&self, id: ObjectId) -> Result<Transmission, String> {
-        let data = self.download_raw(id).await?;
-        postcard::from_bytes(&data).map_err(|e| format!("postcard deserialize: {e}"))
+        use tokio::time::{sleep, Duration};
+        loop {
+            match self.download_raw(id).await {
+                Ok(data) => {
+                    return postcard::from_bytes(&data)
+                        .map_err(|e| format!("postcard deserialize: {e}"));
+                }
+                Err(e) => {
+                    tracing::debug!(?id, error = %e, "download failed, retrying in 1s");
+                }
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
     }
 
     /// Propagates the emission to the next cell - the implementor of

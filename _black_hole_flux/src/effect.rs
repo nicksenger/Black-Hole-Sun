@@ -190,12 +190,6 @@ impl<J> EffectSchema<J> for WaitForInitiation {
     type Err = NucleusError;
 }
 
-//impl Effect<()> for WaitForInitiation {
-//    fn effect(jungle: &(), id: Self::In) -> impl Future<Output = Result<Self::Out, Self::Err>> {
-//        std::future::ready(Ok(((), uuid::Uuid::new_v4())))
-//    }
-//}
-
 impl<J> Effect<J> for WaitForInitiation
 where
     J: VoidInferOps,
@@ -214,6 +208,7 @@ where
                 }
                 other => {
                     let msg = format!("expected Initiation, got {:?}", other);
+                    debug!("initiation failed: {msg}");
                     Err(NucleusError::Transmission(msg))
                 }
             }
@@ -267,6 +262,7 @@ where
                 }
                 other => {
                     let msg = format!("expected Propagation, got {:?}", other);
+                    debug!("propagation failed: {msg}");
                     Err(NucleusError::Transmission(msg))
                 }
             }
@@ -321,6 +317,7 @@ where
                 }
                 other => {
                     let msg = format!("expected Potentiation, got {:?}", other);
+                    debug!("potentiation failed: {msg}");
                     Err(NucleusError::Transmission(msg))
                 }
             }

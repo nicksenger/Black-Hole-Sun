@@ -170,9 +170,10 @@ async fn connect_client_with_retry(remote: SocketAddr) -> jungle_sdk::Client {
 /// 1. Start void + quark servers on random ports.
 /// 2. Create a SpaceJungle with VoidInferOps backed by those servers.
 /// 3. Spawn a jungle-server (in-memory backend) and connect a client.
-/// 4. Start a JungleWorker supporting the Progenitor.
-/// 5. Upload a Propagation transmission to void, then spawn a Progenitor.
-/// 6. Assert that effects execute successfully within a 30s timeout.
+/// 4. Upload a Propagation transmission to void, then spawn a Progenitor.
+/// 5. Subscribe to step updates for the journey.
+/// 6. Start a JungleWorker so effects execute after we're subscribed.
+/// 7. Assert that effects execute successfully within a 30s timeout.
 #[tokio::test]
 async fn progenitor_flux_flow() {
     init_tracing();
@@ -204,15 +205,7 @@ async fn progenitor_flux_flow() {
 
     let client = connect_client_with_retry(listen_addr).await;
 
-    // 4. Start a JungleWorker with Progenitor support.
-    let worker = JungleWorker::new(jungle, client.clone());
-    let worker_handle = tokio::spawn(async move {
-        let _ = worker.spawn().await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // 5. Prepare emission data and Propagation transmission in void.
+    // 4. Prepare emission data and Propagation transmission in void.
     //    The Progenitor flow: PerturbUp -> WaitForPropagation -> QuarkInfer -> PerturbDown
     //    WaitForPropagation reads recv_id from state and downloads a Transmission::Propagation.
 
@@ -222,18 +215,25 @@ async fn progenitor_flux_flow() {
         output_id: InferenceOutputId(inference_output_id),
     };
     let emission_bytes = to_allocvec(&emission).expect("serialize emission");
-    let emission_obj_id =
+    let emission_void_id =
         void_upload(&make_client_endpoint().await, void_addr, emission_bytes).await;
 
     let propagation = Transmission::Propagation {
-        emission_id: EmissionId(emission_obj_id),
+        emission_id: EmissionId(emission_void_id),
         recv: ObjectId::nil(),
         send: ObjectId::nil(),
     };
-    let propagation_id = upload_transmission(void_addr, &propagation).await;
+    let propagation_bytes = to_allocvec(&propagation).expect("serialize propagation");
+    let propagation_void_id =
+        void_upload(&make_client_endpoint().await, void_addr, propagation_bytes).await;
 
-    // 6. Spawn the Progenitor with state pointing to the Propagation.
-    let spawn_result = client.spawn::<Progenitor>(&propagation_id).await;
+    let initiation = Transmission::Initiation {
+        recv: propagation_void_id,
+    };
+    let init_void_id = upload_transmission(void_addr, &initiation).await;
+
+    // 4. Spawn the Progenitor with state pointing to the Propagation.
+    let spawn_result = client.spawn::<Progenitor>(&init_void_id).await;
     assert!(
         spawn_result.is_ok(),
         "spawn should succeed: {:?}",
@@ -242,11 +242,18 @@ async fn progenitor_flux_flow() {
     let journey_id = spawn_result.unwrap().journey_id;
     println!("Spawned Progenitor journey: {journey_id}");
 
-    // 7. Subscribe to step updates and wait for effect completion (30s timeout).
+    // 5. Subscribe to step updates before starting the worker, so we don't miss events.
     let mut subscription = client
         .subscribe_step_updates(journey_id, None)
         .await
         .expect("subscribe should succeed");
+
+    // 6. Start a JungleWorker with Progenitor support.
+    //    Spawned after subscribing so effects execute only after we're listening.
+    let worker = JungleWorker::new(jungle, client.clone());
+    let worker_handle = tokio::spawn(async move {
+        let _ = worker.spawn().await;
+    });
 
     let data_received = tokio::time::timeout(Duration::from_secs(30), async {
         use jungle_sdk::RunnerUpdateOut;
@@ -265,8 +272,16 @@ async fn progenitor_flux_flow() {
                         return Some((effects_started, effects_succeeded));
                     }
                 }
-                RunnerUpdateOut::EffectFailureOutput { uuid, .. } => {
-                    println!("Effect failed for journey {uuid}");
+                RunnerUpdateOut::EffectFailureOutput { node_id, uuid } => {
+                    let status = client
+                        .journey_details(journey_id)
+                        .await
+                        .expect("journey_details should succeed");
+                    eprintln!(
+                        "Effect failed: journey={journey_id} effect={uuid} \
+                         node_id={node_id} seq={} ts_ms={} status={status:?}",
+                        update.sequence_id, update.event_unix_ms
+                    );
                     return None;
                 }
                 RunnerUpdateOut::NodeLifecycle { .. }
