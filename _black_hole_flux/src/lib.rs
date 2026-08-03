@@ -9,7 +9,7 @@
 //!    contained output ID, uploads the result emission, and yields the new `EmissionId`.
 //! 3. Passes the resulting `EmissionId` through the **Out** flow.
 //!
-//! A **Cell** wraps a Nucleus in an infinite QuZO training loop driven by
+//! A **Cell** wraps a nucleus flow in an infinite QuZO training loop driven by
 //! [`Transmission`] messages from void:
 //!
 //! 1. **WaitForInitiation** — reads `recv_id` from [`CellState`], downloads a
@@ -17,12 +17,12 @@
 //! 2. **PerturbUp** — perturbs the associated quark's weights upward.
 //! 3. **WaitForPropagation** — reads `recv_id` from state, downloads a
 //!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 4. **In → Nucleus → Out** — runs the full Nucleus pipeline.
+//! 4. **Nucleus** — runs the nucleus pipeline.
 //! 5. **Transmit** — propagates the emission output to the next cell.
 //! 6. **PerturbDown** — perturbs the quark's weights downward.
 //! 7. **WaitForPropagation** — reads `recv_id` from state, downloads another
 //!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 8. **In → Nucleus → Out** — runs the Nucleus pipeline again.
+//! 8. **Nucleus** — runs the nucleus pipeline again.
 //! 9. **Transmit** — propagates the emission output to the next cell.
 //! 10. **WaitForPotentiation** — reads `recv_id` from state, downloads a
 //!     `Transmission::Potentiation`, stores the new `recv_id`, emits loss values.
@@ -47,6 +47,8 @@
 //! The Jungle instance supplied at runtime must implement [`VoidInferOps`],
 //! which guarantees access to void (upload / download), quark inference, and
 //! quark perturbation / optimization.
+
+use std::marker::PhantomData;
 
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
@@ -115,6 +117,14 @@ pub enum NucleusError {
 }
 
 // ---------------------------------------------------------------------------
+// Noop identity flow
+// ---------------------------------------------------------------------------
+
+/// A no-op identity flow that passes its input through unchanged.
+#[derive(Flow)]
+pub struct Noop<T>(PhantomData<T>);
+
+// ---------------------------------------------------------------------------
 // Nucleus higher-order flow
 // ---------------------------------------------------------------------------
 
@@ -143,45 +153,62 @@ use action::{
     WaitForPropagationAction as WaitForPropagationAction_,
 };
 
-/// A Cell wraps a [`Nucleus`] in an infinite QuZO training loop driven by
+/// A Cell wraps a nucleus flow in an infinite QuZO training loop driven by
 /// [`Transmission`] messages from void.
 ///
 /// See module-level documentation for the full iteration sequence.
 #[derive(Flow)]
-pub struct Cell<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
+pub struct Cell<N>(
     Step<WaitForInitiationAction_>,
-    While<Always<CellState, ()>, Cytoplasm<In, Out, M>>,
+    While<Always<CellState, ()>, Cytoplasm<N>>,
 );
 
 /// The body of one iteration of a [`Cell`] loop.
 ///
 /// Sequential stages (each iteration):
 ///
-/// PerturbUp → WaitForPropagation → In → QuarkInfer → Out → Transmit →
-/// PerturbDown → WaitForPropagation → In → QuarkInfer → Out → Transmit →
+/// PerturbUp → WaitForPropagation → Nucleus → Transmit →
+/// PerturbDown → WaitForPropagation → Nucleus → Transmit →
 /// WaitForPotentiation → Optimize
 ///
 /// The [`CellState`](action::CellState) holds `recv_id` which is read by each
 /// wait-for action to know which void key to download, and updated with the
 /// next transmission ID after each download completes.  Data payloads
-/// (EmissionId, Potentiation) flow through action Output types.
+/// (EmissionId, Potentiation) flow through action Output types. `N` is the
+/// nucleus flow invoked on each propagation.
 #[derive(Flow)]
-pub struct Cytoplasm<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
+pub struct Cytoplasm<N>(
     // Perturb up, then wait for propagation to get first emission
     Step<PerturbUp_>,
     Step<WaitForPropagationAction_>,
     // Run nucleus on the emission from propagation
-    Nucleus<In, Out, M>,
+    N,
     // Transmit emission output, perturb down
     Step<Transmit_>,
     Step<PerturbDown_>,
     // Wait for propagation to get second emission
     Step<WaitForPropagationAction_>,
     // Run nucleus on the emission from propagation
-    Nucleus<In, Out, M>,
+    N,
     // Transmit emission output, wait for potentiation to get losses
     Step<Transmit_>,
     Step<WaitForPotentiationAction_>,
     // Optimize with the loss values (returns unit)
     Step<Optimize_>,
 );
+
+// ---------------------------------------------------------------------------
+// Cell type aliases
+// ---------------------------------------------------------------------------
+
+/// A eukaryotic cell: a [`Cell`] with an arbitrarily complex nucleus
+/// containing input/output processing flows around genomic encapsulation.
+pub type Eukaryote<In, Out, M> = Cell<Nucleus<In, Out, M>>;
+
+/// A prokaryotic cell: a [`Cell`] whose nucleus has no input/output
+/// processing — essentially "just" a nucleus with metadata.
+pub type Prokaryote<M> = Cell<Nucleus<Noop<M>, Noop<M>, M>>;
+
+/// A primordial cell: the simplest possible [`Cell`] with no input/output
+/// processing and no metadata — a bare quark-inference loop.
+pub type Primordium = Cell<Nucleus<Noop<()>, Noop<()>, ()>>;
