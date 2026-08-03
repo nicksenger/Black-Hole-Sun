@@ -185,6 +185,16 @@ pub struct PropAFlow(
 /// The two propagation branches (A and B) running in parallel via focused join.
 pub type PropagationFlows = Join<PropAFlow, PropBFlow>;
 
+/// Alias for the inner loop flow (inner A loop).
+pub type InnerLoop = InnerALoop;
+
+/// Alias for the branch body flow (branch A body).
+pub type BranchBody = BranchABody;
+
+/// Alias for the full propagation layer flow.
+pub type LayerFlow = PropagationFlows;
+
+
 // ---------------------------------------------------------------------------
 // BlackHole — the top-level orchestration flow
 // ---------------------------------------------------------------------------

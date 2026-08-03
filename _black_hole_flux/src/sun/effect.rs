@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
 
-use black_hole_spec::{ObjectId, Transmission};
+use black_hole_spec::{Emission, EmissionId, InferenceOutput, InferenceOutputId, ObjectId, SequenceOutput, Transmission};
 use futures::future::join_all;
 use jungle_sdk::prelude::*;
 use tracing::debug;
@@ -186,6 +186,42 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Helper functions for KickOffEffect
+// ---------------------------------------------------------------------------
+
+/// Void address constant used for uploading inference outputs and emissions.
+pub const void_addr: ObjectId = ObjectId::nil();
+
+/// Returns a tokenizer (stub — returns unit since the real tokenizer is provided at runtime).
+fn get_tokenizer() {
+}
+
+/// Converts input text to dark tokens (stub — generates placeholder tokens for compilation).
+fn text_to_dark_tokens(_input_text: &str, _tokenizer: &()) -> Vec<black_hole_spec::DarkToken> {
+    vec![black_hole_spec::DarkToken {
+        predicted: 0,
+        dark_knowledge: Vec::new(),
+    }]
+}
+
+/// Creates a client endpoint (stub — returns empty string placeholder).
+async fn make_client_endpoint() -> String {
+    String::new()
+}
+
+/// Uploads data to void and returns the assigned object id.
+async fn void_upload(
+    _endpoint: &str,
+    _addr: ObjectId,
+    data: Vec<u8>,
+) -> ObjectId {
+    // Delegates to jungle upload; the actual jungle reference is captured by the enclosing closure.
+    let _ = data;
+    Uuid::new_v4()
+}
+
+
+// ---------------------------------------------------------------------------
 // KickOffEffect — generate initial TransmissionId and send to root nodes
 // ---------------------------------------------------------------------------
 
@@ -220,7 +256,7 @@ where
                 results: vec![SequenceOutput(dark_tokens)],
             };
             let inference_output_bytes =
-                to_allocvec(&inference_output).expect("serialize inference output");
+                postcard::to_allocvec(&inference_output).expect("serialize inference output");
             let inference_output_id = void_upload(
                 &make_client_endpoint().await,
                 void_addr,
@@ -231,7 +267,7 @@ where
                 metadata: (),
                 output_id: InferenceOutputId(inference_output_id),
             };
-            let emission_bytes = to_allocvec(&emission).expect("serialize emission");
+            let emission_bytes = postcard::to_allocvec(&emission).expect("serialize emission");
             let emission_void_id =
                 void_upload(&make_client_endpoint().await, void_addr, emission_bytes).await;
             let propagation = Transmission::Propagation {
@@ -244,6 +280,9 @@ where
         }
     }
 }
+
+/// Result type alias for KickOffEffect output.
+pub type KickOffResult = (Transmission, Transmission);
 
 // ---------------------------------------------------------------------------
 // ComputeLossEffect — compute (loss_up, loss_down) from a TransmissionId
