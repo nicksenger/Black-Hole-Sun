@@ -248,6 +248,8 @@ async fn progenitor_flux_flow() {
 
     let listen_1 = Uuid::new_v4();
     let listen_2 = Uuid::new_v4();
+    let listen_3 = Uuid::new_v4();
+    let listen_4 = Uuid::new_v4();
 
     let model_path = match require_model_path("progenitor_flux_flow") {
         Some(path) => path,
@@ -273,15 +275,99 @@ async fn progenitor_flux_flow() {
 
     let client = connect_client_with_retry(listen_addr).await;
 
-    // 4. Prepare emission data and Propagation transmission in void.
-    //    The Progenitor flow: PerturbUp -> WaitForPropagation -> QuarkInfer -> PerturbDown
-    //    WaitForPropagation reads recv_id from state and downloads a Transmission::Propagation.
+    // 4. Prepare emission data and Propagation transmission chain in void.
+    //    The Progenitor (Primordium) cell optimization loop:
+    //    PerturbUp -> WaitForPropagation -> Nucleus -> Transmit ->
+    //    PerturbDown -> WaitForPropagation -> Nucleus -> Transmit ->
+    //    WaitForPotentiation -> Optimize -> (loop back to WaitForPropagation ...)
+    //
+    //    Chain: Initiation -> Propagation(1) -> Propagation(2) -> Potentiation -> Propagation(3) -> Propagation(4)
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
     let tokenizer = get_tokenizer();
 
-    // ── Second propagation (end of chain) ──
+    // ── Fourth propagation (end of chain) ──
+    let dark_tokens_4 = text_to_dark_tokens(input_text, &tokenizer);
+    let inference_output_4 = InferenceOutput {
+        results: vec![SequenceOutput(dark_tokens_4)],
+    };
+    let inference_output_bytes_4 =
+        to_allocvec(&inference_output_4).expect("serialize inference output 4");
+    let inference_output_id_4 = void_upload(
+        &make_client_endpoint().await,
+        void_addr,
+        inference_output_bytes_4,
+    )
+    .await;
+    let emission_4 = Emission {
+        metadata: (),
+        output_id: InferenceOutputId(inference_output_id_4),
+    };
+    let emission_bytes_4 = to_allocvec(&emission_4).expect("serialize emission 4");
+    let emission_void_id_4 =
+        void_upload(&make_client_endpoint().await, void_addr, emission_bytes_4).await;
+    let propagation_4 = Transmission::Propagation {
+        emission_id: EmissionId(emission_void_id_4),
+        recv: ObjectId::nil(),
+        send: listen_4,
+    };
+    let propagation_bytes_4 = to_allocvec(&propagation_4).expect("serialize propagation 4");
+    let propagation_void_id_4 = void_upload(
+        &make_client_endpoint().await,
+        void_addr,
+        propagation_bytes_4,
+    )
+    .await;
+
+    // ── Third propagation (points to fourth) ──
+    let dark_tokens_3 = text_to_dark_tokens(input_text, &tokenizer);
+    let inference_output_3 = InferenceOutput {
+        results: vec![SequenceOutput(dark_tokens_3)],
+    };
+    let inference_output_bytes_3 =
+        to_allocvec(&inference_output_3).expect("serialize inference output 3");
+    let inference_output_id_3 = void_upload(
+        &make_client_endpoint().await,
+        void_addr,
+        inference_output_bytes_3,
+    )
+    .await;
+    let emission_3 = Emission {
+        metadata: (),
+        output_id: InferenceOutputId(inference_output_id_3),
+    };
+    let emission_bytes_3 = to_allocvec(&emission_3).expect("serialize emission 3");
+    let emission_void_id_3 =
+        void_upload(&make_client_endpoint().await, void_addr, emission_bytes_3).await;
+    let propagation_3 = Transmission::Propagation {
+        emission_id: EmissionId(emission_void_id_3),
+        recv: propagation_void_id_4,
+        send: listen_3,
+    };
+    let propagation_bytes_3 = to_allocvec(&propagation_3).expect("serialize propagation 3");
+    let propagation_void_id_3 = void_upload(
+        &make_client_endpoint().await,
+        void_addr,
+        propagation_bytes_3,
+    )
+    .await;
+
+    // ── Potentiation (links second propagation to third) ──
+    let potentiation = Transmission::Potentiation {
+        loss_up: 0.5,
+        loss_down: 0.3,
+        recv: propagation_void_id_3,
+    };
+    let potentiation_bytes = to_allocvec(&potentiation).expect("serialize potentiation");
+    let potentiation_void_id = void_upload(
+        &make_client_endpoint().await,
+        void_addr,
+        potentiation_bytes,
+    )
+    .await;
+
+    // ── Second propagation (points to potentiation) ──
     let dark_tokens_2 = text_to_dark_tokens(input_text, &tokenizer);
     let inference_output_2 = InferenceOutput {
         results: vec![SequenceOutput(dark_tokens_2)],
@@ -303,7 +389,7 @@ async fn progenitor_flux_flow() {
         void_upload(&make_client_endpoint().await, void_addr, emission_bytes_2).await;
     let propagation_2 = Transmission::Propagation {
         emission_id: EmissionId(emission_void_id_2),
-        recv: ObjectId::nil(),
+        recv: potentiation_void_id,
         send: listen_2,
     };
     let propagation_bytes_2 = to_allocvec(&propagation_2).expect("serialize propagation 2");
@@ -348,7 +434,7 @@ async fn progenitor_flux_flow() {
     };
     let init_void_id = upload_transmission(void_addr, &initiation).await;
 
-    // 4. Spawn the Progenitor with state pointing to the Propagation.
+    // 5. Spawn the Progenitor with state pointing to the Initiation.
     let spawn_result = client.spawn::<Progenitor>(&init_void_id).await;
     assert!(
         spawn_result.is_ok(),
@@ -366,33 +452,44 @@ async fn progenitor_flux_flow() {
     });
 
     let result = tokio::time::timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         async {
-            let (t1, t2) = tokio::join!(
+            let (t1, t2, t3, t4) = tokio::join!(
                 wait_for_void_transmission(void_addr, listen_1),
                 wait_for_void_transmission(void_addr, listen_2),
+                wait_for_void_transmission(void_addr, listen_3),
+                wait_for_void_transmission(void_addr, listen_4),
             );
-            (t1, t2)
+            (t1, t2, t3, t4)
         },
     )
     .await;
 
     match result {
-        Ok((Transmission::Propagation { emission_id: e1, .. }, Transmission::Propagation { emission_id: e2, .. })) => {
-            println!(
-                "Flux flow completed: propagation 1 emitted {}, propagation 2 emitted {}",
-                e1.0, e2.0
-            );
+        Ok((
+            Transmission::Propagation { emission_id: e1, .. },
+            Transmission::Propagation { emission_id: e2, .. },
+            Transmission::Propagation { emission_id: e3, .. },
+            Transmission::Propagation { emission_id: e4, .. },
+        )) => {
+            println!("Flux flow completed through full cell optimization loop:");
+            println!("  propagation 1 emitted {}", e1.0);
+            println!("  propagation 2 emitted {}", e2.0);
+            println!("  propagation 3 emitted {}", e3.0);
+            println!("  propagation 4 emitted {}", e4.0);
         }
-        Ok((t1, t2)) => {
-            panic!("expected Propagation transmissions, got {:?} and {:?}", t1, t2);
+        Ok((t1, t2, t3, t4)) => {
+            panic!(
+                "expected Propagation transmissions, got {:?}, {:?}, {:?}, {:?}",
+                t1, t2, t3, t4
+            );
         }
         Err(e) => {
             let status = client
                 .journey_details(journey_id)
                 .await
                 .expect("journey_details should succeed");
-            panic!("timeout waiting for flux flow outputs (30s): {e}, status: {status:?}");
+            panic!("timeout waiting for flux flow outputs (60s): {e}, status: {status:?}");
         }
     }
     // Cleanup.
