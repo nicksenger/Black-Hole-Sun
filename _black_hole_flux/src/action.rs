@@ -72,12 +72,12 @@ where
     type Input = EmissionId;
     type Output = EmissionId;
 
-    fn emit(_state: &(), input: Self::Input) -> (EmissionId, EmissionId) {
+    fn emit(_state: &CellState, input: Self::Input) -> (EmissionId, EmissionId) {
         (input.clone(), input)
     }
 
     fn absorb(
-        _state: &mut (),
+        _state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
         _carry: EmissionId,
     ) -> Result<Self::Output, Failure> {
@@ -121,12 +121,12 @@ impl Action for PerturbDown {
     type Input = ();
     type Output = ();
 
-    fn emit(_state: &(), input: Self::Input) -> () {
+    fn emit(_state: &CellState, input: Self::Input) -> () {
         input
     }
 
     fn absorb(
-        _state: &mut (),
+        _state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("perturb down failed: {e}")))
@@ -145,12 +145,12 @@ impl Action for Optimize {
     type Input = Potentiation;
     type Output = ();
 
-    fn emit(_state: &(), input: Self::Input) -> Potentiation {
+    fn emit(_state: &CellState, input: Self::Input) -> Potentiation {
         input
     }
 
     fn absorb(
-        _state: &mut (),
+        _state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("optimize failed: {e}")))
@@ -274,12 +274,12 @@ impl Action for Transmit {
     type Input = EmissionId;
     type Output = ();
 
-    fn emit(_state: &(), input: Self::Input) -> EmissionId {
+    fn emit(_state: &CellState, input: Self::Input) -> EmissionId {
         input
     }
 
     fn absorb(
-        _state: &mut (),
+        _state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("transmit failed: {e}")))
