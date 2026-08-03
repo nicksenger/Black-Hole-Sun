@@ -64,16 +64,19 @@ pub struct Sun<
     U,
 >(Step<Spawn<T>>, U);
 
-pub trait BlackHole {
+pub trait EventHorizon {
     type Flow;
 }
-impl<T, U> BlackHole for List<(T, U)>
+impl<T, U> EventHorizon for List<(T, U)>
 where
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
-    U: BlackHole,
+    U: EventHorizon,
 {
-    type Flow = Sun<T, <U as BlackHole>::Flow>;
+    type Flow = Sun<T, <U as EventHorizon>::Flow>;
 }
-impl BlackHole for Empty {
-    type Flow = Step<Noop<SunState, ()>>;
+impl EventHorizon for Empty {
+    type Flow = BlackHole;
 }
+
+#[derive(Flow)]
+pub struct BlackHole(Step<TopologicalSort>);
