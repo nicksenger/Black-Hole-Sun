@@ -71,7 +71,6 @@ pub struct LayerTransmission {
 /// Effect that waits for the first available transmission from any of the
 /// rx ObjectIds associated with the current layer of nodes.
 pub struct WaitForLayerTransmission;
-
 impl<J> EffectSchema<J> for WaitForLayerTransmission {
     type Id = u64;
     type In = Vec<(u32, ObjectId)>;
@@ -118,7 +117,10 @@ where
 
             match result {
                 Ok(transmission) => {
-                    debug!(node_id = transmission.node_id, "layer transmission received");
+                    debug!(
+                        node_id = transmission.node_id,
+                        "layer transmission received"
+                    );
                     Ok(transmission)
                 }
                 Err(e) => Err(e),
@@ -161,7 +163,10 @@ where
         root_nodes: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(count = root_nodes.len(), "kicking off propagation for root nodes");
+            debug!(
+                count = root_nodes.len(),
+                "kicking off propagation for root nodes"
+            );
 
             let transmission_id = Uuid::new_v4();
             let mut rx_map = Vec::new();
@@ -178,15 +183,12 @@ where
                 let data = postcard::to_allocvec(&propagation)
                     .map_err(|e| NucleusError::Transmission(format!("serialize: {e}")))?;
 
-                jungle
-                    .upload_to_void(data)
-                    .await
-                    .map_err(|e| {
-                        NucleusError::Transmission(format!(
-                            "upload kick-off to rx for node {}: {e}",
-                            node_id
-                        ))
-                    })?;
+                jungle.upload_to_void(data).await.map_err(|e| {
+                    NucleusError::Transmission(format!(
+                        "upload kick-off to rx for node {}: {e}",
+                        node_id
+                    ))
+                })?;
 
                 rx_map.push((node_id, rx_id));
                 debug!(node_id, %rx_id, "uploaded kick-off transmission");
@@ -291,15 +293,12 @@ where
                 let data = postcard::to_allocvec(&potentiation)
                     .map_err(|e| NucleusError::Transmission(format!("serialize: {e}")))?;
 
-                jungle
-                    .upload_to_void(data)
-                    .await
-                    .map_err(|e| {
-                        NucleusError::Transmission(format!(
-                            "upload potentiation to po_tx for node {}: {e}",
-                            node_id
-                        ))
-                    })?;
+                jungle.upload_to_void(data).await.map_err(|e| {
+                    NucleusError::Transmission(format!(
+                        "upload potentiation to po_tx for node {}: {e}",
+                        node_id
+                    ))
+                })?;
 
                 new_rx_map.push((node_id, new_rx));
                 debug!(node_id, %new_rx, "uploaded potentiation transmission");

@@ -2,8 +2,10 @@
 
 use std::marker::PhantomData;
 
+use super::effect::{
+    BroadcastPotentiationEffect, ComputeLossEffect, KickOffEffect, WaitForLayerTransmission,
+};
 use super::Tagged;
-use super::effect::{BroadcastPotentiationEffect, ComputeLossEffect, KickOffEffect, WaitForLayerTransmission};
 use black_hole_spec::ObjectId;
 use jungle_sdk::prelude::*;
 use typosaurus::collections::list::{Empty, List};
@@ -114,8 +116,7 @@ where
             (all_nodes, outgoing)
         };
 
-        let mut in_degree: std::collections::HashMap<u32, u32> =
-            std::collections::HashMap::new();
+        let mut in_degree: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         for &node in &all_nodes {
             in_degree.entry(node).or_insert(0);
         }
@@ -186,9 +187,10 @@ where
         _output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         let topo = state.get_topo().clone();
-        let layer = topo.first().cloned().ok_or_else(|| {
-            Failure::Message("no topological layers remaining".to_string())
-        })?;
+        let layer = topo
+            .first()
+            .cloned()
+            .ok_or_else(|| Failure::Message("no topological layers remaining".to_string()))?;
 
         let mut topo = state.get_topo().clone();
         topo.drain(..1);
@@ -219,42 +221,25 @@ where
     type Effect = WaitForLayerTransmission;
     type Input = ();
     type Output = ();
-    type Carry = super::effect::LayerTransmission;
 
-    fn emit(
-        state: &S,
-        _input: Self::Input,
-    ) -> (Vec<(u32, black_hole_spec::ObjectId)>, super::effect::LayerTransmission) {
+    fn emit(state: &S, _input: Self::Input) -> Vec<(u32, black_hole_spec::ObjectId)> {
         let current = state.get_current().clone();
         let inner = state.get_shared().lock().unwrap();
 
         let endpoints: Vec<(u32, black_hole_spec::ObjectId)> = current
             .iter()
-            .filter_map(|&node_id| {
-                state.get_rx(&inner).get(&node_id).map(|rx| (node_id, *rx))
-            })
+            .filter_map(|&node_id| state.get_rx(&inner).get(&node_id).map(|rx| (node_id, *rx)))
             .collect();
 
-        let dummy = super::effect::LayerTransmission {
-            node_id: 0,
-            transmission: black_hole_spec::Transmission::Propagation {
-                emission_id: black_hole_spec::EmissionId(black_hole_spec::ObjectId::nil()),
-                recv: black_hole_spec::ObjectId::nil(),
-                send: black_hole_spec::ObjectId::nil(),
-            },
-        };
-
-        (endpoints, dummy)
+        endpoints
     }
 
     fn absorb(
         state: &mut S,
         output: EffectCompletion<Self::Effect>,
-        _carry: super::effect::LayerTransmission,
     ) -> Result<Self::Output, Failure> {
-        let layer_tx = output.map_err(|e| {
-            Failure::Message(format!("wait for layer transmission failed: {e}"))
-        })?;
+        let layer_tx = output
+            .map_err(|e| Failure::Message(format!("wait for layer transmission failed: {e}")))?;
 
         let node_id = layer_tx.node_id;
         let transmission = layer_tx.transmission;
@@ -286,7 +271,9 @@ where
                 state.get_tx_mut(&mut inner).insert(*target_id, tx_id);
 
                 tracing::debug!(
-                    node_id, target_id, ?tx_id,
+                    node_id,
+                    target_id,
+                    ?tx_id,
                     "forwarded transmission to outgoing node"
                 );
             }
@@ -323,8 +310,7 @@ impl Action for KickOff {
 
     fn emit(state: &super::SunState, _input: Self::Input) -> Vec<u32> {
         let inner = state.a.shared.lock().unwrap();
-        let all_nodes: std::collections::HashSet<u32> =
-            inner.journey_ids.keys().cloned().collect();
+        let all_nodes: std::collections::HashSet<u32> = inner.journey_ids.keys().cloned().collect();
         let incoming = inner.incoming.clone();
         drop(inner);
 
@@ -340,9 +326,7 @@ impl Action for KickOff {
         state: &mut super::SunState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let result = output.map_err(|e| {
-            Failure::Message(format!("kick-off failed: {e}"))
-        })?;
+        let result = output.map_err(|e| Failure::Message(format!("kick-off failed: {e}")))?;
 
         // Store the initial rx ids and transmission id in shared state
         let mut inner = state.a.shared.lock().unwrap();
@@ -381,9 +365,7 @@ impl Action for ComputeLoss {
         _state: &mut super::SunState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|e| {
-            Failure::Message(format!("compute loss failed: {e}"))
-        })
+        output.map_err(|e| Failure::Message(format!("compute loss failed: {e}")))
     }
 }
 
@@ -423,9 +405,8 @@ impl Action for BroadcastPotentiation {
         state: &mut super::SunState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let result = output.map_err(|e| {
-            Failure::Message(format!("broadcast potentiation failed: {e}"))
-        })?;
+        let result =
+            output.map_err(|e| Failure::Message(format!("broadcast potentiation failed: {e}")))?;
 
         let mut inner = state.a.shared.lock().unwrap();
         for (node_id, new_rx) in &result.new_rx_map {
@@ -509,7 +490,10 @@ impl TopologyState for super::PropA {
     fn set_current(&mut self, current: std::collections::HashSet<u32>) {
         self.current = current;
     }
-    fn get_tx<'a>(&self, inner: &'a super::SunInner) -> &'a std::collections::HashMap<u32, ObjectId> {
+    fn get_tx<'a>(
+        &self,
+        inner: &'a super::SunInner,
+    ) -> &'a std::collections::HashMap<u32, ObjectId> {
         &inner.p1_tx
     }
     fn get_tx_mut<'a>(
@@ -518,7 +502,10 @@ impl TopologyState for super::PropA {
     ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
         &mut inner.p1_tx
     }
-    fn get_rx<'a>(&self, inner: &'a super::SunInner) -> &'a std::collections::HashMap<u32, ObjectId> {
+    fn get_rx<'a>(
+        &self,
+        inner: &'a super::SunInner,
+    ) -> &'a std::collections::HashMap<u32, ObjectId> {
         &inner.p1_rx
     }
     fn get_rx_mut<'a>(
@@ -545,7 +532,10 @@ impl TopologyState for super::PropB {
     fn set_current(&mut self, current: std::collections::HashSet<u32>) {
         self.current = current;
     }
-    fn get_tx<'a>(&self, inner: &'a super::SunInner) -> &'a std::collections::HashMap<u32, ObjectId> {
+    fn get_tx<'a>(
+        &self,
+        inner: &'a super::SunInner,
+    ) -> &'a std::collections::HashMap<u32, ObjectId> {
         &inner.p2_tx
     }
     fn get_tx_mut<'a>(
@@ -554,7 +544,10 @@ impl TopologyState for super::PropB {
     ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
         &mut inner.p2_tx
     }
-    fn get_rx<'a>(&self, inner: &'a super::SunInner) -> &'a std::collections::HashMap<u32, ObjectId> {
+    fn get_rx<'a>(
+        &self,
+        inner: &'a super::SunInner,
+    ) -> &'a std::collections::HashMap<u32, ObjectId> {
         &inner.p2_rx
     }
     fn get_rx_mut<'a>(
