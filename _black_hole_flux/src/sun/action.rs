@@ -167,6 +167,84 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// BuildAddrs — build full set of recv/send addrs for all nodes
+// ---------------------------------------------------------------------------
+
+pub struct BuildAddrs<S>(std::marker::PhantomData<fn() -> S>);
+
+#[jungle::action]
+impl<S> Action for BuildAddrs<S>
+where
+    S: TopologyState,
+{
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &S, _input: Self::Input) -> () {
+        ()
+    }
+
+    fn absorb(
+        state: &mut S,
+        _output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let (all_nodes, outgoing) = {
+            let inner = state.get_shared().lock().unwrap();
+            let all_nodes: std::collections::HashSet<u32> =
+                inner.journey_ids.keys().cloned().collect();
+            let outgoing = inner.outgoing.clone();
+            (all_nodes, outgoing)
+        };
+
+        let mut in_degree: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        for &node in &all_nodes {
+            in_degree.entry(node).or_insert(0);
+        }
+        for (_src, targets) in &outgoing {
+            for &target in targets {
+                if all_nodes.contains(&target) {
+                    *in_degree.entry(target).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut topo: Vec<std::collections::HashSet<u32>> = Vec::new();
+        let mut remaining = in_degree.clone();
+
+        loop {
+            let layer: std::collections::HashSet<u32> = remaining
+                .iter()
+                .filter(|(_, &deg)| deg == 0)
+                .map(|(&node, _)| node)
+                .collect();
+
+            if layer.is_empty() {
+                break;
+            }
+
+            topo.push(layer.clone());
+
+            for node in &layer {
+                remaining.remove(node);
+                if let Some(targets) = outgoing.get(node) {
+                    for &target in targets {
+                        if let Some(deg) = remaining.get_mut(&target) {
+                            *deg -= 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        state.set_topo(topo);
+        state.set_current(std::collections::HashSet::new());
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PopLayer — pop the next topological layer into current
 // ---------------------------------------------------------------------------
 
@@ -241,15 +319,12 @@ where
 
         // Build the downstream map: for each node in the current layer,
         // collect its outgoing edges and their rx endpoints.
-        let mut downstream: HashMap<u32, Vec<(u32, black_hole_spec::ObjectId)>> =
-            HashMap::new();
+        let mut downstream: HashMap<u32, Vec<(u32, black_hole_spec::ObjectId)>> = HashMap::new();
         for &node_id in &current {
             if let Some(targets) = outgoing.get(&node_id) {
                 let targets_with_rx: Vec<_> = targets
                     .iter()
-                    .filter_map(|&target_id| {
-                        rx_map.get(&target_id).map(|rx| (target_id, *rx))
-                    })
+                    .filter_map(|&target_id| rx_map.get(&target_id).map(|rx| (target_id, *rx)))
                     .collect();
                 downstream.insert(node_id, targets_with_rx);
             }

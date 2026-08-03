@@ -160,6 +160,7 @@ pub struct BranchBody<S: TopologyState>(
 #[jungle(focus = FocusState)]
 pub struct PropBFlow(
     Step<action::BuildTopologicalSort<S>>,
+    Step<action::BuildAddrs<S>>,
     While<TopoNotEmpty<S>, BranchBody<S>>,
 );
 
@@ -167,6 +168,7 @@ pub struct PropBFlow(
 #[jungle(focus = FocusState)]
 pub struct PropAFlow(
     Step<action::BuildTopologicalSort<S>>,
+    Step<action::BuildAddrs<S>>,
     While<TopoNotEmpty<S>, BranchBody<S>>,
 );
 
