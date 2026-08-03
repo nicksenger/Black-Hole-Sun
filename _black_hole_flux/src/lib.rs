@@ -76,9 +76,16 @@ pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
 pub use nucleus::Nucleus;
 
 pub use sun::{
-    BlackHole, InnerLoop, LayerFlow, NodeIdsFromList, PopLayer, ProcessNode,
-    PropagationFlows, PotentiationFlow, Spawn, SpawnAnimal, SunInner, SunPropagation,
-    SunState, Tag, TopologyState, BranchBody,
+    action::{
+        BroadcastPotentiation, BroadcastPotentiationInput, BuildTopologicalSort, ComputeLoss,
+        NodeIdsFromList, PopLayer, ProcessNode, Spawn, TopologyState, KickOff,
+    },
+    effect::{
+        BroadcastPotentiationEffect, BroadcastPotentiationResult, ComputeLossEffect,
+        KickOffEffect, KickOffResult, LayerTransmission, WaitForLayerTransmission,
+    },
+    BlackHole, BranchBody, CurrentNotEmpty, Epoch, InnerLoop, LayerFlow, PropA, PropB,
+    PropagationFlows, SpawnAnimal, SunInner, SunState, Tag, TopoNotEmpty,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]

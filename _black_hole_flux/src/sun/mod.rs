@@ -20,15 +20,10 @@ pub use action::{
 pub use effect::SpawnAnimal;
 
 // ---------------------------------------------------------------------------
-// Tag — type-level descriptor for a sun node
+// Tag — type-level descriptor for a single node in the sun graph
 // ---------------------------------------------------------------------------
 
 /// Type-level tag that describes a single node in the sun graph.
-///
-/// - `N`: the node's ID as a typenum integer
-/// - `T`: the [`Animal`] type to be spawned at this node
-/// - `E`: a type-level heterogeneous list of typenum integers representing
-///   the IDs of this node's outgoing edges
 pub struct Tag<N: Unsigned, A: Animal, E: NodeIdsFromList>(
     PhantomData<N>,
     PhantomData<A>,
@@ -44,24 +39,19 @@ pub trait Tagged {
 // SunState — runtime state for sun orchestration
 // ---------------------------------------------------------------------------
 
-pub struct A {
-    /// Shared bookkeeping
+/// State for propagation branch A.
+pub struct PropA {
+    /// Shared bookkeeping (Arc so both branches share topology data).
     pub shared: Arc<Mutex<SunInner>>,
     /// Topological layers of node IDs (outer-to-inner).
     pub topo: Vec<HashSet<u32>>,
     /// Current layer being processed (popped from topo).
     pub current: HashSet<u32>,
 }
-pub struct B {
-    /// Shared bookkeeping
-    pub shared: Arc<Mutex<SunInner>>,
-    /// Topological layers of node IDs (outer-to-inner).
-    pub topo: Vec<HashSet<u32>>,
-    /// Current layer being processed (popped from topo).
-    pub current: HashSet<u32>,
-}
-pub struct C {
-    /// Shared bookkeeping
+
+/// State for propagation branch B.
+pub struct PropB {
+    /// Shared bookkeeping (Arc so both branches share topology data).
     pub shared: Arc<Mutex<SunInner>>,
     /// Topological layers of node IDs (outer-to-inner).
     pub topo: Vec<HashSet<u32>>,
@@ -73,35 +63,34 @@ pub struct C {
 /// for a sun of spawned animals.
 #[derive(Optic)]
 pub struct SunState {
-    /// State for the propagation branches
-    #[jungle(focus)]
-    pub propagation: SunPropagation,
-    /// State for potentiation branch
-    #[jungle(focus)]
-    pub c: C,
+    /// State for propagation branch A — uses p1_tx / p1_rx maps.
+    #[jungle(focus = a)]
+    pub a: PropA,
+    /// State for propagation branch B — uses p2_tx / p2_rx maps.
+    #[jungle(focus = b)]
+    pub b: PropB,
 }
 
-#[derive(Optic)]
-pub struct SunPropagation {
-    /// State for propagation A branch
-    #[jungle(focus)]
-    pub a: A,
-    /// State for propagation B branch
-    #[jungle(focus)]
-    pub b: B,
-}
-
+/// Shared inner state accessible by both propagation branches via Arc<Mutex>.
 pub struct SunInner {
-    /// Maps the node u32 id to its associated journey ID
+    /// Maps the node u32 id to its associated journey ID.
     pub journey_ids: HashMap<u32, Uuid>,
-    /// Maps each node to the nodes of its incoming edges
+    /// Maps each node to the nodes of its incoming edges.
     pub incoming: HashMap<u32, Vec<u32>>,
-    /// Maps each node to the nodes of its outgoing edges
+    /// Maps each node to the nodes of its outgoing edges.
     pub outgoing: HashMap<u32, Vec<u32>>,
-    /// Transmission send endpoints keyed by node id.
-    pub tx: HashMap<u32, ObjectId>,
-    /// Transmission receive endpoints keyed by node id.
-    pub rx: HashMap<u32, ObjectId>,
+    /// Propagation A send endpoints keyed by node id.
+    pub p1_tx: HashMap<u32, ObjectId>,
+    /// Propagation A receive endpoints keyed by node id.
+    pub p1_rx: HashMap<u32, ObjectId>,
+    /// Propagation B send endpoints keyed by node id.
+    pub p2_tx: HashMap<u32, ObjectId>,
+    /// Propagation B receive endpoints keyed by node id.
+    pub p2_rx: HashMap<u32, ObjectId>,
+    /// Potentiation send endpoints keyed by node id.
+    pub po_tx: HashMap<u32, ObjectId>,
+    /// The current transmission id (set by KickOff, used by ComputeLoss).
+    pub transmission_id: ObjectId,
 }
 
 #[derive(Flow)]
@@ -153,7 +142,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Flow definitions — branch layer processing
+// Flow definitions — layer processing and orchestration
 // ---------------------------------------------------------------------------
 
 /// Body of the inner loop: process nodes in the current layer until empty.
@@ -167,37 +156,52 @@ pub struct BranchBody<S: TopologyState>(
     While<CurrentNotEmpty<S>, InnerLoop<S>>,
 );
 
-/// One complete pass through the topology for a single branch:
-/// build topological sort, then process all layers.
 #[derive(Flow)]
-pub struct LayerFlow<S: TopologyState>(
+#[jungle(focus = FocusState)]
+pub struct PropBFlow(
+    Step<action::BuildTopologicalSort<S>>,
+    While<TopoNotEmpty<S>, BranchBody<S>>,
+);
+
+#[derive(Flow)]
+#[jungle(focus = FocusState)]
+pub struct PropAFlow(
     Step<action::BuildTopologicalSort<S>>,
     While<TopoNotEmpty<S>, BranchBody<S>>,
 );
 
 /// The two propagation branches (A and B) running in parallel via focused join.
-pub type PropagationFlows = Join<LayerFlow<A>, LayerFlow<B>>;
-
-/// The potentiation branch (C) running as a single layer flow.
-pub type PotentiationFlow = LayerFlow<C>;
+pub type PropagationFlows = Join<PropAFlow, PropBFlow>;
 
 // ---------------------------------------------------------------------------
 // BlackHole — the top-level orchestration flow
 // ---------------------------------------------------------------------------
 
+/// One complete training epoch: kick-off → propagation → compute-loss → broadcast-potentiation.
+#[derive(Flow)]
+pub struct Epoch(
+    Step<action::KickOff>,
+    PropagationFlows,
+    Step<action::ComputeLoss>,
+    Step<action::BroadcastPotentiation>,
+);
+
 /// Top-level orchestration flow that drives all underlying Cell flows
 /// associated with the BlackHoleSun graph.
 ///
-/// Runs a continuous outer loop containing a focused-join over 3 branches:
-/// - **A** (Propagation): processes nodes in the A branch topologically
-/// - **B** (Propagation): processes nodes in the B branch topologically
-/// - **C** (Potentiation): processes nodes in the C branch topologically
+/// Runs a continuous outer loop containing one complete training epoch per
+/// iteration:
 ///
-/// Each branch independently:
-/// 1. Builds topological layers via Kahn's algorithm
-/// 2. Pops the outermost layer into current
-/// 3. Waits for transmissions from rx ObjectIds of current-layer nodes
-/// 4. On receiving a transmission, updates the node's rx id, generates new
-///    tx Uuids for outgoing nodes, and forwards the transmission
+/// 1. **KickOff** — takes unit input, finds root nodes (no incoming edges),
+///    generates a TransmissionId stored in shared state, and sends Propagation
+///    transmissions to each root node's rx endpoint. This kicks off propagation.
+/// 2. **PropagationFlows** — two focused branches (A and B) run in parallel,
+///    each processing nodes topologically. Branch A uses p1_tx/p1_rx maps,
+///    branch B uses p2_tx/p2_rx maps.
+/// 3. **ComputeLoss** — retrieves the TransmissionId from shared state,
+///    downloads the transmission, and computes (loss_up, loss_down).
+/// 4. **BroadcastPotentiation** — broadcasts `Transmission::Potentiation` with
+///    the loss values to all nodes' po_tx endpoints, including a new recv
+///    ObjectId that replaces the used tx. Exits without waiting for responses.
 #[derive(Flow)]
-pub struct BlackHole(While<Always<SunState, ()>, Join<PropagationFlows, PotentiationFlow>>);
+pub struct BlackHole(While<Always<SunState, ()>, Epoch>);

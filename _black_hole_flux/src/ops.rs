@@ -51,6 +51,12 @@ pub trait VoidInferOps: Send + Sync {
     /// estimate a gradient and update its weights.
     async fn optimize(&self, loss_up: f32, loss_down: f32) -> Result<(), String>;
 
+    /// Compute loss values from a propagation transmission's emission.
+    ///
+    /// Takes the void object id of a transmission, downloads it, extracts the
+    /// emission data, and computes (loss_up, loss_down) for potentiation.
+    async fn compute_loss(&self, transmission_id: ObjectId) -> Result<(f32, f32), String>;
+
     /// Wait for a [`Transmission`] from the void by object id.
     ///
     /// Downloads raw bytes and deserializes as `Transmission`.

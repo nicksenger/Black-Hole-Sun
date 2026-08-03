@@ -1,13 +1,12 @@
-//! Sun effects — spawning, transmission waiting, and node advancement.
+//! Sun effects — spawning, transmission waiting, kick-off, loss computation, and potentiation.
 
 use std::future::Future;
 use std::marker::PhantomData;
 
+use black_hole_spec::ObjectId;
 use jungle_sdk::prelude::*;
 use tracing::debug;
 use uuid::Uuid;
-
-use black_hole_spec::ObjectId;
 
 use crate::ops::{SunOps, VoidInferOps};
 use crate::NucleusError;
@@ -17,9 +16,6 @@ use crate::NucleusError;
 // ---------------------------------------------------------------------------
 
 /// Effect that spawns an animal of type `A` into the jungle.
-///
-/// Takes the animal's seed as input, calls [`JungleClient::spawn`](jungle_sdk::JungleClient::spawn),
-/// and returns the journey UUID.
 pub struct SpawnAnimal<A>(PhantomData<fn() -> A>);
 
 impl<A, J> EffectSchema<J> for SpawnAnimal<A>
@@ -64,7 +60,6 @@ where
 // ---------------------------------------------------------------------------
 
 /// Result of waiting for a transmission from the current layer.
-/// Contains the node id that received the transmission and the transmission data.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct LayerTransmission {
     /// The node id (u32) that received this transmission.
@@ -75,9 +70,6 @@ pub struct LayerTransmission {
 
 /// Effect that waits for the first available transmission from any of the
 /// rx ObjectIds associated with the current layer of nodes.
-///
-/// Takes a vector of (node_id, rx_object_id) pairs and polls them concurrently,
-/// returning the first one that succeeds.
 pub struct WaitForLayerTransmission;
 
 impl<J> EffectSchema<J> for WaitForLayerTransmission {
@@ -104,7 +96,6 @@ where
 
             debug!(count = endpoints.len(), "waiting for layer transmission");
 
-            // Spawn a task for each endpoint and race them
             let futures: Vec<_> = endpoints
                 .into_iter()
                 .map(|(node_id, id)| {
@@ -123,16 +114,11 @@ where
                 })
                 .collect();
 
-            // Use futures::future::select_all to get the first completion
-            let (result, _index, _rest) =
-                futures::future::select_all(futures).await;
+            let (result, _index, _rest) = futures::future::select_all(futures).await;
 
             match result {
                 Ok(transmission) => {
-                    debug!(
-                        node_id = transmission.node_id,
-                        "layer transmission received"
-                    );
+                    debug!(node_id = transmission.node_id, "layer transmission received");
                     Ok(transmission)
                 }
                 Err(e) => Err(e),
@@ -142,87 +128,53 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// AdvanceNode — process a received transmission and forward to outgoing nodes
+// KickOffEffect — generate initial TransmissionId and send to root nodes
 // ---------------------------------------------------------------------------
 
-/// Input for the [`AdvanceNode`] effect.
+/// Output from [`KickOffEffect`]: the transmission id and rx map for root nodes.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct AdvanceInput {
-    /// The node id that received the transmission.
-    pub node_id: u32,
-    /// The rx object id of this node (to be replaced).
-    pub current_rx: ObjectId,
-    /// The list of outgoing edge targets (node ids).
-    pub outgoing_nodes: Vec<u32>,
-    /// The received transmission to forward.
-    pub transmission: black_hole_spec::Transmission,
+pub struct KickOffResult {
+    /// The transmission id used to kick off propagation.
+    pub transmission_id: ObjectId,
+    /// Map of root node ids to their rx ObjectIds.
+    pub rx_map: Vec<(u32, ObjectId)>,
 }
 
-/// Output from [`AdvanceNode`]: the new rx id for the processed node.
-pub type AdvanceOutput = ObjectId;
+/// Effect that generates a new TransmissionId and uploads Propagation
+/// transmissions to the rx endpoints of all root nodes (those with no
+/// incoming edges). This kicks off the propagation through the graph.
+pub struct KickOffEffect;
 
-/// Effect that processes a received transmission for a node:
-/// 1. Generates a new rx Uuid for the processed node
-/// 2. For each outgoing node, generates a new tx Uuid
-/// 3. Creates a Propagation transmission with the new tx as recv field
-/// 4. Uploads the transmission to void at the outgoing node's tx endpoint
-pub struct AdvanceNode;
-
-impl<J> EffectSchema<J> for AdvanceNode {
+impl<J> EffectSchema<J> for KickOffEffect {
     type Id = u64;
-    type In = AdvanceInput;
-    type Out = AdvanceOutput;
+    type In = Vec<u32>;
+    type Out = KickOffResult;
     type Err = NucleusError;
 }
 
-impl<J> Effect<J> for AdvanceNode
+impl<J> Effect<J> for KickOffEffect
 where
     J: VoidInferOps,
 {
     fn effect(
         jungle: &J,
-        input: Self::In,
+        root_nodes: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let AdvanceInput {
-                node_id,
-                current_rx: _current_rx,
-                outgoing_nodes,
-                transmission,
-            } = input;
+            debug!(count = root_nodes.len(), "kicking off propagation for root nodes");
 
-            // Generate new rx id for this node (for next iteration)
-            let new_rx = Uuid::new_v4();
+            let transmission_id = Uuid::new_v4();
+            let mut rx_map = Vec::new();
 
-            debug!(
-                node_id,
-                ?new_rx,
-                outgoing_count = outgoing_nodes.len(),
-                "advancing node"
-            );
+            for &node_id in &root_nodes {
+                let rx_id = Uuid::new_v4();
 
-            // For each outgoing node, generate a new tx id and upload the transmission
-            for target_id in &outgoing_nodes {
-                let tx_id = Uuid::new_v4();
-
-                // Create a Propagation transmission for the outgoing node
                 let propagation = black_hole_spec::Transmission::Propagation {
-                    emission_id: match &transmission {
-                        black_hole_spec::Transmission::Propagation { emission_id, .. } => {
-                            emission_id.clone()
-                        }
-                        other => {
-                            return Err(NucleusError::Transmission(format!(
-                                "expected Propagation for forwarding, got {:?}",
-                                other
-                            )));
-                        }
-                    },
-                    recv: tx_id,
+                    emission_id: black_hole_spec::EmissionId(ObjectId::nil()),
+                    recv: rx_id,
                     send: ObjectId::nil(),
                 };
 
-                // Serialize and upload the propagation to void at the tx endpoint
                 let data = postcard::to_allocvec(&propagation)
                     .map_err(|e| NucleusError::Transmission(format!("serialize: {e}")))?;
 
@@ -231,19 +183,129 @@ where
                     .await
                     .map_err(|e| {
                         NucleusError::Transmission(format!(
-                            "upload to tx for node {}: {e}",
-                            target_id
+                            "upload kick-off to rx for node {}: {e}",
+                            node_id
                         ))
                     })?;
 
-                debug!(
-                    target_id,
-                    ?tx_id,
-                    "uploaded propagation to outgoing node"
-                );
+                rx_map.push((node_id, rx_id));
+                debug!(node_id, %rx_id, "uploaded kick-off transmission");
             }
 
-            Ok(new_rx)
+            Ok(KickOffResult {
+                transmission_id,
+                rx_map,
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ComputeLossEffect — compute (loss_up, loss_down) from a TransmissionId
+// ---------------------------------------------------------------------------
+
+/// Effect that takes a TransmissionId, downloads the transmission, and computes
+/// the loss values (loss_up, loss_down) for potentiation.
+pub struct ComputeLossEffect;
+
+impl<J> EffectSchema<J> for ComputeLossEffect {
+    type Id = u64;
+    type In = ObjectId;
+    type Out = (f32, f32);
+    type Err = NucleusError;
+}
+
+impl<J> Effect<J> for ComputeLossEffect
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        transmission_id: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            debug!(%transmission_id, "computing loss from transmission");
+
+            let (loss_up, loss_down) = jungle
+                .compute_loss(transmission_id)
+                .await
+                .map_err(NucleusError::Transmission)?;
+
+            debug!(loss_up, loss_down, "loss computation complete");
+            Ok((loss_up, loss_down))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BroadcastPotentiationEffect — broadcast losses to all nodes
+// ---------------------------------------------------------------------------
+
+/// Output from [`BroadcastPotentiationEffect`]: the new rx map for next epoch.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct BroadcastPotentiationResult {
+    /// Map of node ids to their new recv ObjectIds for the next epoch.
+    pub new_rx_map: Vec<(u32, ObjectId)>,
+}
+
+/// Effect that broadcasts `Transmission::Potentiation` with the given loss
+/// values to all nodes' potentiation endpoints (po_tx). Generates a new recv
+/// ObjectId for each node and uploads the transmission. Does not wait for
+/// any response.
+pub struct BroadcastPotentiationEffect;
+
+impl<J> EffectSchema<J> for BroadcastPotentiationEffect {
+    type Id = u64;
+    type In = super::action::BroadcastPotentiationInput;
+    type Out = BroadcastPotentiationResult;
+    type Err = NucleusError;
+}
+
+impl<J> Effect<J> for BroadcastPotentiationEffect
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            debug!(
+                loss_up = input.loss_up,
+                loss_down = input.loss_down,
+                node_count = input.node_ids.len(),
+                "broadcasting potentiation to all nodes"
+            );
+
+            let mut new_rx_map = Vec::new();
+
+            for &node_id in &input.node_ids {
+                let new_rx = Uuid::new_v4();
+
+                let potentiation = black_hole_spec::Transmission::Potentiation {
+                    loss_up: input.loss_up,
+                    loss_down: input.loss_down,
+                    recv: new_rx,
+                };
+
+                let data = postcard::to_allocvec(&potentiation)
+                    .map_err(|e| NucleusError::Transmission(format!("serialize: {e}")))?;
+
+                jungle
+                    .upload_to_void(data)
+                    .await
+                    .map_err(|e| {
+                        NucleusError::Transmission(format!(
+                            "upload potentiation to po_tx for node {}: {e}",
+                            node_id
+                        ))
+                    })?;
+
+                new_rx_map.push((node_id, new_rx));
+                debug!(node_id, %new_rx, "uploaded potentiation transmission");
+            }
+
+            Ok(BroadcastPotentiationResult { new_rx_map })
         }
     }
 }

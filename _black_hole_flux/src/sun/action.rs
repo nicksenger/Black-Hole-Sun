@@ -1,9 +1,10 @@
-//! Sun actions — spawning animals and populating sun state.
+//! Sun actions — spawning animals, propagation, loss computation, and potentiation.
 
 use std::marker::PhantomData;
 
 use super::Tagged;
-use super::effect::WaitForLayerTransmission;
+use super::effect::{BroadcastPotentiationEffect, ComputeLossEffect, KickOffEffect, WaitForLayerTransmission};
+use black_hole_spec::ObjectId;
 use jungle_sdk::prelude::*;
 use typosaurus::collections::list::{Empty, List};
 use typosaurus::num::Unsigned;
@@ -42,13 +43,6 @@ where
 // ---------------------------------------------------------------------------
 
 /// Action that spawns an animal `T` tagged by [`Tag`](super::Tag) into the jungle.
-///
-/// Takes the animal's seed as input, spawns it via [`SpawnAnimal`](super::effect::SpawnAnimal)
-/// effect, receives the journey UUID, then populates the [`SunState`](super::SunState)
-/// outgoing map with directed edges from this node to each outgoing node ID
-/// derived from the type-level list `E`.
-///
-/// Returns the journey UUID for downstream use.
 pub struct Spawn<Tag>(PhantomData<fn() -> Tag>);
 
 #[jungle::action]
@@ -76,19 +70,11 @@ where
         let journey_id = output.map_err(|e| Failure::Message(format!("spawn failed: {e}")))?;
 
         let node_id = <<T as Tagged>::N as Unsigned>::U32;
-
         let outgoing_node_ids = <<T as Tagged>::E as NodeIdsFromList>::node_ids();
 
-        // Lock the inner struct and register this node + its outgoing edges
-        let mut inner = state.propagation.a.shared.lock().unwrap();
-
-        // Store the journey ID for this node
+        let mut inner = state.a.shared.lock().unwrap();
         inner.journey_ids.insert(node_id, journey_id);
-
-        // Register outgoing edges: this node -> each outgoing node
         inner.outgoing.insert(node_id, outgoing_node_ids.clone());
-
-        // Register each outgoing node with this node as an incoming edge
         for target in outgoing_node_ids {
             inner.incoming.entry(target).or_default().push(node_id);
         }
@@ -101,14 +87,6 @@ where
 // BuildTopologicalSort — build topological layers using Kahn's algorithm
 // ---------------------------------------------------------------------------
 
-/// Action that builds the topological layer ordering for a branch.
-///
-/// Uses Kahn's algorithm: starts with nodes having no incoming edges (within
-/// the branch), assigns them to the first layer, then removes those nodes'
-/// outgoing edges and repeats until all nodes are layered.
-///
-/// The layers are stored outermost-first in `state.topo`, so popping from the
-/// back of the vec gives the innermost layer last (outer-to-inner processing).
 pub struct BuildTopologicalSort<S>(std::marker::PhantomData<fn() -> S>);
 
 #[jungle::action]
@@ -128,7 +106,6 @@ where
         state: &mut S,
         _output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        // Clone data from shared state while holding the lock
         let (all_nodes, outgoing) = {
             let inner = state.get_shared().lock().unwrap();
             let all_nodes: std::collections::HashSet<u32> =
@@ -136,9 +113,7 @@ where
             let outgoing = inner.outgoing.clone();
             (all_nodes, outgoing)
         };
-        // Lock is now dropped
 
-        // Build in-degree map (only count edges within the known nodes)
         let mut in_degree: std::collections::HashMap<u32, u32> =
             std::collections::HashMap::new();
         for &node in &all_nodes {
@@ -152,12 +127,10 @@ where
             }
         }
 
-        // Kahn's algorithm — build layers outermost to innermost
         let mut topo: Vec<std::collections::HashSet<u32>> = Vec::new();
         let mut remaining = in_degree.clone();
 
         loop {
-            // Find all nodes with in-degree 0
             let layer: std::collections::HashSet<u32> = remaining
                 .iter()
                 .filter(|(_, &deg)| deg == 0)
@@ -165,31 +138,23 @@ where
                 .collect();
 
             if layer.is_empty() {
-                // If there are still nodes remaining, there's a cycle
-                if !remaining.is_empty() {
-                    return Err(Failure::Message(
-                        "cycle detected in graph topology".to_string(),
-                    ));
-                }
                 break;
             }
 
             topo.push(layer.clone());
 
-            // Remove this layer and decrease in-degree of their targets
-            for &node in &layer {
-                remaining.remove(&node);
-                if let Some(targets) = outgoing.get(&node) {
+            for node in &layer {
+                remaining.remove(node);
+                if let Some(targets) = outgoing.get(node) {
                     for &target in targets {
                         if let Some(deg) = remaining.get_mut(&target) {
-                            *deg = deg.saturating_sub(1);
+                            *deg -= 1;
                         }
                     }
                 }
             }
         }
 
-        // Store the layers (outermost first, so pop from back for innermost last)
         state.set_topo(topo);
         state.set_current(std::collections::HashSet::new());
 
@@ -198,12 +163,9 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// PopLayer — pop the outermost layer into current
+// PopLayer — pop the next topological layer into current
 // ---------------------------------------------------------------------------
 
-/// Action that pops the next layer from `state.topo` into `state.current`.
-///
-/// Pops from the front (index 0) to process outermost layers first.
 pub struct PopLayer<S>(std::marker::PhantomData<fn() -> S>);
 
 #[jungle::action]
@@ -223,37 +185,33 @@ where
         state: &mut S,
         _output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let topo = state.get_topo();
-        if topo.is_empty() {
-            return Err(Failure::Message(
-                "no layers to pop".to_string(),
-            ));
-        }
+        let topo = state.get_topo().clone();
+        let layer = topo.first().cloned().ok_or_else(|| {
+            Failure::Message("no topological layers remaining".to_string())
+        })?;
 
-        // Pop the first layer (outermost) and shift remaining
-        let mut topo = topo.clone();
-        let current = topo.remove(0);
-
+        let mut topo = state.get_topo().clone();
+        topo.drain(..1);
         state.set_topo(topo);
-        state.set_current(current);
+        state.set_current(layer);
 
         Ok(())
     }
 }
 
-
 // ---------------------------------------------------------------------------
-// ProcessNode — wait for transmission, advance node, remove from current
+// ProcessNode — wait for transmission, forward to outgoing nodes
 // ---------------------------------------------------------------------------
 
-/// Action that processes one node from the current layer:
-/// 1. Collects rx endpoints for all nodes in the current layer
-/// 2. Waits for the first available transmission (via WaitForLayerTransmission)
-/// 3. Advances the received node — updates rx, forwards tx to outgoing nodes
-/// 4. Removes the processed node from current
+/// Action that processes a single node in the current topological layer.
+///
+/// Waits for a [`Transmission::Propagation`] on any of the rx endpoints for
+/// nodes in the current layer (using the branch-specific rx map). On receiving
+/// a transmission, generates new tx ids for each outgoing edge and stores them
+/// in the branch-specific tx map.
 pub struct ProcessNode<S>(std::marker::PhantomData<fn() -> S>);
 
-#[jungle::action(carry = super::effect::LayerTransmission)]
+#[jungle::action]
 impl<S> Action for ProcessNode<S>
 where
     S: TopologyState,
@@ -261,23 +219,22 @@ where
     type Effect = WaitForLayerTransmission;
     type Input = ();
     type Output = ();
+    type Carry = super::effect::LayerTransmission;
 
     fn emit(
         state: &S,
         _input: Self::Input,
     ) -> (Vec<(u32, black_hole_spec::ObjectId)>, super::effect::LayerTransmission) {
-        // Collect rx endpoints for all nodes in the current layer
-        let current = state.get_current();
+        let current = state.get_current().clone();
         let inner = state.get_shared().lock().unwrap();
 
         let endpoints: Vec<(u32, black_hole_spec::ObjectId)> = current
             .iter()
             .filter_map(|&node_id| {
-                inner.rx.get(&node_id).map(|rx| (node_id, *rx))
+                state.get_rx(&inner).get(&node_id).map(|rx| (node_id, *rx))
             })
             .collect();
 
-        // Dummy carry — the actual value comes from effect output via absorb
         let dummy = super::effect::LayerTransmission {
             node_id: 0,
             transmission: black_hole_spec::Transmission::Propagation {
@@ -302,56 +259,39 @@ where
         let node_id = layer_tx.node_id;
         let transmission = layer_tx.transmission;
 
-        // Get outgoing nodes for this node
-        let inner = state.get_shared().lock().unwrap();
-        let outgoing_nodes = inner.outgoing.get(&node_id).cloned().unwrap_or_default();
-        drop(inner);
+        let outgoing_nodes = {
+            let inner = state.get_shared().lock().unwrap();
+            inner.outgoing.get(&node_id).cloned().unwrap_or_default()
+        };
 
-        // Generate new rx id for this node
         let new_rx = uuid::Uuid::new_v4();
 
-        // Update the rx entry for this node in shared state
         {
             let mut inner = state.get_shared().lock().unwrap();
-            inner.rx.insert(node_id, new_rx);
-        }
+            state.get_rx_mut(&mut inner).insert(node_id, new_rx);
 
-        // For each outgoing node, generate a new tx id and upload the transmission
-        for target_id in &outgoing_nodes {
-            let tx_id = uuid::Uuid::new_v4();
+            for target_id in &outgoing_nodes {
+                let tx_id = uuid::Uuid::new_v4();
 
-            // Create a Propagation transmission for the outgoing node
-            let _propagation = match &transmission {
-                black_hole_spec::Transmission::Propagation { emission_id, .. } => {
-                    black_hole_spec::Transmission::Propagation {
-                        emission_id: emission_id.clone(),
-                        recv: tx_id,
-                        send: black_hole_spec::ObjectId::nil(),
+                match &transmission {
+                    black_hole_spec::Transmission::Propagation { .. } => {}
+                    other => {
+                        return Err(Failure::Message(format!(
+                            "expected Propagation for forwarding from node {}, got {:?}",
+                            node_id, other
+                        )));
                     }
                 }
-                other => {
-                    return Err(Failure::Message(format!(
-                        "expected Propagation for forwarding from node {}, got {:?}",
-                        node_id, other
-                    )));
-                }
-            };
 
-            // Store the tx id in shared state for this outgoing edge
-            {
-                let mut inner = state.get_shared().lock().unwrap();
-                inner.tx.insert(*target_id, tx_id);
+                state.get_tx_mut(&mut inner).insert(*target_id, tx_id);
+
+                tracing::debug!(
+                    node_id, target_id, ?tx_id,
+                    "forwarded transmission to outgoing node"
+                );
             }
-
-            tracing::debug!(
-                node_id,
-                target_id,
-                ?tx_id,
-                "forwarded transmission to outgoing node"
-            );
         }
 
-        // Remove the processed node from current
         let mut current = state.get_current().clone();
         current.remove(&node_id);
         state.set_current(current);
@@ -359,12 +299,159 @@ where
         Ok(())
     }
 }
+
 // ---------------------------------------------------------------------------
-// TopologyState — trait for branch state types (A, B, C)
+// KickOff — generate initial TransmissionId and send to first-layer nodes
+// ---------------------------------------------------------------------------
+
+/// Action that kicks off propagation by generating a TransmissionId and
+/// sending it to the rx endpoints of all nodes in the first topological layer
+/// (those with no incoming edges / dependencies).
+///
+/// Takes unit input, finds root nodes from shared state, generates a new
+/// TransmissionId stored in shared state, and uploads Propagation transmissions
+/// to each root node's rx endpoint. Outputs unit — the transmission id is stored
+/// in shared state for ComputeLoss to retrieve later.
+pub struct KickOff;
+
+#[jungle::action]
+impl Action for KickOff {
+    type Effect = KickOffEffect;
+    type Input = ();
+    type Output = ();
+    type Carry = ();
+
+    fn emit(state: &super::SunState, _input: Self::Input) -> Vec<u32> {
+        let inner = state.a.shared.lock().unwrap();
+        let all_nodes: std::collections::HashSet<u32> =
+            inner.journey_ids.keys().cloned().collect();
+        let incoming = inner.incoming.clone();
+        drop(inner);
+
+        let roots: Vec<u32> = all_nodes
+            .into_iter()
+            .filter(|&node| incoming.get(&node).map_or(true, |v| v.is_empty()))
+            .collect();
+
+        roots
+    }
+
+    fn absorb(
+        state: &mut super::SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let result = output.map_err(|e| {
+            Failure::Message(format!("kick-off failed: {e}"))
+        })?;
+
+        // Store the initial rx ids and transmission id in shared state
+        let mut inner = state.a.shared.lock().unwrap();
+        inner.transmission_id = result.transmission_id;
+        for (node_id, rx_id) in &result.rx_map {
+            inner.p1_rx.insert(*node_id, *rx_id);
+            inner.p2_rx.insert(*node_id, *rx_id);
+        }
+        drop(inner);
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ComputeLoss — compute (loss_up, loss_down) from shared TransmissionId
+// ---------------------------------------------------------------------------
+
+/// Action that retrieves the TransmissionId stored by KickOff in shared state,
+/// and computes the loss values (loss_up, loss_down) for potentiation.
+pub struct ComputeLoss;
+
+#[jungle::action]
+impl Action for ComputeLoss {
+    type Effect = ComputeLossEffect;
+    type Input = ();
+    type Output = (f32, f32);
+    type Carry = ();
+
+    fn emit(state: &super::SunState, _input: Self::Input) -> ObjectId {
+        let inner = state.a.shared.lock().unwrap();
+        inner.transmission_id
+    }
+
+    fn absorb(
+        _state: &mut super::SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|e| {
+            Failure::Message(format!("compute loss failed: {e}"))
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BroadcastPotentiation — broadcast losses to all nodes
+// ---------------------------------------------------------------------------
+
+/// Action that broadcasts `Transmission::Potentiation` with the computed
+/// loss values to all nodes' potentiation endpoints (po_tx).
+///
+/// Takes (loss_up, loss_down) as input, generates a new recv ObjectId for
+/// each node, uploads the Potentiation transmission to each po_tx endpoint,
+/// and updates the rx maps so the next epoch can begin. Exits without waiting
+/// for any response transmission.
+pub struct BroadcastPotentiation;
+
+#[jungle::action]
+impl Action for BroadcastPotentiation {
+    type Effect = BroadcastPotentiationEffect;
+    type Input = (f32, f32);
+    type Output = ();
+    type Carry = ();
+
+    fn emit(state: &super::SunState, input: Self::Input) -> BroadcastPotentiationInput {
+        let inner = state.a.shared.lock().unwrap();
+        let node_ids: Vec<u32> = inner.journey_ids.keys().cloned().collect();
+        drop(inner);
+
+        BroadcastPotentiationInput {
+            loss_up: input.0,
+            loss_down: input.1,
+            node_ids,
+        }
+    }
+
+    fn absorb(
+        state: &mut super::SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let result = output.map_err(|e| {
+            Failure::Message(format!("broadcast potentiation failed: {e}"))
+        })?;
+
+        let mut inner = state.a.shared.lock().unwrap();
+        for (node_id, new_rx) in &result.new_rx_map {
+            inner.p1_rx.insert(*node_id, *new_rx);
+            inner.p2_rx.insert(*node_id, *new_rx);
+        }
+        drop(inner);
+
+        Ok(())
+    }
+}
+
+/// Input for the [`BroadcastPotentiation`] effect.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct BroadcastPotentiationInput {
+    pub loss_up: f32,
+    pub loss_down: f32,
+    pub node_ids: Vec<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// TopologyState — trait for branch state types (PropA, PropB)
 // ---------------------------------------------------------------------------
 
 /// Trait that provides accessors for the topology-related fields
-/// shared by [`A`](super::A), [`B`](super::B), and [`C`](super::C).
+/// shared by [`PropA`](super::PropA) and [`PropB`](super::PropB).
 pub trait TopologyState {
     /// Access the shared inner state.
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>>;
@@ -380,9 +467,33 @@ pub trait TopologyState {
 
     /// Set the current layer being processed.
     fn set_current(&mut self, current: std::collections::HashSet<u32>);
+
+    /// Get a reference to the branch-specific tx map from locked inner state.
+    fn get_tx<'a>(
+        &self,
+        inner: &'a super::SunInner,
+    ) -> &'a std::collections::HashMap<u32, ObjectId>;
+
+    /// Get a mutable reference to the branch-specific tx map from locked inner state.
+    fn get_tx_mut<'a>(
+        &self,
+        inner: &'a mut super::SunInner,
+    ) -> &'a mut std::collections::HashMap<u32, ObjectId>;
+
+    /// Get a reference to the branch-specific rx map from locked inner state.
+    fn get_rx<'a>(
+        &self,
+        inner: &'a super::SunInner,
+    ) -> &'a std::collections::HashMap<u32, ObjectId>;
+
+    /// Get a mutable reference to the branch-specific rx map from locked inner state.
+    fn get_rx_mut<'a>(
+        &self,
+        inner: &'a mut super::SunInner,
+    ) -> &'a mut std::collections::HashMap<u32, ObjectId>;
 }
 
-impl TopologyState for super::A {
+impl TopologyState for super::PropA {
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
         &self.shared
     }
@@ -398,9 +509,27 @@ impl TopologyState for super::A {
     fn set_current(&mut self, current: std::collections::HashSet<u32>) {
         self.current = current;
     }
+    fn get_tx<'a>(&self, inner: &'a super::SunInner) -> &'a std::collections::HashMap<u32, ObjectId> {
+        &inner.p1_tx
+    }
+    fn get_tx_mut<'a>(
+        &self,
+        inner: &'a mut super::SunInner,
+    ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
+        &mut inner.p1_tx
+    }
+    fn get_rx<'a>(&self, inner: &'a super::SunInner) -> &'a std::collections::HashMap<u32, ObjectId> {
+        &inner.p1_rx
+    }
+    fn get_rx_mut<'a>(
+        &self,
+        inner: &'a mut super::SunInner,
+    ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
+        &mut inner.p1_rx
+    }
 }
 
-impl TopologyState for super::B {
+impl TopologyState for super::PropB {
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
         &self.shared
     }
@@ -416,22 +545,22 @@ impl TopologyState for super::B {
     fn set_current(&mut self, current: std::collections::HashSet<u32>) {
         self.current = current;
     }
-}
-
-impl TopologyState for super::C {
-    fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
-        &self.shared
+    fn get_tx<'a>(&self, inner: &'a super::SunInner) -> &'a std::collections::HashMap<u32, ObjectId> {
+        &inner.p2_tx
     }
-    fn get_topo(&self) -> &Vec<std::collections::HashSet<u32>> {
-        &self.topo
+    fn get_tx_mut<'a>(
+        &self,
+        inner: &'a mut super::SunInner,
+    ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
+        &mut inner.p2_tx
     }
-    fn set_topo(&mut self, topo: Vec<std::collections::HashSet<u32>>) {
-        self.topo = topo;
+    fn get_rx<'a>(&self, inner: &'a super::SunInner) -> &'a std::collections::HashMap<u32, ObjectId> {
+        &inner.p2_rx
     }
-    fn get_current(&self) -> &std::collections::HashSet<u32> {
-        &self.current
-    }
-    fn set_current(&mut self, current: std::collections::HashSet<u32>) {
-        self.current = current;
+    fn get_rx_mut<'a>(
+        &self,
+        inner: &'a mut super::SunInner,
+    ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
+        &mut inner.p2_rx
     }
 }
