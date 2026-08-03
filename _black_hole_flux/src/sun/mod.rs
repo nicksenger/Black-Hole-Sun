@@ -79,15 +79,17 @@ impl EventHorizon for Empty {
 }
 
 //// 1. Spawn all children getting uuids
-//// OUTER LOOP
+//// LOOP FOREVER
 //// // FOR STAGES (prop1, prop2, potentiation)
 //// // 2. Build topological ordering
 //// // // WHILE TOPO NOT EMPTY
 //// // // 3. Pop topo vec into current
 //// // // // WHILE CURRENT NOT EMPTY
-//// // // // 4. wait for FIRST rx of the set
-//// // // // 5. remove from current and rotate rx
-//// // // // 6. construct and send to outgoing-tx with rx ObjectIds as send
-//// // // // 7. rotate tx
+//// // // // 4. wait for whichever rx from the set becomes available on void first
+//// // // // 5. remove from current and update rx for node
+//// // // // 6. construct transmission and send to outgoing-tx with rx ObjectIds as send
+//// // // // 7. update tx for outgoing nodes
 //#[derive(Flow)]
 //pub struct BlackHole(Step<TopologicalSort>);
+#[derive(Flow)]
+pub struct BlackHole();

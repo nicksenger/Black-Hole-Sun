@@ -1,5 +1,6 @@
 //! Animal definitions for black-hole-flux.
 
+use black_hole_spec::ObjectId;
 use jungle_sdk::prelude::*;
 use jungle_zoo::Noop;
 
@@ -13,6 +14,6 @@ pub struct Progenitor;
 #[jungle::animal(id = 0, generation = 0)]
 impl Animal for Progenitor {
     type State = CellState;
-    type Seed = black_hole_spec::ObjectId;
+    type Seed = ObjectId;
     type Flow = Primordium;
 }

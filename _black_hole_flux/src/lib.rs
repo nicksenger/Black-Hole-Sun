@@ -12,21 +12,19 @@
 //! A **Cell** wraps a nucleus flow in an infinite QuZO training loop driven by
 //! [`Transmission`] messages from void:
 //!
-//! 1. **WaitForInitiation** - reads `recv_id` from [`CellState`], downloads a
-//!    `Transmission::Initiation`, stores the new `recv_id` in state.
-//! 2. **PerturbUp** - perturbs the associated quark's weights upward.
-//! 3. **WaitForPropagation** - reads `recv_id` from state, downloads a
+//! 1. **PerturbUp** - perturbs the associated quark's weights upward.
+//! 2. **WaitForPropagation** - reads `recv_id` from state, downloads a
 //!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 4. **Nucleus** - runs the nucleus pipeline.
-//! 5. **Transmit** - propagates the emission output to the next cell.
-//! 6. **PerturbDown** - perturbs the quark's weights downward.
-//! 7. **WaitForPropagation** - reads `recv_id` from state, downloads another
+//! 3. **Nucleus** - runs the nucleus pipeline.
+//! 4. **Transmit** - propagates the emission output to the next cell.
+//! 5. **PerturbDown** - perturbs the quark's weights downward.
+//! 6. **WaitForPropagation** - reads `recv_id` from state, downloads a
 //!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 8. **Nucleus** - runs the nucleus pipeline again.
-//! 9. **Transmit** - propagates the emission output to the next cell.
-//! 10. **WaitForPotentiation** - reads `recv_id` from state, downloads a
+//! 7. **Nucleus** - runs the nucleus pipeline again.
+//! 8. **Transmit** - propagates the emission output to the next cell.
+//! 9. **WaitForPotentiation** - reads `recv_id` from state, downloads a
 //!     `Transmission::Potentiation`, stores the new `recv_id`, emits loss values.
-//! 11. **Optimize** - applies the QuZO optimization update.
+//! 10. **Optimize** - applies the QuZO optimization update.
 //!
 //! # State
 //!
@@ -65,10 +63,10 @@ pub use black_hole_spec::{
 pub use animal::Progenitor;
 pub use cell::action::{
     CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, QuarkInferStep,
-    Transmit, WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
+    Transmit, WaitForPotentiationAction, WaitForPropagationAction,
 };
 pub use cell::effect::{
-    QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect, WaitForInitiation,
+    QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect,
     WaitForPotentiation, WaitForPropagation,
 };
 pub use nucleus::effect::QuarkInfer;

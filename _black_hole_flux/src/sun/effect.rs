@@ -7,7 +7,7 @@ use jungle_sdk::prelude::*;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::ops::VoidInferOps;
+use crate::ops::{SunOps, VoidInferOps};
 use crate::NucleusError;
 
 // ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ where
     A::Id: AnimalIdValue,
     A::Generation: typosaurus::num::Unsigned,
     A::Seed: Sync + Send + 'static,
-    J: VoidInferOps,
+    J: SunOps,
 {
     fn effect(
         jungle: &J,

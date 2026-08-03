@@ -283,7 +283,7 @@ async fn progenitor_flux_flow() {
     //    PerturbDown -> WaitForPropagation -> Nucleus -> Transmit ->
     //    WaitForPotentiation -> Optimize -> (loop back to WaitForPropagation ...)
     //
-    //    Chain: Initiation -> Propagation(1) -> Propagation(2) -> Potentiation -> Propagation(3) -> Propagation(4)
+    //    Chain: Propagation(1) -> Propagation(2) -> Potentiation -> Propagation(3) -> Propagation(4)
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -427,7 +427,7 @@ async fn progenitor_flux_flow() {
     let propagation_void_id =
         void_upload(&make_client_endpoint().await, void_addr, propagation_bytes).await;
 
-    // 5. Spawn the Progenitor with state pointing to the Initiation.
+    // 5. Spawn the Progenitor with state pointing to the first propagation.
     let spawn_result = client.spawn::<Progenitor>(&propagation_void_id).await;
     assert!(
         spawn_result.is_ok(),

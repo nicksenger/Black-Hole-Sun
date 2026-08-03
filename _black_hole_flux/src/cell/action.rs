@@ -29,7 +29,7 @@ pub use black_hole_spec::EmissionId;
 
 use super::effect::{
     QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect,
-    WaitForInitiation, WaitForPotentiation, WaitForPropagation,
+    WaitForPotentiation, WaitForPropagation,
 };
 
 // ---------------------------------------------------------------------------
@@ -154,40 +154,6 @@ impl Action for Optimize {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("optimize failed: {e}")))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// WaitForInitiationAction — await a Transmission::Initiation from void
-// ---------------------------------------------------------------------------
-
-/// Action that waits for an initiation transmission using the recv_id from
-/// [`CellState`].
-///
-/// Reads `recv_id` from state, downloads the transmission, and stores the
-/// new `recv_id` back into state. Returns unit — there is no data payload
-/// to thread downstream; the emission ID is embedded in the initiation.
-pub struct WaitForInitiationAction;
-
-#[jungle::action]
-impl Action for WaitForInitiationAction {
-    type Effect = WaitForInitiation;
-    type Input = black_hole_spec::ObjectId;
-    type Output = ();
-    type Carry = ();
-
-    fn emit(_state: &CellState, input: Self::Input) -> black_hole_spec::ObjectId {
-        input
-    }
-
-    fn absorb(
-        state: &mut CellState,
-        output: EffectCompletion<Self::Effect>,
-    ) -> Result<Self::Output, Failure> {
-        let ((), recv_id) =
-            output.map_err(|e| Failure::Message(format!("wait for initiation failed: {e}")))?;
-        state.recv_id = recv_id;
-        Ok(())
     }
 }
 

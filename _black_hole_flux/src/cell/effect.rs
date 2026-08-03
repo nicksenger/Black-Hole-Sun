@@ -112,50 +112,6 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// WaitForInitiation — await a Transmission::Initiation from void
-// ---------------------------------------------------------------------------
-
-/// Effect that waits for a [`Transmission::Initiation`] at the given [`ObjectId`].
-///
-/// Downloads the transmission from void and returns the next transmission ID
-/// for state threading. Returns unit as the data payload since initiation
-/// carries no emission to process downstream.
-pub struct WaitForInitiation;
-
-impl<J> EffectSchema<J> for WaitForInitiation {
-    type Id = num::U55;
-    type In = ObjectId;
-    type Out = ((), ObjectId);
-    type Err = NucleusError;
-}
-
-impl<J> Effect<J> for WaitForInitiation
-where
-    J: VoidInferOps,
-{
-    fn effect(jungle: &J, id: Self::In) -> impl Future<Output = Result<Self::Out, Self::Err>> {
-        async move {
-            debug!(%id, "awaiting initiation transmission");
-            let transmission = jungle
-                .wait_for_transmission(id)
-                .await
-                .map_err(NucleusError::Transmission)?;
-            match transmission {
-                Transmission::Initiation { recv } => {
-                    debug!(%recv, "initiation received");
-                    Ok(((), recv))
-                }
-                other => {
-                    let msg = format!("expected Initiation, got {:?}", other);
-                    debug!("initiation failed: {msg}");
-                    Err(NucleusError::Transmission(msg))
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // WaitForPropagation — await a Transmission::Propagation from void
 // ---------------------------------------------------------------------------
 

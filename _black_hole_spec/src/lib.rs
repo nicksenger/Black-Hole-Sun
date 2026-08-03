@@ -121,9 +121,6 @@ pub struct EmissionId(pub ObjectId);
 /// Input / Output from a Cell
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Transmission {
-    Initiation {
-        recv: ObjectId,
-    },
     Propagation {
         emission_id: EmissionId,
         recv: ObjectId,
