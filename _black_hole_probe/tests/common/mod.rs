@@ -133,6 +133,29 @@ pub async fn void_download(endpoint: &quinn::Endpoint, addr: SocketAddr, id: Obj
     }
 }
 
+pub async fn void_download_result(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    id: ObjectId,
+) -> Result<Vec<u8>, String> {
+    let server_name = "localhost";
+    let conn = match endpoint.connect(addr, &server_name).unwrap().await {
+        Ok(c) => c,
+        Err(e) => return Err(format!("connect failed: {e}")),
+    };
+    let (mut send, mut recv) = match conn.open_bi().await {
+        Ok(s) => s,
+        Err(e) => return Err(format!("open_bi failed: {e}")),
+    };
+    send_frame(&mut send, &VoidIn::Download { id }).await;
+    let resp: VoidOut = read_frame(&mut recv).await;
+    match resp {
+        VoidOut::Downloaded { data } => Ok(data),
+        VoidOut::Error { message } => Err(message),
+        _ => Err("unexpected void response for download".into()),
+    }
+}
+
 pub async fn quark_infer(endpoint: &quinn::Endpoint, addr: SocketAddr, input_id: ObjectId) -> ObjectId {
     let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();

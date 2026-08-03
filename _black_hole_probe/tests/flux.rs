@@ -106,6 +106,24 @@ async fn upload_transmission(addr: SocketAddr, transmission: &Transmission) -> O
     void_upload(&endpoint, addr, data).await
 }
 
+/// Poll void until data appears at `id`, deserializing as `Transmission`.
+async fn wait_for_void_transmission(addr: SocketAddr, id: ObjectId) -> Transmission {
+    use tokio::time::{sleep, Duration};
+    loop {
+        let endpoint = make_client_endpoint().await;
+        match void_download_result(&endpoint, addr, id).await {
+            Ok(data) => {
+                return postcard::from_bytes(&data)
+                    .expect("failed to deserialize Transmission from void");
+            }
+            Err(e) => {
+                tracing::debug!(%id, error = %e, "download failed, retrying in 1s");
+            }
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
 /// Download the Qwen tokenizer from HuggingFace.
 fn get_tokenizer() -> tokenizers::Tokenizer {
     let tokenizer_repo = "Qwen/Qwen3.5-0.8B".to_string();
@@ -338,12 +356,6 @@ async fn progenitor_flux_flow() {
     let journey_id = spawn_result.unwrap().journey_id;
     println!("Spawned Progenitor journey: {journey_id}");
 
-    // 5. Subscribe to step updates before starting the worker, so we don't miss events.
-    let mut subscription = client
-        .subscribe_step_updates(journey_id, None)
-        .await
-        .expect("subscribe should succeed");
-
     // 6. Start a JungleWorker with Progenitor support.
     //    Spawned after subscribing so effects execute only after we're listening.
     let worker = JungleWorker::new(jungle, client.clone());
@@ -351,67 +363,36 @@ async fn progenitor_flux_flow() {
         let _ = worker.spawn().await;
     });
 
-    let data_received = tokio::time::timeout(Duration::from_secs(30), async {
-        use jungle_sdk::RunnerUpdateOut;
-        let mut effects_started = 0u32;
-        let mut effects_succeeded = 0u32;
-
-        while let Some(update_result) = subscription.next().await {
-            let update = update_result.expect("stream item should be ok");
-            match update.event {
-                RunnerUpdateOut::EffectInput { .. } => {
-                    effects_started += 1;
-                }
-                RunnerUpdateOut::EffectSuccessOutput { .. } => {
-                    effects_succeeded += 1;
-                    if effects_succeeded >= 2 {
-                        return Some((effects_started, effects_succeeded));
-                    }
-                }
-                RunnerUpdateOut::EffectFailureOutput { node_id, uuid } => {
-                    let status = client
-                        .journey_details(journey_id)
-                        .await
-                        .expect("journey_details should succeed");
-                    eprintln!(
-                        "Effect failed: journey={journey_id} effect={uuid} \
-                         node_id={node_id} seq={} ts_ms={} status={status:?}",
-                        update.sequence_id, update.event_unix_ms
-                    );
-                    return None;
-                }
-                RunnerUpdateOut::NodeLifecycle { .. }
-                | RunnerUpdateOut::SleepScheduled { .. }
-                | RunnerUpdateOut::SleepFired { .. }
-                | RunnerUpdateOut::PerturbationApplied { .. } => {}
-            }
-        }
-        Some((effects_started, effects_succeeded))
-    })
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        async {
+            let (t1, t2) = tokio::join!(
+                wait_for_void_transmission(void_addr, listen_1),
+                wait_for_void_transmission(void_addr, listen_2),
+            );
+            (t1, t2)
+        },
+    )
     .await;
 
-    match data_received {
-        Ok(Some((started, succeeded))) => {
-            println!("Flux flow completed: {started} effects started, {succeeded} succeeded");
-            assert!(started > 0, "expected at least one effect to start");
-            assert!(succeeded > 0, "expected at least one effect to succeed");
+    match result {
+        Ok((Transmission::Propagation { emission_id: e1, .. }, Transmission::Propagation { emission_id: e2, .. })) => {
+            println!(
+                "Flux flow completed: propagation 1 emitted {}, propagation 2 emitted {}",
+                e1.0, e2.0
+            );
         }
-        Ok(None) => {
-            let status = client
-                .journey_details(journey_id)
-                .await
-                .expect("journey_details should succeed");
-            panic!("stream ended without effect success, status: {status:?}");
+        Ok((t1, t2)) => {
+            panic!("expected Propagation transmissions, got {:?} and {:?}", t1, t2);
         }
         Err(e) => {
             let status = client
                 .journey_details(journey_id)
                 .await
                 .expect("journey_details should succeed");
-            panic!("timeout waiting for flux flow data (30s): {e}, status: {status:?}");
+            panic!("timeout waiting for flux flow outputs (30s): {e}, status: {status:?}");
         }
     }
-
     // Cleanup.
     worker_handle.abort();
     let _ = worker_handle.await;
