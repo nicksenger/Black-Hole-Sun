@@ -13,8 +13,8 @@ use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{
-    Emission, EmissionId, InferenceOutputId, ObjectId, QuarkServerBuilder, Transmission,
-    VoidServerBuilder,
+    DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, LogitEntry, ObjectId,
+    QuarkServerBuilder, SequenceOutput, Transmission, VoidServerBuilder,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -95,6 +95,43 @@ async fn upload_transmission(addr: SocketAddr, transmission: &Transmission) -> O
     let endpoint = make_client_endpoint().await;
     let data = to_allocvec(transmission).expect("failed to serialize transmission");
     void_upload(&endpoint, addr, data).await
+}
+
+/// Download the Qwen tokenizer from HuggingFace.
+fn get_tokenizer() -> tokenizers::Tokenizer {
+    let tokenizer_repo = "Qwen/Qwen3.5-0.8B".to_string();
+    let api = hf_hub::api::sync::Api::new().expect("failed to create hf hub api");
+    let repo = api.repo(hf_hub::Repo::with_revision(
+        tokenizer_repo.clone(),
+        hf_hub::RepoType::Model,
+        "main".to_string(),
+    ));
+    let tokenizer_file = repo
+        .get("tokenizer.json")
+        .expect("failed to download tokenizer.json from HuggingFace");
+    tokenizers::Tokenizer::from_file(tokenizer_file)
+        .expect("failed to load tokenizer")
+}
+
+/// Tokenize text into DarkTokens suitable for InferenceOutput.
+fn text_to_dark_tokens(text: &str, tokenizer: &tokenizers::Tokenizer) -> Vec<DarkToken> {
+    let tokens: Vec<u32> = tokenizer
+        .encode(text, false)
+        .expect("failed to tokenize input")
+        .get_ids()
+        .iter()
+        .map(|&id| id as u32)
+        .collect();
+    tokens
+        .iter()
+        .map(|&token_id| DarkToken {
+            predicted: token_id,
+            dark_knowledge: vec![LogitEntry {
+                token_id,
+                log_prob: 0.0,
+            }],
+        })
+        .collect()
 }
 
 async fn start_servers(
@@ -209,7 +246,19 @@ async fn progenitor_flux_flow() {
     //    The Progenitor flow: PerturbUp -> WaitForPropagation -> QuarkInfer -> PerturbDown
     //    WaitForPropagation reads recv_id from state and downloads a Transmission::Propagation.
 
-    let inference_output_id = ObjectId::nil();
+    let input_text =
+        "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
+    let tokenizer = get_tokenizer();
+    let dark_tokens = text_to_dark_tokens(input_text, &tokenizer);
+
+    let inference_output = InferenceOutput {
+        results: vec![SequenceOutput(dark_tokens)],
+    };
+    let inference_output_bytes =
+        to_allocvec(&inference_output).expect("serialize inference output");
+    let inference_output_id =
+        void_upload(&make_client_endpoint().await, void_addr, inference_output_bytes).await;
+
     let emission = Emission {
         metadata: (),
         output_id: InferenceOutputId(inference_output_id),
