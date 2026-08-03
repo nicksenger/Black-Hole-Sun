@@ -3,7 +3,7 @@
 use jungle_sdk::prelude::*;
 use jungle_zoo::Noop;
 
-use crate::action::CellState;
+use crate::cell::CellState;
 use crate::{Nucleoli, Nucleus, Primordium, WaitForInitiationAction};
 
 /// The Progenitor: the first and simplest cell — a bare quark-inference loop

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use black_hole_flux::effect::{QuarkInfer, QuarkPerturbDown, QuarkPerturbUp, WaitForPropagation};
+use black_hole_flux::{QuarkInfer, QuarkPerturbDown, QuarkPerturbUp, WaitForPropagation};
 use black_hole_flux::ops::VoidInferOps;
 use black_hole_flux::{CellState, Progenitor};
 use black_hole_sun::black_hole_flux;

@@ -59,9 +59,9 @@ use thiserror::Error;
 // Submodules
 // ---------------------------------------------------------------------------
 
-pub mod action;
+pub mod cell;
+pub mod nucleus;
 pub mod animal;
-pub mod effect;
 pub mod ops;
 
 // ---------------------------------------------------------------------------
@@ -74,15 +74,18 @@ pub use black_hole_spec::{
 };
 
 // Re-export key items from submodules so they're reachable from the crate root.
-pub use action::{
-    CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, QuarkInferStep,
-    Transmit, WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
+pub use cell::action::{
+    CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, Transmit,
+    WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
 };
-pub use animal::Progenitor;
-pub use effect::{
-    QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect,
+pub use cell::effect::{
+    QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp,
+    Transmit as TransmitEffect,
     WaitForInitiation, WaitForPotentiation, WaitForPropagation,
 };
+pub use nucleus::action::QuarkInferStep;
+pub use nucleus::effect::QuarkInfer;
+pub use animal::Progenitor;
 pub use ops::VoidInferOps;
 
 // ---------------------------------------------------------------------------
@@ -121,7 +124,7 @@ pub enum NucleusError {
 // Nucleus higher-order flow
 // ---------------------------------------------------------------------------
 
-use action::QuarkInferStep as QuarkInferStep_;
+use nucleus::action::QuarkInferStep as QuarkInferStep_;
 
 /// A Nucleus composes three sequential stages:
 ///
@@ -146,7 +149,7 @@ pub struct Nucleoli<In, Out>(
 // Cell higher-order flow
 // ---------------------------------------------------------------------------
 
-use action::{
+use cell::action::{
     Optimize as Optimize_, PerturbDown as PerturbDown_, PerturbUp as PerturbUp_,
     Transmit as Transmit_, WaitForInitiationAction as WaitForInitiationAction_,
     WaitForPotentiationAction as WaitForPotentiationAction_,
@@ -167,11 +170,11 @@ pub struct Cell<N>(
 ///
 /// Sequential stages (each iteration):
 ///
-/// PerturbUp → WaitForPropagation → Nucleus → Transmit →
-/// PerturbDown → WaitForPropagation → Nucleus → Transmit →
-/// WaitForPotentiation → Optimize
+/// PerturbUp -> WaitForPropagation -> Nucleus -> Transmit ->
+/// PerturbDown -> WaitForPropagation -> Nucleus -> Transmit ->
+/// WaitForPotentiation -> Optimize
 ///
-/// The [`CellState`](action::CellState) holds `recv_id` which is read by each
+/// The [`CellState`](cell::action::CellState) holds `recv_id` which is read by each
 /// wait-for action to know which void key to download, and updated with the
 /// next transmission ID after each download completes.  Data payloads
 /// (EmissionId, Potentiation) flow through action Output types. `N` is the

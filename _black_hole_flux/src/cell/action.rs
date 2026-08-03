@@ -1,88 +1,37 @@
-//! Actions for quark inference, perturbation, optimization, and transmission waiting.
-
-use std::marker::PhantomData;
+//! Cell actions for perturbation, optimization, transmission, and waiting.
 
 use jungle_sdk::prelude::*;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 
-pub use black_hole_spec::{EmissionId, ObjectId};
+pub use super::CellState;
+pub use black_hole_spec::EmissionId;
 
-use crate::effect::{
-    QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, WaitForInitiation,
-    WaitForPotentiation, WaitForPropagation,
+use super::effect::{
+    QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect,
+    WaitForInitiation, WaitForPotentiation, WaitForPropagation,
 };
-
-// ---------------------------------------------------------------------------
-// CellState — holds the next transmission ID threaded across Cell iterations
-// ---------------------------------------------------------------------------
-
-/// State carried by a [`Cell`](crate::cell) journey.
-///
-/// Animals that use [`Cell`](crate::cell) as their Journey should use this as
-/// their state type so the wait-for actions can read and write the next
-/// transmission ID.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
-pub struct CellState {
-    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
-    pub recv_id: ObjectId,
-    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to upload.
-    pub send_id: ObjectId,
-    /// Random seed passed to the perturb-up step each iteration.
-    pub perturbation_seed: u64,
-}
 
 // ---------------------------------------------------------------------------
 // Potentiation — payload from a Transmission::Potentiation
 // ---------------------------------------------------------------------------
 
-/// Payload carried by a [`Transmission::Potentiation`].
+/// Payload carried by a [`Transmission::Potentiation`](black_hole_spec::Transmission).
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Potentiation {
     pub loss_up: f32,
     pub loss_down: f32,
-    pub recv_id: ObjectId,
+    pub recv_id: black_hole_spec::ObjectId,
 }
 
 // ---------------------------------------------------------------------------
 // Propagation — payload from a Transmission::Propagation
 // ---------------------------------------------------------------------------
 
-/// Payload carried by a [`Transmission::Propagation`].
+/// Payload carried by a [`Transmission::Propagation`](black_hole_spec::Transmission).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Propagation {
     pub emission_id: EmissionId,
-    pub recv_id: ObjectId,
-    pub send_id: ObjectId,
-}
-
-// ---------------------------------------------------------------------------
-// QuarkInferStep — action wrapper for use inside Nucleus flows
-// ---------------------------------------------------------------------------
-
-/// Action that performs quark inference on an [`EmissionId`].
-pub struct QuarkInferStep<M>(PhantomData<fn() -> M>);
-
-#[jungle::action(carry = EmissionId)]
-impl<M> Action for QuarkInferStep<M>
-where
-    M: Serialize + DeserializeOwned + Send + 'static,
-{
-    type Effect = QuarkInfer<M>;
-    type Input = EmissionId;
-    type Output = EmissionId;
-
-    fn emit(_state: &CellState, input: Self::Input) -> (EmissionId, EmissionId) {
-        (input.clone(), input)
-    }
-
-    fn absorb(
-        _state: &mut CellState,
-        output: EffectCompletion<Self::Effect>,
-        _carry: EmissionId,
-    ) -> Result<Self::Output, Failure> {
-        output.map_err(|e| Failure::Message(format!("quark inference failed: {e}")))
-    }
+    pub recv_id: black_hole_spec::ObjectId,
+    pub send_id: black_hole_spec::ObjectId,
 }
 
 // ---------------------------------------------------------------------------
@@ -172,11 +121,11 @@ pub struct WaitForInitiationAction;
 #[jungle::action]
 impl Action for WaitForInitiationAction {
     type Effect = WaitForInitiation;
-    type Input = ObjectId;
+    type Input = black_hole_spec::ObjectId;
     type Output = ();
     type Carry = ();
 
-    fn emit(state: &CellState, input: Self::Input) -> ObjectId {
+    fn emit(state: &CellState, input: Self::Input) -> black_hole_spec::ObjectId {
         input
     }
 
@@ -209,7 +158,7 @@ impl Action for WaitForPropagationAction {
     type Output = EmissionId;
     type Carry = ();
 
-    fn emit(state: &CellState, _input: Self::Input) -> ObjectId {
+    fn emit(state: &CellState, _input: Self::Input) -> black_hole_spec::ObjectId {
         state.recv_id
     }
 
@@ -243,7 +192,7 @@ impl Action for WaitForPotentiationAction {
     type Output = Potentiation;
     type Carry = ();
 
-    fn emit(state: &CellState, _input: Self::Input) -> ObjectId {
+    fn emit(state: &CellState, _input: Self::Input) -> black_hole_spec::ObjectId {
         state.recv_id
     }
 
@@ -270,11 +219,11 @@ pub struct Transmit;
 
 #[jungle::action]
 impl Action for Transmit {
-    type Effect = crate::effect::Transmit;
+    type Effect = TransmitEffect;
     type Input = EmissionId;
     type Output = ();
 
-    fn emit(state: &CellState, input: Self::Input) -> (EmissionId, ObjectId) {
+    fn emit(state: &CellState, input: Self::Input) -> (EmissionId, black_hole_spec::ObjectId) {
         (input, state.send_id)
     }
 
