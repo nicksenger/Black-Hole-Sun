@@ -83,7 +83,9 @@ impl VoidInferOps for SpaceJungle {
         Ok(())
     }
 
-    async fn optimize(&self, _loss_up: f32, _loss_down: f32) -> Result<(), String> {
+    async fn optimize(&self, loss_up: f32, loss_down: f32) -> Result<(), String> {
+        let endpoint = make_client_endpoint().await;
+        quark_optimize(&endpoint, self.quark_addr, loss_up, loss_down).await;
         Ok(())
     }
 
