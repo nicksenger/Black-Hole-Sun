@@ -23,6 +23,7 @@ use jungle_sdk::server::ServerBuilder;
 use postcard::to_allocvec;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
+use uuid::Uuid;
 
 use common::*;
 
@@ -35,13 +36,22 @@ pub struct SpaceAnimals(Progenitor);
 pub struct SpaceJungle {
     void_addr: SocketAddr,
     quark_addr: SocketAddr,
+    listen_1: Uuid,
+    listen_2: Uuid,
 }
 
 impl SpaceJungle {
-    pub fn new(void_addr: SocketAddr, quark_addr: SocketAddr) -> Self {
+    pub fn new(
+        void_addr: SocketAddr,
+        quark_addr: SocketAddr,
+        listen_1: Uuid,
+        listen_2: Uuid,
+    ) -> Self {
         Self {
             void_addr,
             quark_addr,
+            listen_1,
+            listen_2,
         }
     }
 }
@@ -217,6 +227,9 @@ async fn progenitor_flux_flow() {
         .install_default()
         .ok();
 
+    let listen_1 = Uuid::new_v4();
+    let listen_2 = Uuid::new_v4();
+
     let model_path = match require_model_path("progenitor_flux_flow") {
         Some(path) => path,
         None => return,
@@ -275,8 +288,12 @@ async fn progenitor_flux_flow() {
         send: ObjectId::nil(),
     };
     let propagation_bytes_2 = to_allocvec(&propagation_2).expect("serialize propagation 2");
-    let propagation_void_id_2 =
-        void_upload(&make_client_endpoint().await, void_addr, propagation_bytes_2).await;
+    let propagation_void_id_2 = void_upload(
+        &make_client_endpoint().await,
+        void_addr,
+        propagation_bytes_2,
+    )
+    .await;
 
     // ── First propagation (points to second) ──
     let dark_tokens = text_to_dark_tokens(input_text, &tokenizer);
