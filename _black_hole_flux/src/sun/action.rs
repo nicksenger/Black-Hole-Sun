@@ -9,39 +9,29 @@ use typosaurus::num::Unsigned;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// EdgeIdsFromList — extract runtime edge UUIDs from a type-level integer list
+// NodeIdsFromList — extract runtime node IDs from a type-level integer list
 // ---------------------------------------------------------------------------
 
 /// Trait that converts a type-level list of typenum integers into a runtime
-/// vector of edge UUIDs.
-///
-/// Each typenum integer `N` in the list is converted to a UUID by placing
-/// `N::U32` in the last four bytes of an otherwise-zero UUID.
-pub trait EdgeIdsFromList {
-    fn edge_ids() -> Vec<Uuid>;
-
-    #[inline]
-    fn uuid_from<N: Unsigned>() -> Uuid {
-        let mut bytes = [0u8; 16];
-        bytes[12..16].copy_from_slice(&<N as Unsigned>::U32.to_be_bytes());
-        Uuid::from_bytes(bytes)
-    }
+/// vector of node IDs (u32 values).
+pub trait NodeIdsFromList {
+    fn node_ids() -> Vec<u32>;
 }
 
-impl EdgeIdsFromList for Empty {
-    fn edge_ids() -> Vec<Uuid> {
+impl NodeIdsFromList for Empty {
+    fn node_ids() -> Vec<u32> {
         Vec::new()
     }
 }
 
-impl<H, T> EdgeIdsFromList for List<(H, T)>
+impl<H, T> NodeIdsFromList for List<(H, T)>
 where
     H: Unsigned,
-    T: EdgeIdsFromList,
+    T: NodeIdsFromList,
 {
-    fn edge_ids() -> Vec<Uuid> {
-        let mut ids = vec![Self::uuid_from::<H>()];
-        ids.extend(T::edge_ids());
+    fn node_ids() -> Vec<u32> {
+        let mut ids = vec![<H as Unsigned>::U32];
+        ids.extend(T::node_ids());
         ids
     }
 }
@@ -54,7 +44,8 @@ where
 ///
 /// Takes the animal's seed as input, spawns it via [`SpawnAnimal`](super::effect::SpawnAnimal)
 /// effect, receives the journey UUID, then populates the [`SunState`](super::SunState)
-/// outgoing map with deterministic edge UUIDs derived from the type-level edge list `E`.
+/// outgoing map with directed edges from this node to each outgoing node ID
+/// derived from the type-level list `E`.
 ///
 /// Returns the journey UUID for downstream use.
 pub struct Spawn<Tag>(PhantomData<fn() -> Tag>);
@@ -63,6 +54,7 @@ pub struct Spawn<Tag>(PhantomData<fn() -> Tag>);
 impl<T> Action for Spawn<T>
 where
     T: Tagged,
+    <T as Tagged>::N: Unsigned,
     <<T as Tagged>::A as Animal>::Id: AnimalIdValue,
     <<T as Tagged>::A as Animal>::Generation: Unsigned,
     <<T as Tagged>::A as Animal>::Seed: Sync + Send + 'static,
@@ -82,14 +74,22 @@ where
     ) -> Result<Self::Output, Failure> {
         let journey_id = output.map_err(|e| Failure::Message(format!("spawn failed: {e}")))?;
 
-        let edge_ids = <<T as Tagged>::E as EdgeIdsFromList>::edge_ids();
+        let node_id = <<T as Tagged>::N as Unsigned>::U32;
 
-        // Register outgoing edges: this node -> edge UUIDs
-        state.outgoing.insert(journey_id, edge_ids.clone());
+        let outgoing_node_ids = <<T as Tagged>::E as NodeIdsFromList>::node_ids();
 
-        // Register each edge as pointing back to this node (for incoming lookup)
-        for edge_id in edge_ids {
-            state.incoming.entry(edge_id).or_default().push(journey_id);
+        // Lock the inner struct and register this node + its outgoing edges
+        let mut inner = state.a.0.lock().unwrap();
+
+        // Store the journey ID for this node
+        inner.journey_ids.insert(node_id, journey_id);
+
+        // Register outgoing edges: this node -> each outgoing node
+        inner.outgoing.insert(node_id, outgoing_node_ids.clone());
+
+        // Register each outgoing node with this node as an incoming edge
+        for target in outgoing_node_ids {
+            inner.incoming.entry(target).or_default().push(node_id);
         }
 
         Ok(journey_id)

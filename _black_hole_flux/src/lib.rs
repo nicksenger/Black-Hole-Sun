@@ -75,7 +75,7 @@ pub use ops::VoidInferOps;
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
 pub use nucleus::Nucleus;
 
-pub use sun::{EdgeIdsFromList, Spawn, SpawnAnimal, SunState, Tag};
+pub use sun::{NodeIdsFromList, Spawn, SpawnAnimal, SunState, Tag};
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum NucleusError {

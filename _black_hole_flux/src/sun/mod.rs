@@ -5,6 +5,7 @@ pub mod effect;
 
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
 
 use black_hole_spec::ObjectId;
 use jungle_sdk::prelude::*;
@@ -13,7 +14,7 @@ use typenum::Unsigned;
 use typosaurus::collections::list::{Empty, List};
 use uuid::Uuid;
 
-pub use action::{EdgeIdsFromList, Spawn};
+pub use action::{NodeIdsFromList, Spawn};
 pub use effect::SpawnAnimal;
 
 // ---------------------------------------------------------------------------
@@ -26,7 +27,7 @@ pub use effect::SpawnAnimal;
 /// - `T`: the [`Animal`] type to be spawned at this node
 /// - `E`: a type-level heterogeneous list of typenum integers representing
 ///   the IDs of this node's outgoing edges
-pub struct Tag<N: Unsigned, A: Animal, E: EdgeIdsFromList>(
+pub struct Tag<N: Unsigned, A: Animal, E: NodeIdsFromList>(
     PhantomData<N>,
     PhantomData<A>,
     PhantomData<E>,
@@ -34,19 +35,23 @@ pub struct Tag<N: Unsigned, A: Animal, E: EdgeIdsFromList>(
 pub trait Tagged {
     type N: Unsigned;
     type A: Animal;
-    type E: EdgeIdsFromList;
+    type E: NodeIdsFromList;
 }
 
 // ---------------------------------------------------------------------------
 // SunState — runtime state for sun orchestration
 // ---------------------------------------------------------------------------
 
+pub struct A<T>(pub Arc<Mutex<T>>);
+pub struct B<T>(pub Arc<Mutex<T>>);
+pub struct C<T>(pub Arc<Mutex<T>>);
+
 /// Runtime state that tracks the topology and transmission endpoints
 /// for a sun of spawned animals.
 pub struct SunState {
-    pub a: SunInner,
-    pub b: SunInner,
-    pub c: SunInner,
+    pub a: A<SunInner>,
+    pub b: B<SunInner>,
+    pub c: C<SunInner>,
     /// Topological layers of node IDs (outer-to-inner).
     pub topo: Vec<HashSet<u32>>,
     /// Current layer being processed (popped from topo).
@@ -86,7 +91,6 @@ impl EventHorizon for Empty {
     type Flow = BlackHole;
 }
 
-//// 1. Spawn all children getting uuids
 //// LOOP FOREVER
 ///     FOCUSED-JOIN OVER 3 STATES (propagate1, propagate2, potentiate), for each branch:
 //// // 2. Build topological ordering
