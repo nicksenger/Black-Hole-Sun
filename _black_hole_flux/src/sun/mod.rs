@@ -42,20 +42,40 @@ pub trait Tagged {
 // SunState — runtime state for sun orchestration
 // ---------------------------------------------------------------------------
 
-pub struct A<T>(pub Arc<Mutex<T>>);
-pub struct B<T>(pub Arc<Mutex<T>>);
-pub struct C<T>(pub Arc<Mutex<T>>);
-
-/// Runtime state that tracks the topology and transmission endpoints
-/// for a sun of spawned animals.
-pub struct SunState {
-    pub a: A<SunInner>,
-    pub b: B<SunInner>,
-    pub c: C<SunInner>,
+pub struct A {
+    /// Shared bookkeeping
+    pub shared: Arc<Mutex<SunInner>>,
     /// Topological layers of node IDs (outer-to-inner).
     pub topo: Vec<HashSet<u32>>,
     /// Current layer being processed (popped from topo).
     pub current: HashSet<u32>,
+}
+pub struct B {
+    /// Shared bookkeeping
+    pub shared: Arc<Mutex<SunInner>>,
+    /// Topological layers of node IDs (outer-to-inner).
+    pub topo: Vec<HashSet<u32>>,
+    /// Current layer being processed (popped from topo).
+    pub current: HashSet<u32>,
+}
+pub struct C {
+    /// Shared bookkeeping
+    pub shared: Arc<Mutex<SunInner>>,
+    /// Topological layers of node IDs (outer-to-inner).
+    pub topo: Vec<HashSet<u32>>,
+    /// Current layer being processed (popped from topo).
+    pub current: HashSet<u32>,
+}
+
+/// Runtime state that tracks the topology and transmission endpoints
+/// for a sun of spawned animals.
+pub struct SunState {
+    /// State for propagation A branch
+    pub a: A,
+    /// State for propagation B branch
+    pub b: B,
+    /// State for propagation C branch
+    pub c: C,
 }
 
 pub struct SunInner {

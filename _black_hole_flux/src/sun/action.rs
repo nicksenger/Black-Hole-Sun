@@ -79,7 +79,7 @@ where
         let outgoing_node_ids = <<T as Tagged>::E as NodeIdsFromList>::node_ids();
 
         // Lock the inner struct and register this node + its outgoing edges
-        let mut inner = state.a.0.lock().unwrap();
+        let mut inner = state.a.shared.lock().unwrap();
 
         // Store the journey ID for this node
         inner.journey_ids.insert(node_id, journey_id);
