@@ -51,10 +51,6 @@ pub struct A {
     pub topo: Vec<HashSet<u32>>,
     /// Current layer being processed (popped from topo).
     pub current: HashSet<u32>,
-    /// Propagation1 send endpoints keyed by node id.
-    pub tx: HashMap<u32, ObjectId>,
-    /// Propagation1 receive endpoints keyed by node id.
-    pub rx: HashMap<u32, ObjectId>,
 }
 pub struct B {
     /// Shared bookkeeping
@@ -63,10 +59,6 @@ pub struct B {
     pub topo: Vec<HashSet<u32>>,
     /// Current layer being processed (popped from topo).
     pub current: HashSet<u32>,
-    /// Propagation2 send endpoints keyed by node id.
-    pub tx: HashMap<u32, ObjectId>,
-    /// Propagation2 receive endpoints keyed by node id.
-    pub rx: HashMap<u32, ObjectId>,
 }
 pub struct C {
     /// Shared bookkeeping
@@ -75,8 +67,6 @@ pub struct C {
     pub topo: Vec<HashSet<u32>>,
     /// Current layer being processed (popped from topo).
     pub current: HashSet<u32>,
-    /// Potentiation-reward send endpoints keyed by node id.
-    pub tx: HashMap<u32, ObjectId>,
 }
 
 /// Runtime state that tracks the topology and transmission endpoints
@@ -108,6 +98,10 @@ pub struct SunInner {
     pub incoming: HashMap<u32, Vec<u32>>,
     /// Maps each node to the nodes of its outgoing edges
     pub outgoing: HashMap<u32, Vec<u32>>,
+    /// Transmission send endpoints keyed by node id.
+    pub tx: HashMap<u32, ObjectId>,
+    /// Transmission receive endpoints keyed by node id.
+    pub rx: HashMap<u32, ObjectId>,
 }
 
 #[derive(Flow)]
