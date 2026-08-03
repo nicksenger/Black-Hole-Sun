@@ -261,11 +261,21 @@ where
     type Input = Transmission;
     type Output = Transmission;
 
-    fn emit(state: &S, _input: Self::Input) -> WaitForLayerTransmissionInput {
+    fn emit(state: &S, input: Self::Input) -> WaitForLayerTransmissionInput {
         let current = state.get_current().clone();
         let inner = state.get_shared().lock().unwrap();
         let rx_map = state.get_rx(&inner);
         let outgoing = &inner.outgoing;
+
+        // Determine if this is the first topological layer (root nodes).
+        let is_root_layer = {
+            let topo = state.get_topo();
+            if let Some(first_layer) = topo.first() {
+                current == *first_layer
+            } else {
+                false
+            }
+        };
 
         // Collect rx endpoints for all nodes in the current layer.
         let rx_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = current
@@ -289,6 +299,8 @@ where
         WaitForLayerTransmissionInput {
             rx_endpoints,
             downstream,
+            is_root_layer,
+            input_transmission: if is_root_layer { Some(input) } else { None },
         }
     }
 

@@ -194,7 +194,6 @@ pub type BranchBody = BranchABody;
 /// Alias for the full propagation layer flow.
 pub type LayerFlow = PropagationFlows;
 
-
 // ---------------------------------------------------------------------------
 // BlackHole — the top-level orchestration flow
 // ---------------------------------------------------------------------------
@@ -202,7 +201,6 @@ pub type LayerFlow = PropagationFlows;
 /// One complete training epoch: kick-off → propagation → compute-loss → broadcast-potentiation.
 #[derive(Flow)]
 pub struct Epoch(
-    Step<action::BuildAddrs>,
     Step<action::KickOff>,
     PropagationFlows,
     Step<action::ComputeLoss>,
@@ -211,20 +209,5 @@ pub struct Epoch(
 
 /// Top-level orchestration flow that drives all underlying Cell flows
 /// associated with the BlackHoleSun graph.
-///
-/// Runs a continuous outer loop containing one complete training epoch per
-/// iteration:
-///
-/// 1. **KickOff** — takes unit input, finds root nodes (no incoming edges),
-///    generates a TransmissionId stored in shared state, and sends Propagation
-///    transmissions to each root node's rx endpoint. This kicks off propagation.
-/// 2. **PropagationFlows** — two focused branches (A and B) run in parallel,
-///    each processing nodes topologically. Branch A uses p1_tx/p1_rx maps,
-///    branch B uses p2_tx/p2_rx maps.
-/// 3. **ComputeLoss** — retrieves the TransmissionId from shared state,
-///    downloads the transmission, and computes (loss_up, loss_down).
-/// 4. **BroadcastPotentiation** — broadcasts `Transmission::Potentiation` with
-///    the loss values to all nodes' po_tx endpoints, including a new recv
-///    ObjectId that replaces the used tx. Exits without waiting for responses.
 #[derive(Flow)]
-pub struct BlackHole(While<Always<SunState, ()>, Epoch>);
+pub struct BlackHole(Step<action::BuildAddrs>, While<Always<SunState, ()>, Epoch>);
