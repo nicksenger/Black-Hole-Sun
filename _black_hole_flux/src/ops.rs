@@ -8,7 +8,7 @@ use serde::Serialize;
 // Re-exports — keep common spec types handy alongside the trait
 // ---------------------------------------------------------------------------
 
-pub use black_hole_spec::{Emission, EmissionId, ObjectId, Transmission};
+pub use black_hole_spec::{Emission, EmissionId, InferenceRequest, ObjectId, Transmission};
 
 /// Capability trait that guarantees a Jungle can talk to void and quark.
 ///
@@ -36,7 +36,7 @@ pub trait VoidInferOps: Send + Sync {
 
     /// Run quark inference on an emission stored at `input_id` in void.
     /// Returns the void id of the resulting `InferenceOutput`.
-    async fn infer(&self, input_id: ObjectId) -> Result<ObjectId, String>;
+    async fn infer(&self, request: InferenceRequest) -> Result<ObjectId, String>;
 
     /// Perturb the associated quark's weights in the positive direction.
     ///

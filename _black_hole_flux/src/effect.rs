@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tracing::debug;
 
-pub use black_hole_spec::{Emission, EmissionId, InferenceOutputId, ObjectId, Transmission};
+pub use black_hole_spec::{Emission, EmissionId, InferenceOutputId, InferenceRequest, ObjectId, Transmission};
 
 use crate::action::{Potentiation, Propagation};
 use crate::ops::VoidInferOps;
@@ -50,8 +50,12 @@ where
             let input_output_id = emission.output_id.0;
             debug!(emission_id = %obj_id, "downloaded emission for inference");
 
+            let request = InferenceRequest::VoidId {
+                id: InferenceOutputId(input_output_id),
+                limit: 256,
+            };
             let output_id = jungle
-                .infer(input_output_id)
+                .infer(request)
                 .await
                 .map_err(NucleusError::Inference)?;
             debug!(output_id = %output_id, "quark inference complete");

@@ -13,8 +13,8 @@ use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{
-    DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, LogitEntry, ObjectId,
-    QuarkServerBuilder, SequenceOutput, Transmission, VoidServerBuilder,
+    DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
+    LogitEntry, ObjectId, QuarkServerBuilder, SequenceOutput, Transmission, VoidServerBuilder,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -64,9 +64,11 @@ impl VoidInferOps for SpaceJungle {
         Ok(void_upload(&endpoint, self.void_addr, data).await)
     }
 
-    async fn infer(&self, input_id: ObjectId) -> Result<ObjectId, String> {
+    async fn infer(&self, request: InferenceRequest) -> Result<ObjectId, String> {
+        let request_bytes = to_allocvec(&request).map_err(|e| format!("serialize: {e}"))?;
         let endpoint = make_client_endpoint().await;
-        Ok(quark_infer(&endpoint, self.quark_addr, input_id).await)
+        let request_id = void_upload(&endpoint, self.void_addr, request_bytes).await;
+        Ok(quark_infer(&endpoint, self.quark_addr, request_id).await)
     }
 
     async fn perturb_up(&self, seed: u64) -> Result<(), String> {
