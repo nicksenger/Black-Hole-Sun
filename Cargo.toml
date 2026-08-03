@@ -14,6 +14,7 @@ members = [
 jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun", features = ["fjall"] }
 jungle-vision = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun" }
 jungle-zoo = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun" }
+typosaurus = { git = "https://github.com/nicksenger/typosaurus.git", branch = "jungle" }
 
 [workspace.lints.clippy]
 type_complexity = "allow"

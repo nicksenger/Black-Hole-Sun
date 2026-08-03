@@ -8,6 +8,7 @@ async-trait = "0.1"
 black-hole-spec = { path = "../_black_hole_spec" }
 jungle-sdk = { workspace = true }
 jungle-zoo = { workspace = true }
+typosaurus = { workspace = true }
 postcard = "1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
