@@ -44,6 +44,16 @@ pub trait Tagged {
 /// Runtime state that tracks the topology and transmission endpoints
 /// for a sun of spawned animals.
 pub struct SunState {
+    pub a: SunInner,
+    pub b: SunInner,
+    pub c: SunInner,
+    /// Topological layers of node journey IDs (outer-to-inner).
+    pub topo: Vec<HashSet<Uuid>>,
+    /// Current layer being processed (popped from topo).
+    pub current: HashSet<Uuid>,
+}
+
+pub struct SunInner {
     /// Maps an edge UUID to the list of node journey IDs that receive on that edge.
     pub incoming: HashMap<Uuid, Vec<Uuid>>,
     /// Maps a node journey ID to the list of outgoing edge UUIDs.
@@ -52,10 +62,6 @@ pub struct SunState {
     pub tx: HashMap<Uuid, ObjectId>,
     /// Transmission receive endpoints keyed by edge UUID.
     pub rx: HashMap<Uuid, ObjectId>,
-    /// Topological layers of node journey IDs (outer-to-inner).
-    pub topo: Vec<HashSet<Uuid>>,
-    /// Current layer being processed (popped from topo).
-    pub current: HashSet<Uuid>,
 }
 
 #[derive(Flow)]
@@ -80,7 +86,7 @@ impl EventHorizon for Empty {
 
 //// 1. Spawn all children getting uuids
 //// LOOP FOREVER
-//// // FOR STAGES (prop1, prop2, potentiation)
+///     FOCUSED-JOIN OVER 3 STATES (propagate1, propagate2, potentiate), for each branch:
 //// // 2. Build topological ordering
 //// // // WHILE TOPO NOT EMPTY
 //// // // 3. Pop topo vec into current
