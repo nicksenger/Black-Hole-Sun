@@ -63,6 +63,7 @@ use thiserror::Error;
 pub mod action;
 pub mod effect;
 pub mod ops;
+pub mod animal;
 
 // ---------------------------------------------------------------------------
 // Re-exports — keep common spec types handy at the crate root
@@ -83,6 +84,7 @@ pub use effect::{
     WaitForInitiation, WaitForPotentiation, WaitForPropagation,
 };
 pub use ops::VoidInferOps;
+pub use animal::Progenitor;
 
 // ---------------------------------------------------------------------------
 // Error type

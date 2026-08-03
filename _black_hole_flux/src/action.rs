@@ -22,7 +22,7 @@ use crate::effect::{
 /// Animals that use [`Cell`](crate::cell) as their Journey should use this as
 /// their state type so the wait-for actions can read and write the next
 /// transmission ID.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct CellState {
     /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
     pub recv_id: ObjectId,
