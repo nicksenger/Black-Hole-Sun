@@ -52,6 +52,7 @@ use std::marker::PhantomData;
 
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
+use jungle_zoo::Noop;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use thiserror::Error;
@@ -61,9 +62,9 @@ use thiserror::Error;
 // ---------------------------------------------------------------------------
 
 pub mod action;
+pub mod animal;
 pub mod effect;
 pub mod ops;
-pub mod animal;
 
 // ---------------------------------------------------------------------------
 // Re-exports — keep common spec types handy at the crate root
@@ -79,12 +80,12 @@ pub use action::{
     CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, QuarkInferStep,
     Transmit, WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
 };
+pub use animal::Progenitor;
 pub use effect::{
     QuarkInfer, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect,
     WaitForInitiation, WaitForPotentiation, WaitForPropagation,
 };
 pub use ops::VoidInferOps;
-pub use animal::Progenitor;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -117,14 +118,6 @@ pub enum NucleusError {
     #[error("transmission error: {0}")]
     Transmission(String),
 }
-
-// ---------------------------------------------------------------------------
-// Noop identity flow
-// ---------------------------------------------------------------------------
-
-/// A no-op identity flow that passes its input through unchanged.
-#[derive(Flow)]
-pub struct Noop<T>(PhantomData<T>);
 
 // ---------------------------------------------------------------------------
 // Nucleus higher-order flow
@@ -213,4 +206,4 @@ pub type Prokaryote<M> = Cell<Nucleus<Noop<M>, Noop<M>, M>>;
 
 /// A primordial cell: the simplest possible [`Cell`] with no input/output
 /// processing and no metadata — a bare quark-inference loop.
-pub type Primordium = Cell<Nucleus<Noop<()>, Noop<()>, ()>>;
+pub type Primordium = Cell<Nucleus<Noop<CellState, ()>, Noop<CellState, ()>, ()>>;

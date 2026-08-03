@@ -2,13 +2,15 @@
 //!
 //! Use this crate as the single dependency point for black-hole-probe.
 
+pub use black_hole_flux;
+pub use black_hole_quark;
 pub use black_hole_spec;
 pub use black_hole_void;
-pub use black_hole_quark;
 
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
-    ObjectId, QuarkIn, InferenceInput, InferenceOutput, InferenceRequest, QuarkOut, SequenceOutput, DarkToken, LogitEntry,
+    DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
+    InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkOut, SequenceOutput, Transmission,
 };
 
 // Convenience re-exports — void types
