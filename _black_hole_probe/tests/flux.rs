@@ -29,7 +29,7 @@ use common::*;
 // ─── Ecosystem ───────────────────────────────────────────────────────────────
 
 #[derive(Animals)]
-struct SpaceAnimals(Progenitor);
+pub struct SpaceAnimals(Progenitor);
 
 /// A Jungle implementation backed by void + quark servers over QUIC.
 pub struct SpaceJungle {
@@ -197,8 +197,10 @@ async fn progenitor_flux_flow() {
     let client = connect_client_with_retry(listen_addr).await;
 
     // 4. Start a JungleWorker with Progenitor support.
-    let worker = JungleWorker::new(jungle, client);
-    let worker_handle = tokio::spawn(worker.spawn());
+    let worker = JungleWorker::new(jungle, client.clone());
+    let worker_handle = tokio::spawn(async move {
+        let _ = worker.spawn().await;
+    });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
