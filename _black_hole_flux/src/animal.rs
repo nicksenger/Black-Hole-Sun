@@ -14,5 +14,8 @@ pub struct Progenitor;
 impl Animal for Progenitor {
     type State = CellState;
     type Seed = ();
-    type Flow = Nucleus<Noop<CellState, ()>, Noop<CellState, ()>, ()>;
+    type Flow = ProgenitorFlow;
 }
+
+#[derive(Flow)]
+pub struct ProgenitorFlow(Step<Noop<CellState, ()>>);
