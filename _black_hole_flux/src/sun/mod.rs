@@ -59,21 +59,21 @@ pub struct SunState {
 }
 
 #[derive(Flow)]
-pub struct BlackHole<
+pub struct Sun<
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
     U,
 >(Step<Spawn<T>>, U);
 
-pub trait Sun {
+pub trait BlackHole {
     type Flow;
 }
-impl<T, U> Sun for List<(T, U)>
+impl<T, U> BlackHole for List<(T, U)>
 where
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
-    U: Sun,
+    U: BlackHole,
 {
-    type Flow = BlackHole<T, <U as Sun>::Flow>;
+    type Flow = Sun<T, <U as BlackHole>::Flow>;
 }
-impl Sun for Empty {
+impl BlackHole for Empty {
     type Flow = Step<Noop<SunState, ()>>;
 }
