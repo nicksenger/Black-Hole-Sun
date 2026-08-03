@@ -274,8 +274,8 @@ impl Action for Transmit {
     type Input = EmissionId;
     type Output = ();
 
-    fn emit(_state: &CellState, input: Self::Input) -> EmissionId {
-        input
+    fn emit(state: &CellState, input: Self::Input) -> (EmissionId, ObjectId) {
+        (input, state.send_id)
     }
 
     fn absorb(

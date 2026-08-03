@@ -36,8 +36,7 @@ pub struct SpaceAnimals(Progenitor);
 pub struct SpaceJungle {
     void_addr: SocketAddr,
     quark_addr: SocketAddr,
-    listen_1: Uuid,
-    listen_2: Uuid,
+    listen_addrs: Vec<Uuid>,
 }
 
 impl SpaceJungle {
@@ -50,8 +49,7 @@ impl SpaceJungle {
         Self {
             void_addr,
             quark_addr,
-            listen_1,
-            listen_2,
+            listen_addrs: vec![listen_1, listen_2],
         }
     }
 }
@@ -94,7 +92,7 @@ impl VoidInferOps for SpaceJungle {
         Ok(())
     }
 
-    async fn transmit(&self, _emission_id: EmissionId) -> Result<(), String> {
+    async fn transmit(&self, _emission_id: EmissionId, _send_id: ObjectId) -> Result<(), String> {
         Ok(())
     }
 }
@@ -239,7 +237,7 @@ async fn progenitor_flux_flow() {
     let (void_addr, void_abort, quark_addr, quark_abort) = start_servers(&model_path).await;
 
     // 2. Build the SpaceJungle with void/quark capabilities.
-    let jungle = SpaceJungle::new(void_addr, quark_addr);
+    let jungle = SpaceJungle::new(void_addr, quark_addr, listen_1, listen_2);
 
     // 3. Spawn a jungle-server with in-memory backend and connect a client.
     let listen_addr = reserve_local_addr();

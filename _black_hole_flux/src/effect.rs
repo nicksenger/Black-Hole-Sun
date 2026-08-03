@@ -334,7 +334,7 @@ pub struct Transmit;
 
 impl<J> EffectSchema<J> for Transmit {
     type Id = u64;
-    type In = EmissionId;
+    type In = (EmissionId, ObjectId);
     type Out = ();
     type Err = NucleusError;
 }
@@ -345,12 +345,13 @@ where
 {
     fn effect(
         jungle: &J,
-        emission_id: Self::In,
+        input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(emission_id = %emission_id.0, "transmitting emission to next cell");
+            let (emission_id, send_id) = input;
+            debug!(emission_id = %emission_id.0, %send_id, "transmitting emission to next cell");
             jungle
-                .transmit(emission_id)
+                .transmit(emission_id, send_id)
                 .await
                 .map_err(NucleusError::Transmission)?;
             Ok(())

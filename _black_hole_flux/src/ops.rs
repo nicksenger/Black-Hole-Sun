@@ -75,5 +75,5 @@ pub trait VoidInferOps: Send + Sync {
     /// VoidInferOps is responsible for converting the EmissionId into a
     /// Transmission::Propagation by supplying the recv and send void Ids
     /// for the next node.
-    async fn transmit(&self, emission_id: EmissionId) -> Result<(), String>;
+    async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String>;
 }
