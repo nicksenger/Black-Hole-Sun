@@ -1,9 +1,11 @@
 //! Sun effects — spawning, transmission waiting, kick-off, loss computation, and potentiation.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
 
 use black_hole_spec::ObjectId;
+use futures::future::join_all;
 use jungle_sdk::prelude::*;
 use tracing::debug;
 use uuid::Uuid;
@@ -68,12 +70,25 @@ pub struct LayerTransmission {
     pub transmission: black_hole_spec::Transmission,
 }
 
+/// Input for [`WaitForLayerTransmission`]: rx endpoints to wait on plus
+/// downstream forwarding targets keyed by source node id.
+#[derive(Debug)]
+pub struct WaitForLayerTransmissionInput {
+    /// (node_id, rx_object_id) pairs for the current layer nodes.
+    pub rx_endpoints: Vec<(u32, ObjectId)>,
+    /// Map from source node id to its downstream (node_id, rx_object_id) targets.
+    pub downstream: HashMap<u32, Vec<(u32, ObjectId)>>,
+}
+
 /// Effect that waits for the first available transmission from any of the
-/// rx ObjectIds associated with the current layer of nodes.
+/// rx ObjectIds associated with the current layer of nodes, then forwards
+/// the received transmission to the rx endpoints of the downstream nodes
+/// for the specific node that received it, so propagation continues through
+/// the graph.
 pub struct WaitForLayerTransmission;
 impl<J> EffectSchema<J> for WaitForLayerTransmission {
     type Id = u64;
-    type In = Vec<(u32, ObjectId)>;
+    type In = WaitForLayerTransmissionInput;
     type Out = LayerTransmission;
     type Err = NucleusError;
 }
@@ -84,18 +99,23 @@ where
 {
     fn effect(
         jungle: &J,
-        endpoints: Self::In,
+        input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            if endpoints.is_empty() {
+            let WaitForLayerTransmissionInput {
+                rx_endpoints,
+                downstream,
+            } = input;
+
+            if rx_endpoints.is_empty() {
                 return Err(NucleusError::Transmission(
                     "no endpoints to wait for".to_string(),
                 ));
             }
 
-            debug!(count = endpoints.len(), "waiting for layer transmission");
+            debug!(count = rx_endpoints.len(), "waiting for layer transmission");
 
-            let futures: Vec<_> = endpoints
+            let futures: Vec<_> = rx_endpoints
                 .into_iter()
                 .map(|(node_id, id)| {
                     let jungle_ref = jungle;
@@ -117,10 +137,47 @@ where
 
             match result {
                 Ok(transmission) => {
+                    // Only forward to the downstream nodes of the specific
+                    // node that received this transmission.
+                    let forward_targets = downstream
+                        .get(&transmission.node_id)
+                        .cloned()
+                        .unwrap_or_default();
+
                     debug!(
                         node_id = transmission.node_id,
-                        "layer transmission received"
+                        forward_count = forward_targets.len(),
+                        "layer transmission received, forwarding to downstream nodes"
                     );
+
+                    // Serialize the transmission for forwarding.
+                    let data = postcard::to_allocvec(&transmission.transmission)
+                        .map_err(|e| {
+                            NucleusError::Transmission(format!("serialize for forward: {e}"))
+                        })?;
+
+                    // Forward to all downstream nodes of this source in parallel.
+                    let forward_futures: Vec<_> = forward_targets
+                        .into_iter()
+                        .map(|(target_id, _rx_id)| {
+                            let jungle_ref = jungle;
+                            let data = data.clone();
+                            Box::pin(async move {
+                                jungle_ref.upload_to_void(data).await.map_err(|e| {
+                                    NucleusError::Transmission(format!(
+                                        "forward to downstream node {}: {e}",
+                                        target_id
+                                    ))
+                                })
+                            })
+                        })
+                        .collect();
+
+                    let results = join_all(forward_futures).await;
+                    for result in results {
+                        result?;
+                    }
+
                     Ok(transmission)
                 }
                 Err(e) => Err(e),

@@ -2,8 +2,11 @@
 
 use std::marker::PhantomData;
 
+use std::collections::HashMap;
+
 use super::effect::{
     BroadcastPotentiationEffect, ComputeLossEffect, KickOffEffect, WaitForLayerTransmission,
+    WaitForLayerTransmissionInput,
 };
 use super::Tagged;
 use black_hole_spec::ObjectId;
@@ -208,9 +211,11 @@ where
 /// Action that processes a single node in the current topological layer.
 ///
 /// Waits for a [`Transmission::Propagation`] on any of the rx endpoints for
-/// nodes in the current layer (using the branch-specific rx map). On receiving
-/// a transmission, generates new tx ids for each outgoing edge and stores them
-/// in the branch-specific tx map.
+/// nodes in the current layer (using the branch-specific rx map). The
+/// [`WaitForLayerTransmission`] effect handles forwarding the received
+/// transmission to the rx endpoints of downstream nodes, so propagation
+/// continues through the graph. After receiving, updates the rx map with
+/// a new recv id and removes the processed node from the current layer.
 pub struct ProcessNode<S>(std::marker::PhantomData<fn() -> S>);
 
 #[jungle::action]
@@ -222,16 +227,38 @@ where
     type Input = ();
     type Output = ();
 
-    fn emit(state: &S, _input: Self::Input) -> Vec<(u32, black_hole_spec::ObjectId)> {
+    fn emit(state: &S, _input: Self::Input) -> WaitForLayerTransmissionInput {
         let current = state.get_current().clone();
         let inner = state.get_shared().lock().unwrap();
+        let rx_map = state.get_rx(&inner);
+        let outgoing = &inner.outgoing;
 
-        let endpoints: Vec<(u32, black_hole_spec::ObjectId)> = current
+        // Collect rx endpoints for all nodes in the current layer.
+        let rx_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = current
             .iter()
-            .filter_map(|&node_id| state.get_rx(&inner).get(&node_id).map(|rx| (node_id, *rx)))
+            .filter_map(|&node_id| rx_map.get(&node_id).map(|rx| (node_id, *rx)))
             .collect();
 
-        endpoints
+        // Build the downstream map: for each node in the current layer,
+        // collect its outgoing edges and their rx endpoints.
+        let mut downstream: HashMap<u32, Vec<(u32, black_hole_spec::ObjectId)>> =
+            HashMap::new();
+        for &node_id in &current {
+            if let Some(targets) = outgoing.get(&node_id) {
+                let targets_with_rx: Vec<_> = targets
+                    .iter()
+                    .filter_map(|&target_id| {
+                        rx_map.get(&target_id).map(|rx| (target_id, *rx))
+                    })
+                    .collect();
+                downstream.insert(node_id, targets_with_rx);
+            }
+        }
+
+        WaitForLayerTransmissionInput {
+            rx_endpoints,
+            downstream,
+        }
     }
 
     fn absorb(
@@ -242,43 +269,15 @@ where
             .map_err(|e| Failure::Message(format!("wait for layer transmission failed: {e}")))?;
 
         let node_id = layer_tx.node_id;
-        let transmission = layer_tx.transmission;
 
-        let outgoing_nodes = {
-            let inner = state.get_shared().lock().unwrap();
-            inner.outgoing.get(&node_id).cloned().unwrap_or_default()
-        };
-
+        // Update the rx map with a new recv id for the processed node.
         let new_rx = uuid::Uuid::new_v4();
-
         {
             let mut inner = state.get_shared().lock().unwrap();
             state.get_rx_mut(&mut inner).insert(node_id, new_rx);
-
-            for target_id in &outgoing_nodes {
-                let tx_id = uuid::Uuid::new_v4();
-
-                match &transmission {
-                    black_hole_spec::Transmission::Propagation { .. } => {}
-                    other => {
-                        return Err(Failure::Message(format!(
-                            "expected Propagation for forwarding from node {}, got {:?}",
-                            node_id, other
-                        )));
-                    }
-                }
-
-                state.get_tx_mut(&mut inner).insert(*target_id, tx_id);
-
-                tracing::debug!(
-                    node_id,
-                    target_id,
-                    ?tx_id,
-                    "forwarded transmission to outgoing node"
-                );
-            }
         }
 
+        // Remove the processed node from the current layer.
         let mut current = state.get_current().clone();
         current.remove(&node_id);
         state.set_current(current);
