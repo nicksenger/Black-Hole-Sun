@@ -1,6 +1,6 @@
 mod common;
 
-use std::net::SocketAddr;
+use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -131,6 +131,14 @@ async fn start_servers(
     (void_local, void_abort, quark_local, quark_abort)
 }
 
+fn reserve_local_addr() -> SocketAddr {
+    let socket = UdpSocket::bind((Ipv6Addr::LOCALHOST, 0))
+        .expect("should bind temporary udp socket for test port reservation");
+    socket
+        .local_addr()
+        .expect("temporary udp socket should expose local address")
+}
+
 async fn connect_client_with_retry(remote: SocketAddr) -> jungle_sdk::Client {
     for attempt in 0..40 {
         match jungle_sdk::client::Client::builder()
@@ -184,7 +192,7 @@ async fn progenitor_flux_flow() {
     let jungle = SpaceJungle::new(void_addr, quark_addr);
 
     // 3. Spawn a jungle-server with in-memory backend and connect a client.
-    let listen_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let listen_addr = reserve_local_addr();
     let server_handle = tokio::spawn(async move {
         ServerBuilder::new()
             .listen(listen_addr)
