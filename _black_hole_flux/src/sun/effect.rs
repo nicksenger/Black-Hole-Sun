@@ -95,6 +95,10 @@ pub struct WaitForLayerTransmissionInput {
     pub downstream: HashMap<u32, Vec<(u32, ObjectId, ObjectId)>>,
     /// Which propagation branch is running, to select the correct tx/rx maps.
     pub branch: PropagationBranch,
+    /// Whether this is the first topological layer (root nodes with no incoming edges).
+    pub is_root_layer: bool,
+    /// Input transmission to upload to root nodes when is_root_layer is true.
+    pub input_transmission: Option<Transmission>,
 }
 
 /// Effect that waits for the first available transmission from any of the
@@ -123,7 +127,25 @@ where
                 rx_endpoints,
                 downstream,
                 branch: _branch,
+                is_root_layer,
+                input_transmission,
             } = input;
+
+            // If this is the first topological layer (root nodes with no incoming
+            // edges), upload the Input Transmission to each root node's rx endpoint
+            // so propagation can begin.
+            if is_root_layer {
+                if let Some(transmission) = input_transmission {
+                    let data = postcard::to_allocvec(&transmission).map_err(|e| {
+                        NucleusError::Transmission(format!("serialize input transmission: {e}"))
+                    })?;
+                    let client_endpoint = make_client_endpoint().await;
+                    for (_node_id, rx_id) in &rx_endpoints {
+                        void_upload(&client_endpoint, *rx_id, data.clone()).await;
+                        debug!(%rx_id, "uploaded input transmission to root node rx");
+                    }
+                }
+            }
 
             if rx_endpoints.is_empty() {
                 return Err(NucleusError::Transmission(

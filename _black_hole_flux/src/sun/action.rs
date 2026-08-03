@@ -261,12 +261,22 @@ where
     type Input = Transmission;
     type Output = Transmission;
 
-    fn emit(state: &S, _input: Self::Input) -> WaitForLayerTransmissionInput {
+    fn emit(state: &S, input: Self::Input) -> WaitForLayerTransmissionInput {
         let current = state.get_current().clone();
         let inner = state.get_shared().lock().unwrap();
         let rx_map = state.get_rx(&inner);
         let _tx_map = state.get_tx(&inner);
         let outgoing = &inner.outgoing;
+
+        // Determine if this is the first topological layer (root nodes).
+        let is_root_layer = {
+            let topo = state.get_topo();
+            if let Some(first_layer) = topo.first() {
+                current == *first_layer
+            } else {
+                false
+            }
+        };
 
         // Also read the cross-branch maps needed for recv/send on forwarded transmissions.
         // PropA: recv from p2_tx, send from p2_rx  |  PropB: recv from po_tx, send from p1_rx
@@ -313,6 +323,8 @@ where
             rx_endpoints,
             downstream,
             branch,
+            is_root_layer,
+            input_transmission: if is_root_layer { Some(input) } else { None },
         }
     }
 
