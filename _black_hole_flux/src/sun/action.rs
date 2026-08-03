@@ -4,9 +4,11 @@ use std::marker::PhantomData;
 
 use std::collections::HashMap;
 
+use crate::sun::effect::GenUuidEffect;
+
 use super::effect::{
-    BroadcastPotentiationEffect, ComputeLossEffect, KickOffEffect, PropagationBranch, WaitForLayerTransmission,
-    WaitForLayerTransmissionInput,
+    BroadcastPotentiationEffect, ComputeLossEffect, KickOffEffect, PropagationBranch,
+    WaitForLayerTransmission, WaitForLayerTransmissionInput,
 };
 use super::Tagged;
 use black_hole_spec::{ObjectId, Transmission};
@@ -280,7 +282,10 @@ where
 
         // Also read the cross-branch maps needed for recv/send on forwarded transmissions.
         // PropA: recv from p2_tx, send from p2_rx  |  PropB: recv from po_tx, send from p1_rx
-        let (fwd_tx_map, fwd_rx_map): (&HashMap<u32, black_hole_spec::ObjectId>, &HashMap<u32, black_hole_spec::ObjectId>) = {
+        let (fwd_tx_map, fwd_rx_map): (
+            &HashMap<u32, black_hole_spec::ObjectId>,
+            &HashMap<u32, black_hole_spec::ObjectId>,
+        ) = {
             if std::any::TypeId::of::<S>() == std::any::TypeId::of::<super::PropA>() {
                 (&inner.p2_tx, &inner.p2_rx)
             } else {
@@ -304,7 +309,10 @@ where
         // Build the downstream map: for each node in the current layer,
         // collect its outgoing edges with both tx and rx endpoints from the
         // cross-branch maps used for recv/send on forwarded transmissions.
-        let mut downstream: HashMap<u32, Vec<(u32, black_hole_spec::ObjectId, black_hole_spec::ObjectId)>> = HashMap::new();
+        let mut downstream: HashMap<
+            u32,
+            Vec<(u32, black_hole_spec::ObjectId, black_hole_spec::ObjectId)>,
+        > = HashMap::new();
         for &node_id in &current {
             if let Some(targets) = outgoing.get(&node_id) {
                 let targets_with_endpoints: Vec<_> = targets
@@ -340,7 +348,10 @@ where
         // Extract the next rx (send) and tx (recv) from the received transmission.
         let (new_rx, new_tx) = match &layer_tx.transmission {
             black_hole_spec::Transmission::Propagation { recv, send, .. } => (*send, *recv),
-            _ => (black_hole_spec::ObjectId::nil(), black_hole_spec::ObjectId::nil()),
+            _ => (
+                black_hole_spec::ObjectId::nil(),
+                black_hole_spec::ObjectId::nil(),
+            ),
         };
 
         // Apply the extracted endpoints and rotate downstream maps.
@@ -370,6 +381,35 @@ where
         state.set_current(current);
 
         Ok(layer_tx.transmission)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GenUuid
+// ---------------------------------------------------------------------------
+
+/// Action that kicks off propagation by generating a TransmissionId and
+/// sending it to the rx endpoints of all nodes in the first topological layer
+/// (those with no incoming edges / dependencies).
+///
+/// Takes unit input, finds root nodes from shared state, generates a new
+/// TransmissionId stored in shared state, and uploads Propagation transmissions
+/// to each root node's rx endpoint. Outputs unit — the transmission id is stored
+/// in shared state for ComputeLoss to retrieve later.
+pub struct GenUuid;
+
+#[jungle::action]
+impl Action for GenUuid {
+    type Effect = GenUuidEffect;
+    type Input = ();
+    type Output = Uuid;
+
+    fn emit(_state: &super::SunState, _input: Self::Input) {}
+    fn absorb(
+        _state: &mut super::SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_e| Failure::Message("failed to generate a uuid...".to_string()))
     }
 }
 
@@ -454,9 +494,7 @@ impl Action for BroadcastPotentiation {
         let node_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = inner
             .journey_ids
             .keys()
-            .filter_map(|&node_id| {
-                inner.p1_tx.get(&node_id).map(|tx| (node_id, *tx))
-            })
+            .filter_map(|&node_id| inner.p1_tx.get(&node_id).map(|tx| (node_id, *tx)))
             .collect();
         drop(inner);
 

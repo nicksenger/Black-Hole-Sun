@@ -3,6 +3,7 @@
 pub mod action;
 pub mod effect;
 
+use action::GenUuid;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
@@ -33,6 +34,12 @@ pub trait Tagged {
     type N: Unsigned;
     type A: Animal;
     type E: NodeIdsFromList;
+}
+
+impl<N: Unsigned, A: Animal, E: NodeIdsFromList> Tagged for Tag<N, A, E> {
+    type N = N;
+    type A = A;
+    type E = E;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +105,9 @@ pub struct SunInner {
 pub struct Sun<
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
     U,
->(Step<Spawn<T>>, U);
+>(Step<GenUuid>, Step<Spawn<T>>, U);
+//#[derive(Flow)]
+//pub struct Sun();
 
 pub trait EventHorizon {
     type Flow;
@@ -108,7 +117,9 @@ where
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
     U: EventHorizon,
 {
-    type Flow = Sun<T, <U as EventHorizon>::Flow>;
+    type Flow = Sun<T, U>;
+    //type Flow = Sun<T, <U as EventHorizon>::Flow>;
+    //type Flow = Sun;
 }
 impl EventHorizon for Empty {
     type Flow = BlackHole;

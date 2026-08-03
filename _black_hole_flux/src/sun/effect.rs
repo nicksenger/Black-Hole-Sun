@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
 
-use black_hole_spec::{Emission, EmissionId, InferenceOutput, InferenceOutputId, ObjectId, SequenceOutput, Transmission};
+use black_hole_spec::{
+    Emission, EmissionId, InferenceOutput, InferenceOutputId, ObjectId, SequenceOutput,
+    Transmission,
+};
 use futures::future::join_all;
 use jungle_sdk::prelude::*;
 use tracing::debug;
@@ -13,13 +16,28 @@ use uuid::Uuid;
 use crate::ops::{SunOps, VoidInferOps};
 use crate::NucleusError;
 
+pub struct GenUuidEffect;
+#[jungle::effect]
+impl<J> Effect<J> for GenUuidEffect {
+    type Id = u64;
+    type In = ();
+    type Out = Uuid;
+    type Err = NucleusError;
+
+    fn effect(
+        _jungle: &J,
+        _input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async { Ok(Uuid::new_v4()) }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SpawnAnimal — spawn an animal and return its journey ID
 // ---------------------------------------------------------------------------
 
 /// Effect that spawns an animal of type `A` into the jungle.
 pub struct SpawnAnimal<A>(PhantomData<fn() -> A>);
-
 impl<A, J> EffectSchema<J> for SpawnAnimal<A>
 where
     A: Animal,
@@ -32,7 +50,6 @@ where
     type Out = Uuid;
     type Err = NucleusError;
 }
-
 impl<A, J> Effect<J> for SpawnAnimal<A>
 where
     A: Animal,
@@ -199,7 +216,9 @@ where
                     for &(target_id, target_tx_id, target_rx_id) in &forward_targets {
                         // Deserialize, set recv/send, re-serialize.
                         let mut fwd = transmission.transmission.clone();
-                        if let black_hole_spec::Transmission::Propagation { recv, send, .. } = &mut fwd {
+                        if let black_hole_spec::Transmission::Propagation { recv, send, .. } =
+                            &mut fwd
+                        {
                             *recv = target_tx_id;
                             *send = target_rx_id;
                         }
@@ -241,8 +260,7 @@ where
 pub const void_addr: ObjectId = ObjectId::nil();
 
 /// Returns a tokenizer (stub — returns unit since the real tokenizer is provided at runtime).
-fn get_tokenizer() {
-}
+fn get_tokenizer() {}
 
 /// Converts input text to dark tokens (stub — generates placeholder tokens for compilation).
 fn text_to_dark_tokens(_input_text: &str, _tokenizer: &()) -> Vec<black_hole_spec::DarkToken> {
@@ -258,16 +276,11 @@ async fn make_client_endpoint() -> String {
 }
 
 /// Uploads data to void and returns the assigned object id.
-async fn void_upload(
-    _endpoint: &str,
-    _addr: ObjectId,
-    data: Vec<u8>,
-) -> ObjectId {
+async fn void_upload(_endpoint: &str, _addr: ObjectId, data: Vec<u8>) -> ObjectId {
     // Delegates to jungle upload; the actual jungle reference is captured by the enclosing closure.
     let _ = data;
     Uuid::new_v4()
 }
-
 
 // ---------------------------------------------------------------------------
 // KickOffEffect — generate initial TransmissionId and send to root nodes

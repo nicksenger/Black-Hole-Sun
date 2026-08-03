@@ -890,6 +890,7 @@ dependencies = [
  "tokenizers",
  "tokio",
  "tracing",
+ "typosaurus",
  "uuid",
 ]
 
@@ -3965,6 +3966,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "jungle-fusion"
+version = "0.1.0"
+source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#724f878de566956c3a63753f7c1917c3c51eec42"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "jungle-client",
+ "jungle-server",
+ "jungle-types",
+ "postcard",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "typosaurus",
+ "uuid",
+]
+
+[[package]]
 name = "jungle-macros"
 version = "0.1.0"
 source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#724f878de566956c3a63753f7c1917c3c51eec42"
@@ -4011,6 +4031,7 @@ dependencies = [
  "inception",
  "jungle-client",
  "jungle-core",
+ "jungle-fusion",
  "jungle-macros",
  "jungle-server",
  "jungle-types",

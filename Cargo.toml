@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.dependencies]
-jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun", features = ["fjall"] }
+jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun", features = ["fjall", "fusion"] }
 jungle-vision = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun" }
 jungle-zoo = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun" }
 typosaurus = { git = "https://github.com/nicksenger/typosaurus.git", branch = "jungle" }
