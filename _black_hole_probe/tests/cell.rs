@@ -242,7 +242,7 @@ async fn connect_client_with_retry(remote: SocketAddr) -> jungle_sdk::Client {
 /// 6. Start a JungleWorker so effects execute after we're subscribed.
 /// 7. Assert that effects execute successfully within a 30s timeout.
 #[tokio::test]
-async fn progenitor_flux_flow() {
+async fn cell() {
     init_tracing();
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -253,7 +253,7 @@ async fn progenitor_flux_flow() {
     let listen_3 = Uuid::new_v4();
     let listen_4 = Uuid::new_v4();
 
-    let model_path = match require_model_path("progenitor_flux_flow") {
+    let model_path = match require_model_path("cell") {
         Some(path) => path,
         None => return,
     };
