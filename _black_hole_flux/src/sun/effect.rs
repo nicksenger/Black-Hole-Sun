@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
 
-use black_hole_spec::ObjectId;
+use black_hole_spec::{ObjectId, Transmission};
 use futures::future::join_all;
 use jungle_sdk::prelude::*;
 use tracing::debug;
@@ -72,7 +72,7 @@ pub struct LayerTransmission {
 
 /// Input for [`WaitForLayerTransmission`]: rx endpoints to wait on plus
 /// downstream forwarding targets keyed by source node id.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WaitForLayerTransmissionInput {
     /// (node_id, rx_object_id) pairs for the current layer nodes.
     pub rx_endpoints: Vec<(u32, ObjectId)>,
@@ -151,10 +151,9 @@ where
                     );
 
                     // Serialize the transmission for forwarding.
-                    let data = postcard::to_allocvec(&transmission.transmission)
-                        .map_err(|e| {
-                            NucleusError::Transmission(format!("serialize for forward: {e}"))
-                        })?;
+                    let data = postcard::to_allocvec(&transmission.transmission).map_err(|e| {
+                        NucleusError::Transmission(format!("serialize for forward: {e}"))
+                    })?;
 
                     // Forward to all downstream nodes of this source in parallel.
                     let forward_futures: Vec<_> = forward_targets
@@ -190,15 +189,6 @@ where
 // KickOffEffect — generate initial TransmissionId and send to root nodes
 // ---------------------------------------------------------------------------
 
-/// Output from [`KickOffEffect`]: the transmission id and rx map for root nodes.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct KickOffResult {
-    /// The transmission id used to kick off propagation.
-    pub transmission_id: ObjectId,
-    /// Map of root node ids to their rx ObjectIds.
-    pub rx_map: Vec<(u32, ObjectId)>,
-}
-
 /// Effect that generates a new TransmissionId and uploads Propagation
 /// transmissions to the rx endpoints of all root nodes (those with no
 /// incoming edges). This kicks off the propagation through the graph.
@@ -206,8 +196,8 @@ pub struct KickOffEffect;
 
 impl<J> EffectSchema<J> for KickOffEffect {
     type Id = u64;
-    type In = Vec<u32>;
-    type Out = KickOffResult;
+    type In = ();
+    type Out = (Transmission, Transmission);
     type Err = NucleusError;
 }
 
@@ -220,41 +210,37 @@ where
         root_nodes: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(
-                count = root_nodes.len(),
-                "kicking off propagation for root nodes"
-            );
+            debug!("kicking off propagation for root nodes");
 
-            let transmission_id = Uuid::new_v4();
-            let mut rx_map = Vec::new();
+            let input_text =
+        "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
+            let tokenizer = get_tokenizer();
+            let dark_tokens = text_to_dark_tokens(input_text, &tokenizer);
+            let inference_output = InferenceOutput {
+                results: vec![SequenceOutput(dark_tokens)],
+            };
+            let inference_output_bytes =
+                to_allocvec(&inference_output).expect("serialize inference output");
+            let inference_output_id = void_upload(
+                &make_client_endpoint().await,
+                void_addr,
+                inference_output_bytes,
+            )
+            .await;
+            let emission = Emission {
+                metadata: (),
+                output_id: InferenceOutputId(inference_output_id),
+            };
+            let emission_bytes = to_allocvec(&emission).expect("serialize emission");
+            let emission_void_id =
+                void_upload(&make_client_endpoint().await, void_addr, emission_bytes).await;
+            let propagation = Transmission::Propagation {
+                emission_id: EmissionId(emission_void_id),
+                recv: ObjectId::nil(),
+                send: ObjectId::nil(),
+            };
 
-            for &node_id in &root_nodes {
-                let rx_id = Uuid::new_v4();
-
-                let propagation = black_hole_spec::Transmission::Propagation {
-                    emission_id: black_hole_spec::EmissionId(ObjectId::nil()),
-                    recv: rx_id,
-                    send: ObjectId::nil(),
-                };
-
-                let data = postcard::to_allocvec(&propagation)
-                    .map_err(|e| NucleusError::Transmission(format!("serialize: {e}")))?;
-
-                jungle.upload_to_void(data).await.map_err(|e| {
-                    NucleusError::Transmission(format!(
-                        "upload kick-off to rx for node {}: {e}",
-                        node_id
-                    ))
-                })?;
-
-                rx_map.push((node_id, rx_id));
-                debug!(node_id, %rx_id, "uploaded kick-off transmission");
-            }
-
-            Ok(KickOffResult {
-                transmission_id,
-                rx_map,
-            })
+            Ok((propagation.clone(), propagation))
         }
     }
 }
@@ -266,32 +252,19 @@ where
 /// Effect that takes a TransmissionId, downloads the transmission, and computes
 /// the loss values (loss_up, loss_down) for potentiation.
 pub struct ComputeLossEffect;
-
-impl<J> EffectSchema<J> for ComputeLossEffect {
+#[jungle::effect]
+impl<J> Effect<J> for ComputeLossEffect {
     type Id = u64;
-    type In = ObjectId;
+    type In = (Transmission, Transmission);
     type Out = (f32, f32);
     type Err = NucleusError;
-}
-
-impl<J> Effect<J> for ComputeLossEffect
-where
-    J: VoidInferOps,
-{
     fn effect(
-        jungle: &J,
-        transmission_id: Self::In,
+        _jungle: &J,
+        _transmission_id: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(%transmission_id, "computing loss from transmission");
-
-            let (loss_up, loss_down) = jungle
-                .compute_loss(transmission_id)
-                .await
-                .map_err(NucleusError::Transmission)?;
-
-            debug!(loss_up, loss_down, "loss computation complete");
-            Ok((loss_up, loss_down))
+            debug!("faking loss from transmission");
+            Ok((0.1, 0.1))
         }
     }
 }

@@ -9,7 +9,7 @@ use super::effect::{
     WaitForLayerTransmissionInput,
 };
 use super::Tagged;
-use black_hole_spec::ObjectId;
+use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use typosaurus::collections::list::{Empty, List};
 use typosaurus::num::Unsigned;
@@ -100,16 +100,18 @@ where
     S: TopologyState,
 {
     type Effect = NoEffect;
-    type Input = ();
-    type Output = ();
+    type Input = Transmission;
+    type Output = Transmission;
+    type Carry = Transmission;
 
-    fn emit(_state: &S, _input: Self::Input) -> () {
-        ()
+    fn emit(_state: &S, input: Self::Input) -> ((), Transmission) {
+        ((), input)
     }
 
     fn absorb(
         state: &mut S,
         _output: EffectCompletion<Self::Effect>,
+        carry: Self::Carry,
     ) -> Result<Self::Output, Failure> {
         let (all_nodes, outgoing) = {
             let inner = state.get_shared().lock().unwrap();
@@ -162,7 +164,7 @@ where
         state.set_topo(topo);
         state.set_current(std::collections::HashSet::new());
 
-        Ok(())
+        Ok(carry)
     }
 }
 
@@ -170,77 +172,29 @@ where
 // BuildAddrs — build full set of recv/send addrs for all nodes
 // ---------------------------------------------------------------------------
 
-pub struct BuildAddrs<S>(std::marker::PhantomData<fn() -> S>);
-
+pub struct BuildAddrs;
 #[jungle::action]
-impl<S> Action for BuildAddrs<S>
-where
-    S: TopologyState,
-{
+impl Action for BuildAddrs {
     type Effect = NoEffect;
     type Input = ();
     type Output = ();
 
-    fn emit(_state: &S, _input: Self::Input) -> () {
-        ()
+    fn emit(state: &super::SunState, _input: Self::Input) {
+        let mut inner = state.a.shared.lock().unwrap();
+        for node in inner.outgoing.keys().copied().collect::<Vec<_>>() {
+            inner.p1_tx.insert(node, Uuid::new_v4());
+            inner.p1_rx.insert(node, Uuid::new_v4());
+            inner.p2_tx.insert(node, Uuid::new_v4());
+            inner.p2_rx.insert(node, Uuid::new_v4());
+            inner.po_tx.insert(node, Uuid::new_v4());
+        }
     }
 
     fn absorb(
-        state: &mut S,
-        _output: EffectCompletion<Self::Effect>,
+        _state: &mut super::SunState,
+        output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (all_nodes, outgoing) = {
-            let inner = state.get_shared().lock().unwrap();
-            let all_nodes: std::collections::HashSet<u32> =
-                inner.journey_ids.keys().cloned().collect();
-            let outgoing = inner.outgoing.clone();
-            (all_nodes, outgoing)
-        };
-
-        let mut in_degree: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        for &node in &all_nodes {
-            in_degree.entry(node).or_insert(0);
-        }
-        for (_src, targets) in &outgoing {
-            for &target in targets {
-                if all_nodes.contains(&target) {
-                    *in_degree.entry(target).or_insert(0) += 1;
-                }
-            }
-        }
-
-        let mut topo: Vec<std::collections::HashSet<u32>> = Vec::new();
-        let mut remaining = in_degree.clone();
-
-        loop {
-            let layer: std::collections::HashSet<u32> = remaining
-                .iter()
-                .filter(|(_, &deg)| deg == 0)
-                .map(|(&node, _)| node)
-                .collect();
-
-            if layer.is_empty() {
-                break;
-            }
-
-            topo.push(layer.clone());
-
-            for node in &layer {
-                remaining.remove(node);
-                if let Some(targets) = outgoing.get(node) {
-                    for &target in targets {
-                        if let Some(deg) = remaining.get_mut(&target) {
-                            *deg -= 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        state.set_topo(topo);
-        state.set_current(std::collections::HashSet::new());
-
-        Ok(())
+        output.map_err(|_e| Failure::Message(format!("Build addrs failed")))
     }
 }
 
@@ -256,16 +210,18 @@ where
     S: TopologyState,
 {
     type Effect = NoEffect;
-    type Input = ();
-    type Output = ();
+    type Input = Transmission;
+    type Output = Transmission;
+    type Carry = Transmission;
 
-    fn emit(_state: &S, _input: Self::Input) -> () {
-        ()
+    fn emit(_state: &S, input: Self::Input) -> ((), Transmission) {
+        ((), input)
     }
 
     fn absorb(
         state: &mut S,
         _output: EffectCompletion<Self::Effect>,
+        carry: Transmission,
     ) -> Result<Self::Output, Failure> {
         let topo = state.get_topo().clone();
         let layer = topo
@@ -278,7 +234,7 @@ where
         state.set_topo(topo);
         state.set_current(layer);
 
-        Ok(())
+        Ok(carry)
     }
 }
 
@@ -302,8 +258,8 @@ where
     S: TopologyState,
 {
     type Effect = WaitForLayerTransmission;
-    type Input = ();
-    type Output = ();
+    type Input = Transmission;
+    type Output = Transmission;
 
     fn emit(state: &S, _input: Self::Input) -> WaitForLayerTransmissionInput {
         let current = state.get_current().clone();
@@ -357,7 +313,7 @@ where
         current.remove(&node_id);
         state.set_current(current);
 
-        Ok(())
+        Ok(layer_tx.transmission)
     }
 }
 
@@ -379,39 +335,14 @@ pub struct KickOff;
 impl Action for KickOff {
     type Effect = KickOffEffect;
     type Input = ();
-    type Output = ();
-    type Carry = ();
+    type Output = (Transmission, Transmission);
 
-    fn emit(state: &super::SunState, _input: Self::Input) -> Vec<u32> {
-        let inner = state.a.shared.lock().unwrap();
-        let all_nodes: std::collections::HashSet<u32> = inner.journey_ids.keys().cloned().collect();
-        let incoming = inner.incoming.clone();
-        drop(inner);
-
-        let roots: Vec<u32> = all_nodes
-            .into_iter()
-            .filter(|&node| incoming.get(&node).map_or(true, |v| v.is_empty()))
-            .collect();
-
-        roots
-    }
-
+    fn emit(_state: &super::SunState, _input: Self::Input) {}
     fn absorb(
-        state: &mut super::SunState,
+        _state: &mut super::SunState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let result = output.map_err(|e| Failure::Message(format!("kick-off failed: {e}")))?;
-
-        // Store the initial rx ids and transmission id in shared state
-        let mut inner = state.a.shared.lock().unwrap();
-        inner.transmission_id = result.transmission_id;
-        for (node_id, rx_id) in &result.rx_map {
-            inner.p1_rx.insert(*node_id, *rx_id);
-            inner.p2_rx.insert(*node_id, *rx_id);
-        }
-        drop(inner);
-
-        Ok(())
+        output.map_err(|_e| Failure::Message(format!("kickoff failed")))
     }
 }
 
@@ -426,13 +357,12 @@ pub struct ComputeLoss;
 #[jungle::action]
 impl Action for ComputeLoss {
     type Effect = ComputeLossEffect;
-    type Input = ();
+    type Input = (Transmission, Transmission);
     type Output = (f32, f32);
     type Carry = ();
 
-    fn emit(state: &super::SunState, _input: Self::Input) -> ObjectId {
-        let inner = state.a.shared.lock().unwrap();
-        inner.transmission_id
+    fn emit(_state: &super::SunState, input: Self::Input) -> (Transmission, Transmission) {
+        input
     }
 
     fn absorb(

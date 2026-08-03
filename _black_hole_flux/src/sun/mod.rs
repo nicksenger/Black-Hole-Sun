@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use black_hole_spec::ObjectId;
+use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 use typenum::Unsigned;
@@ -40,6 +40,7 @@ pub trait Tagged {
 // ---------------------------------------------------------------------------
 
 /// State for propagation branch A.
+#[derive(Optic, Clone, Default, Debug)]
 pub struct PropA {
     /// Shared bookkeeping (Arc so both branches share topology data).
     pub shared: Arc<Mutex<SunInner>>,
@@ -50,6 +51,7 @@ pub struct PropA {
 }
 
 /// State for propagation branch B.
+#[derive(Optic, Clone, Default, Debug)]
 pub struct PropB {
     /// Shared bookkeeping (Arc so both branches share topology data).
     pub shared: Arc<Mutex<SunInner>>,
@@ -61,7 +63,7 @@ pub struct PropB {
 
 /// Runtime state that tracks the topology and transmission endpoints
 /// for a sun of spawned animals.
-#[derive(Optic)]
+#[derive(Optic, Clone, Default, Debug)]
 pub struct SunState {
     /// State for propagation branch A — uses p1_tx / p1_rx maps.
     #[jungle(focus = a)]
@@ -72,6 +74,7 @@ pub struct SunState {
 }
 
 /// Shared inner state accessible by both propagation branches via Arc<Mutex>.
+#[derive(Optic, Clone, Default, Debug)]
 pub struct SunInner {
     /// Maps the node u32 id to its associated journey ID.
     pub journey_ids: HashMap<u32, Uuid>,
@@ -89,8 +92,6 @@ pub struct SunInner {
     pub p2_rx: HashMap<u32, ObjectId>,
     /// Potentiation send endpoints keyed by node id.
     pub po_tx: HashMap<u32, ObjectId>,
-    /// The current transmission id (set by KickOff, used by ComputeLoss).
-    pub transmission_id: ObjectId,
 }
 
 #[derive(Flow)]
@@ -120,11 +121,11 @@ impl EventHorizon for Empty {
 /// Predicate that checks if the topological layer queue is non-empty.
 pub struct TopoNotEmpty<S>(PhantomData<fn() -> S>);
 
-impl<S> Predicate<(&S, &())> for TopoNotEmpty<S>
+impl<S> Predicate<(&S, &Transmission)> for TopoNotEmpty<S>
 where
     S: TopologyState,
 {
-    fn eval((state, _): &(&S, &())) -> bool {
+    fn eval((state, _): &(&S, &Transmission)) -> bool {
         !state.get_topo().is_empty()
     }
 }
@@ -132,11 +133,11 @@ where
 /// Predicate that checks if the current layer has unprocessed nodes.
 pub struct CurrentNotEmpty<S>(PhantomData<fn() -> S>);
 
-impl<S> Predicate<(&S, &())> for CurrentNotEmpty<S>
+impl<S> Predicate<(&S, &Transmission)> for CurrentNotEmpty<S>
 where
     S: TopologyState,
 {
-    fn eval((state, _): &(&S, &())) -> bool {
+    fn eval((state, _): &(&S, &Transmission)) -> bool {
         !state.get_current().is_empty()
     }
 }
@@ -144,32 +145,41 @@ where
 // ---------------------------------------------------------------------------
 // Flow definitions — layer processing and orchestration
 // ---------------------------------------------------------------------------
+//
+/// Body of the inner loop: process nodes in the current layer until empty.
+#[derive(Flow)]
+pub struct InnerBLoop(Step<action::ProcessNode<PropB>>);
 
 /// Body of the inner loop: process nodes in the current layer until empty.
 #[derive(Flow)]
-pub struct InnerLoop<S: TopologyState>(Step<action::ProcessNode<S>>);
+pub struct InnerALoop(Step<action::ProcessNode<PropA>>);
 
 /// Body of the outer loop: pop a layer, then process all its nodes.
 #[derive(Flow)]
-pub struct BranchBody<S: TopologyState>(
-    Step<action::PopLayer<S>>,
-    While<CurrentNotEmpty<S>, InnerLoop<S>>,
+pub struct BranchBBody(
+    Step<action::PopLayer<PropB>>,
+    While<CurrentNotEmpty<PropB>, InnerBLoop>,
+);
+
+/// Body of the outer loop: pop a layer, then process all its nodes.
+#[derive(Flow)]
+pub struct BranchABody(
+    Step<action::PopLayer<PropA>>,
+    While<CurrentNotEmpty<PropA>, InnerALoop>,
 );
 
 #[derive(Flow)]
-#[jungle(focus = FocusState)]
+#[jungle(focus = PropB)]
 pub struct PropBFlow(
-    Step<action::BuildTopologicalSort<S>>,
-    Step<action::BuildAddrs<S>>,
-    While<TopoNotEmpty<S>, BranchBody<S>>,
+    Step<action::BuildTopologicalSort<PropB>>,
+    While<TopoNotEmpty<PropB>, BranchBBody>,
 );
 
 #[derive(Flow)]
-#[jungle(focus = FocusState)]
+#[jungle(focus = PropA)]
 pub struct PropAFlow(
-    Step<action::BuildTopologicalSort<S>>,
-    Step<action::BuildAddrs<S>>,
-    While<TopoNotEmpty<S>, BranchBody<S>>,
+    Step<action::BuildTopologicalSort<PropA>>,
+    While<TopoNotEmpty<PropA>, BranchABody>,
 );
 
 /// The two propagation branches (A and B) running in parallel via focused join.
@@ -182,6 +192,7 @@ pub type PropagationFlows = Join<PropAFlow, PropBFlow>;
 /// One complete training epoch: kick-off → propagation → compute-loss → broadcast-potentiation.
 #[derive(Flow)]
 pub struct Epoch(
+    Step<action::BuildAddrs>,
     Step<action::KickOff>,
     PropagationFlows,
     Step<action::ComputeLoss>,
