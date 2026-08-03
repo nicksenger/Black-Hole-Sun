@@ -78,6 +78,8 @@ pub use ops::VoidInferOps;
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
 pub use nucleus::Nucleus;
 
+pub use sun::{EdgeIdsFromList, Spawn, SpawnAnimal, Sun, SunState, Tag};
+
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum NucleusError {
     #[error("void download failed: {0}")]
@@ -103,4 +105,7 @@ pub enum NucleusError {
 
     #[error("transmission error: {0}")]
     Transmission(String),
+
+    #[error("spawn failed: {0}")]
+    Spawn(String),
 }

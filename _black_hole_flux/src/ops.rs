@@ -76,4 +76,18 @@ pub trait VoidInferOps: Send + Sync {
     /// Transmission::Propagation by supplying the recv and send void Ids
     /// for the next node.
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String>;
+
+    /// Spawn an animal of type `A` with the given seed and return the journey ID.
+    ///
+    /// The implementor is responsible for forwarding this to a
+    /// [`JungleClient`](jungle_sdk::JungleClient).
+    async fn spawn_animal<A>(
+        &self,
+        seed: &A::Seed,
+    ) -> Result<uuid::Uuid, String>
+    where
+        A: jungle_sdk::Animal,
+        A::Id: jungle_sdk::AnimalIdValue,
+        A::Generation: typosaurus::num::Unsigned,
+        A::Seed: Sync + Send;
 }
