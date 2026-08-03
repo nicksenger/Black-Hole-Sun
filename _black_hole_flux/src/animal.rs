@@ -4,7 +4,7 @@ use jungle_sdk::prelude::*;
 use jungle_zoo::Noop;
 
 use crate::action::CellState;
-use crate::{Nucleus, Primordium};
+use crate::{Nucleoli, Nucleus, Primordium, WaitForInitiationAction};
 
 /// The Progenitor: the first and simplest cell — a bare quark-inference loop
 /// with no input/output processing and no metadata.
@@ -14,8 +14,5 @@ pub struct Progenitor;
 impl Animal for Progenitor {
     type State = CellState;
     type Seed = ();
-    type Flow = ProgenitorFlow;
+    type Flow = Primordium;
 }
-
-#[derive(Flow)]
-pub struct ProgenitorFlow(Step<Noop<CellState, ()>>);

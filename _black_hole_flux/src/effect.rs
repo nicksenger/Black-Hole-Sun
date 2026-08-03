@@ -184,20 +184,23 @@ where
 pub struct WaitForInitiation;
 
 impl<J> EffectSchema<J> for WaitForInitiation {
-    type Id = u64;
+    type Id = num::U55;
     type In = ObjectId;
     type Out = ((), ObjectId);
     type Err = NucleusError;
 }
 
+//impl Effect<()> for WaitForInitiation {
+//    fn effect(jungle: &(), id: Self::In) -> impl Future<Output = Result<Self::Out, Self::Err>> {
+//        std::future::ready(Ok(((), uuid::Uuid::new_v4())))
+//    }
+//}
+
 impl<J> Effect<J> for WaitForInitiation
 where
     J: VoidInferOps,
 {
-    fn effect(
-        jungle: &J,
-        id: Self::In,
-    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+    fn effect(jungle: &J, id: Self::In) -> impl Future<Output = Result<Self::Out, Self::Err>> {
         async move {
             debug!(%id, "awaiting initiation transmission");
             let transmission = jungle
@@ -256,7 +259,11 @@ where
                     send,
                 } => {
                     debug!(emission_id = %emission_id.0, recv = %recv, send = %send, "propagation received");
-                    Ok(Propagation { emission_id, recv_id: recv, send_id: send })
+                    Ok(Propagation {
+                        emission_id,
+                        recv_id: recv,
+                        send_id: send,
+                    })
                 }
                 other => {
                     let msg = format!("expected Propagation, got {:?}", other);

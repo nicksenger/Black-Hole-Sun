@@ -48,13 +48,11 @@
 //! which guarantees access to void (upload / download), quark inference, and
 //! quark perturbation / optimization.
 
-use std::marker::PhantomData;
-
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 use jungle_zoo::Noop;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -92,7 +90,7 @@ pub use ops::VoidInferOps;
 // ---------------------------------------------------------------------------
 
 /// Errors that can occur during a quark-inference nucleus step or cell loop.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Serialize, Deserialize)]
 pub enum NucleusError {
     #[error("void download failed: {0}")]
     Download(String),
@@ -134,6 +132,13 @@ use action::QuarkInferStep as QuarkInferStep_;
 pub struct Nucleus<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     In,
     Step<QuarkInferStep_<M>>,
+    Out,
+);
+
+#[derive(Flow)]
+pub struct Nucleoli<In, Out>(
+    In,
+    //Step<QuarkInferStep_<M>>,
     Out,
 );
 
@@ -206,4 +211,9 @@ pub type Prokaryote<M> = Cell<Nucleus<Noop<M>, Noop<M>, M>>;
 
 /// A primordial cell: the simplest possible [`Cell`] with no input/output
 /// processing and no metadata — a bare quark-inference loop.
-pub type Primordium = Cell<Nucleus<Noop<CellState, ()>, Noop<CellState, ()>, ()>>;
+pub type Primordium =
+    Cell<Nucleus<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, ()>>;
+
+// ---------------------------------------------------------------------------
+// ProgenitorFlow — single-iteration flow without Cell wrapper
+// ---------------------------------------------------------------------------

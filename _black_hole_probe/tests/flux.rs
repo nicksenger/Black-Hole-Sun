@@ -47,7 +47,7 @@ impl SpaceJungle {
 }
 
 impl Ecosystem for SpaceJungle {
-    const NAME: &'static str = "flux";
+    const NAME: &'static str = "space-jungle";
     type Animals = SpaceAnimals;
 }
 
@@ -225,12 +225,6 @@ async fn progenitor_flux_flow() {
     let propagation_id = upload_transmission(void_addr, &propagation).await;
 
     // 6. Spawn the Progenitor with state pointing to the Propagation.
-    let seed = CellState {
-        recv_id: propagation_id,
-        send_id: ObjectId::nil(),
-        perturbation_seed: 42,
-    };
-
     let spawn_result = client.spawn::<Progenitor>(&()).await;
     assert!(
         spawn_result.is_ok(),
