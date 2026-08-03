@@ -51,9 +51,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod animal;
 pub mod cell;
 pub mod nucleus;
-pub mod animal;
 pub mod ops;
 pub mod sun;
 
@@ -62,23 +62,22 @@ pub use black_hole_spec::{
     InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkOut, SequenceOutput, Transmission,
 };
 
+pub use animal::Progenitor;
 pub use cell::action::{
     CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, QuarkInferStep,
     Transmit, WaitForInitiationAction, WaitForPotentiationAction, WaitForPropagationAction,
 };
 pub use cell::effect::{
-    QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp,
-    Transmit as TransmitEffect,
-    WaitForInitiation, WaitForPotentiation, WaitForPropagation,
+    QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect, WaitForInitiation,
+    WaitForPotentiation, WaitForPropagation,
 };
 pub use nucleus::effect::QuarkInfer;
-pub use animal::Progenitor;
 pub use ops::VoidInferOps;
 
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
 pub use nucleus::Nucleus;
 
-pub use sun::{EdgeIdsFromList, Spawn, SpawnAnimal, Sun, SunState, Tag};
+pub use sun::{EdgeIdsFromList, Spawn, SpawnAnimal, SunState, Tag};
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum NucleusError {

@@ -8,6 +8,9 @@ use std::marker::PhantomData;
 
 use black_hole_spec::ObjectId;
 use jungle_sdk::prelude::*;
+use jungle_zoo::Noop;
+use typenum::Unsigned;
+use typosaurus::collections::list::{Empty, List};
 use uuid::Uuid;
 
 pub use action::{EdgeIdsFromList, Spawn};
@@ -23,7 +26,16 @@ pub use effect::SpawnAnimal;
 /// - `T`: the [`Animal`] type to be spawned at this node
 /// - `E`: a type-level heterogeneous list of typenum integers representing
 ///   the IDs of this node's outgoing edges
-pub struct Tag<N, T, E>(PhantomData<N>, PhantomData<T>, PhantomData<E>);
+pub struct Tag<N: Unsigned, A: Animal, E: EdgeIdsFromList>(
+    PhantomData<N>,
+    PhantomData<A>,
+    PhantomData<E>,
+);
+pub trait Tagged {
+    type N: Unsigned;
+    type A: Animal;
+    type E: EdgeIdsFromList;
+}
 
 // ---------------------------------------------------------------------------
 // SunState — runtime state for sun orchestration
@@ -46,23 +58,22 @@ pub struct SunState {
     pub current: HashSet<Uuid>,
 }
 
-// ---------------------------------------------------------------------------
-// Sun — higher-order flow for sun orchestration
-// ---------------------------------------------------------------------------
+#[derive(Flow)]
+pub struct BlackHole<
+    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
+    U,
+>(Step<Spawn<T>>, U);
 
-/// A Sun orchestrates a graph of spawned animals.
-///
-/// `Cells` is a type-level list of [`Tag`] descriptors, one per node.
-pub struct Sun<Tags>(PhantomData<Tags>);
-
-// ---------------------------------------------------------------------------
-// Ray — single-node spawn flow
-// ---------------------------------------------------------------------------
-
-/// A Ray spawns a single animal tagged by a [`Tag<N, Animal, Edges>`]
-/// and chains it with a downstream flow `U`.
-///
-/// Instantiate with a concrete Tag type so the [`Spawn`] action bounds are met.
-pub struct Ray<Tag, U>(Step<Spawn<Tag>>, U)
+pub trait Sun {
+    type Flow;
+}
+impl<T, U> Sun for List<(T, U)>
 where
-    Spawn<Tag>: Action;
+    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
+    U: Sun,
+{
+    type Flow = BlackHole<T, <U as Sun>::Flow>;
+}
+impl Sun for Empty {
+    type Flow = Step<Noop<SunState, ()>>;
+}

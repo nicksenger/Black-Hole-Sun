@@ -2,6 +2,7 @@
 
 use std::marker::PhantomData;
 
+use super::Tagged;
 use jungle_sdk::prelude::*;
 use typosaurus::collections::list::{Empty, List};
 use typosaurus::num::Unsigned;
@@ -59,21 +60,19 @@ where
 pub struct Spawn<Tag>(PhantomData<fn() -> Tag>);
 
 #[jungle::action]
-impl<N, T, E> Action for Spawn<super::Tag<N, T, E>>
+impl<T> Action for Spawn<T>
 where
-    N: Unsigned,
-    T: Animal,
-    T::Id: AnimalIdValue,
-    T::Generation: Unsigned,
-    T::Seed: Sync + Send + 'static,
-    E: EdgeIdsFromList,
+    T: Tagged,
+    <<T as Tagged>::A as Animal>::Id: AnimalIdValue,
+    <<T as Tagged>::A as Animal>::Generation: Unsigned,
+    <<T as Tagged>::A as Animal>::Seed: Sync + Send + 'static,
 {
-    type Effect = super::effect::SpawnAnimal<T>;
-    type Input = T::Seed;
+    type Effect = super::effect::SpawnAnimal<<T as Tagged>::A>;
+    type Input = <<T as Tagged>::A as Animal>::Seed;
     type Output = Uuid;
     type Carry = ();
 
-    fn emit(_state: &super::SunState, input: Self::Input) -> T::Seed {
+    fn emit(_state: &super::SunState, input: Self::Input) -> <<T as Tagged>::A as Animal>::Seed {
         input
     }
 
@@ -81,21 +80,16 @@ where
         state: &mut super::SunState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let journey_id = output
-            .map_err(|e| Failure::Message(format!("spawn failed: {e}")))?;
+        let journey_id = output.map_err(|e| Failure::Message(format!("spawn failed: {e}")))?;
 
-        let edge_ids = E::edge_ids();
+        let edge_ids = <<T as Tagged>::E as EdgeIdsFromList>::edge_ids();
 
         // Register outgoing edges: this node -> edge UUIDs
         state.outgoing.insert(journey_id, edge_ids.clone());
 
         // Register each edge as pointing back to this node (for incoming lookup)
         for edge_id in edge_ids {
-            state
-                .incoming
-                .entry(edge_id)
-                .or_default()
-                .push(journey_id);
+            state.incoming.entry(edge_id).or_default().push(journey_id);
         }
 
         Ok(journey_id)
