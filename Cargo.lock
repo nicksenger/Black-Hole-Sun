@@ -882,6 +882,7 @@ dependencies = [
  "serde",
  "tokenizers",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

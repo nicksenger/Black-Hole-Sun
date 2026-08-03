@@ -22,6 +22,7 @@ const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 #[derive(Debug, Serialize, Deserialize)]
 enum VoidIn {
     Upload { data: Vec<u8> },
+    UploadWith { id: ObjectId, data: Vec<u8> },
     Download { id: ObjectId },
 }
 

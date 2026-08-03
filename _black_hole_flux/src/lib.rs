@@ -143,7 +143,6 @@ use action::{
     WaitForPropagationAction as WaitForPropagationAction_,
 };
 
-
 /// A Cell wraps a [`Nucleus`] in an infinite QuZO training loop driven by
 /// [`Transmission`] messages from void.
 ///
