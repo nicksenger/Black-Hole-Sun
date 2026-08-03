@@ -33,6 +33,38 @@ use super::effect::{
 };
 
 // ---------------------------------------------------------------------------
+// InitRecvId — set recv_id from the seed ObjectId (first step of Cell flow)
+// ---------------------------------------------------------------------------
+
+/// Action that initializes `recv_id` in [`CellState`] from the seed
+/// [`ObjectId`](black_hole_spec::ObjectId).
+///
+/// This is the very first step of a [`Cell`](crate::Cell) flow, converting the
+/// animal seed into the initial receive ID for the training loop.
+pub struct InitRecvId;
+
+#[jungle::action(carry = black_hole_spec::ObjectId)]
+impl Action for InitRecvId {
+    type Effect = NoEffect;
+    type Input = black_hole_spec::ObjectId;
+    type Output = ();
+
+    fn emit(_state: &CellState, input: Self::Input) -> ((), black_hole_spec::ObjectId) {
+        ((), input)
+    }
+
+    fn absorb(
+        state: &mut CellState,
+        _output: EffectCompletion<Self::Effect>,
+        carry: black_hole_spec::ObjectId,
+    ) -> Result<Self::Output, Failure> {
+        state.recv_id = carry;
+        Ok(())
+    }
+}
+
+
+// ---------------------------------------------------------------------------
 // Potentiation — payload from a Transmission::Potentiation
 // ---------------------------------------------------------------------------
 
