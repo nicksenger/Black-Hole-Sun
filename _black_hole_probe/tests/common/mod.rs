@@ -102,6 +102,24 @@ pub async fn void_upload(endpoint: &quinn::Endpoint, addr: SocketAddr, data: Vec
     }
 }
 
+pub async fn void_upload_with(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    id: ObjectId,
+    data: Vec<u8>,
+) -> ObjectId {
+    let server_name = "localhost";
+    let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send_frame(&mut send, &VoidIn::UploadWith { id, data }).await;
+    let resp: VoidOut = read_frame(&mut recv).await;
+    match resp {
+        VoidOut::Uploaded { id } => id,
+        VoidOut::Error { message } => panic!("void upload error: {message}"),
+        _ => panic!("unexpected void response for upload with"),
+    }
+}
+
 pub async fn void_download(endpoint: &quinn::Endpoint, addr: SocketAddr, id: ObjectId) -> Vec<u8> {
     let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();

@@ -36,20 +36,13 @@ pub struct SpaceAnimals(Progenitor);
 pub struct SpaceJungle {
     void_addr: SocketAddr,
     quark_addr: SocketAddr,
-    listen_addrs: Vec<Uuid>,
 }
 
 impl SpaceJungle {
-    pub fn new(
-        void_addr: SocketAddr,
-        quark_addr: SocketAddr,
-        listen_1: Uuid,
-        listen_2: Uuid,
-    ) -> Self {
+    pub fn new(void_addr: SocketAddr, quark_addr: SocketAddr) -> Self {
         Self {
             void_addr,
             quark_addr,
-            listen_addrs: vec![listen_1, listen_2],
         }
     }
 }
@@ -92,7 +85,15 @@ impl VoidInferOps for SpaceJungle {
         Ok(())
     }
 
-    async fn transmit(&self, _emission_id: EmissionId, _send_id: ObjectId) -> Result<(), String> {
+    async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String> {
+        let propagation = Transmission::Propagation {
+            emission_id,
+            recv: ObjectId::nil(),
+            send: ObjectId::nil(),
+        };
+        let data = to_allocvec(&propagation).map_err(|e| format!("serialize: {e}"))?;
+        let endpoint = make_client_endpoint().await;
+        void_upload_with(&endpoint, self.void_addr, send_id, data).await;
         Ok(())
     }
 }
@@ -237,7 +238,7 @@ async fn progenitor_flux_flow() {
     let (void_addr, void_abort, quark_addr, quark_abort) = start_servers(&model_path).await;
 
     // 2. Build the SpaceJungle with void/quark capabilities.
-    let jungle = SpaceJungle::new(void_addr, quark_addr, listen_1, listen_2);
+    let jungle = SpaceJungle::new(void_addr, quark_addr);
 
     // 3. Spawn a jungle-server with in-memory backend and connect a client.
     let listen_addr = reserve_local_addr();
@@ -283,7 +284,7 @@ async fn progenitor_flux_flow() {
     let propagation_2 = Transmission::Propagation {
         emission_id: EmissionId(emission_void_id_2),
         recv: ObjectId::nil(),
-        send: ObjectId::nil(),
+        send: listen_2,
     };
     let propagation_bytes_2 = to_allocvec(&propagation_2).expect("serialize propagation 2");
     let propagation_void_id_2 = void_upload(
@@ -316,7 +317,7 @@ async fn progenitor_flux_flow() {
     let propagation = Transmission::Propagation {
         emission_id: EmissionId(emission_void_id),
         recv: propagation_void_id_2,
-        send: ObjectId::nil(),
+        send: listen_1,
     };
     let propagation_bytes = to_allocvec(&propagation).expect("serialize propagation");
     let propagation_void_id =
