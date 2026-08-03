@@ -13,6 +13,6 @@ pub struct Progenitor;
 #[jungle::animal(id = 0, generation = 0)]
 impl Animal for Progenitor {
     type State = CellState;
-    type Seed = ();
+    type Seed = black_hole_spec::ObjectId;
     type Flow = Primordium;
 }

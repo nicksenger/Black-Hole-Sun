@@ -172,12 +172,12 @@ pub struct WaitForInitiationAction;
 #[jungle::action]
 impl Action for WaitForInitiationAction {
     type Effect = WaitForInitiation;
-    type Input = ();
+    type Input = ObjectId;
     type Output = ();
     type Carry = ();
 
-    fn emit(state: &CellState, _input: Self::Input) -> ObjectId {
-        state.recv_id
+    fn emit(state: &CellState, input: Self::Input) -> ObjectId {
+        input
     }
 
     fn absorb(

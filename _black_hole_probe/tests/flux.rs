@@ -233,7 +233,7 @@ async fn progenitor_flux_flow() {
     let propagation_id = upload_transmission(void_addr, &propagation).await;
 
     // 6. Spawn the Progenitor with state pointing to the Propagation.
-    let spawn_result = client.spawn::<Progenitor>(&()).await;
+    let spawn_result = client.spawn::<Progenitor>(&propagation_id).await;
     assert!(
         spawn_result.is_ok(),
         "spawn should succeed: {:?}",
