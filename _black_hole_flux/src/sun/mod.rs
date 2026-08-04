@@ -225,7 +225,7 @@ pub type LayerFlow = PropagationFlows;
 /// One complete training epoch: kick-off → propagation → compute-loss → broadcast-potentiation.
 #[derive(Flow)]
 pub struct Epoch(
-    Step<action::KickOff>,
+    Step<action::Initialize>,
     PropagationFlows,
     Step<action::ComputeLoss>,
     Step<action::BroadcastPotentiation>,

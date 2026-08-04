@@ -253,7 +253,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Helper functions for KickOffEffect
+// Helper functions for InitializeEffect
 // ---------------------------------------------------------------------------
 
 /// Void address constant used for uploading inference outputs and emissions.
@@ -283,22 +283,22 @@ async fn void_upload(_endpoint: &str, _addr: ObjectId, data: Vec<u8>) -> ObjectI
 }
 
 // ---------------------------------------------------------------------------
-// KickOffEffect — generate initial TransmissionId and send to root nodes
+// InitializeEffect — generate initial TransmissionId and send to root nodes
 // ---------------------------------------------------------------------------
 
 /// Effect that generates a new TransmissionId and uploads Propagation
 /// transmissions to the rx endpoints of all root nodes (those with no
 /// incoming edges). This kicks off the propagation through the graph.
-pub struct KickOffEffect;
+pub struct InitializeEffect;
 
-impl<J> EffectSchema<J> for KickOffEffect {
+impl<J> EffectSchema<J> for InitializeEffect {
     type Id = u64;
     type In = ();
     type Out = (Transmission, Transmission);
     type Err = NucleusError;
 }
 
-impl<J> Effect<J> for KickOffEffect
+impl<J> Effect<J> for InitializeEffect
 where
     J: VoidInferOps,
 {
@@ -342,8 +342,8 @@ where
     }
 }
 
-/// Result type alias for KickOffEffect output.
-pub type KickOffResult = (Transmission, Transmission);
+/// Result type alias for InitializeEffect output.
+pub type InitializeResult = (Transmission, Transmission);
 
 // ---------------------------------------------------------------------------
 // ComputeLossEffect — compute (loss_up, loss_down) from a TransmissionId

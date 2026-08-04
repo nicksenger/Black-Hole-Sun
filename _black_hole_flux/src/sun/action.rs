@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::sun::effect::GenUuidEffect;
 
 use super::effect::{
-    BroadcastPotentiationEffect, ComputeLossEffect, KickOffEffect, PropagationBranch,
+    BroadcastPotentiationEffect, ComputeLossEffect, InitializeEffect, PropagationBranch,
     WaitForLayerTransmission, WaitForLayerTransmissionInput,
 };
 use super::Tagged;
@@ -414,7 +414,7 @@ impl Action for GenUuid {
 }
 
 // ---------------------------------------------------------------------------
-// KickOff — generate initial TransmissionId and send to first-layer nodes
+// Initialize — generate initial TransmissionId and send to first-layer nodes
 // ---------------------------------------------------------------------------
 
 /// Action that kicks off propagation by generating a TransmissionId and
@@ -425,11 +425,11 @@ impl Action for GenUuid {
 /// TransmissionId stored in shared state, and uploads Propagation transmissions
 /// to each root node's rx endpoint. Outputs unit — the transmission id is stored
 /// in shared state for ComputeLoss to retrieve later.
-pub struct KickOff;
+pub struct Initialize;
 
 #[jungle::action]
-impl Action for KickOff {
-    type Effect = KickOffEffect;
+impl Action for Initialize {
+    type Effect = InitializeEffect;
     type Input = ();
     type Output = (Transmission, Transmission);
 
@@ -438,7 +438,7 @@ impl Action for KickOff {
         _state: &mut super::SunState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_e| Failure::Message(format!("kickoff failed")))
+        output.map_err(|_e| Failure::Message(format!("initialize failed")))
     }
 }
 
@@ -446,7 +446,7 @@ impl Action for KickOff {
 // ComputeLoss — compute (loss_up, loss_down) from shared TransmissionId
 // ---------------------------------------------------------------------------
 
-/// Action that retrieves the TransmissionId stored by KickOff in shared state,
+/// Action that retrieves the TransmissionId stored by Initialize in shared state,
 /// and computes the loss values (loss_up, loss_down) for potentiation.
 pub struct ComputeLoss;
 

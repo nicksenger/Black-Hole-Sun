@@ -229,9 +229,9 @@ fn text_to_dark_tokens(text: &str, tokenizer: &tokenizers::Tokenizer) -> Vec<Dar
 /// is needed — the Flow orchestrates everything.
 ///
 /// We subscribe to step updates and assert that at least 3 full training epochs
-/// complete by tracking KickOff task completions. In each epoch cycle:
-///   Epoch = KickOff -> PropagationFlows -> ComputeLoss -> BroadcastPotentiation
-/// KickOff is the first effect in every epoch, so we detect it as the leading
+/// complete by tracking Initialize task completions. In each epoch cycle:
+///   Epoch = Initialize -> PropagationFlows -> ComputeLoss -> BroadcastPotentiation
+/// Initialize is the first effect in every epoch, so we detect it as the leading
 /// EffectSuccessOutput after BuildAddrs and between epoch boundaries.
 #[tokio::test]
 async fn sun() {
@@ -282,28 +282,28 @@ async fn sun() {
         let _ = worker.spawn().await;
     });
 
-    // 7. Watch for KickOff completions (3 full training epochs).
+    // 7. Watch for Initialize completions (3 full training epochs).
     //
     // The BlackHole flow structure is:
     //   BlackHole(Step<BuildAddrs>, While<Always<SunState, ()>, Epoch>)
-    // where Epoch = (KickOff, PropagationFlows, ComputeLoss, BroadcastPotentiation)
+    // where Epoch = (Initialize, PropagationFlows, ComputeLoss, BroadcastPotentiation)
     //
     // BuildAddrs (node 0) runs once at startup. After that, each epoch iteration
-    // produces a sequence of EffectSuccessOutput events. KickOff is always the
+    // produces a sequence of EffectSuccessOutput events. Initialize is always the
     // first effect in each epoch cycle.
     //
-    // We track KickOff completions by:
+    // We track Initialize completions by:
     // - Detecting BuildAddrs completion (node_id == 0)
-    // - Counting effects after BuildAddrs; KickOff is the first effect of each
-    //   epoch. Each epoch produces at least 3 effect successes (KickOff,
+    // - Counting effects after BuildAddrs; Initialize is the first effect of each
+    //   epoch. Each epoch produces at least 3 effect successes (Initialize,
     //   ComputeLoss, BroadcastPotentiation), with PropagationFlows adding more.
-    //   We detect KickOff as effects at positions 1, 4, 7... after BuildAddrs
+    //   We detect Initialize as effects at positions 1, 4, 7... after BuildAddrs
     //   (i.e., every ~3-4 effects).
 
     let result = tokio::time::timeout(Duration::from_secs(120), async {
         let mut total_effects = 0u32;
         let mut buildaddrs_done = false;
-        let mut kickoff_count = 0u32;
+        let mut initialize_count = 0u32;
 
         while let Some(update_result) = subscription.next().await {
             let update = update_result.expect("stream update should succeed");
@@ -326,26 +326,26 @@ async fn sun() {
 
                     let effects_after_buildaddrs = total_effects - 1;
 
-                    // KickOff is the first effect in each epoch cycle.
+                    // Initialize is the first effect in each epoch cycle.
                     // Each epoch produces at least 3 effect successes
-                    // (KickOff, ComputeLoss, BroadcastPotentiation), with
+                    // (Initialize, ComputeLoss, BroadcastPotentiation), with
                     // PropagationFlows adding more from While-loop iterations.
-                    // We detect KickOff as effects at positions 1, 4, 7...
+                    // We detect Initialize as effects at positions 1, 4, 7...
                     // after BuildAddrs (i.e., every ~3-4 effects).
                     let estimated_epochs = effects_after_buildaddrs / 3;
                     let current_epoch = estimated_epochs + 1;
 
-                    // The first effect of each new epoch is KickOff.
+                    // The first effect of each new epoch is Initialize.
                     if effects_after_buildaddrs > 0 && effects_after_buildaddrs % 3 == 1 {
-                        kickoff_count += 1;
+                        initialize_count += 1;
                         println!(
-                            "KickOff completed (epoch {}, effect #{})",
+                            "Initialize completed (epoch {}, effect #{})",
                             current_epoch, total_effects
                         );
 
-                        if kickoff_count >= 3 {
+                        if initialize_count >= 3 {
                             println!(
-                                "3 KickOff completions detected after {} total effects",
+                                "3 Initialize completions detected after {} total effects",
                                 total_effects
                             );
                             return Ok::<(), String>(());
@@ -362,15 +362,15 @@ async fn sun() {
         }
 
         Err(format!(
-            "stream ended before 3 KickOff completions (got {})",
-            kickoff_count
+            "stream ended before 3 Initialize completions (got {})",
+            initialize_count
         ))
     })
     .await;
 
     match result {
         Ok(Ok(())) => {
-            println!("BlackHole flow completed: 3 KickOff tasks detected");
+            println!("BlackHole flow completed: 3 Initialize tasks detected");
         }
         Ok(Err(e)) => {
             let status = client
@@ -385,7 +385,7 @@ async fn sun() {
                 .await
                 .expect("journey_details should succeed");
             panic!(
-                "timeout waiting for 3 KickOff completions (120s): {}, status: {:?}",
+                "timeout waiting for 3 Initialize completions (120s): {}, status: {:?}",
                 e, status
             );
         }

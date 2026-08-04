@@ -78,11 +78,11 @@ pub use nucleus::Nucleus;
 pub use sun::{
     action::{
         BroadcastPotentiation, BroadcastPotentiationInput, BuildTopologicalSort, ComputeLoss,
-        NodeIdsFromList, PopLayer, ProcessNode, Spawn, TopologyState, KickOff,
+        NodeIdsFromList, PopLayer, ProcessNode, Spawn, TopologyState, Initialize,
     },
     effect::{
         BroadcastPotentiationEffect, BroadcastPotentiationResult, ComputeLossEffect,
-        KickOffEffect, KickOffResult, LayerTransmission, WaitForLayerTransmission,
+        InitializeEffect, InitializeResult, LayerTransmission, WaitForLayerTransmission,
     },
     BlackHole, BranchBody, CurrentNotEmpty, Epoch, InnerLoop, LayerFlow, PropA, PropB,
     PropagationFlows, SpawnAnimal, SunInner, SunState, Tag, TopoNotEmpty,
