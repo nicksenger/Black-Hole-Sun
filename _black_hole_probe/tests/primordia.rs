@@ -29,7 +29,6 @@ use uuid::Uuid;
 
 use common::*;
 
-#[cfg(test)]
 const PROGENITOR_NODE_COUNT: usize = 3;
 const SPACE_PROBE_DISTANCE_PROMPT: &str =
     "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -298,12 +297,22 @@ impl Animal for DarkStarBlackHole {
     type Flow = <DarkStarSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy>;
 }
 
+pub struct BlackDwarfBlackHole;
+
+#[jungle::animal(id = 4, generation = 0)]
+impl Animal for BlackDwarfBlackHole {
+    type State = SunState;
+    type Seed = ();
+    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy>;
+}
+
 #[derive(Animals)]
 pub struct SpaceAnimals(
     Progenitor,
     ProgenitorBlackHole,
     ConcatFusionAnimal,
     DarkStarBlackHole,
+    BlackDwarfBlackHole,
 );
 
 #[derive(Clone)]
@@ -679,6 +688,30 @@ async fn dark_star() {
     .await;
 }
 
+/// Runs the same topology as `primordia`, but with dark_star's generator/policy.
+#[tokio::test]
+async fn black_dwarf() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = match require_model_path("black_dwarf") {
+        Some(path) => path,
+        None => return,
+    };
+
+    exercise_sun_epoch::<BlackDwarfBlackHole>(
+        "black_dwarf Sun",
+        &model_path,
+        PROGENITOR_NODE_COUNT,
+        PROGENITOR_NODE_COUNT,
+        PROGENITOR_NODE_COUNT,
+        0,
+    )
+    .await;
+}
+
 /// Runs the dark_star Sun indefinitely with a live Black Hole Beam viewer.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn run_beam() {
@@ -730,6 +763,57 @@ pub(crate) fn run_beam() {
         .expect("Black Hole Beam should run");
 }
 
+/// Runs the black_dwarf Sun indefinitely with a live Black Hole Beam viewer.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn run_beam_black_dwarf() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
+        .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to run beam_black_dwarf");
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("Tokio runtime should build");
+    let (client, journey_id) = runtime.block_on(async {
+        let (void_addr, _void_abort, quark_addr, _quark_abort) = start_servers(&model_path).await;
+
+        let mut jungle = SpaceJungle::new(void_addr, quark_addr, PROGENITOR_NODE_COUNT);
+        let client = FusedClient::builder()
+            .build()
+            .await
+            .expect("fused client should build");
+        jungle.set_client(client.clone());
+
+        let journey_id = client
+            .spawn::<BlackDwarfBlackHole>(&())
+            .await
+            .expect("BlackDwarfBlackHole should spawn")
+            .journey_id;
+        println!("Spawned BlackDwarfBlackHole journey: {journey_id}");
+
+        // One worker per journey: black_dwarf graph vertices plus the parent.
+        let _worker_handles: Vec<_> = (0..(PROGENITOR_NODE_COUNT + 1))
+            .map(|_| {
+                let worker = JungleWorker::new(jungle.clone(), client.clone());
+                tokio::spawn(async move {
+                    let _ = worker.spawn().await;
+                })
+            })
+            .collect();
+
+        (client, journey_id)
+    });
+
+    black_hole_beam::BeamBuilder::new()
+        .view_live::<BlackDwarfBlackHole>(client, journey_id)
+        .expect("Black Hole Beam should run");
+}
+
 /// Launches the Dark Star Beam example in a process whose UI runs on its main thread.
 #[cfg(test)]
 #[test]
@@ -745,5 +829,23 @@ fn beam_dark_star() {
     assert!(
         status.success(),
         "beam_dark_star example exited with {status}"
+    );
+}
+
+/// Launches the Black Dwarf Beam example in a process whose UI runs on its main thread.
+#[cfg(test)]
+#[test]
+#[ignore]
+fn beam_black_dwarf() {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = std::process::Command::new(cargo)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["run", "--quiet", "--example", "beam_black_dwarf"])
+        .status()
+        .expect("beam_black_dwarf example should launch");
+
+    assert!(
+        status.success(),
+        "beam_black_dwarf example exited with {status}"
     );
 }
