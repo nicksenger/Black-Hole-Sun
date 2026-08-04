@@ -9,31 +9,271 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use black_hole_flux::ops::{SunOps, VoidInferOps};
-use black_hole_flux::sun::{BlackHole, SunState, Unary};
-use black_hole_flux::Progenitor;
+use black_hole_flux::sun::{Binary, BlackHole, SunState, Unary};
+use black_hole_flux::{AtomError, Emission, Fusion, FusionSeed, FusionState, Progenitor};
 use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, QuarkServerBuilder, Transmission, VoidServerBuilder,
+    EmissionId, InferenceInput, InferenceOutput, InferenceOutputId, InferenceRequest, ObjectId,
+    QuarkServerBuilder, Transmission, VoidServerBuilder,
 };
 use futures::stream::StreamExt;
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
-use postcard::to_allocvec;
+use postcard::{from_bytes, to_allocvec};
 use tokio::sync::Barrier;
 use typosaurus::num::consts::*;
 use uuid::Uuid;
 
 use common::*;
 
-const NODE_COUNT: usize = 3;
+const PROGENITOR_NODE_COUNT: usize = 3;
+const SPACE_PROBE_DISTANCE_PROMPT: &str =
+    "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
+const DARK_STAR_MODEL_CELL_COUNT: usize = 10;
+const DARK_STAR_VERTEX_COUNT: usize = 13;
+const DARK_STAR_PORT_COUNT: usize = 16;
+const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
 
 type Unary0 = Unary<U0, Progenitor, list![U1]>;
 type Unary1 = Unary<U1, Progenitor, list![U2]>;
 type Unary2 = Unary<U2, Progenitor, list![]>;
 type ThreeProgenitorSun = list![Unary0, Unary1, Unary2];
+
+type DarkStarInput = Unary<U0, Progenitor, list![U1, U2]>;
+type DarkStarL0 = Unary<U1, Progenitor, list![U3, U4]>;
+type DarkStarR0 = Unary<U2, Progenitor, list![U5, U6]>;
+type DarkStarL1 = Unary<U3, Progenitor, list![U7]>;
+type DarkStarR1 = Unary<U4, Progenitor, list![U8]>;
+type DarkStarL2 = Unary<U5, Progenitor, list![U9]>;
+type DarkStarR2 = Unary<U6, Progenitor, list![U10]>;
+type DarkStarF0 = Binary<U7, U8, ConcatFusionAnimal, list![U13]>;
+type DarkStarF1 = Binary<U9, U10, ConcatFusionAnimal, list![U14]>;
+type DarkStarAfterF0 = Unary<U13, Progenitor, list![U15]>;
+type DarkStarAfterF1 = Unary<U14, Progenitor, list![U16]>;
+type DarkStarF2 = Binary<U15, U16, ConcatFusionAnimal, list![U17]>;
+type DarkStarAfterF2 = Unary<U17, Progenitor, list![]>;
+type DarkStarSun = list![
+    DarkStarInput,
+    DarkStarL0,
+    DarkStarR0,
+    DarkStarL1,
+    DarkStarR1,
+    DarkStarL2,
+    DarkStarR2,
+    DarkStarF0,
+    DarkStarF1,
+    DarkStarAfterF0,
+    DarkStarAfterF1,
+    DarkStarF2,
+    DarkStarAfterF2
+];
+
+#[derive(Flow)]
+pub struct DarkStarGenerator(Step<GenerateDarkStarPrompt>);
+
+pub struct GenerateDarkStarPrompt;
+
+#[jungle::action]
+impl Action for GenerateDarkStarPrompt {
+    type Effect = GenerateDarkStarPromptEffect;
+    type Input = ();
+    type Output = (Transmission, Transmission);
+
+    fn emit(_state: &SunState, _input: Self::Input) {}
+
+    fn absorb(
+        _state: &mut SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("dark star generator failed: {error}")))
+    }
+}
+
+pub struct GenerateDarkStarPromptEffect;
+
+impl<J> EffectSchema<J> for GenerateDarkStarPromptEffect {
+    type Id = u64;
+    type In = ();
+    type Out = (Transmission, Transmission);
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for GenerateDarkStarPromptEffect
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        _input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let request = InferenceRequest::Sequences {
+                sequences: vec![vec![InferenceInput::Text(
+                    SPACE_PROBE_DISTANCE_PROMPT.to_string(),
+                )]],
+                limit: 1,
+            };
+            let output_id = jungle.infer(request).await.map_err(AtomError::Inference)?;
+            let emission = Emission {
+                metadata: (),
+                output_id: InferenceOutputId(output_id),
+            };
+            let emission_bytes = to_allocvec(&emission)?;
+            let emission_id = jungle
+                .upload_to_void(emission_bytes)
+                .await
+                .map_err(AtomError::Upload)?;
+
+            let propagation = Transmission::Propagation {
+                emission_id: EmissionId(emission_id),
+                recv: ObjectId::nil(),
+                send: ObjectId::nil(),
+            };
+            Ok((propagation.clone(), propagation))
+        }
+    }
+}
+
+#[derive(Flow)]
+pub struct DarkStarPolicy(Step<DarkStarLossPolicy>);
+
+pub struct DarkStarLossPolicy;
+
+#[jungle::action]
+impl Action for DarkStarLossPolicy {
+    type Effect = DarkStarLossPolicyEffect;
+    type Input = (Transmission, Transmission);
+    type Output = (f32, f32);
+    type Carry = ();
+
+    fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("dark star policy failed: {error}")))
+    }
+}
+
+pub struct DarkStarLossPolicyEffect;
+
+#[jungle::effect]
+impl<J> Effect<J> for DarkStarLossPolicyEffect {
+    type Id = u64;
+    type In = (Transmission, Transmission);
+    type Out = (f32, f32);
+    type Err = AtomError;
+
+    fn effect(
+        _jungle: &J,
+        _input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move { Ok((0.4, 0.8)) }
+    }
+}
+
+trait FusionConcatOps: Send + Sync {
+    fn record_fusion_concat(&self);
+}
+
+pub struct ConcatFusionOutputs;
+
+#[jungle::action]
+impl Action for ConcatFusionOutputs {
+    type Effect = ConcatFusionOutputsEffect;
+    type Input = (EmissionId, EmissionId);
+    type Output = EmissionId;
+
+    fn emit(_state: &FusionState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut FusionState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("fusion concatenation failed: {error}")))
+    }
+}
+
+pub struct ConcatFusionOutputsEffect;
+
+impl<J> EffectSchema<J> for ConcatFusionOutputsEffect {
+    type Id = u64;
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for ConcatFusionOutputsEffect
+where
+    J: VoidInferOps + FusionConcatOps,
+{
+    fn effect(
+        jungle: &J,
+        (left_id, right_id): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let left_emission: Emission<()> = jungle
+                .download_emission(left_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+            let right_emission: Emission<()> = jungle
+                .download_emission(right_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+
+            let left_bytes = jungle
+                .download_raw(left_emission.output_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+            let right_bytes = jungle
+                .download_raw(right_emission.output_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+
+            let mut merged_output: InferenceOutput = from_bytes(&left_bytes)?;
+            let right_output: InferenceOutput = from_bytes(&right_bytes)?;
+            merged_output.results.extend(right_output.results);
+
+            let merged_output_bytes = to_allocvec(&merged_output)?;
+            let merged_output_id = jungle
+                .upload_to_void(merged_output_bytes)
+                .await
+                .map_err(AtomError::Upload)?;
+            let merged_emission = Emission {
+                metadata: (),
+                output_id: InferenceOutputId(merged_output_id),
+            };
+            let merged_emission_bytes = to_allocvec(&merged_emission)?;
+            let merged_emission_id = jungle
+                .upload_to_void(merged_emission_bytes)
+                .await
+                .map_err(AtomError::Upload)?;
+
+            jungle.record_fusion_concat();
+            Ok(EmissionId(merged_emission_id))
+        }
+    }
+}
+
+#[derive(Flow)]
+pub struct ConcatFusionTransform(Step<ConcatFusionOutputs>);
+
+pub struct ConcatFusionAnimal;
+
+#[jungle::animal(id = 2, generation = 0)]
+impl Animal for ConcatFusionAnimal {
+    type State = FusionState;
+    type Seed = FusionSeed;
+    type Flow = Fusion<ConcatFusionTransform>;
+}
 
 pub struct ProgenitorBlackHole;
 
@@ -44,13 +284,27 @@ impl Animal for ProgenitorBlackHole {
     type Flow = <ThreeProgenitorSun as BlackHole>::Sun<Generator, Policy>;
 }
 
+pub struct DarkStarBlackHole;
+
+#[jungle::animal(id = 3, generation = 0)]
+impl Animal for DarkStarBlackHole {
+    type State = SunState;
+    type Seed = ();
+    type Flow = <DarkStarSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy>;
+}
+
 #[derive(Animals)]
-pub struct SpaceAnimals(Progenitor, ProgenitorBlackHole);
+pub struct SpaceAnimals(
+    Progenitor,
+    ProgenitorBlackHole,
+    ConcatFusionAnimal,
+    DarkStarBlackHole,
+);
 
 /// Coordinates a model mutation once all cells reach the same training phase.
 ///
-/// The three Progenitor journeys share one quark, so perturbation and
-/// optimization apply once per Sun epoch while each node still runs inference.
+/// All Progenitor journeys in a Sun share one quark, so perturbation and
+/// optimization apply once per Sun epoch while each cell still runs inference.
 #[derive(Clone)]
 struct ModelPhase {
     enter: Arc<Barrier>,
@@ -102,21 +356,23 @@ pub struct SpaceJungle {
     potentiation_writes: Arc<AtomicUsize>,
     inference_calls: Arc<AtomicUsize>,
     optimized_cells: Arc<AtomicUsize>,
+    fusion_concat_calls: Arc<AtomicUsize>,
     model_error: Arc<Mutex<Option<String>>>,
 }
 
 impl SpaceJungle {
-    fn new(void_addr: SocketAddr, quark_addr: SocketAddr) -> Self {
+    fn new(void_addr: SocketAddr, quark_addr: SocketAddr, model_cell_count: usize) -> Self {
         Self {
             void_addr,
             quark_addr,
             client: None,
-            perturb_up_phase: ModelPhase::new(NODE_COUNT),
-            perturb_down_phase: ModelPhase::new(NODE_COUNT),
-            optimize_phase: ModelPhase::new(NODE_COUNT),
+            perturb_up_phase: ModelPhase::new(model_cell_count),
+            perturb_down_phase: ModelPhase::new(model_cell_count),
+            optimize_phase: ModelPhase::new(model_cell_count),
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
             inference_calls: Arc::new(AtomicUsize::new(0)),
             optimized_cells: Arc::new(AtomicUsize::new(0)),
+            fusion_concat_calls: Arc::new(AtomicUsize::new(0)),
             model_error: Arc::new(Mutex::new(None)),
         }
     }
@@ -132,6 +388,12 @@ impl SpaceJungle {
                 *first_error = Some(format!("{operation}: {error}"));
             }
         }
+    }
+}
+
+impl FusionConcatOps for SpaceJungle {
+    fn record_fusion_concat(&self) {
+        self.fusion_concat_calls.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -290,43 +552,45 @@ async fn start_servers(
     (void_addr, void_abort, quark_addr, quark_abort)
 }
 
-/// Runs the same U0 -> U1 -> U2 Sun topology as `sun`, with real Progenitor
-/// cells backed by a quark model.
-#[tokio::test]
-async fn primordia() {
-    init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
-
-    let model_path = match require_model_path("primordia") {
-        Some(path) => path,
-        None => return,
-    };
-    let (void_addr, void_abort, quark_addr, quark_abort) = start_servers(&model_path).await;
+#[cfg(test)]
+async fn exercise_sun_epoch<A>(
+    test_name: &str,
+    model_path: &str,
+    model_cell_count: usize,
+    vertex_count: usize,
+    expected_potentiation_writes: usize,
+    expected_fusion_concats: usize,
+)
+where
+    A: Animal<Seed = ()>,
+    A::Id: AnimalIdValue,
+    A::Generation: jungle_sdk::typosaurus::num::Unsigned,
+{
+    let (void_addr, void_abort, quark_addr, quark_abort) = start_servers(model_path).await;
 
     let client = FusedClient::builder()
         .build()
         .await
         .expect("fused client should build");
-    let mut jungle = SpaceJungle::new(void_addr, quark_addr);
+    let mut jungle = SpaceJungle::new(void_addr, quark_addr, model_cell_count);
     jungle.set_client(client.clone());
 
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
     let inference_calls = Arc::clone(&jungle.inference_calls);
     let optimized_cells = Arc::clone(&jungle.optimized_cells);
+    let fusion_concat_calls = Arc::clone(&jungle.fusion_concat_calls);
     let model_error = Arc::clone(&jungle.model_error);
 
     let parent = client
-        .spawn::<ProgenitorBlackHole>(&())
+        .spawn::<A>(&())
         .await
-        .expect("Progenitor Sun should spawn");
+        .unwrap_or_else(|error| panic!("{test_name} should spawn: {error}"));
     let mut subscription = client
         .subscribe_step_updates(parent.journey_id, None)
         .await
         .expect("parent subscription should succeed");
 
-    let worker_handles: Vec<_> = (0..NODE_COUNT + 1)
+    let worker_handles: Vec<_> = (0..vertex_count + 1)
         .map(|_| {
             let worker = JungleWorker::new(jungle.clone(), client.clone());
             tokio::spawn(async move {
@@ -335,15 +599,16 @@ async fn primordia() {
         })
         .collect();
 
-    let result = tokio::time::timeout(Duration::from_secs(180), async {
+    let result = tokio::time::timeout(Duration::from_secs(240), async {
         loop {
             if let Some(error) = model_error.lock().unwrap().clone() {
                 return Err(error);
             }
 
-            if potentiation_writes.load(Ordering::SeqCst) >= NODE_COUNT
-                && inference_calls.load(Ordering::SeqCst) >= NODE_COUNT * 2
-                && optimized_cells.load(Ordering::SeqCst) >= NODE_COUNT
+            if potentiation_writes.load(Ordering::SeqCst) >= expected_potentiation_writes
+                && inference_calls.load(Ordering::SeqCst) >= model_cell_count * 2
+                && optimized_cells.load(Ordering::SeqCst) >= model_cell_count
+                && fusion_concat_calls.load(Ordering::SeqCst) >= expected_fusion_concats
             {
                 return Ok::<(), String>(());
             }
@@ -366,7 +631,7 @@ async fn primordia() {
                             return Err(format!("step update stream failed: {error}"));
                         }
                         None => {
-                            return Err("step update stream ended before one epoch".to_string());
+                            return Err(format!("step update stream ended before {test_name} completed an epoch"));
                         }
                     }
                 }
@@ -376,21 +641,34 @@ async fn primordia() {
     })
     .await;
 
-    if let Err(error) = &result {
-        let status = client
-            .journey_details(parent.journey_id)
-            .await
-            .expect("parent journey details should be available");
-        panic!(
-            "timeout waiting for Progenitor Sun epoch ({error}); \
-             inferences={}, potentiations={}, optimized_cells={}, status={status:?}",
-            inference_calls.load(Ordering::SeqCst),
-            potentiation_writes.load(Ordering::SeqCst),
-            optimized_cells.load(Ordering::SeqCst),
-        );
-    }
-    if let Ok(Err(error)) = result {
-        panic!("Progenitor Sun failed: {error}");
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let status = client
+                .journey_details(parent.journey_id)
+                .await
+                .expect("parent journey details should be available");
+            panic!(
+                "{test_name} failed: {error}; inferences={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
+                inference_calls.load(Ordering::SeqCst),
+                potentiation_writes.load(Ordering::SeqCst),
+                optimized_cells.load(Ordering::SeqCst),
+                fusion_concat_calls.load(Ordering::SeqCst),
+            );
+        }
+        Err(error) => {
+            let status = client
+                .journey_details(parent.journey_id)
+                .await
+                .expect("parent journey details should be available");
+            panic!(
+                "timeout waiting for {test_name} epoch (240s): {error}; inferences={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
+                inference_calls.load(Ordering::SeqCst),
+                potentiation_writes.load(Ordering::SeqCst),
+                optimized_cells.load(Ordering::SeqCst),
+                fusion_concat_calls.load(Ordering::SeqCst),
+            );
+        }
     }
 
     for worker_handle in worker_handles {
@@ -400,4 +678,53 @@ async fn primordia() {
     drop(client);
     void_abort.abort();
     quark_abort.abort();
+}
+
+/// Runs the same U0 -> U1 -> U2 Sun topology as `sun`, with real Progenitor
+/// cells backed by a quark model.
+#[tokio::test]
+async fn primordia() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = match require_model_path("primordia") {
+        Some(path) => path,
+        None => return,
+    };
+    exercise_sun_epoch::<ProgenitorBlackHole>(
+        "Progenitor Sun",
+        &model_path,
+        PROGENITOR_NODE_COUNT,
+        PROGENITOR_NODE_COUNT,
+        PROGENITOR_NODE_COUNT,
+        0,
+    )
+    .await;
+}
+
+/// Runs an expanded diamond with Fusion nodes that concatenate outputs and
+/// additional Progenitor cells after every Fusion vertex.
+#[tokio::test]
+async fn dark_star() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = match require_model_path("dark_star") {
+        Some(path) => path,
+        None => return,
+    };
+
+    exercise_sun_epoch::<DarkStarBlackHole>(
+        "dark_star Sun",
+        &model_path,
+        DARK_STAR_MODEL_CELL_COUNT,
+        DARK_STAR_VERTEX_COUNT,
+        DARK_STAR_PORT_COUNT,
+        DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH,
+    )
+    .await;
 }
