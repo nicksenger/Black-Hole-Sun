@@ -851,8 +851,13 @@ dependencies = [
 name = "black-hole-beam"
 version = "0.1.0"
 dependencies = [
+ "black-hole-flux",
+ "iced",
+ "iced-sugiyama",
  "jungle-sdk",
- "jungle-vision",
+ "postcard",
+ "typenum",
+ "uuid",
 ]
 
 [[package]]
@@ -2294,15 +2299,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
-name = "fdeflate"
-version = "0.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
-dependencies = [
- "simd-adler32",
-]
-
-[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3734,19 +3730,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "image"
-version = "0.25.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
-dependencies = [
- "bytemuck",
- "byteorder-lite",
- "moxcms",
- "num-traits",
- "png",
-]
-
-[[package]]
 name = "inception"
 version = "0.1.0"
 source = "git+https://github.com/nicksenger/inception.git?branch=jungle#c7cb20912de18dbab3c7f80eb8e376cae93f4b19"
@@ -4073,23 +4056,6 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "typosaurus",
- "uuid",
-]
-
-[[package]]
-name = "jungle-vision"
-version = "0.1.0"
-source = "git+https://github.com/nicksenger/Jungle.git?branch=blackholesun#724f878de566956c3a63753f7c1917c3c51eec42"
-dependencies = [
- "iced",
- "iced-sugiyama",
- "iced-sugiyama-core",
- "image",
- "jungle-client",
- "jungle-core",
- "jungle-types",
- "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -4484,16 +4450,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "moxcms"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
-dependencies = [
- "num-traits",
- "pxfm",
 ]
 
 [[package]]
@@ -5602,19 +5558,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
-name = "png"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
-dependencies = [
- "bitflags 2.13.1",
- "crc32fast",
- "fdeflate",
- "flate2",
- "miniz_oxide",
-]
-
-[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5745,12 +5688,6 @@ dependencies = [
  "reborrow",
  "version_check",
 ]
-
-[[package]]
-name = "pxfm"
-version = "0.1.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "quick-xml"
