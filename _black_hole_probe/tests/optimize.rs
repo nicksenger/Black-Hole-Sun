@@ -6,8 +6,9 @@ use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::QuarkServerBuilder;
 use black_hole_sun::VoidServerBuilder;
-use black_hole_sun::{InferenceInput, InferenceRequest, DarkToken, LogitEntry};
+use black_hole_sun::{DarkToken, InferenceInput, InferenceRequest, LogitEntry};
 use postcard::{from_bytes, to_allocvec};
+use uuid::Uuid;
 
 use common::*;
 
@@ -23,14 +24,18 @@ fn get_tokenizer() -> tokenizers::Tokenizer {
     let tokenizer_file = repo
         .get("tokenizer.json")
         .expect("failed to download tokenizer.json from HuggingFace");
-    tokenizers::Tokenizer::from_file(tokenizer_file)
-        .expect("failed to load tokenizer")
+    tokenizers::Tokenizer::from_file(tokenizer_file).expect("failed to load tokenizer")
 }
 
 /// Start void and quark servers, returning their local addresses and abort handles.
 async fn start_servers(
     model_path: &str,
-) -> (std::net::SocketAddr, tokio::task::AbortHandle, std::net::SocketAddr, tokio::task::AbortHandle) {
+) -> (
+    std::net::SocketAddr,
+    tokio::task::AbortHandle,
+    std::net::SocketAddr,
+    tokio::task::AbortHandle,
+) {
     let object_store = Box::new(InMemoryObjectStore::new());
     let store = Box::new(InMemoryStore::new());
     let void_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -74,6 +79,8 @@ async fn optimization() {
 
     let void_client = make_client_endpoint().await;
     let quark_client = make_client_endpoint().await;
+    let model_id = Uuid::new_v4();
+    quark_start(&quark_client, quark_local, model_id).await;
 
     let tokenizer = get_tokenizer();
 
@@ -97,11 +104,11 @@ async fn optimization() {
 
     // Step 1: PerturbUp
     println!("\n--- Step 1: PerturbUp (seed=42) ---");
-    quark_perturb_up(&quark_client, quark_local, 42).await;
+    quark_perturb_up(&quark_client, quark_local, model_id, 42).await;
 
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
-    let output_id_up = quark_infer(&quark_client, quark_local, input_id).await;
+    let output_id_up = quark_infer(&quark_client, quark_local, model_id, input_id).await;
     let output_bytes_up = void_download(&void_client, void_local, output_id_up).await;
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
@@ -115,15 +122,19 @@ async fn optimization() {
         !output_up.results[1].0.is_empty(),
         "up inference sequence 1 returned zero predictions"
     );
-    assert_eq!(output_up.results.len(), 2, "up inference should have 2 results for batch size 2");
+    assert_eq!(
+        output_up.results.len(),
+        2,
+        "up inference should have 2 results for batch size 2"
+    );
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
-    quark_perturb_down(&quark_client, quark_local).await;
+    quark_perturb_down(&quark_client, quark_local, model_id).await;
 
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
-    let output_id_down = quark_infer(&quark_client, quark_local, input_id).await;
+    let output_id_down = quark_infer(&quark_client, quark_local, model_id, input_id).await;
     let output_bytes_down = void_download(&void_client, void_local, output_id_down).await;
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
@@ -137,7 +148,11 @@ async fn optimization() {
         !output_down.results[1].0.is_empty(),
         "down inference sequence 1 returned zero predictions"
     );
-    assert_eq!(output_down.results.len(), 2, "down inference should have 2 results for batch size 2");
+    assert_eq!(
+        output_down.results.len(),
+        2,
+        "down inference should have 2 results for batch size 2"
+    );
 
     // Step 5: Optimize with fake loss values
     let fake_loss_up = 0.5f32;
@@ -146,11 +161,18 @@ async fn optimization() {
         "\n--- Step 5: Optimize (loss_up={}, loss_down={}) ---",
         fake_loss_up, fake_loss_down
     );
-    quark_optimize(&quark_client, quark_local, fake_loss_up, fake_loss_down).await;
+    quark_optimize(
+        &quark_client,
+        quark_local,
+        model_id,
+        fake_loss_up,
+        fake_loss_down,
+    )
+    .await;
 
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
-    let output_id_final = quark_infer(&quark_client, quark_local, input_id).await;
+    let output_id_final = quark_infer(&quark_client, quark_local, model_id, input_id).await;
     let output_bytes_final = void_download(&void_client, void_local, output_id_final).await;
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
@@ -164,7 +186,11 @@ async fn optimization() {
         !output_final.results[1].0.is_empty(),
         "final inference sequence 1 returned zero predictions"
     );
-    assert_eq!(output_final.results.len(), 2, "final inference should have 2 results for batch size 2");
+    assert_eq!(
+        output_final.results.len(),
+        2,
+        "final inference should have 2 results for batch size 2"
+    );
 
     // Verify the output contains plausible text.
     let final_text = decode_dark_tokens(&tokenizer, &output_final.results[0].0);
@@ -181,6 +207,7 @@ async fn optimization() {
         "post-optimize sequence 1 predicted tokens had no decoded text"
     );
 
+    quark_shutdown(&quark_client, quark_local, model_id).await;
     drop(void_client);
     drop(quark_client);
     void_abort.abort();
@@ -203,6 +230,8 @@ async fn dark_optimization() {
 
     let void_client = make_client_endpoint().await;
     let quark_client = make_client_endpoint().await;
+    let model_id = Uuid::new_v4();
+    quark_start(&quark_client, quark_local, model_id).await;
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -249,11 +278,11 @@ async fn dark_optimization() {
 
     // Step 1: PerturbUp
     println!("\n--- Step 1: PerturbUp (seed=42) ---");
-    quark_perturb_up(&quark_client, quark_local, 42).await;
+    quark_perturb_up(&quark_client, quark_local, model_id, 42).await;
 
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
-    let output_id_up = quark_infer(&quark_client, quark_local, input_id).await;
+    let output_id_up = quark_infer(&quark_client, quark_local, model_id, input_id).await;
     let output_bytes_up = void_download(&void_client, void_local, output_id_up).await;
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
@@ -267,15 +296,19 @@ async fn dark_optimization() {
         !output_up.results[1].0.is_empty(),
         "up inference sequence 1 returned zero predictions"
     );
-    assert_eq!(output_up.results.len(), 2, "up inference should have 2 results for batch size 2");
+    assert_eq!(
+        output_up.results.len(),
+        2,
+        "up inference should have 2 results for batch size 2"
+    );
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
-    quark_perturb_down(&quark_client, quark_local).await;
+    quark_perturb_down(&quark_client, quark_local, model_id).await;
 
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
-    let output_id_down = quark_infer(&quark_client, quark_local, input_id).await;
+    let output_id_down = quark_infer(&quark_client, quark_local, model_id, input_id).await;
     let output_bytes_down = void_download(&void_client, void_local, output_id_down).await;
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
@@ -289,7 +322,11 @@ async fn dark_optimization() {
         !output_down.results[1].0.is_empty(),
         "down inference sequence 1 returned zero predictions"
     );
-    assert_eq!(output_down.results.len(), 2, "down inference should have 2 results for batch size 2");
+    assert_eq!(
+        output_down.results.len(),
+        2,
+        "down inference should have 2 results for batch size 2"
+    );
 
     // Step 5: Optimize with fake loss values
     let fake_loss_up = 0.5f32;
@@ -298,11 +335,18 @@ async fn dark_optimization() {
         "\n--- Step 5: Optimize (loss_up={}, loss_down={}) ---",
         fake_loss_up, fake_loss_down
     );
-    quark_optimize(&quark_client, quark_local, fake_loss_up, fake_loss_down).await;
+    quark_optimize(
+        &quark_client,
+        quark_local,
+        model_id,
+        fake_loss_up,
+        fake_loss_down,
+    )
+    .await;
 
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
-    let output_id_final = quark_infer(&quark_client, quark_local, input_id).await;
+    let output_id_final = quark_infer(&quark_client, quark_local, model_id, input_id).await;
     let output_bytes_final = void_download(&void_client, void_local, output_id_final).await;
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
@@ -316,7 +360,11 @@ async fn dark_optimization() {
         !output_final.results[1].0.is_empty(),
         "final inference sequence 1 returned zero predictions"
     );
-    assert_eq!(output_final.results.len(), 2, "final inference should have 2 results for batch size 2");
+    assert_eq!(
+        output_final.results.len(),
+        2,
+        "final inference should have 2 results for batch size 2"
+    );
 
     // Verify the output contains plausible text.
     let final_text = decode_dark_tokens(&tokenizer, &output_final.results[0].0);
@@ -333,6 +381,7 @@ async fn dark_optimization() {
         "post-optimize sequence 1 predicted tokens had no decoded text"
     );
 
+    quark_shutdown(&quark_client, quark_local, model_id).await;
     drop(void_client);
     drop(quark_client);
     void_abort.abort();

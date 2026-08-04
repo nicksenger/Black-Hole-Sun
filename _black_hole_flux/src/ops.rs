@@ -39,23 +39,38 @@ pub trait VoidInferOps: Send + Sync {
     /// spawned cells, so these writes must preserve the requested id.
     async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String>;
 
+    /// Start a quark model instance with a stable ID.
+    async fn start_model(&self, model_id: uuid::Uuid) -> Result<(), String>;
+
     /// Run quark inference on an emission stored at `input_id` in void.
     /// Returns the void id of the resulting `InferenceOutput`.
-    async fn infer(&self, request: InferenceRequest) -> Result<ObjectId, String>;
+    async fn infer(
+        &self,
+        model_id: uuid::Uuid,
+        request: InferenceRequest,
+    ) -> Result<ObjectId, String>;
 
     /// Perturb the associated quark's weights in the positive direction.
     ///
     /// The `seed` parameter controls the random perturbation for reproducibility.
-    async fn perturb_up(&self, seed: u64) -> Result<(), String>;
+    async fn perturb_up(&self, model_id: uuid::Uuid, seed: u64) -> Result<(), String>;
 
     /// Perturb the associated quark's weights in the negative direction.
-    async fn perturb_down(&self) -> Result<(), String>;
+    async fn perturb_down(&self, model_id: uuid::Uuid) -> Result<(), String>;
 
     /// Apply the QuZO optimization update using the up and down loss values.
     ///
     /// The quark uses the difference between `loss_up` and `loss_down` to
     /// estimate a gradient and update its weights.
-    async fn optimize(&self, loss_up: f32, loss_down: f32) -> Result<(), String>;
+    async fn optimize(
+        &self,
+        model_id: uuid::Uuid,
+        loss_up: f32,
+        loss_down: f32,
+    ) -> Result<(), String>;
+
+    /// Shut down a quark model instance.
+    async fn shutdown_model(&self, model_id: uuid::Uuid) -> Result<(), String>;
 
     /// Wait for a [`Transmission`] from the void by object id.
     ///

@@ -12,7 +12,10 @@
 //! A **Cell** wraps a atom flow in an infinite QuZO training loop driven by
 //! [`Transmission`] messages from void:
 //!
-//! 1. **PerturbUp** - perturbs the associated quark's weights upward.
+//! Each Cell first generates a stable model UUID and starts that model instance
+//! on quark. Every Atom and QuZO request is routed to that UUID.
+//!
+//! 1. **PerturbUp** - perturbs the associated quark model's weights upward.
 //! 2. **WaitForPropagation** - reads `recv_id` from state, downloads a
 //!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
 //! 3. **Atom** - runs the atom pipeline.
@@ -23,15 +26,15 @@
 //! 7. **Atom** - runs the atom pipeline again.
 //! 8. **Transmit** - propagates the emission output to the next cell.
 //! 9. **WaitForPotentiation** - reads `recv_id` from state, downloads a
-//!     `Transmission::Potentiation`, stores the new `recv_id`, emits loss values.
+//!    `Transmission::Potentiation`, stores the new `recv_id`, emits loss values.
 //! 10. **Optimize** - applies the QuZO optimization update.
 //!
 //! # State
 //!
-//! The [`CellState`] type holds `recv_id` (void key of the next
-//! [`Transmission`] to download) and `send_id` (void key of the last received
-//! send transmission).  Animals that use [`Cell`] as their Journey
-//! should use [`CellState`] (or a superset) as their state type.
+//! The [`CellState`] type holds the Cell's stable `model_id`, `recv_id` (void
+//! key of the next [`Transmission`] to download), and `send_id` (void key of
+//! the last received send transmission). Animals that use [`Cell`] as their
+//! Journey should use [`CellState`] (or a superset) as their state type.
 //!
 //! # Flow pattern
 //!
@@ -64,12 +67,13 @@ pub use black_hole_spec::{
 pub use animal::Progenitor;
 pub use atom::effect::QuarkInfer;
 pub use cell::action::{
-    CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, QuarkInferStep,
-    Transmit, WaitForPotentiationAction, WaitForPropagationAction,
+    CellState, GenerateModelId, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput,
+    Propagation, QuarkInferStep, ShutdownModel, StartModel, Transmit, WaitForPotentiationAction,
+    WaitForPropagationAction,
 };
 pub use cell::effect::{
-    QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect,
-    WaitForPotentiation, WaitForPropagation,
+    GenerateModelIdEffect, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, QuarkShutdown,
+    QuarkStart, Transmit as TransmitEffect, WaitForPotentiation, WaitForPropagation,
 };
 pub use fusion::action::{FusionSeed, FusionState};
 pub use fusion::{Fusion, FusionEpoch, FusionFlow};
@@ -93,6 +97,12 @@ pub use sun::{
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum AtomError {
+    #[error("quark model start failed: {0}")]
+    ModelStart(String),
+
+    #[error("quark model shutdown failed: {0}")]
+    ModelShutdown(String),
+
     #[error("void download failed: {0}")]
     Download(String),
 

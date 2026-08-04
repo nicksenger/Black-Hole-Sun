@@ -9,7 +9,10 @@ use serde::Serialize;
 
 use action::QuarkInferStep;
 
-/// A Atom composes three sequential stages.
+/// An Atom composes three sequential stages.
+///
+/// Its input flow receives `(model_id, emission_id)` so inference is routed to
+/// the model instance owned by the surrounding Cell.
 #[derive(Flow)]
 pub struct Atom<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     In,

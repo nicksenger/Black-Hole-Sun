@@ -386,20 +386,33 @@ impl VoidInferOps for SpaceJungle {
         Ok(())
     }
 
-    async fn infer(&self, _request: InferenceRequest) -> Result<ObjectId, String> {
+    async fn start_model(&self, _model_id: Uuid) -> Result<(), String> {
+        Err("model lifecycle is not used by TestCell".to_string())
+    }
+
+    async fn infer(&self, _model_id: Uuid, _request: InferenceRequest) -> Result<ObjectId, String> {
         Err("inference is not used by TestCell".to_string())
     }
 
-    async fn perturb_up(&self, _seed: u64) -> Result<(), String> {
+    async fn perturb_up(&self, _model_id: Uuid, _seed: u64) -> Result<(), String> {
         Err("perturbation is not used by TestCell".to_string())
     }
 
-    async fn perturb_down(&self) -> Result<(), String> {
+    async fn perturb_down(&self, _model_id: Uuid) -> Result<(), String> {
         Err("perturbation is not used by TestCell".to_string())
     }
 
-    async fn optimize(&self, _loss_up: f32, _loss_down: f32) -> Result<(), String> {
+    async fn optimize(
+        &self,
+        _model_id: Uuid,
+        _loss_up: f32,
+        _loss_down: f32,
+    ) -> Result<(), String> {
         Err("optimization is not used by TestCell".to_string())
+    }
+
+    async fn shutdown_model(&self, _model_id: Uuid) -> Result<(), String> {
+        Err("model lifecycle is not used by TestCell".to_string())
     }
 
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String> {

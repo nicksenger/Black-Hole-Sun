@@ -70,29 +70,36 @@ impl VoidInferOps for SpaceJungle {
         Ok(())
     }
 
-    async fn infer(&self, request: InferenceRequest) -> Result<ObjectId, String> {
+    async fn start_model(&self, model_id: Uuid) -> Result<(), String> {
+        let endpoint = make_client_endpoint().await;
+        quark_start_result(&endpoint, self.quark_addr, model_id).await
+    }
+
+    async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
         let request_bytes = to_allocvec(&request).map_err(|e| format!("serialize: {e}"))?;
         let endpoint = make_client_endpoint().await;
         let request_id = void_upload(&endpoint, self.void_addr, request_bytes).await;
-        Ok(quark_infer(&endpoint, self.quark_addr, request_id).await)
+        quark_infer_result(&endpoint, self.quark_addr, model_id, request_id).await
     }
 
-    async fn perturb_up(&self, seed: u64) -> Result<(), String> {
+    async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        quark_perturb_up(&endpoint, self.quark_addr, seed).await;
-        Ok(())
+        quark_perturb_up_result(&endpoint, self.quark_addr, model_id, seed).await
     }
 
-    async fn perturb_down(&self) -> Result<(), String> {
+    async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        quark_perturb_down(&endpoint, self.quark_addr).await;
-        Ok(())
+        quark_perturb_down_result(&endpoint, self.quark_addr, model_id).await
     }
 
-    async fn optimize(&self, loss_up: f32, loss_down: f32) -> Result<(), String> {
+    async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        quark_optimize(&endpoint, self.quark_addr, loss_up, loss_down).await;
-        Ok(())
+        quark_optimize_result(&endpoint, self.quark_addr, model_id, loss_up, loss_down).await
+    }
+
+    async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
+        let endpoint = make_client_endpoint().await;
+        quark_shutdown_result(&endpoint, self.quark_addr, model_id).await
     }
 
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String> {

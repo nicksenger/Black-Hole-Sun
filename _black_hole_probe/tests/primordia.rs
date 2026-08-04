@@ -24,7 +24,6 @@ use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
 use postcard::{from_bytes, to_allocvec};
-use tokio::sync::Barrier;
 use typosaurus::num::consts::*;
 use uuid::Uuid;
 
@@ -114,7 +113,15 @@ where
                 )]],
                 limit: 1,
             };
-            let output_id = jungle.infer(request).await.map_err(AtomError::Inference)?;
+            let model_id = Uuid::new_v4();
+            jungle
+                .start_model(model_id)
+                .await
+                .map_err(AtomError::ModelStart)?;
+            let inference = jungle.infer(model_id, request).await;
+            let shutdown = jungle.shutdown_model(model_id).await;
+            let output_id = inference.map_err(AtomError::Inference)?;
+            shutdown.map_err(AtomError::ModelShutdown)?;
             let emission = Emission {
                 metadata: (),
                 output_id: InferenceOutputId(output_id),
@@ -299,58 +306,11 @@ pub struct SpaceAnimals(
     DarkStarBlackHole,
 );
 
-/// Coordinates a model mutation once all cells reach the same training phase.
-///
-/// All Progenitor journeys in a Sun share one quark, so perturbation and
-/// optimization apply once per Sun epoch while each cell still runs inference.
-#[derive(Clone)]
-struct ModelPhase {
-    enter: Arc<Barrier>,
-    operation_complete: Arc<Barrier>,
-    result_read: Arc<Barrier>,
-    result: Arc<Mutex<Option<Result<(), String>>>>,
-}
-
-impl ModelPhase {
-    fn new(participants: usize) -> Self {
-        Self {
-            enter: Arc::new(Barrier::new(participants)),
-            operation_complete: Arc::new(Barrier::new(participants)),
-            result_read: Arc::new(Barrier::new(participants)),
-            result: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    async fn run<F, Fut>(&self, operation: F) -> Result<(), String>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = Result<(), String>> + Send,
-    {
-        let wait = self.enter.wait().await;
-        if wait.is_leader() {
-            *self.result.lock().unwrap() = Some(operation().await);
-        }
-
-        self.operation_complete.wait().await;
-        let result = self
-            .result
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("phase leader should publish a result");
-        self.result_read.wait().await;
-        result
-    }
-}
-
 #[derive(Clone)]
 pub struct SpaceJungle {
     void_addr: SocketAddr,
     quark_addr: SocketAddr,
     client: Option<FusedClient>,
-    perturb_up_phase: ModelPhase,
-    perturb_down_phase: ModelPhase,
-    optimize_phase: ModelPhase,
     potentiation_writes: Arc<AtomicUsize>,
     inference_calls: Arc<AtomicUsize>,
     optimized_cells: Arc<AtomicUsize>,
@@ -359,14 +319,11 @@ pub struct SpaceJungle {
 }
 
 impl SpaceJungle {
-    fn new(void_addr: SocketAddr, quark_addr: SocketAddr, model_cell_count: usize) -> Self {
+    fn new(void_addr: SocketAddr, quark_addr: SocketAddr, _model_cell_count: usize) -> Self {
         Self {
             void_addr,
             quark_addr,
             client: None,
-            perturb_up_phase: ModelPhase::new(model_cell_count),
-            perturb_down_phase: ModelPhase::new(model_cell_count),
-            optimize_phase: ModelPhase::new(model_cell_count),
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
             inference_calls: Arc::new(AtomicUsize::new(0)),
             optimized_cells: Arc::new(AtomicUsize::new(0)),
@@ -425,7 +382,14 @@ impl VoidInferOps for SpaceJungle {
         Ok(())
     }
 
-    async fn infer(&self, request: InferenceRequest) -> Result<ObjectId, String> {
+    async fn start_model(&self, model_id: Uuid) -> Result<(), String> {
+        let endpoint = make_client_endpoint().await;
+        let result = quark_start_result(&endpoint, self.quark_addr, model_id).await;
+        self.record_model_error("start model", &result);
+        result
+    }
+
+    async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
         // One generated token is enough to prove each Progenitor atom reached
         // the real model while keeping this integration test bounded.
         let request = match request {
@@ -438,7 +402,7 @@ impl VoidInferOps for SpaceJungle {
         let request_bytes = to_allocvec(&request).map_err(|error| error.to_string())?;
         let endpoint = make_client_endpoint().await;
         let request_id = void_upload(&endpoint, self.void_addr, request_bytes).await;
-        let result = quark_infer_result(&endpoint, self.quark_addr, request_id).await;
+        let result = quark_infer_result(&endpoint, self.quark_addr, model_id, request_id).await;
         self.record_model_error("infer", &result);
         if result.is_ok() {
             self.inference_calls.fetch_add(1, Ordering::SeqCst);
@@ -446,45 +410,35 @@ impl VoidInferOps for SpaceJungle {
         result
     }
 
-    async fn perturb_up(&self, seed: u64) -> Result<(), String> {
-        let quark_addr = self.quark_addr;
-        let result = self
-            .perturb_up_phase
-            .run(move || async move {
-                let endpoint = make_client_endpoint().await;
-                quark_perturb_up_result(&endpoint, quark_addr, seed).await
-            })
-            .await;
+    async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
+        let endpoint = make_client_endpoint().await;
+        let result = quark_perturb_up_result(&endpoint, self.quark_addr, model_id, seed).await;
         self.record_model_error("perturb up", &result);
         result
     }
 
-    async fn perturb_down(&self) -> Result<(), String> {
-        let quark_addr = self.quark_addr;
-        let result = self
-            .perturb_down_phase
-            .run(move || async move {
-                let endpoint = make_client_endpoint().await;
-                quark_perturb_down_result(&endpoint, quark_addr).await
-            })
-            .await;
+    async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
+        let endpoint = make_client_endpoint().await;
+        let result = quark_perturb_down_result(&endpoint, self.quark_addr, model_id).await;
         self.record_model_error("perturb down", &result);
         result
     }
 
-    async fn optimize(&self, loss_up: f32, loss_down: f32) -> Result<(), String> {
-        let quark_addr = self.quark_addr;
-        let result = self
-            .optimize_phase
-            .run(move || async move {
-                let endpoint = make_client_endpoint().await;
-                quark_optimize_result(&endpoint, quark_addr, loss_up, loss_down).await
-            })
-            .await;
+    async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
+        let endpoint = make_client_endpoint().await;
+        let result =
+            quark_optimize_result(&endpoint, self.quark_addr, model_id, loss_up, loss_down).await;
         self.record_model_error("optimize", &result);
         if result.is_ok() {
             self.optimized_cells.fetch_add(1, Ordering::SeqCst);
         }
+        result
+    }
+
+    async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
+        let endpoint = make_client_endpoint().await;
+        let result = quark_shutdown_result(&endpoint, self.quark_addr, model_id).await;
+        self.record_model_error("shutdown model", &result);
         result
     }
 
@@ -558,8 +512,7 @@ async fn exercise_sun_epoch<A>(
     vertex_count: usize,
     expected_potentiation_writes: usize,
     expected_fusion_concats: usize,
-)
-where
+) where
     A: Animal<Seed = ()>,
     A::Id: AnimalIdValue,
     A::Generation: jungle_sdk::typosaurus::num::Unsigned,
@@ -789,5 +742,8 @@ fn beam_dark_star() {
         .status()
         .expect("beam_dark_star example should launch");
 
-    assert!(status.success(), "beam_dark_star example exited with {status}");
+    assert!(
+        status.success(),
+        "beam_dark_star example exited with {status}"
+    );
 }

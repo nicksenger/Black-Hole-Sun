@@ -6,8 +6,9 @@ pub mod effect;
 pub use action::CellState;
 
 use action::{
-    InitRecvId as InitRecvId_, Optimize as Optimize_, PerturbDown as PerturbDown_,
-    PerturbUp as PerturbUp_, Transmit as Transmit_,
+    GenerateModelId as GenerateModelId_, InitRecvId as InitRecvId_, Optimize as Optimize_,
+    PerturbDown as PerturbDown_, PerturbUp as PerturbUp_, PrepareAtomInput as PrepareAtomInput_,
+    StartModel as StartModel_, Transmit as Transmit_,
     WaitForPotentiationAction as WaitForPotentiationAction_,
     WaitForPropagationAction as WaitForPropagationAction_,
 };
@@ -15,23 +16,31 @@ use black_hole_spec::EmissionId;
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 use jungle_zoo::Noop;
+use uuid::Uuid;
 
 use crate::Atom;
 
 /// A Cell wraps a atom flow in an infinite QuZO training loop driven by
 /// [`Transmission`](black_hole_spec::Transmission) messages from void.
 #[derive(Flow)]
-pub struct Cell<N>(Step<InitRecvId_>, While<Always<CellState, ()>, Cytoplasm<N>>);
+pub struct Cell<N>(
+    Step<InitRecvId_>,
+    Step<GenerateModelId_>,
+    Step<StartModel_>,
+    While<Always<CellState, ()>, Cytoplasm<N>>,
+);
 
 /// The body of one iteration of a [`Cell`] loop.
 #[derive(Flow)]
 pub struct Cytoplasm<N>(
     Step<PerturbUp_>,
     Step<WaitForPropagationAction_>,
+    Step<PrepareAtomInput_>,
     N,
     Step<Transmit_>,
     Step<PerturbDown_>,
     Step<WaitForPropagationAction_>,
+    Step<PrepareAtomInput_>,
     N,
     Step<Transmit_>,
     Step<WaitForPotentiationAction_>,
@@ -43,9 +52,9 @@ pub type Eukaryote<In, Out, M> = Cell<Atom<In, Out, M>>;
 
 /// A prokaryotic cell: a [`Cell`] whose atom has no input/output processing.
 pub type Prokaryote<M> =
-    Cell<Atom<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, M>>;
+    Cell<Atom<Step<Noop<CellState, (Uuid, EmissionId)>>, Step<Noop<CellState, EmissionId>>, M>>;
 
 /// A primordial cell: the simplest possible [`Cell`] with no input/output
 /// processing and no metadata.
 pub type Primordium =
-    Cell<Atom<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, ()>>;
+    Cell<Atom<Step<Noop<CellState, (Uuid, EmissionId)>>, Step<Noop<CellState, EmissionId>>, ()>>;

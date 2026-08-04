@@ -13,21 +13,29 @@ pub type ObjectId = Uuid;
 /// Request sent by a client to the quark QUIC server.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum QuarkIn {
+    /// Start a new model instance with the provided stable ID.
+    Start { model_id: Uuid },
     /// Perturb model weights in the positive direction.
-    PerturbUp { seed: u64 },
+    PerturbUp { model_id: Uuid, seed: u64 },
     /// Run inference on the input object stored in void.
     /// Returns QuarkOut::Inferred(output_id).
-    Infer { input_id: ObjectId },
+    Infer { model_id: Uuid, input_id: ObjectId },
     /// Perturb model weights in the negative direction.
-    PerturbDown,
+    PerturbDown { model_id: Uuid },
     /// Apply the QuZO optimization update with both loss values.
-    Optimize { loss_up: f32, loss_down: f32 },
+    Optimize {
+        model_id: Uuid,
+        loss_up: f32,
+        loss_down: f32,
+    },
+    /// Shut down the model instance with the provided ID.
+    Shutdown { model_id: Uuid },
 }
 
 /// Response sent by the quark server to the client.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum QuarkOut {
-    /// Acknowledges a perturb or optimize step.
+    /// Acknowledges a lifecycle, perturb, or optimize step.
     Ack,
     /// Inference complete; contains the void object ID of the output.
     Inferred { output_id: ObjectId },

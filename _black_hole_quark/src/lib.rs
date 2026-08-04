@@ -1,4 +1,4 @@
-use std::{fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use paramecia_engine::ModelEngine;
 use postcard::{from_bytes, to_allocvec};
@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 use black_hole_spec::{
     DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId, QuarkIn,
@@ -216,12 +217,14 @@ enum QuarkState {
 
 struct QuarkSession {
     state: QuarkState,
+    running: bool,
 }
 
 impl QuarkSession {
     fn new() -> Self {
         Self {
             state: QuarkState::Idle,
+            running: true,
         }
     }
 }
@@ -230,10 +233,21 @@ impl QuarkSession {
 // Server context — shared across connections
 // ---------------------------------------------------------------------------
 
+struct QuarkInstance {
+    engine: ModelEngine,
+    session: tokio::sync::Mutex<QuarkSession>,
+}
+
+enum ModelSlot {
+    Starting,
+    Running(Arc<QuarkInstance>),
+    ShuttingDown,
+}
+
 struct QuarkContext {
-    engine: Arc<ModelEngine>,
+    model_path: PathBuf,
     void_client: Option<Arc<VoidClient>>,
-    quark: tokio::sync::Mutex<QuarkSession>,
+    instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -295,16 +309,10 @@ impl ServerBuilder {
         self
     }
 
-    /// Build the server engine, void client, endpoint and context.
+    /// Build the void client, endpoint and shared server context.
     async fn setup(self) -> Result<(quinn::Endpoint, SocketAddr, Arc<QuarkContext>)> {
-        // Load the model engine.
         let model_path_str = self.model_path.to_string_lossy().to_string();
-        info!(model_path = %model_path_str, "loading model");
-        let engine = paramecia_engine::ModelEngineBuilder::new(&self.model_path)
-            .top_k(256)
-            .build()
-            .map_err(|e| ServerError::ModelError(e.to_string()))?;
-        info!("model loaded");
+        info!(model_path = %model_path_str, "configured model");
 
         // Optionally connect to void.
         let void_client = if let Some(addr) = self.void_addr {
@@ -350,9 +358,9 @@ impl ServerBuilder {
         info!(%local_addr, "listening");
 
         let context = Arc::new(QuarkContext {
-            engine: Arc::new(engine),
+            model_path: self.model_path,
             void_client,
-            quark: tokio::sync::Mutex::new(QuarkSession::new()),
+            instances: tokio::sync::RwLock::new(HashMap::new()),
         });
 
         Ok((endpoint, local_addr, context))
@@ -476,20 +484,141 @@ async fn handle_stream(
 
 async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
     match req {
-        QuarkIn::PerturbUp { seed } => handle_perturb_up(seed, ctx).await,
-        QuarkIn::Infer { input_id } => handle_infer(input_id, ctx).await,
-        QuarkIn::PerturbDown => handle_perturb_down(ctx).await,
-        QuarkIn::Optimize { loss_up, loss_down } => handle_optimize(loss_up, loss_down, ctx).await,
+        QuarkIn::Start { model_id } => handle_start(model_id, ctx).await,
+        QuarkIn::PerturbUp { model_id, seed } => handle_perturb_up(model_id, seed, ctx).await,
+        QuarkIn::Infer { model_id, input_id } => handle_infer(model_id, input_id, ctx).await,
+        QuarkIn::PerturbDown { model_id } => handle_perturb_down(model_id, ctx).await,
+        QuarkIn::Optimize {
+            model_id,
+            loss_up,
+            loss_down,
+        } => handle_optimize(model_id, loss_up, loss_down, ctx).await,
+        QuarkIn::Shutdown { model_id } => handle_shutdown(model_id, ctx).await,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Model instance lifecycle
+// ---------------------------------------------------------------------------
+
+async fn handle_start(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    {
+        let mut instances = ctx.instances.write().await;
+        match instances.entry(model_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(ModelSlot::Starting);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(ServerError::ModelInstanceAlreadyRunning(model_id));
+            }
+        }
+    }
+
+    info!(%model_id, "starting model instance");
+    let model_path = ctx.model_path.clone();
+    let engine_result = match tokio::task::spawn_blocking(move || {
+        paramecia_engine::ModelEngineBuilder::new(model_path)
+            .top_k(256)
+            .build()
+            .map_err(|error| ServerError::ModelError(error.to_string()))
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            ctx.instances.write().await.remove(&model_id);
+            return Err(ServerError::ModelError(format!(
+                "model load task failed: {error}"
+            )));
+        }
+    };
+
+    let engine = match engine_result {
+        Ok(engine) => engine,
+        Err(error) => {
+            ctx.instances.write().await.remove(&model_id);
+            return Err(error);
+        }
+    };
+
+    let instance = Arc::new(QuarkInstance {
+        engine,
+        session: tokio::sync::Mutex::new(QuarkSession::new()),
+    });
+    ctx.instances
+        .write()
+        .await
+        .insert(model_id, ModelSlot::Running(instance));
+
+    info!(%model_id, "model instance started");
+    Ok(QuarkOut::Ack)
+}
+
+async fn handle_shutdown(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    let instance = {
+        let mut instances = ctx.instances.write().await;
+        let slot = instances
+            .get_mut(&model_id)
+            .ok_or(ServerError::ModelInstanceNotRunning(model_id))?;
+        match slot {
+            ModelSlot::Running(instance) => {
+                let instance = Arc::clone(instance);
+                *slot = ModelSlot::ShuttingDown;
+                instance
+            }
+            ModelSlot::Starting | ModelSlot::ShuttingDown => {
+                return Err(ServerError::ModelInstanceNotRunning(model_id));
+            }
+        }
+    };
+
+    let mut session = instance.session.lock().await;
+    session.running = false;
+    let unload_result = instance
+        .engine
+        .unload_model()
+        .await
+        .map_err(|error| ServerError::ModelError(error.to_string()));
+    ctx.instances.write().await.remove(&model_id);
+    unload_result?;
+
+    info!(%model_id, "model instance shut down");
+    Ok(QuarkOut::Ack)
+}
+
+async fn get_instance(model_id: Uuid, ctx: &QuarkContext) -> Result<Arc<QuarkInstance>> {
+    match ctx.instances.read().await.get(&model_id) {
+        Some(ModelSlot::Running(instance)) => Ok(Arc::clone(instance)),
+        Some(ModelSlot::Starting | ModelSlot::ShuttingDown) | None => {
+            Err(ServerError::ModelInstanceNotRunning(model_id))
+        }
+    }
+}
+
+fn ensure_running(session: &QuarkSession, model_id: Uuid) -> Result<()> {
+    if session.running {
+        Ok(())
+    } else {
+        Err(ServerError::ModelInstanceNotRunning(model_id))
+    }
+}
+
+async fn reset_model(engine: &ModelEngine) -> Result<()> {
+    engine
+        .reset_state()
+        .await
+        .map_err(|error| ServerError::ModelError(error.to_string()))
 }
 
 // ---------------------------------------------------------------------------
 // QuZO step handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
-    info!("received perturb up request");
-    let mut session = ctx.quark.lock().await;
+async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
+    info!(%model_id, "received perturb up request");
+    let instance = get_instance(model_id, ctx).await?;
+    let mut session = instance.session.lock().await;
+    ensure_running(&session, model_id)?;
     if session.state != QuarkState::Idle {
         warn!("expected Idle, got {:?}", session.state);
         return Err(ServerError::InvalidQuarkState(format!(
@@ -498,7 +627,9 @@ async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
         )));
     }
 
-    ctx.engine
+    reset_model(&instance.engine).await?;
+    instance
+        .engine
         .perturb_up(Some(seed))
         .await
         .map_err(|e| ServerError::ModelError(e.to_string()))?;
@@ -507,29 +638,29 @@ async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
     Ok(QuarkOut::Ack)
 }
 
-async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut> {
-    info!("received inference request");
-    let state = {
-        let session = ctx.quark.lock().await;
-        if !matches!(
-            session.state,
-            QuarkState::Idle
-                | QuarkState::PostPerturbUp
-                | QuarkState::AwaitingPerturbDown
-                | QuarkState::PostPerturbDown
-                | QuarkState::AwaitingOptimize
-        ) {
-            warn!(
-                "inference requires Idle or an active perturbation phase, got {:?}",
-                session.state
-            );
-            return Err(ServerError::InvalidQuarkState(format!(
-                "inference requires Idle or an active perturbation phase, got {:?}",
-                session.state
-            )));
-        }
-        session.state
-    };
+async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut> {
+    info!(%model_id, "received inference request");
+    let instance = get_instance(model_id, ctx).await?;
+    let mut session = instance.session.lock().await;
+    ensure_running(&session, model_id)?;
+    if !matches!(
+        session.state,
+        QuarkState::Idle
+            | QuarkState::PostPerturbUp
+            | QuarkState::AwaitingPerturbDown
+            | QuarkState::PostPerturbDown
+            | QuarkState::AwaitingOptimize
+    ) {
+        warn!(
+            "inference requires Idle or an active perturbation phase, got {:?}",
+            session.state
+        );
+        return Err(ServerError::InvalidQuarkState(format!(
+            "inference requires Idle or an active perturbation phase, got {:?}",
+            session.state
+        )));
+    }
+    let state = session.state;
 
     // Resolve void client.
     let void = ctx
@@ -613,7 +744,7 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
     };
 
     // Run batched inference.
-    let seq_results = run_batched_inference(&ctx.engine, &sequences, limit).await?;
+    let seq_results = run_batched_inference(&instance.engine, &sequences, limit).await?;
 
     // Convert per-sequence predictions to serializable output.
     let output = InferenceOutput {
@@ -645,25 +776,24 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
     let output_id = void.upload(output_bytes).await?;
 
     // Advance state.
-    {
-        let mut session = ctx.quark.lock().await;
-        session.state = match state {
-            QuarkState::PostPerturbUp | QuarkState::AwaitingPerturbDown => {
-                QuarkState::AwaitingPerturbDown
-            }
-            QuarkState::Idle | QuarkState::PostPerturbDown | QuarkState::AwaitingOptimize => {
-                QuarkState::AwaitingOptimize
-            }
-        };
-    }
+    session.state = match state {
+        QuarkState::PostPerturbUp | QuarkState::AwaitingPerturbDown => {
+            QuarkState::AwaitingPerturbDown
+        }
+        QuarkState::Idle | QuarkState::PostPerturbDown | QuarkState::AwaitingOptimize => {
+            QuarkState::AwaitingOptimize
+        }
+    };
 
-    info!("finished processing inference request");
+    info!(%model_id, "finished processing inference request");
     Ok(QuarkOut::Inferred { output_id })
 }
 
-async fn handle_perturb_down(ctx: &QuarkContext) -> Result<QuarkOut> {
-    info!("received perturb down request");
-    let mut session = ctx.quark.lock().await;
+async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    info!(%model_id, "received perturb down request");
+    let instance = get_instance(model_id, ctx).await?;
+    let mut session = instance.session.lock().await;
+    ensure_running(&session, model_id)?;
     if session.state != QuarkState::AwaitingPerturbDown {
         warn!("expected AwaitingPerturbDown, got {:?}", session.state);
         return Err(ServerError::InvalidQuarkState(format!(
@@ -672,7 +802,9 @@ async fn handle_perturb_down(ctx: &QuarkContext) -> Result<QuarkOut> {
         )));
     }
 
-    ctx.engine
+    reset_model(&instance.engine).await?;
+    instance
+        .engine
         .perturb_down()
         .await
         .map_err(|e| ServerError::ModelError(e.to_string()))?;
@@ -681,9 +813,16 @@ async fn handle_perturb_down(ctx: &QuarkContext) -> Result<QuarkOut> {
     Ok(QuarkOut::Ack)
 }
 
-async fn handle_optimize(loss_up: f32, loss_down: f32, ctx: &QuarkContext) -> Result<QuarkOut> {
-    info!("received optimization request");
-    let mut session = ctx.quark.lock().await;
+async fn handle_optimize(
+    model_id: Uuid,
+    loss_up: f32,
+    loss_down: f32,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    info!(%model_id, "received optimization request");
+    let instance = get_instance(model_id, ctx).await?;
+    let mut session = instance.session.lock().await;
+    ensure_running(&session, model_id)?;
     if session.state != QuarkState::AwaitingOptimize {
         warn!("expected AwaitingOptimize, got {:?}", session.state);
         return Err(ServerError::InvalidQuarkState(format!(
@@ -692,13 +831,18 @@ async fn handle_optimize(loss_up: f32, loss_down: f32, ctx: &QuarkContext) -> Re
         )));
     }
 
-    ctx.engine.update(loss_up, loss_down).await.map_err(|e| {
-        warn!("optimization failed");
-        ServerError::ModelError(e.to_string())
-    })?;
+    reset_model(&instance.engine).await?;
+    instance
+        .engine
+        .update(loss_up, loss_down)
+        .await
+        .map_err(|e| {
+            warn!("optimization failed");
+            ServerError::ModelError(e.to_string())
+        })?;
 
     session.state = QuarkState::Idle;
-    info!("finished optimization update");
+    info!(%model_id, "finished optimization update");
     Ok(QuarkOut::Ack)
 }
 
@@ -843,6 +987,10 @@ pub enum ServerError {
     LocalAddr(#[source] io::Error),
     #[error("model error: {0}")]
     ModelError(String),
+    #[error("model instance {0} is already running")]
+    ModelInstanceAlreadyRunning(Uuid),
+    #[error("model instance {0} is not running")]
+    ModelInstanceNotRunning(Uuid),
     #[error("invalid Quark state machine transition: {0}")]
     InvalidQuarkState(String),
     #[error("void service not configured")]

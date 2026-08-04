@@ -4,12 +4,89 @@ use std::future::Future;
 
 use jungle_sdk::prelude::*;
 use tracing::debug;
+use uuid::Uuid;
 
 use black_hole_spec::{ObjectId, Transmission};
 
 use super::action::{Potentiation, Propagation};
 use crate::ops::VoidInferOps;
 use crate::AtomError;
+
+// ---------------------------------------------------------------------------
+// Model instance lifecycle
+// ---------------------------------------------------------------------------
+
+pub struct GenerateModelIdEffect;
+
+impl<J> EffectSchema<J> for GenerateModelIdEffect {
+    type Id = u64;
+    type In = ();
+    type Out = Uuid;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for GenerateModelIdEffect {
+    fn effect(
+        _jungle: &J,
+        _input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async { Ok(Uuid::new_v4()) }
+    }
+}
+
+pub struct QuarkStart;
+
+impl<J> EffectSchema<J> for QuarkStart {
+    type Id = u64;
+    type In = Uuid;
+    type Out = ();
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for QuarkStart
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        model_id: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            debug!(%model_id, "starting quark model instance");
+            jungle
+                .start_model(model_id)
+                .await
+                .map_err(AtomError::ModelStart)
+        }
+    }
+}
+
+pub struct QuarkShutdown;
+
+impl<J> EffectSchema<J> for QuarkShutdown {
+    type Id = u64;
+    type In = Uuid;
+    type Out = ();
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for QuarkShutdown
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        model_id: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            debug!(%model_id, "shutting down quark model instance");
+            jungle
+                .shutdown_model(model_id)
+                .await
+                .map_err(AtomError::ModelShutdown)
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // QuarkPerturbUp — perturb quark weights in the positive direction
@@ -19,7 +96,7 @@ pub struct QuarkPerturbUp;
 
 impl<J> EffectSchema<J> for QuarkPerturbUp {
     type Id = u64;
-    type In = u64;
+    type In = (Uuid, u64);
     type Out = ();
     type Err = AtomError;
 }
@@ -30,12 +107,12 @@ where
 {
     fn effect(
         jungle: &J,
-        seed: Self::In,
+        (model_id, seed): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(seed, "perturbing quark weights up");
+            debug!(%model_id, seed, "perturbing quark weights up");
             jungle
-                .perturb_up(seed)
+                .perturb_up(model_id, seed)
                 .await
                 .map_err(AtomError::PerturbUp)?;
             Ok(())
@@ -51,7 +128,7 @@ pub struct QuarkPerturbDown;
 
 impl<J> EffectSchema<J> for QuarkPerturbDown {
     type Id = u64;
-    type In = ();
+    type In = Uuid;
     type Out = ();
     type Err = AtomError;
 }
@@ -62,12 +139,12 @@ where
 {
     fn effect(
         jungle: &J,
-        _input: Self::In,
+        model_id: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!("perturbing quark weights down");
+            debug!(%model_id, "perturbing quark weights down");
             jungle
-                .perturb_down()
+                .perturb_down(model_id)
                 .await
                 .map_err(AtomError::PerturbDown)?;
             Ok(())
@@ -83,7 +160,7 @@ pub struct QuarkOptimize;
 
 impl<J> EffectSchema<J> for QuarkOptimize {
     type Id = u64;
-    type In = Potentiation;
+    type In = (Uuid, Potentiation);
     type Out = ();
     type Err = AtomError;
 }
@@ -94,16 +171,17 @@ where
 {
     fn effect(
         jungle: &J,
-        potentiation: Self::In,
+        (model_id, potentiation): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             debug!(
+                %model_id,
                 loss_up = potentiation.loss_up,
                 loss_down = potentiation.loss_down,
                 "applying quark optimization"
             );
             jungle
-                .optimize(potentiation.loss_up, potentiation.loss_down)
+                .optimize(model_id, potentiation.loss_up, potentiation.loss_down)
                 .await
                 .map_err(AtomError::Optimize)?;
             Ok(())

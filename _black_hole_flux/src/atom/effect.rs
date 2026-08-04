@@ -7,6 +7,7 @@ use jungle_sdk::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tracing::debug;
+use uuid::Uuid;
 
 pub use black_hole_spec::{Emission, EmissionId, InferenceOutputId, InferenceRequest};
 
@@ -25,7 +26,7 @@ where
     M: Serialize + DeserializeOwned + Send + 'static,
 {
     type Id = u64;
-    type In = EmissionId;
+    type In = (Uuid, EmissionId);
     type Out = EmissionId;
     type Err = AtomError;
 }
@@ -37,7 +38,7 @@ where
 {
     fn effect(
         jungle: &J,
-        input_id: Self::In,
+        (model_id, input_id): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             let obj_id = input_id.0;
@@ -54,10 +55,10 @@ where
                 limit: 256,
             };
             let output_id = jungle
-                .infer(request)
+                .infer(model_id, request)
                 .await
                 .map_err(AtomError::Inference)?;
-            debug!(output_id = %output_id, "quark inference complete");
+            debug!(%model_id, output_id = %output_id, "quark inference complete");
 
             let output_emission = Emission {
                 metadata: emission.metadata,
