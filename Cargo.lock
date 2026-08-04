@@ -884,6 +884,7 @@ name = "black-hole-probe"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "black-hole-beam",
  "black-hole-sun",
  "futures",
  "hf-hub",

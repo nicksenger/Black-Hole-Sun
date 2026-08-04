@@ -39,17 +39,6 @@ const CELL_GRAPH_ID: &str = "black-hole-beam-cells";
 const FLOW_GRAPH_ID: &str = "black-hole-beam-child-flow";
 const DISCOVERY_INTERVAL: Duration = Duration::from_millis(750);
 
-/// Static-view mode for [`BeamBuilder`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct StaticBeam;
-
-/// Live-view mode for [`BeamBuilder`].
-#[derive(Clone)]
-pub struct LiveBeam {
-    client: Arc<dyn JungleClient>,
-    journey_id: Uuid,
-}
-
 /// Builder for Black Hole Sun graph viewers.
 ///
 /// A static view can be launched directly:
@@ -58,24 +47,22 @@ pub struct LiveBeam {
 /// BeamBuilder::new().view::<MyBlackHoleAnimal>()
 /// ```
 ///
-/// A live view is configured with the parent Sun journey first:
+/// A live view accepts the Jungle client and parent Sun journey:
 ///
 /// ```ignore
 /// BeamBuilder::new()
-///     .live(client, journey_id)
-///     .view_live::<MyBlackHoleAnimal>()
+///     .view_live::<MyBlackHoleAnimal>(client, journey_id)
 /// ```
 #[derive(Clone)]
-pub struct BeamBuilder<Mode = StaticBeam> {
+pub struct BeamBuilder {
     title: String,
     width: f32,
     height: f32,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
-    mode: Mode,
 }
 
-impl Default for BeamBuilder<StaticBeam> {
+impl Default for BeamBuilder {
     fn default() -> Self {
         Self {
             title: "Black Hole Beam".to_string(),
@@ -83,32 +70,13 @@ impl Default for BeamBuilder<StaticBeam> {
             height: DEFAULT_WINDOW_HEIGHT,
             animation_duration: None,
             animation_easing: None,
-            mode: StaticBeam,
         }
     }
 }
 
-impl BeamBuilder<StaticBeam> {
+impl BeamBuilder {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Attach the Jungle client and parent Sun journey used by a live view.
-    pub fn live<C>(self, client: C, journey_id: Uuid) -> BeamBuilder<LiveBeam>
-    where
-        C: JungleClient + 'static,
-    {
-        BeamBuilder {
-            title: self.title,
-            width: self.width,
-            height: self.height,
-            animation_duration: self.animation_duration,
-            animation_easing: self.animation_easing,
-            mode: LiveBeam {
-                client: Arc::new(client),
-                journey_id,
-            },
-        }
     }
 
     /// Render a static Black Hole Sun and its child flows.
@@ -119,9 +87,20 @@ impl BeamBuilder<StaticBeam> {
     {
         run_beam::<A>(self.into_config(), None)
     }
-}
 
-impl<Mode> BeamBuilder<Mode> {
+    /// Render a live Black Hole Sun and each spawned child journey.
+    pub fn view_live<A>(self, client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
+    where
+        A: Animal + 'static,
+        A::Flow: BlackHoleSunFlow,
+    {
+        let live = LiveConfig {
+            client: Arc::new(client),
+            journey_id,
+        };
+        run_beam::<A>(self.into_config(), Some(live))
+    }
+
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
         self
@@ -154,21 +133,6 @@ impl<Mode> BeamBuilder<Mode> {
     }
 }
 
-impl BeamBuilder<LiveBeam> {
-    /// Render a live Black Hole Sun and each spawned child journey.
-    pub fn view_live<A>(self) -> iced::Result
-    where
-        A: Animal + 'static,
-        A::Flow: BlackHoleSunFlow,
-    {
-        let live = LiveConfig {
-            client: self.mode.client.clone(),
-            journey_id: self.mode.journey_id,
-        };
-        run_beam::<A>(self.into_config(), Some(live))
-    }
-}
-
 /// Render a static Black Hole Sun with default viewer settings.
 pub fn view<A>() -> iced::Result
 where
@@ -179,13 +143,12 @@ where
 }
 
 /// Render a live Black Hole Sun with default viewer settings.
-pub fn view_live<A, C>(client: C, journey_id: Uuid) -> iced::Result
+pub fn view_live<A>(client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
 where
     A: Animal + 'static,
     A::Flow: BlackHoleSunFlow,
-    C: JungleClient + 'static,
 {
-    BeamBuilder::new().live(client, journey_id).view_live::<A>()
+    BeamBuilder::new().view_live::<A>(client, journey_id)
 }
 
 mod private {

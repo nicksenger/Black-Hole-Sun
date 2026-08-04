@@ -562,3 +562,43 @@ async fn sun() {
     drop(client);
     void_abort.abort();
 }
+
+/// Runs the diamond Sun indefinitely with a live Black Hole Beam viewer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn forever() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let (void_addr, _void_abort) = start_server().await;
+
+    let mut jungle = SpaceJungle::new(void_addr);
+    let client = FusedClient::builder()
+        .build()
+        .await
+        .expect("fused client should build");
+    jungle.set_client(client.clone());
+
+    let journey_id = client
+        .spawn::<BlackHoleAnimal>(&())
+        .await
+        .expect("BlackHoleAnimal should spawn")
+        .journey_id;
+    println!("Spawned BlackHoleAnimal journey: {journey_id}");
+
+    let _worker_handles: Vec<_> = (0..6)
+        .map(|_| {
+            let worker = JungleWorker::new(jungle.clone(), client.clone());
+            tokio::spawn(async move {
+                let _ = worker.spawn().await;
+            })
+        })
+        .collect();
+
+    black_hole_beam::BeamBuilder::new()
+        .title("Diamond Sun")
+        .view_live::<BlackHoleAnimal>(client, journey_id)
+        .expect("Black Hole Beam should run");
+}
