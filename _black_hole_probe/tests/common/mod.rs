@@ -1,4 +1,9 @@
 #![allow(dead_code)]
+
+mod sun;
+
+pub use sun::{Generator, Policy};
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 

@@ -169,8 +169,15 @@ pub struct BinarySunStep<
 #[derive(Flow)]
 pub struct SunNode<S, U>(S, U);
 
+/// Maps a type-level graph to its orchestration flow.
+///
+/// `Generator` is a Jungle flow from `()` to `(Transmission, Transmission)`;
+/// `Policy` is a Jungle flow from `(Transmission, Transmission)` to
+/// `(f32, f32)`. Keeping both as flow parameters lets callers compose arbitrary
+/// generation and policy pipelines around the fixed graph propagation
+/// machinery.
 pub trait BlackHole {
-    type Sun;
+    type Sun<Generator, Policy>;
 }
 impl<P, A, E, U> BlackHole for List<(Unary<P, A, E>, U)>
 where
@@ -179,7 +186,8 @@ where
     E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun = SunNode<UnarySunStep<P, A, E>, <U as BlackHole>::Sun>;
+    type Sun<Generator, Policy> =
+        SunNode<UnarySunStep<P, A, E>, <U as BlackHole>::Sun<Generator, Policy>>;
 }
 impl<P1, P2, A, E, U> BlackHole for List<(Binary<P1, P2, A, E>, U)>
 where
@@ -190,10 +198,11 @@ where
     E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun = SunNode<BinarySunStep<P1, P2, A, E>, <U as BlackHole>::Sun>;
+    type Sun<Generator, Policy> =
+        SunNode<BinarySunStep<P1, P2, A, E>, <U as BlackHole>::Sun<Generator, Policy>>;
 }
 impl BlackHole for Empty {
-    type Sun = Sun;
+    type Sun<Generator, Policy> = Sun<Generator, Policy>;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,16 +289,19 @@ pub type LayerFlow = PropagationFlows;
 // BlackHole — the top-level orchestration flow
 // ---------------------------------------------------------------------------
 
-/// One complete training epoch: kick-off → propagation → compute-loss → broadcast-potentiation.
+/// One complete training epoch: generate → propagate → apply policy → broadcast potentiation.
 #[derive(Flow)]
-pub struct Epoch(
-    Step<action::Initialize>,
+pub struct Epoch<Generator, Policy>(
+    Generator,
     PropagationFlows,
-    Step<action::ComputeLoss>,
+    Policy,
     Step<action::BroadcastPotentiation>,
 );
 
 /// Top-level orchestration flow that drives all underlying Cell flows
 /// associated with the BlackHoleSun graph.
 #[derive(Flow)]
-pub struct Sun(Step<action::BuildAddrs>, While<Always<SunState, ()>, Epoch>);
+pub struct Sun<Generator, Policy>(
+    Step<action::BuildAddrs>,
+    While<Always<SunState, ()>, Epoch<Generator, Policy>>,
+);

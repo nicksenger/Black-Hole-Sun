@@ -1,13 +1,10 @@
-//! Sun effects — spawning, transmission waiting, kick-off, loss computation, and potentiation.
+//! Sun effects — spawning, transmission waiting, and potentiation.
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
 
-use black_hole_spec::{
-    Emission, EmissionId, InferenceOutput, InferenceOutputId, ObjectId, SequenceOutput,
-    Transmission,
-};
+use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use tracing::debug;
 use uuid::Uuid;
@@ -262,93 +259,6 @@ where
                 }
                 Err(e) => Err(e),
             }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// InitializeEffect — create the initial emission for both propagation passes
-// ---------------------------------------------------------------------------
-
-/// Creates an initial inference output and emission in void, then returns one
-/// propagation value for each branch. The branch effects attach cell-specific
-/// mailboxes before sending these values to root cells.
-pub struct InitializeEffect;
-
-impl<J> EffectSchema<J> for InitializeEffect {
-    type Id = u64;
-    type In = ();
-    type Out = (Transmission, Transmission);
-    type Err = AtomError;
-}
-
-impl<J> Effect<J> for InitializeEffect
-where
-    J: VoidInferOps,
-{
-    fn effect(
-        jungle: &J,
-        _input: Self::In,
-    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        async move {
-            debug!("creating initial sun emission");
-
-            let inference_output = InferenceOutput {
-                results: vec![SequenceOutput(vec![black_hole_spec::DarkToken {
-                    predicted: 0,
-                    dark_knowledge: Vec::new(),
-                }])],
-            };
-            let inference_output_bytes = postcard::to_allocvec(&inference_output)?;
-            let inference_output_id = jungle
-                .upload_to_void(inference_output_bytes)
-                .await
-                .map_err(AtomError::Upload)?;
-
-            let emission = Emission {
-                metadata: (),
-                output_id: InferenceOutputId(inference_output_id),
-            };
-            let emission_bytes = postcard::to_allocvec(&emission)?;
-            let emission_void_id = jungle
-                .upload_to_void(emission_bytes)
-                .await
-                .map_err(AtomError::Upload)?;
-
-            let propagation = Transmission::Propagation {
-                emission_id: EmissionId(emission_void_id),
-                recv: ObjectId::nil(),
-                send: ObjectId::nil(),
-            };
-
-            Ok((propagation.clone(), propagation))
-        }
-    }
-}
-
-/// Result type alias for InitializeEffect output.
-pub type InitializeResult = (Transmission, Transmission);
-
-// ---------------------------------------------------------------------------
-// ComputeLossEffect — compute (loss_up, loss_down) from a TransmissionId
-// ---------------------------------------------------------------------------
-
-/// Effect that takes a TransmissionId, downloads the transmission, and computes
-/// the loss values (loss_up, loss_down) for potentiation.
-pub struct ComputeLossEffect;
-#[jungle::effect]
-impl<J> Effect<J> for ComputeLossEffect {
-    type Id = u64;
-    type In = (Transmission, Transmission);
-    type Out = (f32, f32);
-    type Err = AtomError;
-    fn effect(
-        _jungle: &J,
-        _transmission_id: Self::In,
-    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        async move {
-            debug!("faking loss from transmission");
-            Ok((0.1, 0.1))
         }
     }
 }

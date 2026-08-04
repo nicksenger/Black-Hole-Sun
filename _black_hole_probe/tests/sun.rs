@@ -273,7 +273,7 @@ pub struct BlackHoleAnimal;
 impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <DiamondSun as BlackHole>::Sun;
+    type Flow = <DiamondSun as BlackHole>::Sun<Generator, Policy>;
 }
 
 // ─── Ecosystem ───────────────────────────────────────────────────────────────

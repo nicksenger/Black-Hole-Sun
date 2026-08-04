@@ -41,7 +41,7 @@ pub struct ProgenitorBlackHole;
 impl Animal for ProgenitorBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeProgenitorSun as BlackHole>::Sun;
+    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<Generator, Policy>;
 }
 
 #[derive(Animals)]

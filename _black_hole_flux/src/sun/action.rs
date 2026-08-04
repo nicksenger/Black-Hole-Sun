@@ -1,4 +1,4 @@
-//! Sun actions — spawning animals, propagation, loss computation, and potentiation.
+//! Sun actions — spawning animals, propagation, and potentiation.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
@@ -7,8 +7,8 @@ use crate::sun::effect::{GenFusionSeedEffect, GenUuidEffect};
 use crate::{FusionSeed, FusionState};
 
 use super::effect::{
-    BroadcastPotentiationEffect, ComputeLossEffect, InitializeEffect, PropagationTarget,
-    WaitForLayerTransmission, WaitForLayerTransmissionInput,
+    BroadcastPotentiationEffect, PropagationTarget, WaitForLayerTransmission,
+    WaitForLayerTransmissionInput,
 };
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
@@ -604,56 +604,6 @@ impl Action for GenFusionSeed {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_| Failure::Message("failed to generate fusion seed".to_string()))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Initialize — create the initial transmissions for both propagation passes
-// ---------------------------------------------------------------------------
-
-/// Creates one initial transmission for each propagation branch. Root delivery
-/// is handled by [`ProcessNode`] once branch-specific mailboxes are available.
-pub struct Initialize;
-
-#[jungle::action]
-impl Action for Initialize {
-    type Effect = InitializeEffect;
-    type Input = ();
-    type Output = (Transmission, Transmission);
-
-    fn emit(_state: &super::SunState, _input: Self::Input) {}
-    fn absorb(
-        _state: &mut super::SunState,
-        output: EffectCompletion<Self::Effect>,
-    ) -> Result<Self::Output, Failure> {
-        output.map_err(|_e| Failure::Message("initialize failed".to_string()))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ComputeLoss — compute (loss_up, loss_down) from branch outputs
-// ---------------------------------------------------------------------------
-
-/// Computes the loss values from the completed outputs of both propagation
-/// branches.
-pub struct ComputeLoss;
-
-#[jungle::action]
-impl Action for ComputeLoss {
-    type Effect = ComputeLossEffect;
-    type Input = (Transmission, Transmission);
-    type Output = (f32, f32);
-    type Carry = ();
-
-    fn emit(_state: &super::SunState, input: Self::Input) -> (Transmission, Transmission) {
-        input
-    }
-
-    fn absorb(
-        _state: &mut super::SunState,
-        output: EffectCompletion<Self::Effect>,
-    ) -> Result<Self::Output, Failure> {
-        output.map_err(|e| Failure::Message(format!("compute loss failed: {e}")))
     }
 }
 
