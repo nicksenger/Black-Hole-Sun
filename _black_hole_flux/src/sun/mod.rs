@@ -20,6 +20,15 @@ pub use action::{
 };
 pub use effect::SpawnAnimal;
 
+//impl<T> From<T> for () {
+//    fn from(_value: T) -> Self {}
+//}
+//impl<T> From<T> for (()) {
+//    fn from(value: T) -> Self {
+//        ()
+//    }
+//}
+
 // ---------------------------------------------------------------------------
 // Tag — type-level descriptor for a single node in the sun graph
 // ---------------------------------------------------------------------------
@@ -101,13 +110,16 @@ pub struct SunInner {
     pub po_tx: HashMap<u32, ObjectId>,
 }
 
+/// Single-node spawn step: generate UUID then spawn the animal for one tag.
 #[derive(Flow)]
-pub struct Sun<
+pub struct SunStep<
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
-    U,
->(Step<GenUuid>, Step<Spawn<T>>, U);
-//#[derive(Flow)]
-//pub struct Sun();
+>(Step<GenUuid>, Step<Spawn<T>>);
+
+/// Wrapper that gives a Join-tree of flows a proper FlowScope implementation.
+/// Used as the top-level flow type returned by EventHorizon.
+#[derive(Flow)]
+pub struct SunFlow<F>(F);
 
 pub trait EventHorizon {
     type Flow;
@@ -117,12 +129,13 @@ where
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
     U: EventHorizon,
 {
-    type Flow = Sun<T, U>;
-    //type Flow = Sun<T, <U as EventHorizon>::Flow>;
-    //type Flow = Sun;
+    // Build a Join-tree: SunStep<T> composed with the rest of the list.
+    // Wrapped in SunFlow so the top-level type implements FlowScope.
+    type Flow = SunFlow<Join<SunStep<T>, <U as EventHorizon>::Flow>>;
 }
 impl EventHorizon for Empty {
-    type Flow = BlackHole;
+    // Base case: wrap BlackHole in SunFlow for consistent wrapping.
+    type Flow = SunFlow<BlackHole>;
 }
 
 // ---------------------------------------------------------------------------

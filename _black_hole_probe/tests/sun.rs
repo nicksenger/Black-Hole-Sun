@@ -46,7 +46,7 @@ pub struct BlackHoleAnimal;
 impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeTagSunType as EventHorizon>::Flow;
+    type Flow = FakeFlow;
     //type Flow = FakeFlow;
 }
 
@@ -278,125 +278,125 @@ async fn sun() {
 
     // 6. Start a JungleWorker so effects execute after we're subscribed.
     let worker = JungleWorker::new(jungle, client.clone());
-    //let worker_handle = tokio::spawn(async move {
-    //    let _ = worker.spawn().await;
-    //});
+    let worker_handle = tokio::spawn(async move {
+        let _ = worker.spawn().await;
+    });
+
+    // 7. Watch for KickOff completions (3 full training epochs).
     //
-    //// 7. Watch for KickOff completions (3 full training epochs).
-    ////
-    //// The BlackHole flow structure is:
-    ////   BlackHole(Step<BuildAddrs>, While<Always<SunState, ()>, Epoch>)
-    //// where Epoch = (KickOff, PropagationFlows, ComputeLoss, BroadcastPotentiation)
-    ////
-    //// BuildAddrs (node 0) runs once at startup. After that, each epoch iteration
-    //// produces a sequence of EffectSuccessOutput events. KickOff is always the
-    //// first effect in each epoch cycle.
-    ////
-    //// We track KickOff completions by:
-    //// - Detecting BuildAddrs completion (node_id == 0)
-    //// - Counting effects after BuildAddrs; KickOff is the first effect of each
-    ////   epoch. Each epoch produces at least 3 effect successes (KickOff,
-    ////   ComputeLoss, BroadcastPotentiation), with PropagationFlows adding more.
-    ////   We detect KickOff as effects at positions 1, 4, 7... after BuildAddrs
-    ////   (i.e., every ~3-4 effects).
+    // The BlackHole flow structure is:
+    //   BlackHole(Step<BuildAddrs>, While<Always<SunState, ()>, Epoch>)
+    // where Epoch = (KickOff, PropagationFlows, ComputeLoss, BroadcastPotentiation)
     //
-    //let result = tokio::time::timeout(Duration::from_secs(120), async {
-    //    let mut total_effects = 0u32;
-    //    let mut buildaddrs_done = false;
-    //    let mut kickoff_count = 0u32;
+    // BuildAddrs (node 0) runs once at startup. After that, each epoch iteration
+    // produces a sequence of EffectSuccessOutput events. KickOff is always the
+    // first effect in each epoch cycle.
     //
-    //    while let Some(update_result) = subscription.next().await {
-    //        let update = update_result.expect("stream update should succeed");
-    //
-    //        match update.event {
-    //            RunnerUpdateOut::EffectSuccessOutput { node_id, .. } => {
-    //                total_effects += 1;
-    //
-    //                // BuildAddrs is node 0 — runs once at startup.
-    //                if node_id == 0 && !buildaddrs_done {
-    //                    buildaddrs_done = true;
-    //                    println!("BuildAddrs completed (effect #{})", total_effects);
-    //                    continue;
-    //                }
-    //
-    //                if !buildaddrs_done {
-    //                    // Effects before BuildAddrs — skip.
-    //                    continue;
-    //                }
-    //
-    //                let effects_after_buildaddrs = total_effects - 1;
-    //
-    //                // KickOff is the first effect in each epoch cycle.
-    //                // Each epoch produces at least 3 effect successes
-    //                // (KickOff, ComputeLoss, BroadcastPotentiation), with
-    //                // PropagationFlows adding more from While-loop iterations.
-    //                // We detect KickOff as effects at positions 1, 4, 7...
-    //                // after BuildAddrs (i.e., every ~3-4 effects).
-    //                let estimated_epochs = effects_after_buildaddrs / 3;
-    //                let current_epoch = estimated_epochs + 1;
-    //
-    //                // The first effect of each new epoch is KickOff.
-    //                if effects_after_buildaddrs > 0 && effects_after_buildaddrs % 3 == 1 {
-    //                    kickoff_count += 1;
-    //                    println!(
-    //                        "KickOff completed (epoch {}, effect #{})",
-    //                        current_epoch, total_effects
-    //                    );
-    //
-    //                    if kickoff_count >= 3 {
-    //                        println!(
-    //                            "3 KickOff completions detected after {} total effects",
-    //                            total_effects
-    //                        );
-    //                        return Ok::<(), String>(());
-    //                    }
-    //                }
-    //            }
-    //            RunnerUpdateOut::NodeLifecycle(node) => {
-    //                if node.phase == jungle_sdk::types::NodeLifecyclePhase::Entered {
-    //                    println!("Journey entered lifecycle");
-    //                }
-    //            }
-    //            _ => {}
-    //        }
-    //    }
-    //
-    //    Err(format!(
-    //        "stream ended before 3 KickOff completions (got {})",
-    //        kickoff_count
-    //    ))
-    //})
-    //.await;
-    //
-    //match result {
-    //    Ok(Ok(())) => {
-    //        println!("BlackHole flow completed: 3 KickOff tasks detected");
-    //    }
-    //    Ok(Err(e)) => {
-    //        let status = client
-    //            .journey_details(journey_id)
-    //            .await
-    //            .expect("journey_details should succeed");
-    //        panic!("flow assertion failed: {}, status: {:?}", e, status);
-    //    }
-    //    Err(e) => {
-    //        let status = client
-    //            .journey_details(journey_id)
-    //            .await
-    //            .expect("journey_details should succeed");
-    //        panic!(
-    //            "timeout waiting for 3 KickOff completions (120s): {}, status: {:?}",
-    //            e, status
-    //        );
-    //    }
-    //}
-    //
-    //// Cleanup.
-    //worker_handle.abort();
-    //let _ = worker_handle.await;
-    //server_handle.abort();
-    //let _ = server_handle.await;
-    //drop(client);
-    //void_abort.abort();
-    //quark_abort.abort();
+    // We track KickOff completions by:
+    // - Detecting BuildAddrs completion (node_id == 0)
+    // - Counting effects after BuildAddrs; KickOff is the first effect of each
+    //   epoch. Each epoch produces at least 3 effect successes (KickOff,
+    //   ComputeLoss, BroadcastPotentiation), with PropagationFlows adding more.
+    //   We detect KickOff as effects at positions 1, 4, 7... after BuildAddrs
+    //   (i.e., every ~3-4 effects).
+
+    let result = tokio::time::timeout(Duration::from_secs(120), async {
+        let mut total_effects = 0u32;
+        let mut buildaddrs_done = false;
+        let mut kickoff_count = 0u32;
+
+        while let Some(update_result) = subscription.next().await {
+            let update = update_result.expect("stream update should succeed");
+
+            match update.event {
+                RunnerUpdateOut::EffectSuccessOutput { node_id, .. } => {
+                    total_effects += 1;
+
+                    // BuildAddrs is node 0 — runs once at startup.
+                    if node_id == 0 && !buildaddrs_done {
+                        buildaddrs_done = true;
+                        println!("BuildAddrs completed (effect #{})", total_effects);
+                        continue;
+                    }
+
+                    if !buildaddrs_done {
+                        // Effects before BuildAddrs — skip.
+                        continue;
+                    }
+
+                    let effects_after_buildaddrs = total_effects - 1;
+
+                    // KickOff is the first effect in each epoch cycle.
+                    // Each epoch produces at least 3 effect successes
+                    // (KickOff, ComputeLoss, BroadcastPotentiation), with
+                    // PropagationFlows adding more from While-loop iterations.
+                    // We detect KickOff as effects at positions 1, 4, 7...
+                    // after BuildAddrs (i.e., every ~3-4 effects).
+                    let estimated_epochs = effects_after_buildaddrs / 3;
+                    let current_epoch = estimated_epochs + 1;
+
+                    // The first effect of each new epoch is KickOff.
+                    if effects_after_buildaddrs > 0 && effects_after_buildaddrs % 3 == 1 {
+                        kickoff_count += 1;
+                        println!(
+                            "KickOff completed (epoch {}, effect #{})",
+                            current_epoch, total_effects
+                        );
+
+                        if kickoff_count >= 3 {
+                            println!(
+                                "3 KickOff completions detected after {} total effects",
+                                total_effects
+                            );
+                            return Ok::<(), String>(());
+                        }
+                    }
+                }
+                RunnerUpdateOut::NodeLifecycle(node) => {
+                    if node.phase == jungle_sdk::types::NodeLifecyclePhase::Entered {
+                        println!("Journey entered lifecycle");
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Err(format!(
+            "stream ended before 3 KickOff completions (got {})",
+            kickoff_count
+        ))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => {
+            println!("BlackHole flow completed: 3 KickOff tasks detected");
+        }
+        Ok(Err(e)) => {
+            let status = client
+                .journey_details(journey_id)
+                .await
+                .expect("journey_details should succeed");
+            panic!("flow assertion failed: {}, status: {:?}", e, status);
+        }
+        Err(e) => {
+            let status = client
+                .journey_details(journey_id)
+                .await
+                .expect("journey_details should succeed");
+            panic!(
+                "timeout waiting for 3 KickOff completions (120s): {}, status: {:?}",
+                e, status
+            );
+        }
+    }
+
+    // Cleanup.
+    worker_handle.abort();
+    let _ = worker_handle.await;
+    server_handle.abort();
+    let _ = server_handle.await;
+    drop(client);
+    void_abort.abort();
+    quark_abort.abort();
 }
