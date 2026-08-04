@@ -43,6 +43,31 @@ type Merge = Binary<U3, U4, FusionAnimal, list![U5]>;
 type Sink = Unary<U5, SinkAnimal, list![]>;
 type DiamondSun = list![Root, Left, Right, Merge, Sink];
 
+// ─── Expanded diamond graph ──────────────────────────────────────────────────
+
+type ExpandedInput = Unary<U0, RootAnimal, list![U1, U2]>;
+type ExpandedL0 = Unary<U1, RootAnimal, list![U3, U4]>;
+type ExpandedR0 = Unary<U2, RootAnimal, list![U5, U6]>;
+type ExpandedL1 = Unary<U3, LeftAnimal, list![U7]>;
+type ExpandedR1 = Unary<U4, RightAnimal, list![U8]>;
+type ExpandedL2 = Unary<U5, LeftAnimal, list![U9]>;
+type ExpandedR2 = Unary<U6, RightAnimal, list![U10]>;
+type ExpandedF0 = Binary<U7, U8, FusionAnimal, list![U11]>;
+type ExpandedF1 = Binary<U9, U10, FusionAnimal, list![U12]>;
+type ExpandedF2 = Binary<U11, U12, FusionAnimal, list![]>;
+type ExpandedDiamondSun = list![
+    ExpandedInput,
+    ExpandedL0,
+    ExpandedR0,
+    ExpandedL1,
+    ExpandedR1,
+    ExpandedL2,
+    ExpandedR2,
+    ExpandedF0,
+    ExpandedF1,
+    ExpandedF2
+];
+
 // ─── Lightweight unary animals ───────────────────────────────────────────────
 
 /// Completes one test-cell epoch after consuming its potentiation.
@@ -278,6 +303,16 @@ impl Animal for BlackHoleAnimal {
     type Flow = <DiamondSun as BlackHole>::Sun<Generator, Policy>;
 }
 
+/// Runs the expanded, three-fusion diamond topology.
+pub struct ExpandedBlackHoleAnimal;
+
+#[jungle::animal(id = 6, generation = 0)]
+impl Animal for ExpandedBlackHoleAnimal {
+    type State = SunState;
+    type Seed = ();
+    type Flow = <ExpandedDiamondSun as BlackHole>::Sun<Generator, Policy>;
+}
+
 // ─── Ecosystem ───────────────────────────────────────────────────────────────
 
 #[derive(Animals)]
@@ -288,6 +323,7 @@ pub struct SpaceAnimals(
     FusionAnimal,
     SinkAnimal,
     BlackHoleAnimal,
+    ExpandedBlackHoleAnimal,
 );
 
 /// A Jungle implementation backed by void over QUIC.
@@ -413,55 +449,47 @@ async fn start_server() -> (SocketAddr, tokio::task::AbortHandle) {
 
 // ─── Test ────────────────────────────────────────────────────────────────────
 
-/// Exercises a multi-epoch unary diamond feeding one binary fusion vertex.
-///
-/// The left and right unary branches stamp distinct emission IDs, with the P1
-/// branch deliberately delayed so P2 arrives first. The explicit fusion
-/// transform records each pair, proving that declared `P1`, `P2` order remains
-/// stable on both propagation passes in every completed epoch.
 #[cfg(test)]
-#[tokio::test]
-async fn sun() {
+async fn exercise_sun<A>(
+    name: &str,
+    vertex_count: usize,
+    port_count: usize,
+    epochs: usize,
+) -> Vec<(ObjectId, ObjectId)>
+where
+    A: Animal<Seed = ()>,
+    A::Id: AnimalIdValue,
+    A::Generation: jungle_sdk::typosaurus::num::Unsigned,
+{
     init_tracing();
     rustls::crypto::ring::default_provider()
         .install_default()
         .ok();
 
-    // 1. Start void on a random port.
     let (void_addr, void_abort) = start_server().await;
-
-    // 2. Build the SpaceJungle with void capabilities.
     let mut jungle = SpaceJungle::new(void_addr);
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
     let fusion_inputs = Arc::clone(&jungle.fusion_inputs);
 
-    // 3. Build a FusedClient with in-memory backend.
     let client = FusedClient::builder()
         .build()
         .await
         .expect("fused client should build");
-
-    // Store the client inside SpaceJungle so SunOps can spawn child animals.
     jungle.set_client(client.clone());
 
-    // 4. Spawn the BlackHoleAnimal with unit seed — no manual input needed.
-    let spawn_result = client.spawn::<BlackHoleAnimal>(&()).await;
-    assert!(
-        spawn_result.is_ok(),
-        "spawn should succeed: {:?}",
-        spawn_result
-    );
-    let journey_id = spawn_result.unwrap().journey_id;
-    println!("Spawned BlackHoleAnimal journey: {journey_id}");
+    let journey_id = client
+        .spawn::<A>(&())
+        .await
+        .unwrap_or_else(|error| panic!("{name} should spawn: {error}"))
+        .journey_id;
+    println!("Spawned {name} journey: {journey_id}");
 
-    // 5. Subscribe to step updates for the journey.
     let mut subscription = client
         .subscribe_step_updates(journey_id, None)
         .await
         .expect("subscribe_step_updates should succeed");
 
-    // 6. Run one worker per journey: five graph vertices plus the parent.
-    let worker_handles: Vec<_> = (0..6)
+    let worker_handles: Vec<_> = (0..vertex_count + 1)
         .map(|_| {
             let worker = JungleWorker::new(jungle.clone(), client.clone());
             tokio::spawn(async move {
@@ -470,15 +498,10 @@ async fn sun() {
         })
         .collect();
 
-    // 7. Wait for three complete epochs. There are six input ports: four
-    // unary ports plus both independently chained binary ports.
-    const EPOCHS: usize = 3;
-    const PORT_COUNT: usize = 6;
-    const EXPECTED_POTENTIATION_WRITES: usize = EPOCHS * PORT_COUNT;
+    let expected_potentiation_writes = epochs * port_count;
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let writes = potentiation_writes.load(Ordering::SeqCst);
-            if writes >= EXPECTED_POTENTIATION_WRITES {
+            if potentiation_writes.load(Ordering::SeqCst) >= expected_potentiation_writes {
                 return Ok::<(), String>(());
             }
 
@@ -500,7 +523,9 @@ async fn sun() {
                             return Err(format!("step update stream failed: {error}"));
                         }
                         None => {
-                            return Err("step update stream ended before three epochs".to_string());
+                            return Err(format!(
+                                "step update stream ended before {epochs} epochs"
+                            ));
                         }
                     }
                 }
@@ -511,31 +536,50 @@ async fn sun() {
     .await;
 
     match result {
-        Ok(Ok(())) => {
-            println!("BlackHole flow completed 3 epochs");
-        }
-        Ok(Err(e)) => {
+        Ok(Ok(())) => println!("{name} completed {epochs} epochs"),
+        Ok(Err(error)) => {
             let status = client
                 .journey_details(journey_id)
                 .await
                 .expect("journey_details should succeed");
-            panic!("flow assertion failed: {}, status: {:?}", e, status);
+            panic!("{name} flow assertion failed: {error}, status: {status:?}");
         }
-        Err(e) => {
+        Err(error) => {
             let status = client
                 .journey_details(journey_id)
                 .await
                 .expect("journey_details should succeed");
             panic!(
-                "timeout waiting for 3 epochs (60s): {}, potentiation writes: {}, status: {:?}",
-                e,
+                "timeout waiting for {name} to complete {epochs} epochs (60s): {error}, \
+                 potentiation writes: {}, status: {status:?}",
                 potentiation_writes.load(Ordering::SeqCst),
-                status
             );
         }
     }
 
-    let observed = fusion_inputs.lock().unwrap();
+    let observed = fusion_inputs.lock().unwrap().clone();
+    for worker_handle in worker_handles {
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+    drop(client);
+    void_abort.abort();
+
+    observed
+}
+
+/// Exercises a multi-epoch unary diamond feeding one binary fusion vertex.
+///
+/// The left and right unary branches stamp distinct emission IDs, with the P1
+/// branch deliberately delayed so P2 arrives first. The explicit fusion
+/// transform records each pair, proving that declared `P1`, `P2` order remains
+/// stable on both propagation passes in every completed epoch.
+#[cfg(test)]
+#[tokio::test]
+async fn sun() {
+    const EPOCHS: usize = 3;
+    let observed = exercise_sun::<BlackHoleAnimal>("diamond Sun", 5, 6, EPOCHS).await;
+
     assert!(
         observed.len() >= EPOCHS * 2,
         "expected two fusion transforms per epoch, observed {observed:?}"
@@ -555,18 +599,64 @@ async fn sun() {
             );
         }
     }
-    drop(observed);
-
-    // Cleanup.
-    for worker_handle in worker_handles {
-        worker_handle.abort();
-        let _ = worker_handle.await;
-    }
-    drop(client);
-    void_abort.abort();
 }
 
-/// Runs the diamond Sun indefinitely with a live Black Hole Beam viewer.
+/// Exercises an extra diamond layer ending in a third binary fusion:
+///
+/// `Input -> [L0, R0]`, `L0 -> [L1, R1]`, `R0 -> [L2, R2]`,
+/// `[L1, R1] -> F0`, `[L2, R2] -> F1`, and `[F0, F1] -> F2`.
+#[cfg(test)]
+#[tokio::test]
+async fn expanded_diamond_sun() {
+    const EPOCHS: usize = 3;
+    const PROPAGATION_PASSES: usize = 2;
+    const FIRST_LAYER_FUSIONS: usize = 2;
+    const FINAL_LAYER_FUSIONS: usize = 1;
+    const FUSION_TRANSFORMS: usize =
+        EPOCHS * PROPAGATION_PASSES * (FIRST_LAYER_FUSIONS + FINAL_LAYER_FUSIONS);
+
+    // Ten vertices own thirteen input ports: seven unary and six binary.
+    let observed =
+        exercise_sun::<ExpandedBlackHoleAnimal>("expanded diamond Sun", 10, 13, EPOCHS).await;
+    assert!(
+        observed.len() >= FUSION_TRANSFORMS,
+        "expected {FUSION_TRANSFORMS} fusion transforms, observed {observed:?}"
+    );
+
+    let completed_epochs = &observed[..FUSION_TRANSFORMS];
+    let first_layer_pair = (
+        Uuid::from_u128(LEFT_EMISSION),
+        Uuid::from_u128(RIGHT_EMISSION),
+    );
+    let final_layer_pair = (
+        Uuid::from_u128(FUSED_EMISSION),
+        Uuid::from_u128(FUSED_EMISSION),
+    );
+    assert!(
+        completed_epochs
+            .iter()
+            .all(|pair| *pair == first_layer_pair || *pair == final_layer_pair),
+        "unexpected fusion inputs in completed epochs: {completed_epochs:?}"
+    );
+    assert_eq!(
+        completed_epochs
+            .iter()
+            .filter(|pair| **pair == first_layer_pair)
+            .count(),
+        EPOCHS * PROPAGATION_PASSES * FIRST_LAYER_FUSIONS,
+        "both first-layer fusions should run on every pass"
+    );
+    assert_eq!(
+        completed_epochs
+            .iter()
+            .filter(|pair| **pair == final_layer_pair)
+            .count(),
+        EPOCHS * PROPAGATION_PASSES * FINAL_LAYER_FUSIONS,
+        "the final fusion should run on every pass"
+    );
+}
+
+/// Runs the expanded diamond Sun indefinitely with a live Black Hole Beam viewer.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn run_beam() {
     init_tracing();
@@ -590,13 +680,14 @@ pub(crate) fn run_beam() {
         jungle.set_client(client.clone());
 
         let journey_id = client
-            .spawn::<BlackHoleAnimal>(&())
+            .spawn::<ExpandedBlackHoleAnimal>(&())
             .await
-            .expect("BlackHoleAnimal should spawn")
+            .expect("ExpandedBlackHoleAnimal should spawn")
             .journey_id;
-        println!("Spawned BlackHoleAnimal journey: {journey_id}");
+        println!("Spawned ExpandedBlackHoleAnimal journey: {journey_id}");
 
-        let _worker_handles: Vec<_> = (0..6)
+        // One worker per journey: ten graph vertices plus the parent.
+        let _worker_handles: Vec<_> = (0..11)
             .map(|_| {
                 let worker = JungleWorker::new(jungle.clone(), client.clone());
                 tokio::spawn(async move {
@@ -609,8 +700,8 @@ pub(crate) fn run_beam() {
     });
 
     black_hole_beam::BeamBuilder::new()
-        .title("Diamond Sun")
-        .view_live::<BlackHoleAnimal>(client, journey_id)
+        .title("Expanded Diamond Sun")
+        .view_live::<ExpandedBlackHoleAnimal>(client, journey_id)
         .expect("Black Hole Beam should run");
 }
 
