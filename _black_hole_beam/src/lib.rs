@@ -1,12 +1,11 @@
-//! Visualize Black Hole Sun cell graphs and their Jungle child flows.
+//! Visualize Black Hole Sun cell graphs.
 //!
 //! [`BeamBuilder`] renders the type-level cell topology of a
 //! [`BlackHole`](black_hole_flux::sun::BlackHole) with the circular `circo`
-//! layout. Selecting a cell opens the Jungle flow for the animal hosted by that
-//! cell. Live views discover the child journey IDs from the parent Sun journey
-//! and apply each child's update stream to its flow graph.
+//! layout. Live views discover the child journey IDs from the parent Sun
+//! journey and use each child's update stream to color its cell by activity.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -16,12 +15,12 @@ use black_hole_flux::sun::action::{SpawnBinary, SpawnUnary};
 use black_hole_flux::sun::{BinarySunStep, NodeIdsFromList, Sun, SunNode, UnarySunStep};
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState, ObjectId};
 use iced::futures::{self, Stream, StreamExt};
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{column, container, text};
 use iced::{Background, Color, Element, Font, Length, Shadow, Subscription, Task, Theme, Vector};
 use iced_sugiyama::motion::easing::Easing;
 use iced_sugiyama::{circo_layout, AutoFit, Cluster, Graph, LayoutInput, Sugiyama};
 use jungle_sdk::client::JourneyUpdateSubscription;
-use jungle_sdk::core::dag::{Dag, DagSnapshot, LiveDagState, Phase, RuntimeState};
+use jungle_sdk::core::dag::{Dag, LiveDagState};
 use jungle_sdk::{
     Action, Animal, AnimalIdValue, JourneyAst, JourneyAstSource, JourneyUpdateEvent, JungleClient,
     RunnerOut,
@@ -31,12 +30,7 @@ use uuid::Uuid;
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
-const CELL_NODE_WIDTH: f64 = 210.0;
-const CELL_NODE_HEIGHT: f64 = 78.0;
-const FLOW_NODE_WIDTH: f64 = 230.0;
-const FLOW_NODE_HEIGHT: f64 = 76.0;
 const CELL_GRAPH_ID: &str = "black-hole-beam-cells";
-const FLOW_GRAPH_ID: &str = "black-hole-beam-child-flow";
 const DISCOVERY_INTERVAL: Duration = Duration::from_millis(750);
 
 /// Builder for Black Hole Sun graph viewers.
@@ -79,7 +73,7 @@ impl BeamBuilder {
         Self::default()
     }
 
-    /// Render a static Black Hole Sun and its child flows.
+    /// Render a static Black Hole Sun.
     pub fn view<A>(self) -> iced::Result
     where
         A: Animal + 'static,
@@ -88,7 +82,7 @@ impl BeamBuilder {
         run_beam::<A>(self.into_config(), None)
     }
 
-    /// Render a live Black Hole Sun and each spawned child journey.
+    /// Render a live Black Hole Sun colored by each spawned child journey.
     pub fn view_live<A>(self, client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
     where
         A: Animal + 'static,
@@ -240,10 +234,7 @@ struct CellDefinition {
     ports: Vec<u32>,
     outgoing_ports: Vec<u32>,
     animal_name: String,
-    flow_name: String,
     dag: Dag,
-    graph: Graph,
-    static_colors: HashMap<u32, Color>,
     spawn_action: &'static str,
 }
 
@@ -259,19 +250,13 @@ impl CellDefinition {
         A::Flow: JourneyAstSource,
     {
         let dag = Dag::from_ast(<A::Flow as JourneyAstSource>::journey_ast());
-        let nodes = dag.nodes.iter().map(|node| node.id).collect::<Vec<_>>();
-        let graph = Graph::new(nodes.clone(), dag.edges.clone());
-        let static_colors = graph_colors(&nodes, &dag.edges);
 
         Self {
             id,
             ports,
             outgoing_ports,
             animal_name: short_type_name::<A>(),
-            flow_name: short_type_name::<A::Flow>(),
             dag,
-            graph,
-            static_colors,
             spawn_action,
         }
     }
@@ -280,7 +265,6 @@ impl CellDefinition {
 struct BeamModel {
     cells: Vec<CellDefinition>,
     graph: Graph,
-    static_colors: HashMap<u32, Color>,
     spawn_runtime_to_cell: HashMap<u32, usize>,
     errors: Vec<String>,
 }
@@ -333,7 +317,6 @@ impl BeamModel {
         }
 
         let nodes = cells.iter().map(|cell| cell.id).collect::<Vec<_>>();
-        let static_colors = graph_colors(&nodes, &edges);
         let graph = Graph::new(nodes, edges);
 
         let ast = <F as JourneyAstSource>::journey_ast();
@@ -373,7 +356,6 @@ impl BeamModel {
         Self {
             cells,
             graph,
-            static_colors,
             spawn_runtime_to_cell,
             errors,
         }
@@ -437,7 +419,6 @@ where
 
 #[derive(Debug, Clone)]
 enum Message {
-    SelectCell(usize),
     DiscoveryTick,
     ChildrenDiscovered(Result<Vec<(usize, Uuid)>, String>),
     ChildUpdate {
@@ -464,14 +445,58 @@ impl CellRuntime {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CellActivity {
+    Idle,
+    Processing,
+    Propagating,
+    Optimizing,
+    Failed,
+}
+
+impl CellActivity {
+    fn from_step_label(label: &str) -> Self {
+        if label.starts_with("WaitFor") || matches!(label, "InitRecvId" | "InitFusion") {
+            Self::Idle
+        } else {
+            let label = label.to_ascii_lowercase();
+            if label.contains("optimiz") || label.contains("perturb") {
+                Self::Optimizing
+            } else if label.contains("transmit") || label.contains("propagat") {
+                Self::Propagating
+            } else {
+                Self::Processing
+            }
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Processing => "processing",
+            Self::Propagating => "propagating",
+            Self::Optimizing => "optimizing",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Self::Idle => Color::from_rgb8(18, 9, 24),
+            Self::Processing => Color::from_rgb8(112, 42, 119),
+            Self::Propagating => Color::from_rgb8(224, 91, 31),
+            Self::Optimizing => Color::from_rgb8(171, 69, 202),
+            Self::Failed => Color::from_rgb8(169, 31, 77),
+        }
+    }
+}
+
 struct BeamApp {
     config: BeamConfig,
     model: BeamModel,
     live: Option<LiveConfig>,
     cell_runtime: Vec<CellRuntime>,
-    selected_cell: Option<usize>,
     discovering: bool,
-    discovery_error: Option<String>,
 }
 
 impl BeamApp {
@@ -481,6 +506,11 @@ impl BeamApp {
         A::Flow: BlackHoleSunFlow,
     {
         let model = BeamModel::build::<A::Flow>();
+        debug_assert!(
+            model.errors.is_empty(),
+            "invalid Black Hole Sun: {:?}",
+            &model.errors
+        );
         let cell_runtime = model.cells.iter().map(CellRuntime::new).collect();
         let discovering = live.is_some();
         let task = live
@@ -494,9 +524,7 @@ impl BeamApp {
                 model,
                 live,
                 cell_runtime,
-                selected_cell: None,
                 discovering,
-                discovery_error: None,
             },
             task,
         )
@@ -504,12 +532,6 @@ impl BeamApp {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::SelectCell(index) => {
-                if index < self.model.cells.len() {
-                    self.selected_cell = Some(index);
-                    return iced_sugiyama::force_review(iced_sugiyama::Id::new(FLOW_GRAPH_ID));
-                }
-            }
             Message::DiscoveryTick => {
                 if !self.discovering
                     && self.live.is_some()
@@ -526,23 +548,19 @@ impl BeamApp {
             }
             Message::ChildrenDiscovered(result) => {
                 self.discovering = false;
-                match result {
-                    Ok(children) => {
-                        self.discovery_error = None;
-                        for (index, journey_id) in children {
-                            let Some(runtime) = self.cell_runtime.get_mut(index) else {
-                                continue;
-                            };
-                            if runtime.journey_id != Some(journey_id) {
-                                runtime.journey_id = Some(journey_id);
-                                runtime.live = LiveDagState::default();
-                                runtime.live.bind_model(&self.model.cells[index].dag);
-                                runtime.stream_error = None;
-                            }
+                if let Ok(children) = result {
+                    for (index, journey_id) in children {
+                        let Some(runtime) = self.cell_runtime.get_mut(index) else {
+                            continue;
+                        };
+                        if runtime.journey_id != Some(journey_id) {
+                            runtime.journey_id = Some(journey_id);
+                            runtime.live = LiveDagState::default();
+                            runtime.live.bind_model(&self.model.cells[index].dag);
+                            runtime.stream_error = None;
                         }
-                        return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
                     }
-                    Err(error) => self.discovery_error = Some(error),
+                    return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
                 }
             }
             Message::ChildUpdate { cell_index, update } => {
@@ -557,15 +575,7 @@ impl BeamApp {
                     Err(error) => runtime.stream_error = Some(error),
                 }
 
-                let mut tasks = vec![iced_sugiyama::force_review(iced_sugiyama::Id::new(
-                    CELL_GRAPH_ID,
-                ))];
-                if self.selected_cell == Some(cell_index) {
-                    tasks.push(iced_sugiyama::force_review(iced_sugiyama::Id::new(
-                        FLOW_GRAPH_ID,
-                    )));
-                }
-                return Task::batch(tasks);
+                return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
             }
         }
 
@@ -605,86 +615,49 @@ impl BeamApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let mode_label = match &self.live {
-            Some(live) => format!("live · parent {}", short_uuid(live.journey_id)),
-            None => "static".to_string(),
-        };
-        let header = row![
-            column![
-                text(&self.config.title)
-                    .size(28)
-                    .color(inferno_text_bright()),
-                text(mode_label).size(13).color(inferno_text_muted()),
-            ]
-            .spacing(2),
-            Space::new().width(Length::Fill),
-            text(format!("{} cells", self.model.cells.len()))
-                .size(14)
-                .color(inferno_text_muted()),
-        ]
-        .align_y(iced::Alignment::Center)
-        .padding([14, 20]);
-
-        let body = row![self.cell_graph_panel(), self.child_flow_panel()]
-            .spacing(12)
-            .padding(12)
-            .height(Length::Fill);
-
-        container(column![header, body].height(Length::Fill))
+        container(self.cell_graph())
             .width(Length::Fill)
             .height(Length::Fill)
             .style(app_background_style)
             .into()
     }
 
-    fn cell_graph_panel(&self) -> Element<'_, Message> {
+    fn cell_graph(&self) -> Element<'_, Message> {
         let labels = self
             .model
             .cells
             .iter()
             .enumerate()
             .map(|(index, cell)| {
-                (
-                    cell.id,
-                    (
-                        index,
-                        cell.animal_name.clone(),
-                        self.cell_status_label(index),
-                    ),
-                )
+                let activity = cell_activity(cell, &self.cell_runtime[index]);
+                (cell.id, (cell.animal_name.clone(), activity))
             })
             .collect::<HashMap<_, _>>();
         let colors = self.cell_colors();
-        let selected = self.selected_cell;
         let colors_for_nodes = colors.clone();
         let colors_for_edges = colors.clone();
 
         let mut graph =
             Sugiyama::<Message, Theme, iced::Renderer>::new(&self.model.graph, move |node_id| {
-                let (index, animal_name, status) = labels.get(&node_id).cloned().unwrap_or((
-                    0,
-                    format!("cell {node_id}"),
-                    "unknown".to_string(),
-                ));
+                let (animal_name, activity) = labels
+                    .get(&node_id)
+                    .cloned()
+                    .unwrap_or((format!("cell {node_id}"), CellActivity::Idle));
                 let color = colors_for_nodes
                     .get(&node_id)
                     .copied()
-                    .unwrap_or_else(inferno_node_base);
-                let is_selected = selected == Some(index);
-                button(
+                    .unwrap_or_else(|| CellActivity::Idle.color());
+                container(
                     column![
                         text(animal_name).size(16).color(contrasting_text(color)),
-                        text(format!("cell {node_id} · {status}"))
+                        text(format!("cell {node_id} · {}", activity.label()))
                             .size(12)
                             .color(contrasting_text(color).scale_alpha(0.82)),
                     ]
                     .spacing(3),
                 )
-                //.width(Length::Fill)
-                //.height(Length::Fill)
                 .padding([10, 12])
-                .on_press(Message::SelectCell(index))
-                .style(move |_theme, status| node_button_style(color, is_selected, status))
+                .style(move |_theme| cell_node_style(color))
                 .into()
             })
             .id(iced_sugiyama::Id::new(CELL_GRAPH_ID))
@@ -732,11 +705,11 @@ impl BeamApp {
                 let start = colors_for_edges
                     .get(&ctx.edge.0)
                     .copied()
-                    .unwrap_or_else(inferno_node_base);
+                    .unwrap_or_else(|| CellActivity::Idle.color());
                 let end = colors_for_edges
                     .get(&ctx.edge.1)
                     .copied()
-                    .unwrap_or_else(inferno_node_base);
+                    .unwrap_or_else(|| CellActivity::Idle.color());
                 (lighten(start, 0.18), end)
             })
             .stroke_width(1.4)
@@ -750,208 +723,11 @@ impl BeamApp {
             graph = graph.animation_easing(easing);
         }
 
-        let mut content = column![
-            text("Sun cells").size(18).color(inferno_text_bright()),
-            text("Select a cell to inspect its animal flow")
-                .size(12)
-                .color(inferno_text_muted()),
-        ]
-        .spacing(3);
-        if !self.model.errors.is_empty() {
-            content = content.push(
-                text(self.model.errors.join(" · "))
-                    .size(12)
-                    .color(Color::from_rgb8(255, 120, 105)),
-            );
-        }
-        if let Some(error) = &self.discovery_error {
-            content = content.push(
-                text(format!("child discovery: {error}"))
-                    .size(12)
-                    .color(Color::from_rgb8(255, 120, 105)),
-            );
-        }
-        content = content.push(
-            container(graph)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .clip(true),
-        );
-
-        container(content.padding(16).height(Length::Fill))
-            .width(Length::FillPortion(5))
+        container(graph)
+            .width(Length::Fill)
             .height(Length::Fill)
-            .style(panel_style)
+            .clip(true)
             .into()
-    }
-
-    fn child_flow_panel(&self) -> Element<'_, Message> {
-        let Some(index) = self.selected_cell else {
-            return container(
-                column![
-                    text("Child flow").size(18).color(inferno_text_bright()),
-                    Space::new().height(Length::Fill),
-                    text("Select a Sun cell to view its Jungle flow")
-                        .size(16)
-                        .color(inferno_text_muted()),
-                    Space::new().height(Length::Fill),
-                ]
-                .align_x(iced::Alignment::Center)
-                .padding(16),
-            )
-            .width(Length::FillPortion(7))
-            .height(Length::Fill)
-            .style(panel_style)
-            .into();
-        };
-
-        let cell = &self.model.cells[index];
-        let runtime = &self.cell_runtime[index];
-        let live_data = self.live.as_ref().map(|_| &runtime.live);
-        let snapshot = DagSnapshot::new(&cell.dag, live_data);
-        let labels = cell
-            .dag
-            .nodes
-            .iter()
-            .map(|node| (node.id, node.label.clone()))
-            .collect::<HashMap<_, _>>();
-        let colors = cell
-            .dag
-            .nodes
-            .iter()
-            .map(|node| {
-                let color = match snapshot.node_phase(node.id) {
-                    Phase::Static => cell
-                        .static_colors
-                        .get(&node.id)
-                        .copied()
-                        .unwrap_or_else(inferno_node_base),
-                    Phase::Live(state) => runtime_color(state),
-                };
-                (node.id, color)
-            })
-            .collect::<HashMap<_, _>>();
-        let colors_for_nodes = colors.clone();
-        let colors_for_edges = colors.clone();
-        let clusters = cell
-            .dag
-            .clusters
-            .iter()
-            .map(|cluster| {
-                let mut value = Cluster::new(cluster.nodes.clone());
-                if let Some(padding) = cluster.padding {
-                    value = value.padding(padding.into());
-                }
-                if let Some(parent) = cluster.parent {
-                    value = value.parent(parent);
-                }
-                value
-            })
-            .collect::<Vec<_>>();
-
-        let mut graph =
-            Sugiyama::<Message, Theme, iced::Renderer>::new(&cell.graph, move |node_id| {
-                let label = labels
-                    .get(&node_id)
-                    .map(|label| truncate_label(label, 38))
-                    .unwrap_or_else(|| format!("step {node_id}"));
-                let color = colors_for_nodes
-                    .get(&node_id)
-                    .copied()
-                    .unwrap_or_else(inferno_node_base);
-                container(text(label).size(14).color(contrasting_text(color)))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill)
-                    .padding([8, 10])
-                    .style(move |_theme| flow_node_style(color))
-                    .into()
-            })
-            .id(iced_sugiyama::Id::new(FLOW_GRAPH_ID))
-            .node_size(|_| (FLOW_NODE_WIDTH, FLOW_NODE_HEIGHT))
-            .edge_color(move |ctx| {
-                let start = colors_for_edges
-                    .get(&ctx.edge.0)
-                    .copied()
-                    .unwrap_or_else(inferno_node_base);
-                let end = colors_for_edges
-                    .get(&ctx.edge.1)
-                    .copied()
-                    .unwrap_or_else(inferno_node_base);
-                (lighten(start, 0.2), end)
-            })
-            .stroke_width(1.2)
-            .edge_corner_radius(18.0)
-            .clusters(clusters)
-            .cluster_color(cluster_fill_color)
-            .padding(28)
-            .auto_fit(AutoFit::Ongoing)
-            .keep_centered(true);
-        if let Some(duration) = self.config.animation_duration {
-            graph = graph.animation_duration(duration);
-        }
-        if let Some(easing) = self.config.animation_easing {
-            graph = graph.animation_easing(easing);
-        }
-
-        let ports = cell
-            .ports
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let journey = runtime
-            .journey_id
-            .map(|id| format!(" · journey {}", short_uuid(id)))
-            .unwrap_or_default();
-        let mut content = column![
-            text(format!("{} child flow", cell.animal_name))
-                .size(18)
-                .color(inferno_text_bright()),
-            text(format!("{} · ports {ports}{journey}", cell.flow_name))
-                .size(12)
-                .color(inferno_text_muted()),
-        ]
-        .spacing(3);
-        if let Some(error) = &runtime.stream_error {
-            content = content.push(
-                text(format!("live stream: {error}"))
-                    .size(12)
-                    .color(Color::from_rgb8(255, 120, 105)),
-            );
-        }
-        content = content.push(
-            container(graph)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .clip(true),
-        );
-
-        container(content.padding(16).height(Length::Fill))
-            .width(Length::FillPortion(7))
-            .height(Length::Fill)
-            .style(panel_style)
-            .into()
-    }
-
-    fn cell_status_label(&self, index: usize) -> String {
-        if self.live.is_none() {
-            return "static".to_string();
-        }
-        let runtime = &self.cell_runtime[index];
-        if runtime.journey_id.is_none() {
-            return "discovering".to_string();
-        }
-        if !runtime.live.failed_runtime_ids.is_empty() {
-            "failed".to_string()
-        } else if !runtime.live.active_runtime_ids.is_empty() {
-            "running".to_string()
-        } else if runtime.live.latest_event_count > 0 {
-            "idle".to_string()
-        } else {
-            "pending".to_string()
-        }
     }
 
     fn cell_colors(&self) -> HashMap<u32, Color> {
@@ -960,28 +736,34 @@ impl BeamApp {
             .iter()
             .enumerate()
             .map(|(index, cell)| {
-                let runtime = &self.cell_runtime[index];
-                let color = if self.live.is_none() {
-                    self.model
-                        .static_colors
-                        .get(&cell.id)
-                        .copied()
-                        .unwrap_or_else(inferno_node_base)
-                } else if runtime.journey_id.is_none() {
-                    inferno_gradient(0.04)
-                } else if !runtime.live.failed_runtime_ids.is_empty() {
-                    Color::from_rgb8(126, 38, 80)
-                } else if !runtime.live.active_runtime_ids.is_empty() {
-                    inferno_gradient(0.96)
-                } else if runtime.live.latest_event_count > 0 {
-                    inferno_gradient(0.62)
-                } else {
-                    inferno_gradient(0.16)
-                };
-                (cell.id, color)
+                (
+                    cell.id,
+                    cell_activity(cell, &self.cell_runtime[index]).color(),
+                )
             })
             .collect()
     }
+}
+
+fn cell_activity(cell: &CellDefinition, runtime: &CellRuntime) -> CellActivity {
+    if runtime.stream_error.is_some() || !runtime.live.failed_runtime_ids.is_empty() {
+        return CellActivity::Failed;
+    }
+
+    cell.dag
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.runtime_node_id
+                .is_some_and(|id| runtime.live.active_runtime_ids.contains(&id))
+                || node
+                    .proxy_runtime_ids
+                    .iter()
+                    .any(|id| runtime.live.active_runtime_ids.contains(id))
+        })
+        .map(|node| CellActivity::from_step_label(&node.label))
+        .max()
+        .unwrap_or(CellActivity::Idle)
 }
 
 #[derive(Clone)]
@@ -1071,99 +853,8 @@ fn decode_child_journeys(
     Ok(children)
 }
 
-fn graph_colors(nodes: &[u32], edges: &[(u32, u32)]) -> HashMap<u32, Color> {
-    if nodes.is_empty() {
-        return HashMap::new();
-    }
-
-    let mut indegree = nodes
-        .iter()
-        .map(|node| (*node, 0_usize))
-        .collect::<HashMap<_, _>>();
-    let mut outgoing = HashMap::<u32, Vec<u32>>::new();
-    let mut degree = nodes
-        .iter()
-        .map(|node| (*node, 0_usize))
-        .collect::<HashMap<_, _>>();
-    for (from, to) in edges {
-        *indegree.entry(*to).or_default() += 1;
-        outgoing.entry(*from).or_default().push(*to);
-        *degree.entry(*from).or_default() += 1;
-        *degree.entry(*to).or_default() += 1;
-    }
-
-    let mut depth = HashMap::<u32, usize>::new();
-    let mut queue = VecDeque::new();
-    for node in nodes {
-        if indegree.get(node).copied().unwrap_or(0) == 0 {
-            depth.insert(*node, 0);
-            queue.push_back(*node);
-        }
-    }
-    if queue.is_empty() {
-        depth.insert(nodes[0], 0);
-        queue.push_back(nodes[0]);
-    }
-    while let Some(node) = queue.pop_front() {
-        let next_depth = depth.get(&node).copied().unwrap_or(0).saturating_add(1);
-        for target in outgoing.get(&node).into_iter().flatten() {
-            let should_update = depth
-                .get(target)
-                .is_none_or(|current| next_depth < *current);
-            if should_update {
-                depth.insert(*target, next_depth);
-                queue.push_back(*target);
-            }
-        }
-    }
-
-    let max_depth = depth.values().copied().max().unwrap_or(0).max(1) as f32;
-    let max_degree = degree.values().copied().max().unwrap_or(0).max(1) as f32;
-    nodes
-        .iter()
-        .map(|node| {
-            let layer = depth.get(node).copied().unwrap_or(0) as f32 / max_depth;
-            let connected = degree.get(node).copied().unwrap_or(0) as f32 / max_degree;
-            let heat = (0.14 + 0.76 * layer + 0.10 * connected).clamp(0.0, 1.0);
-            (*node, inferno_gradient(heat))
-        })
-        .collect()
-}
-
-fn runtime_color(state: RuntimeState) -> Color {
-    match state {
-        RuntimeState::Pending => inferno_gradient(0.08),
-        RuntimeState::Running => inferno_gradient(0.97),
-        RuntimeState::Completed => inferno_gradient(0.62),
-        RuntimeState::Failed => Color::from_rgb8(126, 38, 80),
-    }
-}
-
-fn inferno_gradient(heat: f32) -> Color {
-    let cool = Color::from_rgb8(46, 6, 10);
-    let ember = Color::from_rgb8(124, 20, 16);
-    let flame = Color::from_rgb8(216, 74, 18);
-    let gold = Color::from_rgb8(250, 184, 54);
-    let t = heat.clamp(0.0, 1.0);
-    if t < 0.33 {
-        lerp_color(cool, ember, t / 0.33)
-    } else if t < 0.72 {
-        lerp_color(ember, flame, (t - 0.33) / 0.39)
-    } else {
-        lerp_color(flame, gold, (t - 0.72) / 0.28)
-    }
-}
-
-fn inferno_node_base() -> Color {
-    inferno_gradient(0.5)
-}
-
-fn inferno_text_bright() -> Color {
+fn black_hole_text() -> Color {
     Color::from_rgb8(252, 226, 184)
-}
-
-fn inferno_text_muted() -> Color {
-    Color::from_rgb8(224, 170, 130)
 }
 
 fn beam_theme(_app: &BeamApp) -> Theme {
@@ -1172,46 +863,19 @@ fn beam_theme(_app: &BeamApp) -> Theme {
 
 fn app_background_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgb8(16, 7, 9))),
-        text_color: Some(inferno_text_bright()),
+        background: Some(Background::Color(Color::BLACK)),
+        text_color: Some(black_hole_text()),
         ..Default::default()
     }
 }
 
-fn panel_style(_theme: &Theme) -> iced::widget::container::Style {
+fn cell_node_style(color: Color) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgb8(22, 9, 11))),
-        text_color: Some(inferno_text_bright()),
-        border: iced::border::rounded(12)
-            .color(Color::from_rgb8(73, 30, 28))
-            .width(1),
-        ..Default::default()
-    }
-}
-
-fn node_button_style(
-    color: Color,
-    selected: bool,
-    status: iced::widget::button::Status,
-) -> iced::widget::button::Style {
-    let color = match status {
-        iced::widget::button::Status::Hovered => lighten(color, 0.10),
-        iced::widget::button::Status::Pressed => lighten(color, 0.17),
-        _ => color,
-    };
-    let border_color = if selected {
-        Color::from_rgb8(255, 228, 112)
-    } else {
-        lighten(color, 0.28)
-    };
-    iced::widget::button::Style {
         background: Some(Background::Color(color)),
-        text_color: contrasting_text(color),
-        border: iced::border::rounded(9)
-            .color(border_color)
-            .width(if selected { 2 } else { 1 }),
+        text_color: Some(contrasting_text(color)),
+        border: iced::border::rounded(9),
         shadow: Shadow {
-            color: Color::from_rgba(color.r, color.g, color.b, 0.28),
+            color: Color::from_rgba(color.r, color.g, color.b, 0.32),
             offset: Vector::new(0.0, 2.0),
             blur_radius: 10.0,
         },
@@ -1219,30 +883,12 @@ fn node_button_style(
     }
 }
 
-fn flow_node_style(color: Color) -> iced::widget::container::Style {
-    iced::widget::container::Style {
-        background: Some(Background::Color(color)),
-        text_color: Some(contrasting_text(color)),
-        border: iced::border::rounded(9).color(lighten(color, 0.3)).width(1),
-        shadow: Shadow {
-            color: Color::from_rgba(color.r, color.g, color.b, 0.22),
-            offset: Vector::new(0.0, 1.0),
-            blur_radius: 8.0,
-        },
-        ..Default::default()
-    }
-}
-
-fn cluster_fill_color(_index: usize) -> Color {
-    Color::from_rgba8(124, 20, 16, 0.12)
-}
-
 fn contrasting_text(background: Color) -> Color {
     let luminance = 0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b;
     if luminance > 0.58 {
         Color::from_rgb8(26, 14, 9)
     } else {
-        inferno_text_bright()
+        black_hole_text()
     }
 }
 
@@ -1260,21 +906,9 @@ fn lighten(color: Color, amount: f32) -> Color {
     lerp_color(color, Color::WHITE, amount)
 }
 
-fn truncate_label(label: &str, max_chars: usize) -> String {
-    if label.chars().count() <= max_chars {
-        return label.to_string();
-    }
-    let keep = max_chars.saturating_sub(3);
-    format!("{}...", label.chars().take(keep).collect::<String>())
-}
-
 fn short_type_name<T: ?Sized>() -> String {
     let full = core::any::type_name::<T>();
     full.rsplit("::").next().unwrap_or(full).to_string()
-}
-
-fn short_uuid(id: Uuid) -> String {
-    id.to_string().chars().take(8).collect()
 }
 
 #[cfg(test)]
@@ -1332,6 +966,36 @@ mod tests {
         assert_eq!(model.graph.nodes, vec![0]);
         assert_eq!(model.cells[0].ports, vec![0, 1]);
         assert_eq!(model.spawn_runtime_to_cell.get(&1), Some(&0));
+    }
+
+    #[test]
+    fn derives_cell_activity_from_the_active_child_step() {
+        let model = BeamModel::build::<TestSun>();
+        let cell = &model.cells[0];
+        let mut runtime = CellRuntime::new(cell);
+
+        for (label, expected) in [
+            ("WaitForPropagationAction", CellActivity::Idle),
+            ("QuarkInferStep", CellActivity::Processing),
+            ("Transmit", CellActivity::Propagating),
+            ("PerturbUp", CellActivity::Optimizing),
+            ("Optimize", CellActivity::Optimizing),
+        ] {
+            let runtime_id = cell
+                .dag
+                .nodes
+                .iter()
+                .find(|node| node.label == label)
+                .and_then(|node| node.runtime_node_id)
+                .unwrap_or_else(|| panic!("missing runtime node for {label}"));
+            runtime.live.active_runtime_ids.clear();
+            runtime.live.active_runtime_ids.insert(runtime_id);
+
+            assert_eq!(cell_activity(cell, &runtime), expected, "{label}");
+        }
+
+        runtime.stream_error = Some("subscription closed".to_string());
+        assert_eq!(cell_activity(cell, &runtime), CellActivity::Failed);
     }
 
     #[test]
