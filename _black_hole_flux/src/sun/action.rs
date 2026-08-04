@@ -49,8 +49,8 @@ where
 // Spawn — spawn an animal and populate SunState with outgoing edges
 // ---------------------------------------------------------------------------
 
-/// Action that spawns an animal `T` tagged by [`Tag`](super::Tag) into the jungle.
-pub struct Spawn<Tag>(PhantomData<fn() -> Tag>);
+/// Action that spawns the animal described by a [`Unary`](super::Unary) node.
+pub struct Spawn<T>(PhantomData<fn() -> T>);
 
 #[jungle::action]
 impl<T> Action for Spawn<T>

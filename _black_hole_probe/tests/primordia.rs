@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use black_hole_flux::ops::{SunOps, VoidInferOps};
-use black_hole_flux::sun::{BlackHole, SunState, Tag};
+use black_hole_flux::sun::{BlackHole, SunState, Unary};
 use black_hole_flux::Progenitor;
 use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
@@ -30,10 +30,10 @@ use common::*;
 
 const NODE_COUNT: usize = 3;
 
-type Tag0 = Tag<U0, Progenitor, list![U1]>;
-type Tag1 = Tag<U1, Progenitor, list![U2]>;
-type Tag2 = Tag<U2, Progenitor, list![]>;
-type ThreeProgenitorSun = list![Tag0, Tag1, Tag2];
+type Unary0 = Unary<U0, Progenitor, list![U1]>;
+type Unary1 = Unary<U1, Progenitor, list![U2]>;
+type Unary2 = Unary<U2, Progenitor, list![]>;
+type ThreeProgenitorSun = list![Unary0, Unary1, Unary2];
 
 pub struct ProgenitorBlackHole;
 

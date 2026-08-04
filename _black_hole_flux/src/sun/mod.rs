@@ -21,11 +21,11 @@ pub use action::{
 pub use effect::SpawnAnimal;
 
 // ---------------------------------------------------------------------------
-// Tag — type-level descriptor for a single node in the sun graph
+// Unary — type-level descriptor for a single node in the sun graph
 // ---------------------------------------------------------------------------
 
-/// Type-level tag that describes a single node in the sun graph.
-pub struct Tag<N: Unsigned, A: Animal, E: NodeIdsFromList>(
+/// Type-level unary node in the sun graph.
+pub struct Unary<N: Unsigned, A: Animal, E: NodeIdsFromList>(
     PhantomData<N>,
     PhantomData<A>,
     PhantomData<E>,
@@ -36,7 +36,7 @@ pub trait Tagged {
     type E: NodeIdsFromList;
 }
 
-impl<N: Unsigned, A: Animal, E: NodeIdsFromList> Tagged for Tag<N, A, E> {
+impl<N: Unsigned, A: Animal, E: NodeIdsFromList> Tagged for Unary<N, A, E> {
     type N = N;
     type A = A;
     type E = E;
@@ -117,17 +117,17 @@ pub struct SunInner {
     pub po_tx: HashMap<u32, ObjectId>,
 }
 
-/// Single-node spawn step: generate UUID then spawn the animal for one tag.
+/// Single-node spawn step: generate UUID then spawn one unary node's animal.
 #[derive(Flow)]
 pub struct SunStep<T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>>>(
     Step<GenUuid>,
     Step<Spawn<T>>,
 );
 
-/// One tagged animal followed by the remaining nodes in the sun.
+/// One unary node's animal followed by the remaining nodes in the sun.
 ///
 /// Keeping the recursive list inside a derived flow preserves sequential
-/// composition: all tagged animals are spawned before [`Sun`] starts driving
+/// composition: all unary-node animals are spawned before [`Sun`] starts driving
 /// their journeys.
 #[derive(Flow)]
 pub struct SunNode<

@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use black_hole_flux::cell::action::InitRecvId;
 use black_hole_flux::ops::{SunOps, VoidInferOps};
 use black_hole_flux::sun::BlackHole;
-use black_hole_flux::sun::{SunState, Tag};
+use black_hole_flux::sun::{SunState, Unary};
 use black_hole_flux::{
     CellState, Potentiation, Transmit, WaitForPotentiationAction, WaitForPropagationAction,
 };
@@ -27,16 +27,16 @@ use uuid::Uuid;
 
 use common::*;
 
-// ─── 3-tag Sun graph type (U0 -> U1 -> U2) ──────────────────────────────────
+// ─── 3-unary Sun graph type (U0 -> U1 -> U2) ────────────────────────────────
 
-/// Node tags: each tag carries a typenum index, the animal type,
+/// Unary nodes: each node carries a typenum index, the animal type,
 /// and the list of outgoing edge targets.
-type Tag0 = Tag<U0, TestCell, list![U1]>;
-type Tag1 = Tag<U1, TestCell, list![U2]>;
-type Tag2 = Tag<U2, TestCell, list![]>;
+type Unary0 = Unary<U0, TestCell, list![U1]>;
+type Unary1 = Unary<U1, TestCell, list![U2]>;
+type Unary2 = Unary<U2, TestCell, list![]>;
 
-/// The complete three-node sun: a type-level list of all node tags.
-type ThreeTagSunType = list![Tag0, Tag1, Tag2];
+/// The complete three-node sun: a type-level list of all unary nodes.
+type ThreeUnarySunType = list![Unary0, Unary1, Unary2];
 
 // ─── TestCell ────────────────────────────────────────────────────────────────
 
@@ -100,7 +100,7 @@ pub struct BlackHoleAnimal;
 impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeTagSunType as BlackHole>::Sun;
+    type Flow = <ThreeUnarySunType as BlackHole>::Sun;
 }
 
 // ─── Ecosystem ───────────────────────────────────────────────────────────────

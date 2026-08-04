@@ -85,7 +85,7 @@ pub use sun::{
         InitializeEffect, InitializeResult, LayerTransmission, WaitForLayerTransmission,
     },
     BlackHole, BranchBody, CurrentNotEmpty, Epoch, InnerLoop, LayerFlow, PropA, PropB,
-    PropagationFlows, SpawnAnimal, SunInner, SunState, Tag, TopoNotEmpty,
+    PropagationFlows, SpawnAnimal, SunInner, SunState, TopoNotEmpty, Unary,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]
