@@ -70,7 +70,7 @@ pub struct PropB {
 
 /// Runtime state that tracks the topology and transmission endpoints
 /// for a sun of spawned animals.
-#[derive(Optic, Clone, Default, Debug)]
+#[derive(Optic, Clone, Debug)]
 pub struct SunState {
     /// State for propagation branch A — uses p1_tx / p1_rx maps.
     #[jungle(focus = a)]
@@ -78,6 +78,22 @@ pub struct SunState {
     /// State for propagation branch B — uses p2_tx / p2_rx maps.
     #[jungle(focus = b)]
     pub b: PropB,
+}
+
+impl Default for SunState {
+    fn default() -> Self {
+        let shared = Arc::new(Mutex::new(SunInner::default()));
+        Self {
+            a: PropA {
+                shared: Arc::clone(&shared),
+                ..PropA::default()
+            },
+            b: PropB {
+                shared,
+                ..PropB::default()
+            },
+        }
+    }
 }
 
 /// Shared inner state accessible by both propagation branches via Arc<Mutex>.
@@ -103,9 +119,10 @@ pub struct SunInner {
 
 /// Single-node spawn step: generate UUID then spawn the animal for one tag.
 #[derive(Flow)]
-pub struct SunStep<
-    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
->(Step<GenUuid>, Step<Spawn<T>>);
+pub struct SunStep<T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>>>(
+    Step<GenUuid>,
+    Step<Spawn<T>>,
+);
 
 /// One tagged animal followed by the remaining nodes in the sun.
 ///
@@ -114,7 +131,7 @@ pub struct SunStep<
 /// their journeys.
 #[derive(Flow)]
 pub struct SunNode<
-    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
+    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>>,
     U,
 >(SunStep<T>, U);
 
@@ -123,7 +140,7 @@ pub trait BlackHole {
 }
 impl<T, U> BlackHole for List<(T, U)>
 where
-    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
+    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>>,
     U: BlackHole,
 {
     type Sun = SunNode<T, <U as BlackHole>::Sun>;

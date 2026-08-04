@@ -33,6 +33,12 @@ pub trait VoidInferOps: Send + Sync {
     /// Upload data to void and return the assigned object id.
     async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String>;
 
+    /// Upload data to void at a specific object id.
+    ///
+    /// Sun orchestration uses stable object ids as mailboxes shared with
+    /// spawned cells, so these writes must preserve the requested id.
+    async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String>;
+
     /// Run quark inference on an emission stored at `input_id` in void.
     /// Returns the void id of the resulting `InferenceOutput`.
     async fn infer(&self, request: InferenceRequest) -> Result<ObjectId, String>;

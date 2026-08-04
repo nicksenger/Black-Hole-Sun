@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::sun::effect::GenUuidEffect;
 
 use super::effect::{
-    BroadcastPotentiationEffect, ComputeLossEffect, InitializeEffect, PropagationBranch,
+    BroadcastPotentiationEffect, ComputeLossEffect, InitializeEffect, PropagationTarget,
     WaitForLayerTransmission, WaitForLayerTransmissionInput,
 };
 use super::Tagged;
@@ -55,24 +55,24 @@ pub struct Spawn<Tag>(PhantomData<fn() -> Tag>);
 #[jungle::action]
 impl<T> Action for Spawn<T>
 where
-    T: Tagged,
+    T: Tagged<A: Animal<Seed = ObjectId>>,
     <T as Tagged>::N: Unsigned,
     <<T as Tagged>::A as Animal>::Id: AnimalIdValue,
     <<T as Tagged>::A as Animal>::Generation: Unsigned,
-    <<T as Tagged>::A as Animal>::Seed: Sync + Send + 'static,
 {
     type Effect = super::effect::SpawnAnimal<<T as Tagged>::A>;
-    type Input = <<T as Tagged>::A as Animal>::Seed;
+    type Input = ObjectId;
     type Output = ();
-    type Carry = ();
+    type Carry = ObjectId;
 
-    fn emit(_state: &super::SunState, input: Self::Input) -> <<T as Tagged>::A as Animal>::Seed {
-        input
+    fn emit(_state: &super::SunState, input: Self::Input) -> (ObjectId, ObjectId) {
+        (input, input)
     }
 
     fn absorb(
         state: &mut super::SunState,
         output: EffectCompletion<Self::Effect>,
+        initial_recv_id: Self::Carry,
     ) -> Result<Self::Output, Failure> {
         let journey_id = output.map_err(|e| Failure::Message(format!("spawn failed: {e}")))?;
 
@@ -81,6 +81,7 @@ where
 
         let mut inner = state.a.shared.lock().unwrap();
         inner.journey_ids.insert(node_id, journey_id);
+        inner.p1_tx.insert(node_id, initial_recv_id);
         inner.outgoing.insert(node_id, outgoing_node_ids.clone());
         for target in outgoing_node_ids {
             inner.incoming.entry(target).or_default().push(node_id);
@@ -183,8 +184,7 @@ impl Action for BuildAddrs {
 
     fn emit(state: &super::SunState, _input: Self::Input) {
         let mut inner = state.a.shared.lock().unwrap();
-        for node in inner.outgoing.keys().copied().collect::<Vec<_>>() {
-            inner.p1_tx.insert(node, Uuid::new_v4());
+        for node in inner.journey_ids.keys().copied().collect::<Vec<_>>() {
             inner.p1_rx.insert(node, Uuid::new_v4());
             inner.p2_tx.insert(node, Uuid::new_v4());
             inner.p2_rx.insert(node, Uuid::new_v4());
@@ -250,8 +250,8 @@ where
 /// nodes in the current layer (using the branch-specific rx map). The
 /// [`WaitForLayerTransmission`] effect handles forwarding the received
 /// transmission to the rx endpoints of downstream nodes, so propagation
-/// continues through the graph. After receiving, updates the rx map with
-/// a new recv id and removes the processed node from the current layer.
+/// continues through the graph. After receiving, removes the processed node
+/// from the current layer.
 pub struct ProcessNode<S>(std::marker::PhantomData<fn() -> S>);
 
 #[jungle::action]
@@ -266,73 +266,66 @@ where
     fn emit(state: &S, input: Self::Input) -> WaitForLayerTransmissionInput {
         let current = state.get_current().clone();
         let inner = state.get_shared().lock().unwrap();
-        let rx_map = state.get_rx(&inner);
-        let _tx_map = state.get_tx(&inner);
         let outgoing = &inner.outgoing;
 
-        // Determine if this is the first topological layer (root nodes).
-        let is_root_layer = {
-            let topo = state.get_topo();
-            if let Some(first_layer) = topo.first() {
-                current == *first_layer
-            } else {
-                false
-            }
-        };
-
-        // Also read the cross-branch maps needed for recv/send on forwarded transmissions.
-        // PropA: recv from p2_tx, send from p2_rx  |  PropB: recv from po_tx, send from p1_rx
-        let (fwd_tx_map, fwd_rx_map): (
+        // Each branch writes to the cell's current inbox, tells the cell which
+        // inbox to use next, and waits at a dedicated output mailbox.
+        let (input_map, next_input_map, output_map): (
+            &HashMap<u32, black_hole_spec::ObjectId>,
             &HashMap<u32, black_hole_spec::ObjectId>,
             &HashMap<u32, black_hole_spec::ObjectId>,
         ) = {
             if std::any::TypeId::of::<S>() == std::any::TypeId::of::<super::PropA>() {
-                (&inner.p2_tx, &inner.p2_rx)
+                (&inner.p1_tx, &inner.p2_tx, &inner.p1_rx)
             } else {
-                (&inner.po_tx, &inner.p1_rx)
+                (&inner.p2_tx, &inner.po_tx, &inner.p2_rx)
             }
         };
 
-        // Determine the propagation branch.
-        let branch = if std::any::TypeId::of::<S>() == std::any::TypeId::of::<super::PropA>() {
-            PropagationBranch::A
-        } else {
-            PropagationBranch::B
+        let target = |node_id| {
+            Some(PropagationTarget {
+                node_id,
+                input_id: *input_map.get(&node_id)?,
+                next_input_id: *next_input_map.get(&node_id)?,
+                output_id: *output_map.get(&node_id)?,
+            })
         };
 
-        // Collect rx endpoints for all nodes in the current layer.
+        // Parent-side mailboxes where cells publish their completed emissions.
         let rx_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = current
             .iter()
-            .filter_map(|&node_id| rx_map.get(&node_id).map(|rx| (node_id, *rx)))
+            .filter_map(|&node_id| output_map.get(&node_id).map(|rx| (node_id, *rx)))
             .collect();
 
-        // Build the downstream map: for each node in the current layer,
-        // collect its outgoing edges with both tx and rx endpoints from the
-        // cross-branch maps used for recv/send on forwarded transmissions.
-        let mut downstream: HashMap<
-            u32,
-            Vec<(u32, black_hole_spec::ObjectId, black_hole_spec::ObjectId)>,
-        > = HashMap::new();
+        // Root cells receive the epoch's initial transmission directly.
+        let root_targets = current
+            .iter()
+            .copied()
+            .filter(|node_id| {
+                inner
+                    .incoming
+                    .get(node_id)
+                    .is_none_or(|sources| sources.is_empty())
+            })
+            .filter_map(target)
+            .collect();
+
+        // A completed cell emission is forwarded to each downstream cell's
+        // current inbox with that cell's next/output mailboxes attached.
+        let mut downstream: HashMap<u32, Vec<PropagationTarget>> = HashMap::new();
         for &node_id in &current {
             if let Some(targets) = outgoing.get(&node_id) {
-                let targets_with_endpoints: Vec<_> = targets
-                    .iter()
-                    .filter_map(|&target_id| {
-                        fwd_tx_map.get(&target_id).and_then(|tx| {
-                            fwd_rx_map.get(&target_id).map(|rx| (target_id, *tx, *rx))
-                        })
-                    })
-                    .collect();
+                let targets_with_endpoints: Vec<_> =
+                    targets.iter().copied().filter_map(target).collect();
                 downstream.insert(node_id, targets_with_endpoints);
             }
         }
 
         WaitForLayerTransmissionInput {
             rx_endpoints,
+            root_targets,
             downstream,
-            branch,
-            is_root_layer,
-            input_transmission: if is_root_layer { Some(input) } else { None },
+            input_transmission: input,
         }
     }
 
@@ -344,36 +337,6 @@ where
             .map_err(|e| Failure::Message(format!("wait for layer transmission failed: {e}")))?;
 
         let node_id = layer_tx.node_id;
-
-        // Extract the next rx (send) and tx (recv) from the received transmission.
-        let (new_rx, new_tx) = match &layer_tx.transmission {
-            black_hole_spec::Transmission::Propagation { recv, send, .. } => (*send, *recv),
-            _ => (
-                black_hole_spec::ObjectId::nil(),
-                black_hole_spec::ObjectId::nil(),
-            ),
-        };
-
-        // Apply the extracted endpoints and rotate downstream maps.
-        {
-            let is_branch_a = std::any::TypeId::of::<S>() == std::any::TypeId::of::<super::PropA>();
-            let mut inner = state.get_shared().lock().unwrap();
-            // The processed node's rx map gets the send value from the transmission.
-            state.get_rx_mut(&mut inner).insert(node_id, new_rx);
-            // The processed node's tx map gets the recv value from the transmission.
-            state.get_tx_mut(&mut inner).insert(node_id, new_tx);
-
-            // Apply the rotated endpoints for all downstream targets.
-            for &(target_id, new_tx_id, new_rx_id) in &layer_tx.new_downstream_endpoints {
-                if is_branch_a {
-                    inner.p2_tx.insert(target_id, new_tx_id);
-                    inner.p2_rx.insert(target_id, new_rx_id);
-                } else {
-                    inner.po_tx.insert(target_id, new_tx_id);
-                    inner.p1_rx.insert(target_id, new_rx_id);
-                }
-            }
-        }
 
         // Remove the processed node from the current layer.
         let mut current = state.get_current().clone();
@@ -388,14 +351,7 @@ where
 // GenUuid
 // ---------------------------------------------------------------------------
 
-/// Action that kicks off propagation by generating a TransmissionId and
-/// sending it to the rx endpoints of all nodes in the first topological layer
-/// (those with no incoming edges / dependencies).
-///
-/// Takes unit input, finds root nodes from shared state, generates a new
-/// TransmissionId stored in shared state, and uploads Propagation transmissions
-/// to each root node's rx endpoint. Outputs unit — the transmission id is stored
-/// in shared state for ComputeLoss to retrieve later.
+/// Generates the initial inbox used to seed one spawned cell journey.
 pub struct GenUuid;
 
 #[jungle::action]
@@ -414,17 +370,11 @@ impl Action for GenUuid {
 }
 
 // ---------------------------------------------------------------------------
-// Initialize — generate initial TransmissionId and send to first-layer nodes
+// Initialize — create the initial transmissions for both propagation passes
 // ---------------------------------------------------------------------------
 
-/// Action that kicks off propagation by generating a TransmissionId and
-/// sending it to the rx endpoints of all nodes in the first topological layer
-/// (those with no incoming edges / dependencies).
-///
-/// Takes unit input, finds root nodes from shared state, generates a new
-/// TransmissionId stored in shared state, and uploads Propagation transmissions
-/// to each root node's rx endpoint. Outputs unit — the transmission id is stored
-/// in shared state for ComputeLoss to retrieve later.
+/// Creates one initial transmission for each propagation branch. Root delivery
+/// is handled by [`ProcessNode`] once branch-specific mailboxes are available.
 pub struct Initialize;
 
 #[jungle::action]
@@ -438,16 +388,16 @@ impl Action for Initialize {
         _state: &mut super::SunState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_e| Failure::Message(format!("initialize failed")))
+        output.map_err(|_e| Failure::Message("initialize failed".to_string()))
     }
 }
 
 // ---------------------------------------------------------------------------
-// ComputeLoss — compute (loss_up, loss_down) from shared TransmissionId
+// ComputeLoss — compute (loss_up, loss_down) from branch outputs
 // ---------------------------------------------------------------------------
 
-/// Action that retrieves the TransmissionId stored by Initialize in shared state,
-/// and computes the loss values (loss_up, loss_down) for potentiation.
+/// Computes the loss values from the completed outputs of both propagation
+/// branches.
 pub struct ComputeLoss;
 
 #[jungle::action]
@@ -476,10 +426,8 @@ impl Action for ComputeLoss {
 /// Action that broadcasts `Transmission::Potentiation` with the computed
 /// loss values to all nodes' potentiation endpoints (po_tx).
 ///
-/// Takes (loss_up, loss_down) as input, generates a new recv ObjectId for
-/// each node, uploads the Potentiation transmission to each po_tx endpoint,
-/// and updates the rx maps so the next epoch can begin. Exits without waiting
-/// for any response transmission.
+/// Sends losses to each cell's potentiation inbox, assigns each cell a fresh
+/// first-pass inbox, and rotates all intermediate mailboxes for the next epoch.
 pub struct BroadcastPotentiation;
 
 #[jungle::action]
@@ -494,7 +442,7 @@ impl Action for BroadcastPotentiation {
         let node_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = inner
             .journey_ids
             .keys()
-            .filter_map(|&node_id| inner.p1_tx.get(&node_id).map(|tx| (node_id, *tx)))
+            .filter_map(|&node_id| inner.po_tx.get(&node_id).map(|tx| (node_id, *tx)))
             .collect();
         drop(inner);
 
@@ -513,8 +461,12 @@ impl Action for BroadcastPotentiation {
             output.map_err(|e| Failure::Message(format!("broadcast potentiation failed: {e}")))?;
 
         let mut inner = state.a.shared.lock().unwrap();
-        for (node_id, new_po_tx) in &result.new_po_tx_map {
-            inner.po_tx.insert(*node_id, *new_po_tx);
+        for (node_id, next_p1_tx) in &result.next_p1_tx_map {
+            inner.p1_tx.insert(*node_id, *next_p1_tx);
+            inner.p1_rx.insert(*node_id, Uuid::new_v4());
+            inner.p2_tx.insert(*node_id, Uuid::new_v4());
+            inner.p2_rx.insert(*node_id, Uuid::new_v4());
+            inner.po_tx.insert(*node_id, Uuid::new_v4());
         }
         drop(inner);
 
@@ -527,7 +479,7 @@ impl Action for BroadcastPotentiation {
 pub struct BroadcastPotentiationInput {
     pub loss_up: f32,
     pub loss_down: f32,
-    /// (node_id, p1_tx_object_id) pairs — used as recv on each Potentiation transmission.
+    /// (node_id, potentiation inbox) pairs.
     pub node_endpoints: Vec<(u32, ObjectId)>,
 }
 

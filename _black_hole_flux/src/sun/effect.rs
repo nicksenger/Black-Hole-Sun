@@ -8,7 +8,6 @@ use black_hole_spec::{
     Emission, EmissionId, InferenceOutput, InferenceOutputId, ObjectId, SequenceOutput,
     Transmission,
 };
-use futures::future::join_all;
 use jungle_sdk::prelude::*;
 use tracing::debug;
 use uuid::Uuid;
@@ -85,19 +84,18 @@ pub struct LayerTransmission {
     pub node_id: u32,
     /// The transmission received.
     pub transmission: black_hole_spec::Transmission,
-    /// For each downstream target: (node_id, new_tx_id, new_rx_id) generated
-    /// after forwarding — the caller must apply these to the shared maps.
-    pub new_downstream_endpoints: Vec<(u32, ObjectId, ObjectId)>,
 }
 
-/// Which propagation branch is currently running, to determine which tx/rx
-/// maps provide the recv/send values for forwarded transmissions.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub enum PropagationBranch {
-    /// Propagation A: forward using p2_tx (recv) and p2_rx (send).
-    A,
-    /// Propagation B: forward using po_tx (recv) and p1_rx (send).
-    B,
+/// Mailboxes needed to drive one cell through a propagation pass.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PropagationTarget {
+    pub node_id: u32,
+    /// Object id where the cell is currently waiting for a transmission.
+    pub input_id: ObjectId,
+    /// Object id the cell should wait on after this propagation.
+    pub next_input_id: ObjectId,
+    /// Object id where the cell should publish its output.
+    pub output_id: ObjectId,
 }
 
 /// Input for [`WaitForLayerTransmission`]: rx endpoints to wait on plus
@@ -106,16 +104,13 @@ pub enum PropagationBranch {
 pub struct WaitForLayerTransmissionInput {
     /// (node_id, rx_object_id) pairs for the current layer nodes.
     pub rx_endpoints: Vec<(u32, ObjectId)>,
+    /// Root cells that receive the epoch's initial transmission.
+    pub root_targets: Vec<PropagationTarget>,
     /// Map from source node id to its downstream targets, each carrying
-    /// (target_node_id, tx_object_id, rx_object_id). The tx/rx ids come from
-    /// the maps determined by [`PropagationBranch`].
-    pub downstream: HashMap<u32, Vec<(u32, ObjectId, ObjectId)>>,
-    /// Which propagation branch is running, to select the correct tx/rx maps.
-    pub branch: PropagationBranch,
-    /// Whether this is the first topological layer (root nodes with no incoming edges).
-    pub is_root_layer: bool,
-    /// Input transmission to upload to root nodes when is_root_layer is true.
-    pub input_transmission: Option<Transmission>,
+    /// the mailboxes needed to drive that target cell.
+    pub downstream: HashMap<u32, Vec<PropagationTarget>>,
+    /// Input transmission to upload to root cells.
+    pub input_transmission: Transmission,
 }
 
 /// Effect that waits for the first available transmission from any of the
@@ -124,6 +119,35 @@ pub struct WaitForLayerTransmissionInput {
 /// for the specific node that received it, so propagation continues through
 /// the graph.
 pub struct WaitForLayerTransmission;
+
+async fn send_propagation<J: VoidInferOps>(
+    jungle: &J,
+    target: &PropagationTarget,
+    transmission: &Transmission,
+) -> Result<(), AtomError> {
+    let mut transmission = transmission.clone();
+    match &mut transmission {
+        Transmission::Propagation { recv, send, .. } => {
+            *recv = target.next_input_id;
+            *send = target.output_id;
+        }
+        other => {
+            return Err(AtomError::Transmission(format!(
+                "expected propagation input, got {other:?}"
+            )));
+        }
+    }
+
+    let data = postcard::to_allocvec(&transmission)
+        .map_err(|e| AtomError::Transmission(format!("serialize propagation: {e}")))?;
+    jungle
+        .upload_to_void_with(target.input_id, data)
+        .await
+        .map_err(|e| {
+            AtomError::Transmission(format!("send propagation to node {}: {e}", target.node_id))
+        })
+}
+
 impl<J> EffectSchema<J> for WaitForLayerTransmission {
     type Id = u64;
     type In = WaitForLayerTransmissionInput;
@@ -142,26 +166,18 @@ where
         async move {
             let WaitForLayerTransmissionInput {
                 rx_endpoints,
+                root_targets,
                 downstream,
-                branch: _branch,
-                is_root_layer,
                 input_transmission,
             } = input;
 
-            // If this is the first topological layer (root nodes with no incoming
-            // edges), upload the Input Transmission to each root node's rx endpoint
-            // so propagation can begin.
-            if is_root_layer {
-                if let Some(transmission) = input_transmission {
-                    let data = postcard::to_allocvec(&transmission).map_err(|e| {
-                        AtomError::Transmission(format!("serialize input transmission: {e}"))
-                    })?;
-                    let client_endpoint = make_client_endpoint().await;
-                    for (_node_id, rx_id) in &rx_endpoints {
-                        void_upload(&client_endpoint, *rx_id, data.clone()).await;
-                        debug!(%rx_id, "uploaded input transmission to root node rx");
-                    }
-                }
+            for target in &root_targets {
+                send_propagation(jungle, target, &input_transmission).await?;
+                debug!(
+                    node_id = target.node_id,
+                    input_id = %target.input_id,
+                    "sent initial propagation to root cell"
+                );
             }
 
             if rx_endpoints.is_empty() {
@@ -185,7 +201,6 @@ where
                         Ok::<_, AtomError>(LayerTransmission {
                             node_id,
                             transmission,
-                            new_downstream_endpoints: Vec::new(),
                         })
                     })
                 })
@@ -208,42 +223,13 @@ where
                         "layer transmission received, forwarding to downstream nodes"
                     );
 
-                    // For each downstream target, customize the transmission with that target's
-                    // recv (tx id) and send (rx id), then upload. After sending,
-                    // immediately rotate both maps with newly generated ids.
-                    let mut new_downstream_endpoints: Vec<(u32, ObjectId, ObjectId)> = Vec::new();
-
-                    for &(target_id, target_tx_id, target_rx_id) in &forward_targets {
-                        // Deserialize, set recv/send, re-serialize.
-                        let mut fwd = transmission.transmission.clone();
-                        if let black_hole_spec::Transmission::Propagation { recv, send, .. } =
-                            &mut fwd
-                        {
-                            *recv = target_tx_id;
-                            *send = target_rx_id;
-                        }
-                        let data = postcard::to_allocvec(&fwd).map_err(|e| {
-                            AtomError::Transmission(format!("serialize for forward: {e}"))
-                        })?;
-
-                        jungle.upload_to_void(data).await.map_err(|e| {
-                            AtomError::Transmission(format!(
-                                "forward to downstream node {}: {e}",
-                                target_id
-                            ))
-                        })?;
-
-                        // Immediately rotate: generate new ids for tx and rx after sending.
-                        let new_tx = Uuid::new_v4();
-                        let new_rx = Uuid::new_v4();
-                        new_downstream_endpoints.push((target_id, new_tx, new_rx));
-                        debug!(node_id = target_id, %new_tx, %new_rx, "rotated downstream endpoints after forward");
+                    for target in &forward_targets {
+                        send_propagation(jungle, target, &transmission.transmission).await?;
                     }
 
                     Ok(LayerTransmission {
                         node_id: transmission.node_id,
                         transmission: transmission.transmission,
-                        new_downstream_endpoints,
                     })
                 }
                 Err(e) => Err(e),
@@ -253,42 +239,12 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Helper functions for InitializeEffect
+// InitializeEffect — create the initial emission for both propagation passes
 // ---------------------------------------------------------------------------
 
-/// Void address constant used for uploading inference outputs and emissions.
-pub const void_addr: ObjectId = ObjectId::nil();
-
-/// Returns a tokenizer (stub — returns unit since the real tokenizer is provided at runtime).
-fn get_tokenizer() {}
-
-/// Converts input text to dark tokens (stub — generates placeholder tokens for compilation).
-fn text_to_dark_tokens(_input_text: &str, _tokenizer: &()) -> Vec<black_hole_spec::DarkToken> {
-    vec![black_hole_spec::DarkToken {
-        predicted: 0,
-        dark_knowledge: Vec::new(),
-    }]
-}
-
-/// Creates a client endpoint (stub — returns empty string placeholder).
-async fn make_client_endpoint() -> String {
-    String::new()
-}
-
-/// Uploads data to void and returns the assigned object id.
-async fn void_upload(_endpoint: &str, _addr: ObjectId, data: Vec<u8>) -> ObjectId {
-    // Delegates to jungle upload; the actual jungle reference is captured by the enclosing closure.
-    let _ = data;
-    Uuid::new_v4()
-}
-
-// ---------------------------------------------------------------------------
-// InitializeEffect — generate initial TransmissionId and send to root nodes
-// ---------------------------------------------------------------------------
-
-/// Effect that generates a new TransmissionId and uploads Propagation
-/// transmissions to the rx endpoints of all root nodes (those with no
-/// incoming edges). This kicks off the propagation through the graph.
+/// Creates an initial inference output and emission in void, then returns one
+/// propagation value for each branch. The branch effects attach cell-specific
+/// mailboxes before sending these values to root cells.
 pub struct InitializeEffect;
 
 impl<J> EffectSchema<J> for InitializeEffect {
@@ -304,33 +260,33 @@ where
 {
     fn effect(
         jungle: &J,
-        root_nodes: Self::In,
+        _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!("kicking off propagation for root nodes");
+            debug!("creating initial sun emission");
 
-            let input_text =
-        "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
-            let tokenizer = get_tokenizer();
-            let dark_tokens = text_to_dark_tokens(input_text, &tokenizer);
             let inference_output = InferenceOutput {
-                results: vec![SequenceOutput(dark_tokens)],
+                results: vec![SequenceOutput(vec![black_hole_spec::DarkToken {
+                    predicted: 0,
+                    dark_knowledge: Vec::new(),
+                }])],
             };
-            let inference_output_bytes =
-                postcard::to_allocvec(&inference_output).expect("serialize inference output");
-            let inference_output_id = void_upload(
-                &make_client_endpoint().await,
-                void_addr,
-                inference_output_bytes,
-            )
-            .await;
+            let inference_output_bytes = postcard::to_allocvec(&inference_output)?;
+            let inference_output_id = jungle
+                .upload_to_void(inference_output_bytes)
+                .await
+                .map_err(AtomError::Upload)?;
+
             let emission = Emission {
                 metadata: (),
                 output_id: InferenceOutputId(inference_output_id),
             };
-            let emission_bytes = postcard::to_allocvec(&emission).expect("serialize emission");
-            let emission_void_id =
-                void_upload(&make_client_endpoint().await, void_addr, emission_bytes).await;
+            let emission_bytes = postcard::to_allocvec(&emission)?;
+            let emission_void_id = jungle
+                .upload_to_void(emission_bytes)
+                .await
+                .map_err(AtomError::Upload)?;
+
             let propagation = Transmission::Propagation {
                 emission_id: EmissionId(emission_void_id),
                 recv: ObjectId::nil(),
@@ -373,17 +329,16 @@ impl<J> Effect<J> for ComputeLossEffect {
 // BroadcastPotentiationEffect — broadcast losses to all nodes
 // ---------------------------------------------------------------------------
 
-/// Output from [`BroadcastPotentiationEffect`]: the new rx map for next epoch.
+/// Output from [`BroadcastPotentiationEffect`]: each cell's first inbox for
+/// the next epoch.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BroadcastPotentiationResult {
-    /// Map of node ids to their new po_tx ObjectIds after broadcasting.
-    pub new_po_tx_map: Vec<(u32, ObjectId)>,
+    pub next_p1_tx_map: Vec<(u32, ObjectId)>,
 }
 
 /// Effect that broadcasts `Transmission::Potentiation` with the given loss
-/// values to all nodes' potentiation endpoints (po_tx). Generates a new recv
-/// ObjectId for each node and uploads the transmission. Does not wait for
-/// any response.
+/// values to all cells' potentiation inboxes. Each transmission gives the
+/// cell a fresh inbox for the next epoch.
 pub struct BroadcastPotentiationEffect;
 
 impl<J> EffectSchema<J> for BroadcastPotentiationEffect {
@@ -409,32 +364,30 @@ where
                 "broadcasting potentiation to all nodes"
             );
 
-            let mut new_po_tx_map = Vec::<(u32, ObjectId)>::new();
+            let mut next_p1_tx_map = Vec::<(u32, ObjectId)>::new();
 
-            for &(node_id, p1_tx_id) in &input.node_endpoints {
+            for &(node_id, potentiation_input_id) in &input.node_endpoints {
+                let next_p1_tx = Uuid::new_v4();
                 let potentiation = black_hole_spec::Transmission::Potentiation {
                     loss_up: input.loss_up,
                     loss_down: input.loss_down,
-                    recv: p1_tx_id,
+                    recv: next_p1_tx,
                 };
 
-                let data = postcard::to_allocvec(&potentiation)
-                    .map_err(|e| AtomError::Transmission(format!("serialize: {e}")))?;
+                let data = postcard::to_allocvec(&potentiation)?;
 
-                jungle.upload_to_void(data).await.map_err(|e| {
-                    AtomError::Transmission(format!(
-                        "upload potentiation to po_tx for node {}: {e}",
-                        node_id
-                    ))
-                })?;
+                jungle
+                    .upload_to_void_with(potentiation_input_id, data)
+                    .await
+                    .map_err(|e| {
+                        AtomError::Transmission(format!("send potentiation to node {node_id}: {e}"))
+                    })?;
 
-                // Immediately rotate po_tx after sending.
-                let new_po_tx = Uuid::new_v4();
-                new_po_tx_map.push((node_id, new_po_tx));
-                debug!(node_id, %new_po_tx, "rotated po_tx after potentiation send");
+                next_p1_tx_map.push((node_id, next_p1_tx));
+                debug!(node_id, %next_p1_tx, "sent potentiation to cell");
             }
 
-            Ok(BroadcastPotentiationResult { new_po_tx_map })
+            Ok(BroadcastPotentiationResult { next_p1_tx_map })
         }
     }
 }

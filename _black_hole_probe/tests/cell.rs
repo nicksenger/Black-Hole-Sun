@@ -64,6 +64,12 @@ impl VoidInferOps for SpaceJungle {
         Ok(void_upload(&endpoint, self.void_addr, data).await)
     }
 
+    async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
+        let endpoint = make_client_endpoint().await;
+        void_upload_with(&endpoint, self.void_addr, id, data).await;
+        Ok(())
+    }
+
     async fn infer(&self, request: InferenceRequest) -> Result<ObjectId, String> {
         let request_bytes = to_allocvec(&request).map_err(|e| format!("serialize: {e}"))?;
         let endpoint = make_client_endpoint().await;

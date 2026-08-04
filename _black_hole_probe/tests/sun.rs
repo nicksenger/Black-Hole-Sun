@@ -1,23 +1,23 @@
 mod common;
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use black_hole_flux::cell::action::InitRecvId;
 use black_hole_flux::ops::{SunOps, VoidInferOps};
 use black_hole_flux::sun::BlackHole;
 use black_hole_flux::sun::{SunState, Tag};
-use black_hole_flux::Progenitor;
+use black_hole_flux::{
+    CellState, Potentiation, Transmit, WaitForPotentiationAction, WaitForPropagationAction,
+};
 use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
-use black_hole_sun::{
-    DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkServerBuilder,
-    SequenceOutput, Transmission, VoidServerBuilder,
-};
+use black_hole_sun::{EmissionId, InferenceRequest, ObjectId, Transmission, VoidServerBuilder};
 use futures::stream::StreamExt;
-use jungle_sdk::client::JourneyUpdateSubscription;
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
@@ -29,14 +29,67 @@ use common::*;
 
 // ─── 3-tag Sun graph type (U0 -> U1 -> U2) ──────────────────────────────────
 
-/// Node tags: each tag carries a typenum index, the animal type (Progenitor),
+/// Node tags: each tag carries a typenum index, the animal type,
 /// and the list of outgoing edge targets.
-type Tag0 = Tag<U0, Progenitor, list![U1]>;
-type Tag1 = Tag<U1, Progenitor, list![U2]>;
-type Tag2 = Tag<U2, Progenitor, list![U3]>;
+type Tag0 = Tag<U0, TestCell, list![U1]>;
+type Tag1 = Tag<U1, TestCell, list![U2]>;
+type Tag2 = Tag<U2, TestCell, list![]>;
 
 /// The complete three-node sun: a type-level list of all node tags.
 type ThreeTagSunType = list![Tag0, Tag1, Tag2];
+
+// ─── TestCell ────────────────────────────────────────────────────────────────
+
+/// Completes one test-cell epoch after consuming its potentiation.
+pub struct FinishEpoch;
+
+#[jungle::action]
+impl Action for FinishEpoch {
+    type Effect = NoEffect;
+    type Input = Potentiation;
+    type Output = ();
+
+    fn emit(_state: &CellState, _input: Self::Input) {}
+
+    fn absorb(
+        _state: &mut CellState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("finish epoch failed".to_string()))
+    }
+}
+
+#[derive(Flow)]
+pub struct TestCellEpoch(
+    Step<WaitForPropagationAction>,
+    Step<Transmit>,
+    Step<WaitForPropagationAction>,
+    Step<Transmit>,
+    Step<WaitForPotentiationAction>,
+    Step<FinishEpoch>,
+);
+
+pub struct AlwaysEpoch;
+
+impl Predicate<(&CellState, &())> for AlwaysEpoch {
+    fn eval(_input: &(&CellState, &())) -> bool {
+        true
+    }
+}
+
+#[derive(Flow)]
+pub struct TestCellFlow(Step<InitRecvId>, While<AlwaysEpoch, TestCellEpoch>);
+
+/// A lightweight cell protocol used to isolate Sun orchestration from model
+/// inference, which is covered by the separate cell integration test.
+pub struct TestCell;
+
+#[jungle::animal(id = 0, generation = 0)]
+impl Animal for TestCell {
+    type State = CellState;
+    type Seed = ObjectId;
+    type Flow = TestCellFlow;
+}
 
 // ─── BlackHoleAnimal ─────────────────────────────────────────────────────────
 
@@ -53,21 +106,22 @@ impl Animal for BlackHoleAnimal {
 // ─── Ecosystem ───────────────────────────────────────────────────────────────
 
 #[derive(Animals)]
-pub struct SpaceAnimals(Progenitor, BlackHoleAnimal);
+pub struct SpaceAnimals(TestCell, BlackHoleAnimal);
 
-/// A Jungle implementation backed by void + quark servers over QUIC.
+/// A Jungle implementation backed by void over QUIC.
+#[derive(Clone)]
 pub struct SpaceJungle {
     void_addr: SocketAddr,
-    quark_addr: SocketAddr,
     client: Option<FusedClient>,
+    potentiation_writes: Arc<AtomicUsize>,
 }
 
 impl SpaceJungle {
-    pub fn new(void_addr: SocketAddr, quark_addr: SocketAddr) -> Self {
+    pub fn new(void_addr: SocketAddr) -> Self {
         Self {
             void_addr,
-            quark_addr,
             client: None,
+            potentiation_writes: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -85,7 +139,7 @@ impl Ecosystem for SpaceJungle {
 impl VoidInferOps for SpaceJungle {
     async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
         let endpoint = make_client_endpoint().await;
-        Ok(void_download(&endpoint, self.void_addr, id).await)
+        void_download_result(&endpoint, self.void_addr, id).await
     }
 
     async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
@@ -93,29 +147,33 @@ impl VoidInferOps for SpaceJungle {
         Ok(void_upload(&endpoint, self.void_addr, data).await)
     }
 
-    async fn infer(&self, request: InferenceRequest) -> Result<ObjectId, String> {
-        let request_bytes = to_allocvec(&request).map_err(|e| format!("serialize: {e}"))?;
+    async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
+        let is_potentiation = matches!(
+            postcard::from_bytes(&data),
+            Ok(Transmission::Potentiation { .. })
+        );
         let endpoint = make_client_endpoint().await;
-        let request_id = void_upload(&endpoint, self.void_addr, request_bytes).await;
-        Ok(quark_infer(&endpoint, self.quark_addr, request_id).await)
+        void_upload_with(&endpoint, self.void_addr, id, data).await;
+        if is_potentiation {
+            self.potentiation_writes.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(())
     }
 
-    async fn perturb_up(&self, seed: u64) -> Result<(), String> {
-        let endpoint = make_client_endpoint().await;
-        quark_perturb_up(&endpoint, self.quark_addr, seed).await;
-        Ok(())
+    async fn infer(&self, _request: InferenceRequest) -> Result<ObjectId, String> {
+        Err("inference is not used by TestCell".to_string())
+    }
+
+    async fn perturb_up(&self, _seed: u64) -> Result<(), String> {
+        Err("perturbation is not used by TestCell".to_string())
     }
 
     async fn perturb_down(&self) -> Result<(), String> {
-        let endpoint = make_client_endpoint().await;
-        quark_perturb_down(&endpoint, self.quark_addr).await;
-        Ok(())
+        Err("perturbation is not used by TestCell".to_string())
     }
 
-    async fn optimize(&self, loss_up: f32, loss_down: f32) -> Result<(), String> {
-        let endpoint = make_client_endpoint().await;
-        quark_optimize(&endpoint, self.quark_addr, loss_up, loss_down).await;
-        Ok(())
+    async fn optimize(&self, _loss_up: f32, _loss_down: f32) -> Result<(), String> {
+        Err("optimization is not used by TestCell".to_string())
     }
 
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String> {
@@ -145,16 +203,9 @@ impl SunOps for SpaceJungle {
     }
 }
 
-// ─── Server helpers (matching cell.rs patterns) ──────────────────────────────
+// ─── Server helper ───────────────────────────────────────────────────────────
 
-async fn start_servers(
-    model_path: &str,
-) -> (
-    SocketAddr,
-    tokio::task::AbortHandle,
-    SocketAddr,
-    tokio::task::AbortHandle,
-) {
+async fn start_server() -> (SocketAddr, tokio::task::AbortHandle) {
     let object_store = Box::new(InMemoryObjectStore::new());
     let store = Box::new(InMemoryStore::new());
     let void_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -165,55 +216,9 @@ async fn start_servers(
         .expect("failed to start void server");
     let void_abort = void_handle.abort_handle();
 
-    let quark_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let (quark_local, quark_handle) = QuarkServerBuilder::new(PathBuf::from(model_path))
-        .listen(quark_addr)
-        .void_addr(void_local)
-        .serve()
-        .await
-        .expect("failed to start quark server");
-    let quark_abort = quark_handle.abort_handle();
-
     drop(void_handle);
-    drop(quark_handle);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    (void_local, void_abort, quark_local, quark_abort)
-}
-
-// ─── Token helpers (matching cell.rs patterns) ───────────────────────────────
-
-/// Download the Qwen tokenizer from HuggingFace.
-fn get_tokenizer() -> tokenizers::Tokenizer {
-    let tokenizer_repo = "Qwen/Qwen3.5-0.8B".to_string();
-    let api = hf_hub::api::sync::Api::new().expect("failed to create hf hub api");
-    let repo = api.repo(hf_hub::Repo::with_revision(
-        tokenizer_repo.clone(),
-        hf_hub::RepoType::Model,
-        "main".to_string(),
-    ));
-    let tokenizer_file = repo
-        .get("tokenizer.json")
-        .expect("failed to download tokenizer.json from HuggingFace");
-    tokenizers::Tokenizer::from_file(tokenizer_file).expect("failed to load tokenizer")
-}
-
-/// Tokenize text into DarkTokens suitable for InferenceOutput.
-fn text_to_dark_tokens(text: &str, tokenizer: &tokenizers::Tokenizer) -> Vec<DarkToken> {
-    let tokens: Vec<u32> = tokenizer
-        .encode(text, false)
-        .expect("failed to tokenize input")
-        .get_ids()
-        .iter()
-        .map(|&id| id as u32)
-        .collect();
-    tokens
-        .iter()
-        .map(|id| DarkToken {
-            predicted: *id,
-            dark_knowledge: Vec::new(),
-        })
-        .collect()
+    (void_local, void_abort)
 }
 
 // ─── Test ────────────────────────────────────────────────────────────────────
@@ -225,11 +230,8 @@ fn text_to_dark_tokens(text: &str, tokenizer: &tokenizers::Tokenizer) -> Vec<Dar
 /// and potentiation broadcasting. No manual upload of inputs or void interactions
 /// is needed — the Flow orchestrates everything.
 ///
-/// We subscribe to step updates and assert that at least 3 full training epochs
-/// complete by tracking Initialize task completions. In each epoch cycle:
-///   Epoch = Initialize -> PropagationFlows -> ComputeLoss -> BroadcastPotentiation
-/// Initialize is the first effect in every epoch, so we detect it as the leading
-/// EffectSuccessOutput after BuildAddrs and between epoch boundaries.
+/// Three potentiation writes per epoch prove that every tagged cell completed
+/// both propagation passes and that the parent reached the epoch boundary.
 #[tokio::test]
 async fn sun() {
     init_tracing();
@@ -237,16 +239,12 @@ async fn sun() {
         .install_default()
         .ok();
 
-    let model_path = match require_model_path("black_hole_flow") {
-        Some(path) => path,
-        None => return,
-    };
+    // 1. Start void on a random port.
+    let (void_addr, void_abort) = start_server().await;
 
-    // 1. Start void and quark servers on random ports.
-    let (void_addr, void_abort, quark_addr, quark_abort) = start_servers(&model_path).await;
-
-    // 2. Build the SpaceJungle with void/quark capabilities.
-    let mut jungle = SpaceJungle::new(void_addr, quark_addr);
+    // 2. Build the SpaceJungle with void capabilities.
+    let mut jungle = SpaceJungle::new(void_addr);
+    let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
 
     // 3. Build a FusedClient with in-memory backend.
     let client = FusedClient::builder()
@@ -268,106 +266,63 @@ async fn sun() {
     println!("Spawned BlackHoleAnimal journey: {journey_id}");
 
     // 5. Subscribe to step updates for the journey.
-    let mut subscription: JourneyUpdateSubscription = client
+    let mut subscription = client
         .subscribe_step_updates(journey_id, None)
         .await
         .expect("subscribe_step_updates should succeed");
 
-    // 6. Start a JungleWorker so effects execute after we're subscribed.
-    let worker = JungleWorker::new(jungle, client.clone());
-    let worker_handle = tokio::spawn(async move {
-        let _ = worker.spawn().await;
-    });
+    // 6. Run one worker per journey so the parent can wait while its three
+    // child journeys execute.
+    let worker_handles: Vec<_> = (0..4)
+        .map(|_| {
+            let worker = JungleWorker::new(jungle.clone(), client.clone());
+            tokio::spawn(async move {
+                let _ = worker.spawn().await;
+            })
+        })
+        .collect();
 
-    // 7. Watch for Initialize completions (3 full training epochs).
-    //
-    // The BlackHole flow structure is:
-    //   BlackHole(Step<BuildAddrs>, While<Always<SunState, ()>, Epoch>)
-    // where Epoch = (Initialize, PropagationFlows, ComputeLoss, BroadcastPotentiation)
-    //
-    // BuildAddrs (node 0) runs once at startup. After that, each epoch iteration
-    // produces a sequence of EffectSuccessOutput events. Initialize is always the
-    // first effect in each epoch cycle.
-    //
-    // We track Initialize completions by:
-    // - Detecting BuildAddrs completion (node_id == 0)
-    // - Counting effects after BuildAddrs; Initialize is the first effect of each
-    //   epoch. Each epoch produces at least 3 effect successes (Initialize,
-    //   ComputeLoss, BroadcastPotentiation), with PropagationFlows adding more.
-    //   We detect Initialize as effects at positions 1, 4, 7... after BuildAddrs
-    //   (i.e., every ~3-4 effects).
+    // 7. Wait for three complete epochs. Each parent broadcast writes one
+    // potentiation transmission for each of the three tagged cells.
+    const EXPECTED_POTENTIATION_WRITES: usize = 3 * 3;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let writes = potentiation_writes.load(Ordering::SeqCst);
+            if writes >= EXPECTED_POTENTIATION_WRITES {
+                return Ok::<(), String>(());
+            }
 
-    let result = tokio::time::timeout(Duration::from_secs(120), async {
-        let mut total_effects = 0u32;
-        let mut buildaddrs_done = false;
-        let mut initialize_count = 0u32;
-
-        while let Some(update_result) = subscription.next().await {
-            let update = update_result.expect("stream update should succeed");
-
-            match update.event {
-                RunnerUpdateOut::EffectSuccessOutput { node_id, .. } => {
-                    total_effects += 1;
-
-                    // BuildAddrs is node 0 — runs once at startup.
-                    if node_id == 0 && !buildaddrs_done {
-                        buildaddrs_done = true;
-                        println!("BuildAddrs completed (effect #{})", total_effects);
-                        continue;
-                    }
-
-                    if !buildaddrs_done {
-                        // Effects before BuildAddrs — skip.
-                        continue;
-                    }
-
-                    let effects_after_buildaddrs = total_effects - 1;
-
-                    // Initialize is the first effect in each epoch cycle.
-                    // Each epoch produces at least 3 effect successes
-                    // (Initialize, ComputeLoss, BroadcastPotentiation), with
-                    // PropagationFlows adding more from While-loop iterations.
-                    // We detect Initialize as effects at positions 1, 4, 7...
-                    // after BuildAddrs (i.e., every ~3-4 effects).
-                    let estimated_epochs = effects_after_buildaddrs / 3;
-                    let current_epoch = estimated_epochs + 1;
-
-                    // The first effect of each new epoch is Initialize.
-                    if effects_after_buildaddrs > 0 && effects_after_buildaddrs % 3 == 1 {
-                        initialize_count += 1;
-                        println!(
-                            "Initialize completed (epoch {}, effect #{})",
-                            current_epoch, total_effects
-                        );
-
-                        if initialize_count >= 3 {
-                            println!(
-                                "3 Initialize completions detected after {} total effects",
-                                total_effects
-                            );
-                            return Ok::<(), String>(());
+            tokio::select! {
+                update = subscription.next() => {
+                    match update {
+                        Some(Ok(update)) => match update.event {
+                            RunnerUpdateOut::EffectFailureOutput { node_id, .. } => {
+                                return Err(format!("parent effect {node_id} failed"));
+                            }
+                            RunnerUpdateOut::NodeLifecycle(node)
+                                if node.phase == jungle_sdk::types::NodeLifecyclePhase::Failed =>
+                            {
+                                return Err(format!("parent node {} failed", node.node_id));
+                            }
+                            _ => {}
+                        },
+                        Some(Err(error)) => {
+                            return Err(format!("step update stream failed: {error}"));
+                        }
+                        None => {
+                            return Err("step update stream ended before three epochs".to_string());
                         }
                     }
                 }
-                RunnerUpdateOut::NodeLifecycle(node) => {
-                    if node.phase == jungle_sdk::types::NodeLifecyclePhase::Entered {
-                        println!("Journey entered lifecycle");
-                    }
-                }
-                _ => {}
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
             }
         }
-
-        Err(format!(
-            "stream ended before 3 Initialize completions (got {})",
-            initialize_count
-        ))
     })
     .await;
 
     match result {
         Ok(Ok(())) => {
-            println!("BlackHole flow completed: 3 Initialize tasks detected");
+            println!("BlackHole flow completed 3 epochs");
         }
         Ok(Err(e)) => {
             let status = client
@@ -382,16 +337,19 @@ async fn sun() {
                 .await
                 .expect("journey_details should succeed");
             panic!(
-                "timeout waiting for 3 Initialize completions (120s): {}, status: {:?}",
-                e, status
+                "timeout waiting for 3 epochs (30s): {}, potentiation writes: {}, status: {:?}",
+                e,
+                potentiation_writes.load(Ordering::SeqCst),
+                status
             );
         }
     }
 
     // Cleanup.
-    worker_handle.abort();
-    let _ = worker_handle.await;
+    for worker_handle in worker_handles {
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
     drop(client);
     void_abort.abort();
-    quark_abort.abort();
 }
