@@ -31,8 +31,8 @@ use uuid::Uuid;
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
-const CELL_NODE_WIDTH: f64 = 210.0;
-const CELL_NODE_HEIGHT: f64 = 78.0;
+const CELL_NODE_WIDTH: f64 = 110.0;
+const CELL_NODE_HEIGHT: f64 = 64.0;
 const FLOW_NODE_WIDTH: f64 = 230.0;
 const FLOW_NODE_HEIGHT: f64 = 76.0;
 const CELL_GRAPH_ID: &str = "black-hole-beam-cells";
@@ -65,7 +65,7 @@ pub struct BeamBuilder {
 impl Default for BeamBuilder {
     fn default() -> Self {
         Self {
-            title: "Black Hole Beam".to_string(),
+            title: "Black Hole Sun".to_string(),
             width: DEFAULT_WINDOW_WIDTH,
             height: DEFAULT_WINDOW_HEIGHT,
             animation_duration: None,
@@ -673,18 +673,18 @@ impl BeamApp {
                 let is_selected = selected == Some(index);
                 button(
                     column![
-                        text(animal_name).size(16).color(contrasting_text(color)),
+                        text(animal_name).size(14).color(inferno_text_bright()),
                         text(format!("cell {node_id} · {status}"))
-                            .size(12)
-                            .color(contrasting_text(color).scale_alpha(0.82)),
+                            .size(11)
+                            .color(inferno_text_muted()),
                     ]
-                    .spacing(3),
+                    .spacing(2),
                 )
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .padding([10, 12])
+                .padding([8, 8])
                 .on_press(Message::SelectCell(index))
-                .style(move |_theme, status| node_button_style(color, is_selected, status))
+                .style(move |_theme, status| cell_node_button_style(color, is_selected, status))
                 .into()
             })
             .id(iced_sugiyama::Id::new(CELL_GRAPH_ID))
@@ -742,8 +742,7 @@ impl BeamApp {
             })
             .stroke_width(1.4)
             .edge_corner_radius(16.0)
-            .padding(28)
-            .auto_fit(AutoFit::Ongoing)
+            .padding(70)
             .keep_centered(true);
         if let Some(duration) = self.config.animation_duration {
             graph = graph.animation_duration(duration);
@@ -753,8 +752,8 @@ impl BeamApp {
         }
 
         let mut content = column![
-            text("Sun cells").size(18).color(inferno_text_bright()),
-            text("Select a cell to inspect its animal flow")
+            text("Sun").size(18).color(inferno_text_bright()),
+            text("Select a cell to inspect its Flow")
                 .size(12)
                 .color(inferno_text_muted()),
         ]
@@ -781,7 +780,7 @@ impl BeamApp {
         );
 
         container(content.padding(16).height(Length::Fill))
-            .width(Length::FillPortion(5))
+            .width(Length::FillPortion(1))
             .height(Length::Fill)
             .style(panel_style)
             .into()
@@ -791,9 +790,9 @@ impl BeamApp {
         let Some(index) = self.selected_cell else {
             return container(
                 column![
-                    text("Child flow").size(18).color(inferno_text_bright()),
+                    text("Cell").size(18).color(inferno_text_bright()),
                     Space::new().height(Length::Fill),
-                    text("Select a Sun cell to view its Jungle flow")
+                    text("Select a cell to view its Flow")
                         .size(16)
                         .color(inferno_text_muted()),
                     Space::new().height(Length::Fill),
@@ -801,7 +800,7 @@ impl BeamApp {
                 .align_x(iced::Alignment::Center)
                 .padding(16),
             )
-            .width(Length::FillPortion(7))
+            .width(Length::FillPortion(1))
             .height(Length::Fill)
             .style(panel_style)
             .into();
@@ -908,12 +907,13 @@ impl BeamApp {
             .map(|id| format!(" · journey {}", short_uuid(id)))
             .unwrap_or_default();
         let mut content = column![
-            text(format!("{} child flow", cell.animal_name))
-                .size(18)
-                .color(inferno_text_bright()),
-            text(format!("{} · ports {ports}{journey}", cell.flow_name))
-                .size(12)
-                .color(inferno_text_muted()),
+            text("Cell").size(18).color(inferno_text_bright()),
+            text(format!(
+                "{} · {} · ports {ports}{journey}",
+                cell.animal_name, cell.flow_name
+            ))
+            .size(12)
+            .color(inferno_text_muted()),
         ]
         .spacing(3);
         if let Some(error) = &runtime.stream_error {
@@ -931,7 +931,7 @@ impl BeamApp {
         );
 
         container(content.padding(16).height(Length::Fill))
-            .width(Length::FillPortion(7))
+            .width(Length::FillPortion(1))
             .height(Length::Fill)
             .style(panel_style)
             .into()
@@ -1191,29 +1191,29 @@ fn panel_style(_theme: &Theme) -> iced::widget::container::Style {
     }
 }
 
-fn node_button_style(
+fn cell_node_button_style(
     color: Color,
     selected: bool,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let color = match status {
-        iced::widget::button::Status::Hovered => lighten(color, 0.10),
-        iced::widget::button::Status::Pressed => lighten(color, 0.17),
-        _ => color,
+    let background = match status {
+        iced::widget::button::Status::Hovered => Color::from_rgb8(24, 10, 11),
+        iced::widget::button::Status::Pressed => Color::from_rgb8(35, 13, 13),
+        _ => Color::from_rgb8(5, 3, 4),
     };
     let border_color = if selected {
-        Color::from_rgb8(255, 228, 112)
+        inferno_gradient(0.96)
     } else {
-        lighten(color, 0.28)
+        lighten(color, 0.14)
     };
     iced::widget::button::Style {
-        background: Some(Background::Color(color)),
-        text_color: contrasting_text(color),
+        background: Some(Background::Color(background)),
+        text_color: inferno_text_bright(),
         border: iced::border::rounded(9)
             .color(border_color)
             .width(if selected { 2 } else { 1 }),
         shadow: Shadow {
-            color: Color::from_rgba(color.r, color.g, color.b, 0.28),
+            color: Color::from_rgba(border_color.r, border_color.g, border_color.b, 0.34),
             offset: Vector::new(0.0, 2.0),
             blur_radius: 10.0,
         },
