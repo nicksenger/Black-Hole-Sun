@@ -34,10 +34,10 @@ use common::*;
 const PROGENITOR_NODE_COUNT: usize = 3;
 const SPACE_PROBE_DISTANCE_PROMPT: &str =
     "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
-const DARK_STAR_MODEL_CELL_COUNT: usize = 10;
-const DARK_STAR_VERTEX_COUNT: usize = 13;
+const DARK_STAR_MODEL_CELL_COUNT: usize = 7;
+const DARK_STAR_VERTEX_COUNT: usize = 10;
 #[cfg(test)]
-const DARK_STAR_PORT_COUNT: usize = 16;
+const DARK_STAR_PORT_COUNT: usize = 13;
 #[cfg(test)]
 const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
 
@@ -53,12 +53,9 @@ type DarkStarL1 = Unary<U3, Progenitor, list![U7]>;
 type DarkStarR1 = Unary<U4, Progenitor, list![U8]>;
 type DarkStarL2 = Unary<U5, Progenitor, list![U9]>;
 type DarkStarR2 = Unary<U6, Progenitor, list![U10]>;
-type DarkStarF0 = Binary<U7, U8, ConcatFusionAnimal, list![U13]>;
-type DarkStarF1 = Binary<U9, U10, ConcatFusionAnimal, list![U14]>;
-type DarkStarAfterF0 = Unary<U13, Progenitor, list![U15]>;
-type DarkStarAfterF1 = Unary<U14, Progenitor, list![U16]>;
-type DarkStarF2 = Binary<U15, U16, ConcatFusionAnimal, list![U17]>;
-type DarkStarAfterF2 = Unary<U17, Progenitor, list![]>;
+type DarkStarF0 = Binary<U7, U8, ConcatFusionAnimal, list![U11]>;
+type DarkStarF1 = Binary<U9, U10, ConcatFusionAnimal, list![U12]>;
+type DarkStarF2 = Binary<U11, U12, ConcatFusionAnimal, list![]>;
 type DarkStarSun = list![
     DarkStarInput,
     DarkStarL0,
@@ -69,10 +66,7 @@ type DarkStarSun = list![
     DarkStarR2,
     DarkStarF0,
     DarkStarF1,
-    DarkStarAfterF0,
-    DarkStarAfterF1,
-    DarkStarF2,
-    DarkStarAfterF2
+    DarkStarF2
 ];
 
 #[derive(Flow)]
@@ -708,8 +702,7 @@ async fn primordia() {
     .await;
 }
 
-/// Runs an expanded diamond with Fusion nodes that concatenate outputs and
-/// additional Progenitor cells after every Fusion vertex.
+/// Runs an expanded diamond with Fusion nodes that concatenate outputs.
 #[tokio::test]
 async fn dark_star() {
     init_tracing();
