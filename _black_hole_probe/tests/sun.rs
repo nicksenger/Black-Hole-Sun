@@ -609,6 +609,7 @@ pub(crate) fn run_beam() {
     });
 
     black_hole_beam::BeamBuilder::new()
+        .title("Diamond Sun")
         .view_live::<BlackHoleAnimal>(client, journey_id)
         .expect("Black Hole Beam should run");
 }
