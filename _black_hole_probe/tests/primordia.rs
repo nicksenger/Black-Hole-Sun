@@ -192,7 +192,7 @@ pub struct ConcatFusionOutputs;
 #[jungle::action]
 impl Action for ConcatFusionOutputs {
     type Effect = ConcatFusionOutputsEffect;
-    type Input = (EmissionId, EmissionId);
+    type Input = (Uuid, (EmissionId, EmissionId));
     type Output = EmissionId;
 
     fn emit(_state: &FusionState, input: Self::Input) -> Self::Input {
@@ -211,7 +211,7 @@ pub struct ConcatFusionOutputsEffect;
 
 impl<J> EffectSchema<J> for ConcatFusionOutputsEffect {
     type Id = u64;
-    type In = (EmissionId, EmissionId);
+    type In = (Uuid, (EmissionId, EmissionId));
     type Out = EmissionId;
     type Err = AtomError;
 }
@@ -222,7 +222,7 @@ where
 {
     fn effect(
         jungle: &J,
-        (left_id, right_id): Self::In,
+        (_transform_id, (left_id, right_id)): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             let left_emission: Emission<()> = jungle

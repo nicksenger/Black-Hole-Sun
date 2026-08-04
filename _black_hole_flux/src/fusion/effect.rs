@@ -5,10 +5,30 @@ use std::future::Future;
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::cell::action::{Potentiation, Propagation};
 use crate::ops::VoidInferOps;
 use crate::AtomError;
+
+/// Generates the stable ID passed to one fusion journey's transform.
+pub struct GenerateTransformIdEffect;
+
+impl<J> EffectSchema<J> for GenerateTransformIdEffect {
+    type Id = u64;
+    type In = ();
+    type Out = Uuid;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for GenerateTransformIdEffect {
+    fn effect(
+        _jungle: &J,
+        _input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        std::future::ready(Ok(Uuid::new_v4()))
+    }
+}
 
 async fn wait_for_pair<J>(
     jungle: &J,

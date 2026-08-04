@@ -2,10 +2,13 @@
 
 use jungle_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use black_hole_spec::{EmissionId, ObjectId};
 
-use super::effect::{WaitForFusionPotentiation, WaitForFusionPropagation};
+use super::effect::{
+    GenerateTransformIdEffect, WaitForFusionPotentiation, WaitForFusionPropagation,
+};
 use crate::cell::effect::Transmit as TransmitEffect;
 
 /// Initial receive mailboxes for a binary vertex, in declared `P1`, `P2` order.
@@ -15,9 +18,11 @@ pub struct FusionSeed {
     pub p2_recv_id: ObjectId,
 }
 
-/// Runtime mailbox state for a [`Fusion`](super::Fusion) journey.
+/// Runtime identity and mailbox state for a [`Fusion`](super::Fusion) journey.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct FusionState {
+    /// Stable ID passed to the transform on every propagation pass.
+    pub transform_id: Uuid,
     p1_recv_id: ObjectId,
     p2_recv_id: ObjectId,
     send_id: ObjectId,
@@ -44,6 +49,27 @@ impl Action for InitFusion {
         output.map_err(|_| Failure::Message("initialize fusion failed".to_string()))?;
         state.p1_recv_id = seed.p1_recv_id;
         state.p2_recv_id = seed.p2_recv_id;
+        Ok(())
+    }
+}
+
+/// Generates and stores the stable ID for this fusion journey's transform.
+pub struct GenerateTransformId;
+
+#[jungle::action]
+impl Action for GenerateTransformId {
+    type Effect = GenerateTransformIdEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &FusionState, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut FusionState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        state.transform_id = output
+            .map_err(|error| Failure::Message(format!("generate transform ID failed: {error}")))?;
         Ok(())
     }
 }
@@ -81,6 +107,29 @@ impl Action for WaitForFusionPropagationAction {
         state.send_id = p1.send_id;
 
         Ok((p1.emission_id, p2.emission_id))
+    }
+}
+
+/// Adds this fusion journey's stable ID to the pair passed into its transform.
+pub struct PrepareTransformInput;
+
+#[jungle::action(carry = (EmissionId, EmissionId))]
+impl Action for PrepareTransformInput {
+    type Effect = NoEffect;
+    type Input = (EmissionId, EmissionId);
+    type Output = (Uuid, (EmissionId, EmissionId));
+
+    fn emit(_state: &FusionState, emissions: Self::Input) -> ((), Self::Input) {
+        ((), emissions)
+    }
+
+    fn absorb(
+        state: &mut FusionState,
+        output: EffectCompletion<Self::Effect>,
+        emissions: Self::Input,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("prepare transform input failed".to_string()))?;
+        Ok((state.transform_id, emissions))
     }
 }
 
