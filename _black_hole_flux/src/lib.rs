@@ -1,26 +1,26 @@
 //! Higher-order Jungle flows for quark-inference nuclei and cells.
 //!
-//! A **Nucleus** composes an input flow, a single quark-inference step, and an
+//! A **Atom** composes an input flow, a single quark-inference step, and an
 //! output flow into one sequential pipeline.  Given an [`EmissionId`] pointing
-//! to an [`Emission<M>`] stored in void, the Nucleus:
+//! to an [`Emission<M>`] stored in void, the Atom:
 //!
 //! 1. Runs the **In** flow to produce a (possibly transformed) `EmissionId`.
 //! 2. Downloads that emission from void, performs quark inference on the
 //!    contained output ID, uploads the result emission, and yields the new `EmissionId`.
 //! 3. Passes the resulting `EmissionId` through the **Out** flow.
 //!
-//! A **Cell** wraps a nucleus flow in an infinite QuZO training loop driven by
+//! A **Cell** wraps a atom flow in an infinite QuZO training loop driven by
 //! [`Transmission`] messages from void:
 //!
 //! 1. **PerturbUp** - perturbs the associated quark's weights upward.
 //! 2. **WaitForPropagation** - reads `recv_id` from state, downloads a
 //!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 3. **Nucleus** - runs the nucleus pipeline.
+//! 3. **Atom** - runs the atom pipeline.
 //! 4. **Transmit** - propagates the emission output to the next cell.
 //! 5. **PerturbDown** - perturbs the quark's weights downward.
 //! 6. **WaitForPropagation** - reads `recv_id` from state, downloads a
 //!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 7. **Nucleus** - runs the nucleus pipeline again.
+//! 7. **Atom** - runs the atom pipeline again.
 //! 8. **Transmit** - propagates the emission output to the next cell.
 //! 9. **WaitForPotentiation** - reads `recv_id` from state, downloads a
 //!     `Transmission::Potentiation`, stores the new `recv_id`, emits loss values.
@@ -51,7 +51,7 @@ use thiserror::Error;
 
 pub mod animal;
 pub mod cell;
-pub mod nucleus;
+pub mod atom;
 pub mod ops;
 pub mod sun;
 
@@ -69,11 +69,11 @@ pub use cell::effect::{
     QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect,
     WaitForPotentiation, WaitForPropagation,
 };
-pub use nucleus::effect::QuarkInfer;
+pub use atom::effect::QuarkInfer;
 pub use ops::VoidInferOps;
 
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
-pub use nucleus::Nucleus;
+pub use atom::Atom;
 
 pub use sun::{
     action::{
@@ -89,7 +89,7 @@ pub use sun::{
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]
-pub enum NucleusError {
+pub enum AtomError {
     #[error("void download failed: {0}")]
     Download(String),
 

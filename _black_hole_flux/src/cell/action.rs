@@ -89,7 +89,7 @@ pub struct Propagation {
 }
 
 // ---------------------------------------------------------------------------
-// QuarkInferStep — action wrapper for use inside Nucleus flows
+// QuarkInferStep — action wrapper for use inside Atom flows
 // ---------------------------------------------------------------------------
 
 /// Action that performs quark inference on an [`EmissionId`].
@@ -100,7 +100,7 @@ impl<M> Action for QuarkInferStep<M>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
 {
-    type Effect = super::super::nucleus::effect::QuarkInfer<M>;
+    type Effect = super::super::atom::effect::QuarkInfer<M>;
     type Input = EmissionId;
     type Output = EmissionId;
 

@@ -16,9 +16,9 @@ use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 use jungle_zoo::Noop;
 
-use crate::Nucleus;
+use crate::Atom;
 
-/// A Cell wraps a nucleus flow in an infinite QuZO training loop driven by
+/// A Cell wraps a atom flow in an infinite QuZO training loop driven by
 /// [`Transmission`](black_hole_spec::Transmission) messages from void.
 #[derive(Flow)]
 pub struct Cell<N>(Step<InitRecvId_>, While<Always<CellState, ()>, Cytoplasm<N>>);
@@ -38,14 +38,14 @@ pub struct Cytoplasm<N>(
     Step<Optimize_>,
 );
 
-/// A eukaryotic cell: a [`Cell`] with an arbitrarily complex nucleus.
-pub type Eukaryote<In, Out, M> = Cell<Nucleus<In, Out, M>>;
+/// A eukaryotic cell: a [`Cell`] with an arbitrarily complex atom.
+pub type Eukaryote<In, Out, M> = Cell<Atom<In, Out, M>>;
 
-/// A prokaryotic cell: a [`Cell`] whose nucleus has no input/output processing.
+/// A prokaryotic cell: a [`Cell`] whose atom has no input/output processing.
 pub type Prokaryote<M> =
-    Cell<Nucleus<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, M>>;
+    Cell<Atom<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, M>>;
 
 /// A primordial cell: the simplest possible [`Cell`] with no input/output
 /// processing and no metadata.
 pub type Primordium =
-    Cell<Nucleus<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, ()>>;
+    Cell<Atom<Step<Noop<CellState, EmissionId>>, Step<Noop<CellState, EmissionId>>, ()>>;

@@ -14,7 +14,7 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::ops::{SunOps, VoidInferOps};
-use crate::NucleusError;
+use crate::AtomError;
 
 pub struct GenUuidEffect;
 #[jungle::effect]
@@ -22,7 +22,7 @@ impl<J> Effect<J> for GenUuidEffect {
     type Id = u64;
     type In = ();
     type Out = Uuid;
-    type Err = NucleusError;
+    type Err = AtomError;
 
     fn effect(
         _jungle: &J,
@@ -48,7 +48,7 @@ where
     type Id = u64;
     type In = A::Seed;
     type Out = Uuid;
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 impl<A, J> Effect<J> for SpawnAnimal<A>
 where
@@ -67,7 +67,7 @@ where
             let journey_id = jungle
                 .spawn_animal::<A>(&seed)
                 .await
-                .map_err(NucleusError::Spawn)?;
+                .map_err(AtomError::Spawn)?;
             debug!(?journey_id, "animal spawned");
             Ok(journey_id)
         }
@@ -128,7 +128,7 @@ impl<J> EffectSchema<J> for WaitForLayerTransmission {
     type Id = u64;
     type In = WaitForLayerTransmissionInput;
     type Out = LayerTransmission;
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<J> Effect<J> for WaitForLayerTransmission
@@ -154,7 +154,7 @@ where
             if is_root_layer {
                 if let Some(transmission) = input_transmission {
                     let data = postcard::to_allocvec(&transmission).map_err(|e| {
-                        NucleusError::Transmission(format!("serialize input transmission: {e}"))
+                        AtomError::Transmission(format!("serialize input transmission: {e}"))
                     })?;
                     let client_endpoint = make_client_endpoint().await;
                     for (_node_id, rx_id) in &rx_endpoints {
@@ -165,7 +165,7 @@ where
             }
 
             if rx_endpoints.is_empty() {
-                return Err(NucleusError::Transmission(
+                return Err(AtomError::Transmission(
                     "no endpoints to wait for".to_string(),
                 ));
             }
@@ -181,8 +181,8 @@ where
                         let transmission = jungle_ref
                             .wait_for_transmission(id)
                             .await
-                            .map_err(NucleusError::Transmission)?;
-                        Ok::<_, NucleusError>(LayerTransmission {
+                            .map_err(AtomError::Transmission)?;
+                        Ok::<_, AtomError>(LayerTransmission {
                             node_id,
                             transmission,
                             new_downstream_endpoints: Vec::new(),
@@ -223,11 +223,11 @@ where
                             *send = target_rx_id;
                         }
                         let data = postcard::to_allocvec(&fwd).map_err(|e| {
-                            NucleusError::Transmission(format!("serialize for forward: {e}"))
+                            AtomError::Transmission(format!("serialize for forward: {e}"))
                         })?;
 
                         jungle.upload_to_void(data).await.map_err(|e| {
-                            NucleusError::Transmission(format!(
+                            AtomError::Transmission(format!(
                                 "forward to downstream node {}: {e}",
                                 target_id
                             ))
@@ -295,7 +295,7 @@ impl<J> EffectSchema<J> for InitializeEffect {
     type Id = u64;
     type In = ();
     type Out = (Transmission, Transmission);
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<J> Effect<J> for InitializeEffect
@@ -357,7 +357,7 @@ impl<J> Effect<J> for ComputeLossEffect {
     type Id = u64;
     type In = (Transmission, Transmission);
     type Out = (f32, f32);
-    type Err = NucleusError;
+    type Err = AtomError;
     fn effect(
         _jungle: &J,
         _transmission_id: Self::In,
@@ -390,7 +390,7 @@ impl<J> EffectSchema<J> for BroadcastPotentiationEffect {
     type Id = u64;
     type In = super::action::BroadcastPotentiationInput;
     type Out = BroadcastPotentiationResult;
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<J> Effect<J> for BroadcastPotentiationEffect
@@ -419,10 +419,10 @@ where
                 };
 
                 let data = postcard::to_allocvec(&potentiation)
-                    .map_err(|e| NucleusError::Transmission(format!("serialize: {e}")))?;
+                    .map_err(|e| AtomError::Transmission(format!("serialize: {e}")))?;
 
                 jungle.upload_to_void(data).await.map_err(|e| {
-                    NucleusError::Transmission(format!(
+                    AtomError::Transmission(format!(
                         "upload potentiation to po_tx for node {}: {e}",
                         node_id
                     ))

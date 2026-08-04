@@ -1,4 +1,4 @@
-//! Nucleus effects — quark inference.
+//! Atom effects — quark inference.
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -11,7 +11,7 @@ use tracing::debug;
 pub use black_hole_spec::{Emission, EmissionId, InferenceOutputId, InferenceRequest};
 
 use crate::ops::VoidInferOps;
-use crate::NucleusError;
+use crate::AtomError;
 
 // ---------------------------------------------------------------------------
 // QuarkInfer — download -> infer -> upload in a single effect
@@ -27,7 +27,7 @@ where
     type Id = u64;
     type In = EmissionId;
     type Out = EmissionId;
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<M, J> Effect<J> for QuarkInfer<M>
@@ -45,7 +45,7 @@ where
             let emission: Emission<M> = jungle
                 .download_emission(obj_id)
                 .await
-                .map_err(NucleusError::Download)?;
+                .map_err(AtomError::Download)?;
             let input_output_id = emission.output_id.0;
             debug!(emission_id = %obj_id, "downloaded emission for inference");
 
@@ -56,7 +56,7 @@ where
             let output_id = jungle
                 .infer(request)
                 .await
-                .map_err(NucleusError::Inference)?;
+                .map_err(AtomError::Inference)?;
             debug!(output_id = %output_id, "quark inference complete");
 
             let output_emission = Emission {
@@ -67,7 +67,7 @@ where
             let result_id = jungle
                 .upload_to_void(result_bytes)
                 .await
-                .map_err(NucleusError::Upload)?;
+                .map_err(AtomError::Upload)?;
             debug!(result_id = %result_id, "uploaded inference result emission");
 
             Ok(EmissionId(result_id))

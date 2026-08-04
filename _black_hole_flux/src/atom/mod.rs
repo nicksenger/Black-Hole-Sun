@@ -1,4 +1,4 @@
-//! Nucleus module - quark-inference pipeline components.
+//! Atom module - quark-inference pipeline components.
 
 pub mod action;
 pub mod effect;
@@ -9,9 +9,9 @@ use serde::Serialize;
 
 use action::QuarkInferStep;
 
-/// A Nucleus composes three sequential stages.
+/// A Atom composes three sequential stages.
 #[derive(Flow)]
-pub struct Nucleus<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
+pub struct Atom<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
     In,
     Step<QuarkInferStep<M>>,
     Out,

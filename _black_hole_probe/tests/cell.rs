@@ -279,8 +279,8 @@ async fn cell() {
 
     // 4. Prepare emission data and Propagation transmission chain in void.
     //    The Progenitor (Primordium) cell optimization loop:
-    //    PerturbUp -> WaitForPropagation -> Nucleus -> Transmit ->
-    //    PerturbDown -> WaitForPropagation -> Nucleus -> Transmit ->
+    //    PerturbUp -> WaitForPropagation -> Atom -> Transmit ->
+    //    PerturbDown -> WaitForPropagation -> Atom -> Transmit ->
     //    WaitForPotentiation -> Optimize -> (loop back to WaitForPropagation ...)
     //
     //    Chain: Propagation(1) -> Propagation(2) -> Potentiation -> Propagation(3) -> Propagation(4)

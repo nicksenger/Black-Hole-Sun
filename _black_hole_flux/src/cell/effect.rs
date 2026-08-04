@@ -9,7 +9,7 @@ use black_hole_spec::{ObjectId, Transmission};
 
 use super::action::{Potentiation, Propagation};
 use crate::ops::VoidInferOps;
-use crate::NucleusError;
+use crate::AtomError;
 
 // ---------------------------------------------------------------------------
 // QuarkPerturbUp — perturb quark weights in the positive direction
@@ -21,7 +21,7 @@ impl<J> EffectSchema<J> for QuarkPerturbUp {
     type Id = u64;
     type In = u64;
     type Out = ();
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<J> Effect<J> for QuarkPerturbUp
@@ -37,7 +37,7 @@ where
             jungle
                 .perturb_up(seed)
                 .await
-                .map_err(NucleusError::PerturbUp)?;
+                .map_err(AtomError::PerturbUp)?;
             Ok(())
         }
     }
@@ -53,7 +53,7 @@ impl<J> EffectSchema<J> for QuarkPerturbDown {
     type Id = u64;
     type In = ();
     type Out = ();
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<J> Effect<J> for QuarkPerturbDown
@@ -69,7 +69,7 @@ where
             jungle
                 .perturb_down()
                 .await
-                .map_err(NucleusError::PerturbDown)?;
+                .map_err(AtomError::PerturbDown)?;
             Ok(())
         }
     }
@@ -85,7 +85,7 @@ impl<J> EffectSchema<J> for QuarkOptimize {
     type Id = u64;
     type In = Potentiation;
     type Out = ();
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<J> Effect<J> for QuarkOptimize
@@ -105,7 +105,7 @@ where
             jungle
                 .optimize(potentiation.loss_up, potentiation.loss_down)
                 .await
-                .map_err(NucleusError::Optimize)?;
+                .map_err(AtomError::Optimize)?;
             Ok(())
         }
     }
@@ -125,7 +125,7 @@ impl<J> EffectSchema<J> for WaitForPropagation {
     type Id = u64;
     type In = ObjectId;
     type Out = Propagation;
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<J> Effect<J> for WaitForPropagation
@@ -141,7 +141,7 @@ where
             let transmission = jungle
                 .wait_for_transmission(id)
                 .await
-                .map_err(NucleusError::Transmission)?;
+                .map_err(AtomError::Transmission)?;
             match transmission {
                 Transmission::Propagation {
                     emission_id,
@@ -158,7 +158,7 @@ where
                 other => {
                     let msg = format!("expected Propagation, got {:?}", other);
                     debug!("propagation failed: {msg}");
-                    Err(NucleusError::Transmission(msg))
+                    Err(AtomError::Transmission(msg))
                 }
             }
         }
@@ -179,7 +179,7 @@ impl<J> EffectSchema<J> for WaitForPotentiation {
     type Id = u64;
     type In = ObjectId;
     type Out = (Potentiation, ObjectId);
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<J> Effect<J> for WaitForPotentiation
@@ -195,7 +195,7 @@ where
             let transmission = jungle
                 .wait_for_transmission(id)
                 .await
-                .map_err(NucleusError::Transmission)?;
+                .map_err(AtomError::Transmission)?;
             match transmission {
                 Transmission::Potentiation {
                     loss_up,
@@ -213,7 +213,7 @@ where
                 other => {
                     let msg = format!("expected Potentiation, got {:?}", other);
                     debug!("potentiation failed: {msg}");
-                    Err(NucleusError::Transmission(msg))
+                    Err(AtomError::Transmission(msg))
                 }
             }
         }
@@ -231,7 +231,7 @@ impl<J> EffectSchema<J> for Transmit {
     type Id = u64;
     type In = (black_hole_spec::EmissionId, ObjectId);
     type Out = ();
-    type Err = NucleusError;
+    type Err = AtomError;
 }
 
 impl<J> Effect<J> for Transmit
@@ -248,7 +248,7 @@ where
             jungle
                 .transmit(emission_id, send_id)
                 .await
-                .map_err(NucleusError::Transmission)?;
+                .map_err(AtomError::Transmission)?;
             Ok(())
         }
     }
