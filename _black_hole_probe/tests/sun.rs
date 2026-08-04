@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use black_hole_flux::ops::{SunOps, VoidInferOps};
-use black_hole_flux::sun::EventHorizon;
+use black_hole_flux::sun::BlackHole;
 use black_hole_flux::sun::{SunState, Tag};
 use black_hole_flux::Progenitor;
 use black_hole_sun::black_hole_flux;
@@ -16,6 +16,7 @@ use black_hole_sun::{
     DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkServerBuilder,
     SequenceOutput, Transmission, VoidServerBuilder,
 };
+use futures::stream::StreamExt;
 use jungle_sdk::client::JourneyUpdateSubscription;
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
@@ -46,12 +47,8 @@ pub struct BlackHoleAnimal;
 impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = FakeFlow;
-    //type Flow = FakeFlow;
+    type Flow = <ThreeTagSunType as BlackHole>::Sun;
 }
-
-#[derive(Flow)]
-pub struct FakeFlow();
 
 // ─── Ecosystem ───────────────────────────────────────────────────────────────
 
@@ -394,8 +391,6 @@ async fn sun() {
     // Cleanup.
     worker_handle.abort();
     let _ = worker_handle.await;
-    server_handle.abort();
-    let _ = server_handle.await;
     drop(client);
     void_abort.abort();
     quark_abort.abort();

@@ -121,21 +121,21 @@ pub struct SunStep<
 #[derive(Flow)]
 pub struct SunFlow<F>(F);
 
-pub trait EventHorizon {
-    type Flow;
+pub trait BlackHole {
+    type Sun;
 }
-impl<T, U> EventHorizon for List<(T, U)>
+impl<T, U> BlackHole for List<(T, U)>
 where
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
-    U: EventHorizon,
+    U: BlackHole,
 {
     // Build a Join-tree: SunStep<T> composed with the rest of the list.
     // Wrapped in SunFlow so the top-level type implements FlowScope.
-    type Flow = SunFlow<Join<SunStep<T>, <U as EventHorizon>::Flow>>;
+    type Sun = SunFlow<Join<SunStep<T>, <U as BlackHole>::Sun>>;
 }
-impl EventHorizon for Empty {
+impl BlackHole for Empty {
     // Base case: wrap BlackHole in SunFlow for consistent wrapping.
-    type Flow = SunFlow<BlackHole>;
+    type Sun = SunFlow<Sun>;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,4 +234,4 @@ pub struct Epoch(
 /// Top-level orchestration flow that drives all underlying Cell flows
 /// associated with the BlackHoleSun graph.
 #[derive(Flow)]
-pub struct BlackHole(Step<action::BuildAddrs>, While<Always<SunState, ()>, Epoch>);
+pub struct Sun(Step<action::BuildAddrs>, While<Always<SunState, ()>, Epoch>);
