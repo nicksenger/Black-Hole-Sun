@@ -4,7 +4,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -15,8 +15,9 @@ use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{
-    EmissionId, InferenceInput, InferenceOutput, InferenceOutputId, InferenceRequest, ObjectId,
-    QuarkServerBuilder, Transmission, VoidServerBuilder,
+    DarkToken, EmissionId, InferenceOutput, InferenceOutputId, LogitEntry, ObjectId,
+    QuarkServerBuilder, SequenceOutput, Transmission, VoidServerBuilder,
+    InferenceRequest,
 };
 #[cfg(test)]
 use futures::stream::StreamExt;
@@ -38,6 +39,8 @@ const DARK_STAR_VERTEX_COUNT: usize = 10;
 const DARK_STAR_PORT_COUNT: usize = 13;
 #[cfg(test)]
 const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
+const QWEN_TOKENIZER_REPO: &str = "Qwen/Qwen3.5-0.8B";
+static DARK_STAR_TOKENIZER: OnceLock<Result<tokenizers::Tokenizer, String>> = OnceLock::new();
 
 type Unary0 = Unary<U0, Progenitor, list![U1]>;
 type Unary1 = Unary<U1, Progenitor, list![U2]>;
@@ -66,6 +69,51 @@ type DarkStarSun = list![
     DarkStarF1,
     DarkStarF2
 ];
+
+fn dark_star_tokenizer() -> Result<&'static tokenizers::Tokenizer, String> {
+    let tokenizer_result = DARK_STAR_TOKENIZER.get_or_init(|| {
+        let api = hf_hub::api::sync::Api::new()
+            .map_err(|error| format!("failed to create hf hub api: {error}"))?;
+        let repo = api.repo(hf_hub::Repo::with_revision(
+            QWEN_TOKENIZER_REPO.to_string(),
+            hf_hub::RepoType::Model,
+            "main".to_string(),
+        ));
+        let tokenizer_file = repo
+            .get("tokenizer.json")
+            .map_err(|error| format!("failed to download tokenizer.json from HuggingFace: {error}"))?;
+        tokenizers::Tokenizer::from_file(tokenizer_file)
+            .map_err(|error| format!("failed to load tokenizer.json: {error}"))
+    });
+    match tokenizer_result {
+        Ok(tokenizer) => Ok(tokenizer),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn prompt_to_dark_tokens(
+    prompt: &str,
+    tokenizer: &tokenizers::Tokenizer,
+) -> Result<Vec<DarkToken>, String> {
+    let tokens = tokenizer
+        .encode(prompt, false)
+        .map_err(|error| format!("failed to tokenize prompt: {error}"))?;
+
+    Ok(tokens
+        .get_ids()
+        .iter()
+        .map(|&id| {
+            let token_id = id as u32;
+            DarkToken {
+                predicted: token_id,
+                dark_knowledge: vec![LogitEntry {
+                    token_id,
+                    log_prob: 0.0,
+                }],
+            }
+        })
+        .collect())
+}
 
 #[derive(Flow)]
 pub struct DarkStarGenerator(Step<GenerateDarkStarPrompt>);
@@ -106,21 +154,17 @@ where
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let request = InferenceRequest::Sequences {
-                sequences: vec![vec![InferenceInput::Text(
-                    SPACE_PROBE_DISTANCE_PROMPT.to_string(),
-                )]],
-                limit: 1,
+            let tokenizer = dark_star_tokenizer().map_err(AtomError::Inference)?;
+            let dark_tokens = prompt_to_dark_tokens(SPACE_PROBE_DISTANCE_PROMPT, tokenizer)
+                .map_err(AtomError::Inference)?;
+            let output = InferenceOutput {
+                results: vec![SequenceOutput(dark_tokens)],
             };
-            let model_id = Uuid::new_v4();
-            jungle
-                .start_model(model_id)
+            let output_bytes = to_allocvec(&output)?;
+            let output_id = jungle
+                .upload_to_void(output_bytes)
                 .await
-                .map_err(AtomError::ModelStart)?;
-            let inference = jungle.infer(model_id, request).await;
-            let shutdown = jungle.shutdown_model(model_id).await;
-            let output_id = inference.map_err(AtomError::Inference)?;
-            shutdown.map_err(AtomError::ModelShutdown)?;
+                .map_err(AtomError::Upload)?;
             let emission = Emission {
                 metadata: (),
                 output_id: InferenceOutputId(output_id),
