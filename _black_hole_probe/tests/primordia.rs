@@ -18,6 +18,7 @@ use black_hole_sun::{
     EmissionId, InferenceInput, InferenceOutput, InferenceOutputId, InferenceRequest, ObjectId,
     QuarkServerBuilder, Transmission, VoidServerBuilder,
 };
+#[cfg(test)]
 use futures::stream::StreamExt;
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
@@ -29,12 +30,15 @@ use uuid::Uuid;
 
 use common::*;
 
+#[cfg(test)]
 const PROGENITOR_NODE_COUNT: usize = 3;
 const SPACE_PROBE_DISTANCE_PROMPT: &str =
     "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
 const DARK_STAR_MODEL_CELL_COUNT: usize = 10;
 const DARK_STAR_VERTEX_COUNT: usize = 13;
+#[cfg(test)]
 const DARK_STAR_PORT_COUNT: usize = 16;
+#[cfg(test)]
 const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
 
 type Unary0 = Unary<U0, Progenitor, list![U1]>;
@@ -727,4 +731,70 @@ async fn dark_star() {
         DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH,
     )
     .await;
+}
+
+/// Runs the dark_star Sun indefinitely with a live Black Hole Beam viewer.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn run_beam() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
+        .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to run beam_dark_star");
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("Tokio runtime should build");
+    let (client, journey_id) = runtime.block_on(async {
+        let (void_addr, _void_abort, quark_addr, _quark_abort) = start_servers(&model_path).await;
+
+        let mut jungle = SpaceJungle::new(void_addr, quark_addr, DARK_STAR_MODEL_CELL_COUNT);
+        let client = FusedClient::builder()
+            .build()
+            .await
+            .expect("fused client should build");
+        jungle.set_client(client.clone());
+
+        let journey_id = client
+            .spawn::<DarkStarBlackHole>(&())
+            .await
+            .expect("DarkStarBlackHole should spawn")
+            .journey_id;
+        println!("Spawned DarkStarBlackHole journey: {journey_id}");
+
+        // One worker per journey: dark_star graph vertices plus the parent.
+        let _worker_handles: Vec<_> = (0..(DARK_STAR_VERTEX_COUNT + 1))
+            .map(|_| {
+                let worker = JungleWorker::new(jungle.clone(), client.clone());
+                tokio::spawn(async move {
+                    let _ = worker.spawn().await;
+                })
+            })
+            .collect();
+
+        (client, journey_id)
+    });
+
+    black_hole_beam::BeamBuilder::new()
+        .view_live::<DarkStarBlackHole>(client, journey_id)
+        .expect("Black Hole Beam should run");
+}
+
+/// Launches the Dark Star Beam example in a process whose UI runs on its main thread.
+#[cfg(test)]
+#[test]
+#[ignore]
+fn beam_dark_star() {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = std::process::Command::new(cargo)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["run", "--quiet", "--example", "beam_dark_star"])
+        .status()
+        .expect("beam_dark_star example should launch");
+
+    assert!(status.success(), "beam_dark_star example exited with {status}");
 }
