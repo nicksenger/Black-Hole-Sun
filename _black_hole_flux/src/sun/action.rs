@@ -63,7 +63,7 @@ where
 {
     type Effect = super::effect::SpawnAnimal<<T as Tagged>::A>;
     type Input = <<T as Tagged>::A as Animal>::Seed;
-    type Output = Uuid;
+    type Output = ();
     type Carry = ();
 
     fn emit(_state: &super::SunState, input: Self::Input) -> <<T as Tagged>::A as Animal>::Seed {
@@ -86,7 +86,7 @@ where
             inner.incoming.entry(target).or_default().push(node_id);
         }
 
-        Ok(journey_id)
+        Ok(())
     }
 }
 

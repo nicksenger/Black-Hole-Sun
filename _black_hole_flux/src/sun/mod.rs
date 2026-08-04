@@ -20,15 +20,6 @@ pub use action::{
 };
 pub use effect::SpawnAnimal;
 
-//impl<T> From<T> for () {
-//    fn from(_value: T) -> Self {}
-//}
-//impl<T> From<T> for (()) {
-//    fn from(value: T) -> Self {
-//        ()
-//    }
-//}
-
 // ---------------------------------------------------------------------------
 // Tag — type-level descriptor for a single node in the sun graph
 // ---------------------------------------------------------------------------
@@ -116,10 +107,16 @@ pub struct SunStep<
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
 >(Step<GenUuid>, Step<Spawn<T>>);
 
-/// Wrapper that gives a Join-tree of flows a proper FlowScope implementation.
-/// Used as the top-level flow type returned by EventHorizon.
+/// One tagged animal followed by the remaining nodes in the sun.
+///
+/// Keeping the recursive list inside a derived flow preserves sequential
+/// composition: all tagged animals are spawned before [`Sun`] starts driving
+/// their journeys.
 #[derive(Flow)]
-pub struct SunFlow<F>(F);
+pub struct SunNode<
+    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
+    U,
+>(SunStep<T>, U);
 
 pub trait BlackHole {
     type Sun;
@@ -129,13 +126,10 @@ where
     T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed: Send + Sync + 'static>>,
     U: BlackHole,
 {
-    // Build a Join-tree: SunStep<T> composed with the rest of the list.
-    // Wrapped in SunFlow so the top-level type implements FlowScope.
-    type Sun = SunFlow<Join<SunStep<T>, <U as BlackHole>::Sun>>;
+    type Sun = SunNode<T, <U as BlackHole>::Sun>;
 }
 impl BlackHole for Empty {
-    // Base case: wrap BlackHole in SunFlow for consistent wrapping.
-    type Sun = SunFlow<Sun>;
+    type Sun = Sun;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,28 +176,28 @@ pub struct InnerALoop(Step<action::ProcessNode<PropA>>);
 #[derive(Flow)]
 pub struct BranchBBody(
     Step<action::PopLayer<PropB>>,
-    While<CurrentNotEmpty<PropB>, InnerBLoop>,
+    While<FocusedLoopCondition<CurrentNotEmpty<PropB>, PropB>, InnerBLoop>,
 );
 
 /// Body of the outer loop: pop a layer, then process all its nodes.
 #[derive(Flow)]
 pub struct BranchABody(
     Step<action::PopLayer<PropA>>,
-    While<CurrentNotEmpty<PropA>, InnerALoop>,
+    While<FocusedLoopCondition<CurrentNotEmpty<PropA>, PropA>, InnerALoop>,
 );
 
 #[derive(Flow)]
 #[jungle(focus = PropB)]
 pub struct PropBFlow(
     Step<action::BuildTopologicalSort<PropB>>,
-    While<TopoNotEmpty<PropB>, BranchBBody>,
+    While<FocusedLoopCondition<TopoNotEmpty<PropB>, PropB>, BranchBBody>,
 );
 
 #[derive(Flow)]
 #[jungle(focus = PropA)]
 pub struct PropAFlow(
     Step<action::BuildTopologicalSort<PropA>>,
-    While<TopoNotEmpty<PropA>, BranchABody>,
+    While<FocusedLoopCondition<TopoNotEmpty<PropA>, PropA>, BranchABody>,
 );
 
 /// The two propagation branches (A and B) running in parallel via focused join.
