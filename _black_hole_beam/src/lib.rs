@@ -680,8 +680,8 @@ impl BeamApp {
                     ]
                     .spacing(3),
                 )
-                .width(Length::Fill)
-                .height(Length::Fill)
+                //.width(Length::Fill)
+                //.height(Length::Fill)
                 .padding([10, 12])
                 .on_press(Message::SelectCell(index))
                 .style(move |_theme, status| node_button_style(color, is_selected, status))
@@ -728,7 +728,6 @@ impl BeamApp {
                 };
                 circo_layout(&remapped_input)
             })
-            .node_size(|_| (CELL_NODE_WIDTH, CELL_NODE_HEIGHT))
             .edge_color(move |ctx| {
                 let start = colors_for_edges
                     .get(&ctx.edge.0)
@@ -742,7 +741,6 @@ impl BeamApp {
             })
             .stroke_width(1.4)
             .edge_corner_radius(16.0)
-            .padding(28)
             .auto_fit(AutoFit::Ongoing)
             .keep_centered(true);
         if let Some(duration) = self.config.animation_duration {
