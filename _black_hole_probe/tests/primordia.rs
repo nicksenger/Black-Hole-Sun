@@ -293,13 +293,13 @@ async fn start_servers(
 /// Runs the same U0 -> U1 -> U2 Sun topology as `sun`, with real Progenitor
 /// cells backed by a quark model.
 #[tokio::test]
-async fn sun_progenitor() {
+async fn primordia() {
     init_tracing();
     rustls::crypto::ring::default_provider()
         .install_default()
         .ok();
 
-    let model_path = match require_model_path("sun_progenitor") {
+    let model_path = match require_model_path("primordia") {
         Some(path) => path,
         None => return,
     };
