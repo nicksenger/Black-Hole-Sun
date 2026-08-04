@@ -9,7 +9,10 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
 
-use black_hole_spec::{ObjectId, DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, QuarkIn, QuarkOut, SequenceOutput};
+use black_hole_spec::{
+    DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId, QuarkIn,
+    QuarkOut, SequenceOutput,
+};
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -79,7 +82,6 @@ impl rustls::client::danger::ServerCertVerifier for VoidCertVerifier {
     }
 }
 
-
 /// A QUIC client connection to the void object store.
 pub struct VoidClient {
     endpoint: quinn::Endpoint,
@@ -102,8 +104,8 @@ impl VoidClient {
 
         // Bind to any local address/port.
         let local_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-        let mut endpoint = quinn::Endpoint::client(local_addr)
-            .map_err(|e| ServerError::BindVoidClient(e))?;
+        let mut endpoint =
+            quinn::Endpoint::client(local_addr).map_err(|e| ServerError::BindVoidClient(e))?;
         endpoint.set_default_client_config(client_config);
 
         Ok(Self {
@@ -138,7 +140,9 @@ impl VoidClient {
         match resp {
             VoidOut::Downloaded { data } => Ok(data),
             VoidOut::Error { message } => Err(ServerError::VoidError(message)),
-            _ => Err(ServerError::VoidError("unexpected void response for download".into())),
+            _ => Err(ServerError::VoidError(
+                "unexpected void response for download".into(),
+            )),
         }
     }
 
@@ -148,7 +152,9 @@ impl VoidClient {
         match resp {
             VoidOut::Uploaded { id } => Ok(id),
             VoidOut::Error { message } => Err(ServerError::VoidError(message)),
-            _ => Err(ServerError::VoidError("unexpected void response for upload".into())),
+            _ => Err(ServerError::VoidError(
+                "unexpected void response for upload".into(),
+            )),
         }
     }
 }
@@ -156,12 +162,14 @@ impl VoidClient {
 /// Write a length-prefixed postcard frame to a QUIC send stream.
 async fn write_frame(send: &mut quinn::SendStream, msg: &impl Serialize) -> Result<()> {
     let payload = to_allocvec(msg).map_err(ServerError::EncodeFrame)?;
-    let len = u32::try_from(payload.len())
-        .map_err(|_| ServerError::FrameTooLarge(payload.len()))?;
+    let len =
+        u32::try_from(payload.len()).map_err(|_| ServerError::FrameTooLarge(payload.len()))?;
 
-    send.write_all(&len.to_be_bytes()).await
+    send.write_all(&len.to_be_bytes())
+        .await
         .map_err(ServerError::WriteFrame)?;
-    send.write_all(&payload).await
+    send.write_all(&payload)
+        .await
         .map_err(ServerError::WriteFrame)?;
     Ok(())
 }
@@ -288,9 +296,7 @@ impl ServerBuilder {
     }
 
     /// Build the server engine, void client, endpoint and context.
-    async fn setup(
-        self,
-    ) -> Result<(quinn::Endpoint, SocketAddr, Arc<QuarkContext>)> {
+    async fn setup(self) -> Result<(quinn::Endpoint, SocketAddr, Arc<QuarkContext>)> {
         // Load the model engine.
         let model_path_str = self.model_path.to_string_lossy().to_string();
         info!(model_path = %model_path_str, "loading model");
@@ -325,20 +331,20 @@ impl ServerBuilder {
             server_config.key_log = Arc::new(rustls::KeyLogFile::new());
         }
 
-        let crypto = QuicServerConfig::try_from(server_config)
-            .map_err(ServerError::QuicServerConfig)?;
+        let crypto =
+            QuicServerConfig::try_from(server_config).map_err(ServerError::QuicServerConfig)?;
 
         let endpoint_cfg = quinn::ServerConfig::with_crypto(Arc::new(crypto));
 
-        let listener = std::net::UdpSocket::bind(self.listen)
-            .map_err(ServerError::BindEndpoint)?;
+        let listener = std::net::UdpSocket::bind(self.listen).map_err(ServerError::BindEndpoint)?;
         let runtime = quinn::TokioRuntime;
         let endpoint = quinn::Endpoint::new(
             Default::default(),
             Some(endpoint_cfg),
             listener,
             Arc::new(runtime),
-        ).map_err(ServerError::BindEndpoint)?;
+        )
+        .map_err(ServerError::BindEndpoint)?;
 
         let local_addr = endpoint.local_addr().map_err(ServerError::LocalAddr)?;
         info!(%local_addr, "listening");
@@ -443,7 +449,13 @@ async fn handle_stream(
     let req: QuarkIn = match read_frame(&mut recv).await {
         Ok(r) => r,
         Err(e) => {
-            let _ = write_frame(&mut send, &QuarkOut::Error { message: e.to_string() }).await;
+            let _ = write_frame(
+                &mut send,
+                &QuarkOut::Error {
+                    message: e.to_string(),
+                },
+            )
+            .await;
             return;
         }
     };
@@ -452,7 +464,9 @@ async fn handle_stream(
 
     let out = match handle_request(req, &context).await {
         Ok(o) => o,
-        Err(e) => QuarkOut::Error { message: e.to_string() },
+        Err(e) => QuarkOut::Error {
+            message: e.to_string(),
+        },
     };
 
     if write_frame(&mut send, &out).await.is_err() {
@@ -460,10 +474,7 @@ async fn handle_stream(
     }
 }
 
-async fn handle_request(
-    req: QuarkIn,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
     match req {
         QuarkIn::PerturbUp { seed } => handle_perturb_up(seed, ctx).await,
         QuarkIn::Infer { input_id } => handle_infer(input_id, ctx).await,
@@ -477,22 +488,27 @@ async fn handle_request(
 // ---------------------------------------------------------------------------
 
 async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
+    info!("received perturb up request");
     let mut session = ctx.quark.lock().await;
     if session.state != QuarkState::Idle {
-        return Err(ServerError::InvalidQuarkState(
-            format!("expected Idle, got {:?}", session.state),
-        ));
+        warn!("expected Idle, got {:?}", session.state);
+        return Err(ServerError::InvalidQuarkState(format!(
+            "expected Idle, got {:?}",
+            session.state
+        )));
     }
 
-    ctx.engine.perturb_up(Some(seed)).await.map_err(|e| {
-        ServerError::ModelError(e.to_string())
-    })?;
+    ctx.engine
+        .perturb_up(Some(seed))
+        .await
+        .map_err(|e| ServerError::ModelError(e.to_string()))?;
 
     session.state = QuarkState::PostPerturbUp;
     Ok(QuarkOut::Ack)
 }
 
 async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut> {
+    info!("received inference request");
     let state = {
         let session = ctx.quark.lock().await;
         if !matches!(
@@ -503,45 +519,62 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
                 | QuarkState::PostPerturbDown
                 | QuarkState::AwaitingOptimize
         ) {
-            return Err(ServerError::InvalidQuarkState(
-                format!(
-                    "inference requires Idle or an active perturbation phase, got {:?}",
-                    session.state
-                ),
-            ));
+            warn!(
+                "inference requires Idle or an active perturbation phase, got {:?}",
+                session.state
+            );
+            return Err(ServerError::InvalidQuarkState(format!(
+                "inference requires Idle or an active perturbation phase, got {:?}",
+                session.state
+            )));
         }
         session.state
     };
 
     // Resolve void client.
-    let void = ctx.void_client.as_ref().ok_or_else(|| {
-        ServerError::VoidNotConfigured
-    })?;
+    let void = ctx
+        .void_client
+        .as_ref()
+        .ok_or_else(|| ServerError::VoidNotConfigured)?;
 
     // Download input object from void and decode the inference request.
     let input_bytes = void.download(input_id).await?;
-    let infer_req: InferenceRequest =
-        from_bytes(&input_bytes).map_err(ServerError::DecodeFrame)?;
+    let infer_req: InferenceRequest = from_bytes(&input_bytes).map_err(ServerError::DecodeFrame)?;
 
     // Resolve sequences and limit from the request variant.
     let (sequences, limit) = match infer_req {
-        InferenceRequest::Sequences { sequences: raw_seqs, limit } => {
+        InferenceRequest::Sequences {
+            sequences: raw_seqs,
+            limit,
+        } => {
             let seqs: Vec<Vec<paramecia_engine::ModelInput>> = raw_seqs
                 .into_iter()
                 .map(|seq_inputs| {
-                    seq_inputs.into_iter().map(|inp| match inp {
-                        InferenceInput::Text(t) => paramecia_engine::ModelInput::Text(t),
-                        InferenceInput::Tokens(ids) => paramecia_engine::ModelInput::Tokens(ids),
-                        InferenceInput::Dark(tokens) => paramecia_engine::ModelInput::Soft(
-                            tokens.into_iter().map(|t| paramecia_engine::SoftToken {
-                                predicted: t.predicted,
-                                dark_knowledge: t.dark_knowledge.into_iter().map(|e| paramecia_engine::LogitEntry {
-                                    token_id: e.token_id,
-                                    log_prob: e.log_prob,
-                                }).collect(),
-                            }).collect(),
-                        ),
-                    }).collect()
+                    seq_inputs
+                        .into_iter()
+                        .map(|inp| match inp {
+                            InferenceInput::Text(t) => paramecia_engine::ModelInput::Text(t),
+                            InferenceInput::Tokens(ids) => {
+                                paramecia_engine::ModelInput::Tokens(ids)
+                            }
+                            InferenceInput::Dark(tokens) => paramecia_engine::ModelInput::Soft(
+                                tokens
+                                    .into_iter()
+                                    .map(|t| paramecia_engine::SoftToken {
+                                        predicted: t.predicted,
+                                        dark_knowledge: t
+                                            .dark_knowledge
+                                            .into_iter()
+                                            .map(|e| paramecia_engine::LogitEntry {
+                                                token_id: e.token_id,
+                                                log_prob: e.log_prob,
+                                            })
+                                            .collect(),
+                                    })
+                                    .collect(),
+                            ),
+                        })
+                        .collect()
                 })
                 .collect();
             (seqs, limit)
@@ -557,13 +590,21 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
                 .into_iter()
                 .map(|seq_out| {
                     vec![paramecia_engine::ModelInput::Soft(
-                        seq_out.0.into_iter().map(|tok| paramecia_engine::SoftToken {
-                            predicted: tok.predicted,
-                            dark_knowledge: tok.dark_knowledge.into_iter().map(|e| paramecia_engine::LogitEntry {
-                                token_id: e.token_id,
-                                log_prob: e.log_prob,
-                            }).collect(),
-                        }).collect(),
+                        seq_out
+                            .0
+                            .into_iter()
+                            .map(|tok| paramecia_engine::SoftToken {
+                                predicted: tok.predicted,
+                                dark_knowledge: tok
+                                    .dark_knowledge
+                                    .into_iter()
+                                    .map(|e| paramecia_engine::LogitEntry {
+                                        token_id: e.token_id,
+                                        log_prob: e.log_prob,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
                     )]
                 })
                 .collect();
@@ -576,15 +617,27 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
 
     // Convert per-sequence predictions to serializable output.
     let output = InferenceOutput {
-        results: seq_results.into_iter().map(|predictions| SequenceOutput(
-            predictions.into_iter().map(|p| DarkToken {
-                predicted: p.token_id,
-                dark_knowledge: p.top_k.into_iter().map(|e| LogitEntry {
-                    token_id: e.token_id,
-                    log_prob: e.log_prob,
-                }).collect(),
-            }).collect(),
-        )).collect(),
+        results: seq_results
+            .into_iter()
+            .map(|predictions| {
+                SequenceOutput(
+                    predictions
+                        .into_iter()
+                        .map(|p| DarkToken {
+                            predicted: p.token_id,
+                            dark_knowledge: p
+                                .top_k
+                                .into_iter()
+                                .map(|e| LogitEntry {
+                                    token_id: e.token_id,
+                                    log_prob: e.log_prob,
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
     };
 
     // Upload output to void.
@@ -598,44 +651,54 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
             QuarkState::PostPerturbUp | QuarkState::AwaitingPerturbDown => {
                 QuarkState::AwaitingPerturbDown
             }
-            QuarkState::Idle
-            | QuarkState::PostPerturbDown
-            | QuarkState::AwaitingOptimize => QuarkState::AwaitingOptimize,
+            QuarkState::Idle | QuarkState::PostPerturbDown | QuarkState::AwaitingOptimize => {
+                QuarkState::AwaitingOptimize
+            }
         };
     }
 
+    info!("finished processing inference request");
     Ok(QuarkOut::Inferred { output_id })
 }
 
 async fn handle_perturb_down(ctx: &QuarkContext) -> Result<QuarkOut> {
+    info!("received perturb down request");
     let mut session = ctx.quark.lock().await;
     if session.state != QuarkState::AwaitingPerturbDown {
-        return Err(ServerError::InvalidQuarkState(
-            format!("expected AwaitingPerturbDown, got {:?}", session.state),
-        ));
+        warn!("expected AwaitingPerturbDown, got {:?}", session.state);
+        return Err(ServerError::InvalidQuarkState(format!(
+            "expected AwaitingPerturbDown, got {:?}",
+            session.state
+        )));
     }
 
-    ctx.engine.perturb_down().await.map_err(|e| {
-        ServerError::ModelError(e.to_string())
-    })?;
+    ctx.engine
+        .perturb_down()
+        .await
+        .map_err(|e| ServerError::ModelError(e.to_string()))?;
 
     session.state = QuarkState::PostPerturbDown;
     Ok(QuarkOut::Ack)
 }
 
 async fn handle_optimize(loss_up: f32, loss_down: f32, ctx: &QuarkContext) -> Result<QuarkOut> {
+    info!("received optimization request");
     let mut session = ctx.quark.lock().await;
     if session.state != QuarkState::AwaitingOptimize {
-        return Err(ServerError::InvalidQuarkState(
-            format!("expected AwaitingOptimize, got {:?}", session.state),
-        ));
+        warn!("expected AwaitingOptimize, got {:?}", session.state);
+        return Err(ServerError::InvalidQuarkState(format!(
+            "expected AwaitingOptimize, got {:?}",
+            session.state
+        )));
     }
 
     ctx.engine.update(loss_up, loss_down).await.map_err(|e| {
+        warn!("optimization failed");
         ServerError::ModelError(e.to_string())
     })?;
 
     session.state = QuarkState::Idle;
+    info!("finished optimization update");
     Ok(QuarkOut::Ack)
 }
 
@@ -649,7 +712,9 @@ async fn run_batched_inference(
     limit: u32,
 ) -> Result<Vec<Vec<paramecia_engine::Predicted>>> {
     // Start batched streaming completion — returns (result_rx, cancel_tx).
-    let (mut result_rx, _cancel_tx) = engine.predict_completions_batched(sequences).await
+    let (mut result_rx, _cancel_tx) = engine
+        .predict_completions_batched(sequences)
+        .await
         .map_err(|e| ServerError::ModelError(e.to_string()))?;
 
     let n_seqs = sequences.len();
@@ -658,7 +723,9 @@ async fn run_batched_inference(
     let mut done = false;
 
     while !done {
-        let Some(result) = result_rx.recv().await else { break };
+        let Some(result) = result_rx.recv().await else {
+            break;
+        };
         match result {
             Ok(step_predictions) => {
                 // step_predictions has one Predicted per sequence for this decode step.
