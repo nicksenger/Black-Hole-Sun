@@ -15,6 +15,7 @@ use black_hole_flux::sun::action::{SpawnBinary, SpawnUnary};
 use black_hole_flux::sun::{BinarySunStep, NodeIdsFromList, Sun, SunNode, UnarySunStep};
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState, ObjectId};
 use iced::futures::{self, Stream, StreamExt};
+use iced::time::Instant;
 use iced::widget::{column, container, text};
 use iced::{Background, Color, Element, Font, Length, Shadow, Subscription, Task, Theme, Vector};
 use iced_sugiyama::motion::easing::Easing;
@@ -32,6 +33,9 @@ const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
 const CELL_GRAPH_ID: &str = "black-hole-beam-cells";
 const DISCOVERY_INTERVAL: Duration = Duration::from_millis(750);
+const COLOR_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
+const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 
 /// Builder for Black Hole Sun graph viewers.
 ///
@@ -420,6 +424,7 @@ where
 #[derive(Debug, Clone)]
 enum Message {
     DiscoveryTick,
+    ColorTick(Instant),
     ChildrenDiscovered(Result<Vec<(usize, Uuid)>, String>),
     ChildUpdate {
         cell_index: usize,
@@ -431,6 +436,7 @@ struct CellRuntime {
     journey_id: Option<Uuid>,
     live: LiveDagState,
     stream_error: Option<String>,
+    visual: CellVisualState,
 }
 
 impl CellRuntime {
@@ -441,6 +447,7 @@ impl CellRuntime {
             journey_id: None,
             live,
             stream_error: None,
+            visual: CellVisualState::default(),
         }
     }
 }
@@ -480,14 +487,118 @@ impl CellActivity {
         }
     }
 
-    fn color(self) -> Color {
+    fn palette(self) -> (Color, Color) {
         match self {
-            Self::Idle => Color::from_rgb8(224, 91, 31),
-            Self::Processing => Color::from_rgb8(139, 74, 224),
-            Self::Propagating => Color::from_rgb8(244, 190, 62),
-            Self::Optimizing => Color::from_rgb8(220, 55, 75),
-            Self::Failed => Color::from_rgb8(180, 31, 45),
+            Self::Idle => (
+                Color::from_rgb8(220, 76, 24),
+                Color::from_rgb8(246, 164, 46),
+            ),
+            Self::Processing => (
+                Color::from_rgb8(123, 58, 202),
+                Color::from_rgb8(164, 87, 232),
+            ),
+            Self::Propagating => (
+                Color::from_rgb8(238, 161, 35),
+                Color::from_rgb8(250, 215, 72),
+            ),
+            Self::Optimizing => (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57)),
+            Self::Failed => (Color::from_rgb8(151, 24, 40), Color::from_rgb8(194, 40, 49)),
         }
+    }
+
+    fn color(self, cell_id: u32) -> Color {
+        let (low, high) = self.palette();
+        lerp_color(low, high, cell_palette_position(cell_id))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CellVisualState {
+    previous: CellActivity,
+    current: CellActivity,
+    transition_started_at: Option<Instant>,
+    pending: Option<CellActivity>,
+}
+
+impl Default for CellVisualState {
+    fn default() -> Self {
+        Self {
+            previous: CellActivity::Idle,
+            current: CellActivity::Idle,
+            transition_started_at: None,
+            pending: None,
+        }
+    }
+}
+
+impl CellVisualState {
+    fn observe(&mut self, activity: CellActivity, now: Instant) -> bool {
+        if activity == self.current {
+            self.pending = None;
+            return false;
+        }
+
+        if self.can_transition(now) {
+            self.begin_transition(activity, now);
+            true
+        } else {
+            self.pending = Some(activity);
+            false
+        }
+    }
+
+    fn advance(&mut self, now: Instant) -> bool {
+        if !self.can_transition(now) {
+            return false;
+        }
+
+        let Some(activity) = self.pending.take() else {
+            return false;
+        };
+        if activity == self.current {
+            return false;
+        }
+
+        self.begin_transition(activity, now);
+        true
+    }
+
+    fn color(&self, cell_id: u32, now: Instant) -> Color {
+        let progress = self
+            .transition_started_at
+            .map(|started_at| {
+                now.saturating_duration_since(started_at).as_secs_f32()
+                    / COLOR_FADE_DURATION.as_secs_f32()
+            })
+            .unwrap_or(1.0);
+        lerp_color(
+            self.previous.color(cell_id),
+            self.current.color(cell_id),
+            progress,
+        )
+    }
+
+    fn is_fading(&self, now: Instant) -> bool {
+        self.transition_started_at.is_some_and(|started_at| {
+            now.saturating_duration_since(started_at) < COLOR_FADE_DURATION
+        })
+    }
+
+    fn needs_tick(&self, now: Instant) -> bool {
+        self.pending.is_some() || self.is_fading(now)
+    }
+
+    fn can_transition(&self, now: Instant) -> bool {
+        self.transition_started_at.is_none_or(|started_at| {
+            now.saturating_duration_since(started_at) >= MIN_COLOR_STATE_DURATION
+        })
+    }
+
+    fn begin_transition(&mut self, activity: CellActivity, now: Instant) {
+        self.previous = self.current;
+        self.current = activity;
+        self.transition_started_at = Some(now);
+        self.pending = None;
     }
 }
 
@@ -497,6 +608,7 @@ struct BeamApp {
     live: Option<LiveConfig>,
     cell_runtime: Vec<CellRuntime>,
     discovering: bool,
+    color_now: Instant,
 }
 
 impl BeamApp {
@@ -525,6 +637,7 @@ impl BeamApp {
                 live,
                 cell_runtime,
                 discovering,
+                color_now: Instant::now(),
             },
             task,
         )
@@ -546,9 +659,30 @@ impl BeamApp {
                     }
                 }
             }
+            Message::ColorTick(now) => {
+                let was_fading = self
+                    .cell_runtime
+                    .iter()
+                    .any(|runtime| runtime.visual.is_fading(self.color_now));
+                self.color_now = now;
+                let mut transitioned = false;
+                for runtime in &mut self.cell_runtime {
+                    transitioned |= runtime.visual.advance(now);
+                }
+                let is_fading = self
+                    .cell_runtime
+                    .iter()
+                    .any(|runtime| runtime.visual.is_fading(now));
+
+                if was_fading || transitioned || is_fading {
+                    return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
+                }
+            }
             Message::ChildrenDiscovered(result) => {
                 self.discovering = false;
                 if let Ok(children) = result {
+                    let now = Instant::now();
+                    self.color_now = now;
                     for (index, journey_id) in children {
                         let Some(runtime) = self.cell_runtime.get_mut(index) else {
                             continue;
@@ -558,6 +692,7 @@ impl BeamApp {
                             runtime.live = LiveDagState::default();
                             runtime.live.bind_model(&self.model.cells[index].dag);
                             runtime.stream_error = None;
+                            runtime.visual.observe(CellActivity::Idle, now);
                         }
                     }
                     return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
@@ -574,6 +709,10 @@ impl BeamApp {
                     }
                     Err(error) => runtime.stream_error = Some(error),
                 }
+                let now = Instant::now();
+                self.color_now = now;
+                let activity = cell_activity(&self.model.cells[cell_index], runtime);
+                runtime.visual.observe(activity, now);
 
                 return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
             }
@@ -595,6 +734,13 @@ impl BeamApp {
         {
             subscriptions
                 .push(iced::time::every(DISCOVERY_INTERVAL).map(|_| Message::DiscoveryTick));
+        }
+        if self
+            .cell_runtime
+            .iter()
+            .any(|runtime| runtime.visual.needs_tick(self.color_now))
+        {
+            subscriptions.push(iced::time::every(COLOR_FRAME_INTERVAL).map(Message::ColorTick));
         }
 
         for (cell_index, runtime) in self.cell_runtime.iter().enumerate() {
@@ -629,7 +775,7 @@ impl BeamApp {
             .iter()
             .enumerate()
             .map(|(index, cell)| {
-                let activity = cell_activity(cell, &self.cell_runtime[index]);
+                let activity = self.cell_runtime[index].visual.current;
                 (cell.id, (cell.animal_name.clone(), activity))
             })
             .collect::<HashMap<_, _>>();
@@ -646,7 +792,7 @@ impl BeamApp {
                 let color = colors_for_nodes
                     .get(&node_id)
                     .copied()
-                    .unwrap_or_else(|| CellActivity::Idle.color());
+                    .unwrap_or_else(|| CellActivity::Idle.color(node_id));
                 container(
                     column![
                         text(animal_name).size(16).color(contrasting_text(color)),
@@ -705,17 +851,18 @@ impl BeamApp {
                 let start = colors_for_edges
                     .get(&ctx.edge.0)
                     .copied()
-                    .unwrap_or_else(|| CellActivity::Idle.color());
+                    .unwrap_or_else(|| CellActivity::Idle.color(ctx.edge.0));
                 let end = colors_for_edges
                     .get(&ctx.edge.1)
                     .copied()
-                    .unwrap_or_else(|| CellActivity::Idle.color());
+                    .unwrap_or_else(|| CellActivity::Idle.color(ctx.edge.1));
                 (lighten(start, 0.18), end)
             })
             .stroke_width(1.4)
             .edge_corner_radius(16.0)
-            .auto_fit(AutoFit::Ongoing)
-            .keep_centered(true);
+            .padding(24)
+            .auto_fit(AutoFit::Initial)
+            .keep_centered(false);
         if let Some(duration) = self.config.animation_duration {
             graph = graph.animation_duration(duration);
         }
@@ -736,10 +883,8 @@ impl BeamApp {
             .iter()
             .enumerate()
             .map(|(index, cell)| {
-                (
-                    cell.id,
-                    cell_activity(cell, &self.cell_runtime[index]).color(),
-                )
+                let runtime = &self.cell_runtime[index];
+                (cell.id, runtime.visual.color(cell.id, self.color_now))
             })
             .collect()
     }
@@ -902,6 +1047,11 @@ fn lerp_color(a: Color, b: Color, amount: f32) -> Color {
     )
 }
 
+fn cell_palette_position(cell_id: u32) -> f32 {
+    const POSITIONS: [f32; 8] = [0.08, 0.76, 0.31, 0.91, 0.52, 0.18, 0.67, 0.42];
+    POSITIONS[cell_id as usize % POSITIONS.len()]
+}
+
 fn lighten(color: Color, amount: f32) -> Color {
     lerp_color(color, Color::WHITE, amount)
 }
@@ -950,20 +1100,71 @@ mod tests {
     #[test]
     fn uses_black_hole_sun_title_and_activity_palette() {
         assert_eq!(BeamBuilder::default().title, "Black Hole Sun");
-        assert_eq!(CellActivity::Idle.color(), Color::from_rgb8(224, 91, 31));
         assert_eq!(
-            CellActivity::Processing.color(),
-            Color::from_rgb8(139, 74, 224)
+            CellActivity::Idle.palette(),
+            (
+                Color::from_rgb8(220, 76, 24),
+                Color::from_rgb8(246, 164, 46)
+            )
         );
         assert_eq!(
-            CellActivity::Propagating.color(),
-            Color::from_rgb8(244, 190, 62)
+            CellActivity::Processing.palette(),
+            (
+                Color::from_rgb8(123, 58, 202),
+                Color::from_rgb8(164, 87, 232)
+            )
         );
         assert_eq!(
-            CellActivity::Optimizing.color(),
-            Color::from_rgb8(220, 55, 75)
+            CellActivity::Propagating.palette(),
+            (
+                Color::from_rgb8(238, 161, 35),
+                Color::from_rgb8(250, 215, 72)
+            )
         );
-        assert_eq!(CellActivity::Failed.color(), Color::from_rgb8(180, 31, 45));
+        assert_eq!(
+            CellActivity::Optimizing.palette(),
+            (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57))
+        );
+        assert_eq!(
+            CellActivity::Failed.palette(),
+            (Color::from_rgb8(151, 24, 40), Color::from_rgb8(194, 40, 49))
+        );
+        assert_ne!(CellActivity::Idle.color(0), CellActivity::Idle.color(1));
+        assert!(CellActivity::Idle.color(1).g > CellActivity::Idle.color(0).g);
+    }
+
+    #[test]
+    fn fades_and_holds_ui_activity_colors() {
+        let start = Instant::now();
+        let mut visual = CellVisualState::default();
+
+        assert_eq!(COLOR_FADE_DURATION, Duration::from_millis(400));
+        assert_eq!(MIN_COLOR_STATE_DURATION, Duration::from_secs(1));
+        assert!(visual.observe(CellActivity::Processing, start));
+        assert_eq!(
+            visual.color(0, start),
+            CellActivity::Idle.color(0),
+            "the fade starts from the previous activity color"
+        );
+        assert_eq!(
+            visual.color(0, start + COLOR_FADE_DURATION / 2),
+            lerp_color(
+                CellActivity::Idle.color(0),
+                CellActivity::Processing.color(0),
+                0.5
+            ),
+            "the color is blended halfway through the fade"
+        );
+        assert_eq!(
+            visual.color(0, start + COLOR_FADE_DURATION),
+            CellActivity::Processing.color(0),
+            "the fade reaches the new color after 400ms"
+        );
+
+        assert!(!visual.observe(CellActivity::Propagating, start + COLOR_FADE_DURATION));
+        assert!(!visual.advance(start + MIN_COLOR_STATE_DURATION - Duration::from_millis(1)));
+        assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
+        assert_eq!(visual.current, CellActivity::Propagating);
     }
 
     #[test]
