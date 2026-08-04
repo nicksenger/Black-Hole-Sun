@@ -15,32 +15,38 @@ use typenum::Unsigned;
 use typosaurus::collections::list::{Empty, List};
 use uuid::Uuid;
 
+use crate::fusion::action::{FusionSeed, FusionState};
+use crate::fusion::FusionFlow;
+
 pub use action::{
     BuildTopologicalSort, NodeIdsFromList, PopLayer, ProcessNode, Spawn, TopologyState,
 };
 pub use effect::SpawnAnimal;
 
 // ---------------------------------------------------------------------------
-// Unary — type-level descriptor for a single node in the sun graph
+// Descriptors — type-level vertices and their input ports
 // ---------------------------------------------------------------------------
 
-/// Type-level unary node in the sun graph.
-pub struct Unary<N: Unsigned, A: Animal, E: NodeIdsFromList>(
-    PhantomData<N>,
+/// Type-level unary vertex with one input port and a list of output ports.
+///
+/// `P` is both the public input port and the deterministic internal vertex key.
+pub struct Unary<P: Unsigned, A: Animal, E: NodeIdsFromList>(
+    PhantomData<P>,
     PhantomData<A>,
     PhantomData<E>,
 );
-pub trait Tagged {
-    type N: Unsigned;
-    type A: Animal;
-    type E: NodeIdsFromList;
-}
 
-impl<N: Unsigned, A: Animal, E: NodeIdsFromList> Tagged for Unary<N, A, E> {
-    type N = N;
-    type A = A;
-    type E = E;
-}
+/// Type-level binary vertex whose two input ports share one spawned animal and
+/// one output mailbox per propagation pass.
+///
+/// `P1` is the deterministic internal vertex key; both `P1` and `P2` resolve
+/// to it during graph finalization.
+pub struct Binary<P1: Unsigned, P2: Unsigned, A: Animal, E: NodeIdsFromList>(
+    PhantomData<P1>,
+    PhantomData<P2>,
+    PhantomData<A>,
+    PhantomData<E>,
+);
 
 // ---------------------------------------------------------------------------
 // SunState — runtime state for sun orchestration
@@ -99,51 +105,92 @@ impl Default for SunState {
 /// Shared inner state accessible by both propagation branches via Arc<Mutex>.
 #[derive(Optic, Clone, Default, Debug)]
 pub struct SunInner {
-    /// Maps the node u32 id to its associated journey ID.
+    /// Maps an internal vertex key to its associated journey ID.
     pub journey_ids: HashMap<u32, Uuid>,
-    /// Maps each node to the nodes of its incoming edges.
+    /// Input ports owned by each vertex, in descriptor order.
+    pub vertex_ports: HashMap<u32, Vec<u32>>,
+    /// Resolves every public input port to its internal vertex key.
+    pub port_vertices: HashMap<u32, u32>,
+    /// Ports declared as outputs by each vertex, before graph finalization.
+    pub declared_outputs: HashMap<u32, Vec<u32>>,
+    /// Ports claimed by more than one descriptor.
+    pub duplicate_ports: HashSet<u32>,
+    /// Maps each vertex to the vertices of its incoming edges.
     pub incoming: HashMap<u32, Vec<u32>>,
-    /// Maps each node to the nodes of its outgoing edges.
-    pub outgoing: HashMap<u32, Vec<u32>>,
-    /// Propagation A send endpoints keyed by node id.
+    /// Resolved outgoing destination ports for each vertex.
+    pub outgoing: HashMap<u32, Vec<PortTarget>>,
+    /// First-pass input endpoints keyed by port id.
     pub p1_tx: HashMap<u32, ObjectId>,
-    /// Propagation A receive endpoints keyed by node id.
+    /// First-pass output endpoints keyed by vertex id.
     pub p1_rx: HashMap<u32, ObjectId>,
-    /// Propagation B send endpoints keyed by node id.
+    /// Second-pass input endpoints keyed by port id.
     pub p2_tx: HashMap<u32, ObjectId>,
-    /// Propagation B receive endpoints keyed by node id.
+    /// Second-pass output endpoints keyed by vertex id.
     pub p2_rx: HashMap<u32, ObjectId>,
-    /// Potentiation send endpoints keyed by node id.
+    /// Potentiation input endpoints keyed by port id.
     pub po_tx: HashMap<u32, ObjectId>,
 }
 
-/// Single-node spawn step: generate UUID then spawn one unary node's animal.
+/// A resolved edge target. `port_id` identifies the destination mailbox while
+/// `vertex_id` identifies the single animal/output shared by all of its ports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortTarget {
+    pub port_id: u32,
+    pub vertex_id: u32,
+}
+
+/// Generate a unary seed, then spawn and register its animal.
 #[derive(Flow)]
-pub struct SunStep<T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>>>(
-    Step<GenUuid>,
-    Step<Spawn<T>>,
+pub struct UnarySunStep<
+    P: Unsigned,
+    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
+    E: NodeIdsFromList,
+>(Step<GenUuid>, Step<action::SpawnUnary<P, AnimalT, E>>);
+
+/// Generate a two-port seed, then spawn and register one binary animal.
+#[derive(Flow)]
+pub struct BinarySunStep<
+    P1: Unsigned,
+    P2: Unsigned,
+    AnimalT: Animal<
+        Id: AnimalIdValue,
+        Generation: Unsigned,
+        Seed = FusionSeed,
+        State = FusionState,
+        Flow: FusionFlow,
+    >,
+    E: NodeIdsFromList,
+>(
+    Step<action::GenFusionSeed>,
+    Step<action::SpawnBinary<P1, P2, AnimalT, E>>,
 );
 
-/// One unary node's animal followed by the remaining nodes in the sun.
-///
-/// Keeping the recursive list inside a derived flow preserves sequential
-/// composition: all unary-node animals are spawned before [`Sun`] starts driving
-/// their journeys.
+/// One descriptor-specific spawn flow followed by the remaining descriptors.
 #[derive(Flow)]
-pub struct SunNode<
-    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>>,
-    U,
->(SunStep<T>, U);
+pub struct SunNode<S, U>(S, U);
 
 pub trait BlackHole {
     type Sun;
 }
-impl<T, U> BlackHole for List<(T, U)>
+impl<P, A, E, U> BlackHole for List<(Unary<P, A, E>, U)>
 where
-    T: Tagged<A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>>,
+    P: Unsigned,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
+    E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun = SunNode<T, <U as BlackHole>::Sun>;
+    type Sun = SunNode<UnarySunStep<P, A, E>, <U as BlackHole>::Sun>;
+}
+impl<P1, P2, A, E, U> BlackHole for List<(Binary<P1, P2, A, E>, U)>
+where
+    P1: Unsigned,
+    P2: Unsigned,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
+    A::Flow: FusionFlow,
+    E: NodeIdsFromList,
+    U: BlackHole,
+{
+    type Sun = SunNode<BinarySunStep<P1, P2, A, E>, <U as BlackHole>::Sun>;
 }
 impl BlackHole for Empty {
     type Sun = Sun;

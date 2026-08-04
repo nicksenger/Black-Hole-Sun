@@ -1,17 +1,18 @@
 mod common;
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use black_hole_flux::cell::action::InitRecvId;
 use black_hole_flux::ops::{SunOps, VoidInferOps};
-use black_hole_flux::sun::BlackHole;
-use black_hole_flux::sun::{SunState, Unary};
+use black_hole_flux::sun::{Binary, BlackHole, SunState, Unary};
 use black_hole_flux::{
-    CellState, Potentiation, Transmit, WaitForPotentiationAction, WaitForPropagationAction,
+    AtomError, CellState, Fusion, FusionSeed, FusionState, Potentiation, Transmit,
+    WaitForPotentiationAction, WaitForPropagationAction,
 };
 use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
@@ -27,18 +28,20 @@ use uuid::Uuid;
 
 use common::*;
 
-// ─── 3-unary Sun graph type (U0 -> U1 -> U2) ────────────────────────────────
+const LEFT_EMISSION: u128 = 1;
+const RIGHT_EMISSION: u128 = 2;
+const FUSED_EMISSION: u128 = 3;
 
-/// Unary nodes: each node carries a typenum index, the animal type,
-/// and the list of outgoing edge targets.
-type Unary0 = Unary<U0, TestCell, list![U1]>;
-type Unary1 = Unary<U1, TestCell, list![U2]>;
-type Unary2 = Unary<U2, TestCell, list![]>;
+// ─── Multi-epoch diamond graph ───────────────────────────────────────────────
 
-/// The complete three-node sun: a type-level list of all unary nodes.
-type ThreeUnarySunType = list![Unary0, Unary1, Unary2];
+type Root = Unary<U0, RootAnimal, list![U1, U2]>;
+type Left = Unary<U1, LeftAnimal, list![U3]>;
+type Right = Unary<U2, RightAnimal, list![U4]>;
+type Merge = Binary<U3, U4, FusionAnimal, list![U5]>;
+type Sink = Unary<U5, SinkAnimal, list![]>;
+type DiamondSun = list![Root, Left, Right, Merge, Sink];
 
-// ─── TestCell ────────────────────────────────────────────────────────────────
+// ─── Lightweight unary animals ───────────────────────────────────────────────
 
 /// Completes one test-cell epoch after consuming its potentiation.
 pub struct FinishEpoch;
@@ -60,10 +63,12 @@ impl Action for FinishEpoch {
 }
 
 #[derive(Flow)]
-pub struct TestCellEpoch(
+pub struct TestCellEpoch<Transform>(
     Step<WaitForPropagationAction>,
+    Transform,
     Step<Transmit>,
     Step<WaitForPropagationAction>,
+    Transform,
     Step<Transmit>,
     Step<WaitForPotentiationAction>,
     Step<FinishEpoch>,
@@ -78,17 +83,185 @@ impl Predicate<(&CellState, &())> for AlwaysEpoch {
 }
 
 #[derive(Flow)]
-pub struct TestCellFlow(Step<InitRecvId>, While<AlwaysEpoch, TestCellEpoch>);
+pub struct TestCellFlow<Transform>(
+    Step<InitRecvId>,
+    While<AlwaysEpoch, TestCellEpoch<Transform>>,
+);
 
-/// A lightweight cell protocol used to isolate Sun orchestration from model
-/// inference, which is covered by the separate cell integration test.
-pub struct TestCell;
+pub struct PassEmission;
+
+#[jungle::action(carry = EmissionId)]
+impl Action for PassEmission {
+    type Effect = NoEffect;
+    type Input = EmissionId;
+    type Output = EmissionId;
+
+    fn emit(_state: &CellState, input: Self::Input) -> ((), EmissionId) {
+        ((), input)
+    }
+
+    fn absorb(
+        _state: &mut CellState,
+        output: EffectCompletion<Self::Effect>,
+        emission_id: EmissionId,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("pass emission failed".to_string()))?;
+        Ok(emission_id)
+    }
+}
+
+pub struct MarkLeft;
+
+pub struct DelayedLeftEffect;
+
+impl<J> EffectSchema<J> for DelayedLeftEffect {
+    type Id = u64;
+    type In = ();
+    type Out = EmissionId;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for DelayedLeftEffect {
+    fn effect(
+        _jungle: &J,
+        _input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok(EmissionId(Uuid::from_u128(LEFT_EMISSION)))
+        }
+    }
+}
+
+#[jungle::action]
+impl Action for MarkLeft {
+    type Effect = DelayedLeftEffect;
+    type Input = EmissionId;
+    type Output = EmissionId;
+
+    fn emit(_state: &CellState, _input: Self::Input) {}
+
+    fn absorb(
+        _state: &mut CellState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("mark left emission failed: {error}")))
+    }
+}
+
+pub struct MarkRight;
+
+#[jungle::action]
+impl Action for MarkRight {
+    type Effect = NoEffect;
+    type Input = EmissionId;
+    type Output = EmissionId;
+
+    fn emit(_state: &CellState, _input: Self::Input) {}
+
+    fn absorb(
+        _state: &mut CellState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("mark right emission failed".to_string()))?;
+        Ok(EmissionId(Uuid::from_u128(RIGHT_EMISSION)))
+    }
+}
+
+pub struct RootAnimal;
 
 #[jungle::animal(id = 0, generation = 0)]
-impl Animal for TestCell {
+impl Animal for RootAnimal {
     type State = CellState;
     type Seed = ObjectId;
-    type Flow = TestCellFlow;
+    type Flow = TestCellFlow<Step<PassEmission>>;
+}
+
+pub struct LeftAnimal;
+
+#[jungle::animal(id = 2, generation = 0)]
+impl Animal for LeftAnimal {
+    type State = CellState;
+    type Seed = ObjectId;
+    type Flow = TestCellFlow<Step<MarkLeft>>;
+}
+
+pub struct RightAnimal;
+
+#[jungle::animal(id = 3, generation = 0)]
+impl Animal for RightAnimal {
+    type State = CellState;
+    type Seed = ObjectId;
+    type Flow = TestCellFlow<Step<MarkRight>>;
+}
+
+pub struct SinkAnimal;
+
+#[jungle::animal(id = 5, generation = 0)]
+impl Animal for SinkAnimal {
+    type State = CellState;
+    type Seed = ObjectId;
+    type Flow = TestCellFlow<Step<PassEmission>>;
+}
+
+// ─── Explicit fusion transform animal ────────────────────────────────────────
+
+trait FusionProbeOps: Send + Sync {
+    fn record_fusion_inputs(&self, p1: ObjectId, p2: ObjectId);
+}
+
+pub struct RecordFusionInputsEffect;
+
+impl<J> EffectSchema<J> for RecordFusionInputsEffect {
+    type Id = u64;
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for RecordFusionInputsEffect
+where
+    J: FusionProbeOps,
+{
+    fn effect(
+        jungle: &J,
+        (p1, p2): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        jungle.record_fusion_inputs(p1.0, p2.0);
+        std::future::ready(Ok(EmissionId(Uuid::from_u128(FUSED_EMISSION))))
+    }
+}
+
+pub struct RecordFusionInputs;
+
+#[jungle::action]
+impl Action for RecordFusionInputs {
+    type Effect = RecordFusionInputsEffect;
+    type Input = (EmissionId, EmissionId);
+    type Output = EmissionId;
+
+    fn emit(_state: &FusionState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut FusionState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("record fusion inputs failed: {error}")))
+    }
+}
+
+#[derive(Flow)]
+pub struct FusionTransform(Step<RecordFusionInputs>);
+
+pub struct FusionAnimal;
+
+#[jungle::animal(id = 4, generation = 0)]
+impl Animal for FusionAnimal {
+    type State = FusionState;
+    type Seed = FusionSeed;
+    type Flow = Fusion<FusionTransform>;
 }
 
 // ─── BlackHoleAnimal ─────────────────────────────────────────────────────────
@@ -100,13 +273,20 @@ pub struct BlackHoleAnimal;
 impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeUnarySunType as BlackHole>::Sun;
+    type Flow = <DiamondSun as BlackHole>::Sun;
 }
 
 // ─── Ecosystem ───────────────────────────────────────────────────────────────
 
 #[derive(Animals)]
-pub struct SpaceAnimals(TestCell, BlackHoleAnimal);
+pub struct SpaceAnimals(
+    RootAnimal,
+    LeftAnimal,
+    RightAnimal,
+    FusionAnimal,
+    SinkAnimal,
+    BlackHoleAnimal,
+);
 
 /// A Jungle implementation backed by void over QUIC.
 #[derive(Clone)]
@@ -114,6 +294,7 @@ pub struct SpaceJungle {
     void_addr: SocketAddr,
     client: Option<FusedClient>,
     potentiation_writes: Arc<AtomicUsize>,
+    fusion_inputs: Arc<Mutex<Vec<(ObjectId, ObjectId)>>>,
 }
 
 impl SpaceJungle {
@@ -122,11 +303,18 @@ impl SpaceJungle {
             void_addr,
             client: None,
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
+            fusion_inputs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn set_client(&mut self, client: FusedClient) {
         self.client = Some(client);
+    }
+}
+
+impl FusionProbeOps for SpaceJungle {
+    fn record_fusion_inputs(&self, p1: ObjectId, p2: ObjectId) {
+        self.fusion_inputs.lock().unwrap().push((p1, p2));
     }
 }
 
@@ -223,15 +411,12 @@ async fn start_server() -> (SocketAddr, tokio::task::AbortHandle) {
 
 // ─── Test ────────────────────────────────────────────────────────────────────
 
-/// Exercises the full BlackHole flow over a three-node Sun graph (U0 -> U1 -> U2).
+/// Exercises a multi-epoch unary diamond feeding one binary fusion vertex.
 ///
-/// This test follows the same pattern as the cell.rs test but uses the BlackHole
-/// Flow to automatically handle all input generation, propagation, loss computation,
-/// and potentiation broadcasting. No manual upload of inputs or void interactions
-/// is needed — the Flow orchestrates everything.
-///
-/// Three potentiation writes per epoch prove that every tagged cell completed
-/// both propagation passes and that the parent reached the epoch boundary.
+/// The left and right unary branches stamp distinct emission IDs, with the P1
+/// branch deliberately delayed so P2 arrives first. The explicit fusion
+/// transform records each pair, proving that declared `P1`, `P2` order remains
+/// stable on both propagation passes in every completed epoch.
 #[tokio::test]
 async fn sun() {
     init_tracing();
@@ -245,6 +430,7 @@ async fn sun() {
     // 2. Build the SpaceJungle with void capabilities.
     let mut jungle = SpaceJungle::new(void_addr);
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
+    let fusion_inputs = Arc::clone(&jungle.fusion_inputs);
 
     // 3. Build a FusedClient with in-memory backend.
     let client = FusedClient::builder()
@@ -271,9 +457,8 @@ async fn sun() {
         .await
         .expect("subscribe_step_updates should succeed");
 
-    // 6. Run one worker per journey so the parent can wait while its three
-    // child journeys execute.
-    let worker_handles: Vec<_> = (0..4)
+    // 6. Run one worker per journey: five graph vertices plus the parent.
+    let worker_handles: Vec<_> = (0..6)
         .map(|_| {
             let worker = JungleWorker::new(jungle.clone(), client.clone());
             tokio::spawn(async move {
@@ -282,10 +467,12 @@ async fn sun() {
         })
         .collect();
 
-    // 7. Wait for three complete epochs. Each parent broadcast writes one
-    // potentiation transmission for each of the three tagged cells.
-    const EXPECTED_POTENTIATION_WRITES: usize = 3 * 3;
-    let result = tokio::time::timeout(Duration::from_secs(30), async {
+    // 7. Wait for three complete epochs. There are six input ports: four
+    // unary ports plus both independently chained binary ports.
+    const EPOCHS: usize = 3;
+    const PORT_COUNT: usize = 6;
+    const EXPECTED_POTENTIATION_WRITES: usize = EPOCHS * PORT_COUNT;
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let writes = potentiation_writes.load(Ordering::SeqCst);
             if writes >= EXPECTED_POTENTIATION_WRITES {
@@ -337,13 +524,35 @@ async fn sun() {
                 .await
                 .expect("journey_details should succeed");
             panic!(
-                "timeout waiting for 3 epochs (30s): {}, potentiation writes: {}, status: {:?}",
+                "timeout waiting for 3 epochs (60s): {}, potentiation writes: {}, status: {:?}",
                 e,
                 potentiation_writes.load(Ordering::SeqCst),
                 status
             );
         }
     }
+
+    let observed = fusion_inputs.lock().unwrap();
+    assert!(
+        observed.len() >= EPOCHS * 2,
+        "expected two fusion transforms per epoch, observed {observed:?}"
+    );
+    for epoch in 0..EPOCHS {
+        for pass in 0..2 {
+            let (p1, p2) = observed[epoch * 2 + pass];
+            assert_eq!(
+                p1,
+                Uuid::from_u128(LEFT_EMISSION),
+                "epoch {epoch} propagation pass {pass} did not preserve P1"
+            );
+            assert_eq!(
+                p2,
+                Uuid::from_u128(RIGHT_EMISSION),
+                "epoch {epoch} propagation pass {pass} did not preserve P2"
+            );
+        }
+    }
+    drop(observed);
 
     // Cleanup.
     for worker_handle in worker_handles {

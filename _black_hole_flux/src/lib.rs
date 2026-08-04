@@ -50,8 +50,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod animal;
-pub mod cell;
 pub mod atom;
+pub mod cell;
+pub mod fusion;
 pub mod ops;
 pub mod sun;
 
@@ -61,6 +62,7 @@ pub use black_hole_spec::{
 };
 
 pub use animal::Progenitor;
+pub use atom::effect::QuarkInfer;
 pub use cell::action::{
     CellState, Optimize, PerturbDown, PerturbUp, Potentiation, Propagation, QuarkInferStep,
     Transmit, WaitForPotentiationAction, WaitForPropagationAction,
@@ -69,22 +71,23 @@ pub use cell::effect::{
     QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, Transmit as TransmitEffect,
     WaitForPotentiation, WaitForPropagation,
 };
-pub use atom::effect::QuarkInfer;
+pub use fusion::action::{FusionSeed, FusionState};
+pub use fusion::{Fusion, FusionEpoch, FusionFlow};
 pub use ops::VoidInferOps;
 
-pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
 pub use atom::Atom;
+pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
 
 pub use sun::{
     action::{
         BroadcastPotentiation, BroadcastPotentiationInput, BuildTopologicalSort, ComputeLoss,
-        NodeIdsFromList, PopLayer, ProcessNode, Spawn, TopologyState, Initialize,
+        Initialize, NodeIdsFromList, PopLayer, ProcessNode, Spawn, TopologyState,
     },
     effect::{
         BroadcastPotentiationEffect, BroadcastPotentiationResult, ComputeLossEffect,
         InitializeEffect, InitializeResult, LayerTransmission, WaitForLayerTransmission,
     },
-    BlackHole, BranchBody, CurrentNotEmpty, Epoch, InnerLoop, LayerFlow, PropA, PropB,
+    Binary, BlackHole, BranchBody, CurrentNotEmpty, Epoch, InnerLoop, LayerFlow, PropA, PropB,
     PropagationFlows, SpawnAnimal, SunInner, SunState, TopoNotEmpty, Unary,
 };
 

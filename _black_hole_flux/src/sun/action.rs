@@ -1,16 +1,15 @@
 //! Sun actions — spawning animals, propagation, loss computation, and potentiation.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 
-use std::collections::HashMap;
-
-use crate::sun::effect::GenUuidEffect;
+use crate::sun::effect::{GenFusionSeedEffect, GenUuidEffect};
+use crate::{FusionSeed, FusionState};
 
 use super::effect::{
     BroadcastPotentiationEffect, ComputeLossEffect, InitializeEffect, PropagationTarget,
     WaitForLayerTransmission, WaitForLayerTransmissionInput,
 };
-use super::Tagged;
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use typosaurus::collections::list::{Empty, List};
@@ -46,21 +45,49 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Spawn — spawn an animal and populate SunState with outgoing edges
+// Spawn — descriptor-specific animal spawning and graph registration
 // ---------------------------------------------------------------------------
 
-/// Action that spawns the animal described by a [`Unary`](super::Unary) node.
-pub struct Spawn<T>(PhantomData<fn() -> T>);
+fn register_vertex(
+    state: &mut super::SunState,
+    vertex_id: u32,
+    ports: &[(u32, ObjectId)],
+    declared_outputs: Vec<u32>,
+    journey_id: Uuid,
+) {
+    let mut inner = state.a.shared.lock().unwrap();
+
+    inner.journey_ids.entry(vertex_id).or_insert(journey_id);
+    inner
+        .vertex_ports
+        .entry(vertex_id)
+        .or_insert_with(|| ports.iter().map(|(port_id, _)| *port_id).collect());
+    inner
+        .declared_outputs
+        .entry(vertex_id)
+        .or_insert(declared_outputs);
+
+    for &(port_id, initial_recv_id) in ports {
+        if inner.port_vertices.contains_key(&port_id) {
+            inner.duplicate_ports.insert(port_id);
+            continue;
+        }
+        inner.port_vertices.insert(port_id, vertex_id);
+        inner.p1_tx.insert(port_id, initial_recv_id);
+    }
+}
+
+/// Spawns and registers a [`Unary`](super::Unary) descriptor.
+pub struct SpawnUnary<P, A, E>(PhantomData<fn() -> (P, A, E)>);
 
 #[jungle::action]
-impl<T> Action for Spawn<T>
+impl<P, A, E> Action for SpawnUnary<P, A, E>
 where
-    T: Tagged<A: Animal<Seed = ObjectId>>,
-    <T as Tagged>::N: Unsigned,
-    <<T as Tagged>::A as Animal>::Id: AnimalIdValue,
-    <<T as Tagged>::A as Animal>::Generation: Unsigned,
+    P: Unsigned,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
+    E: NodeIdsFromList,
 {
-    type Effect = super::effect::SpawnAnimal<<T as Tagged>::A>;
+    type Effect = super::effect::SpawnAnimal<A>;
     type Input = ObjectId;
     type Output = ();
     type Carry = ObjectId;
@@ -76,16 +103,59 @@ where
     ) -> Result<Self::Output, Failure> {
         let journey_id = output.map_err(|e| Failure::Message(format!("spawn failed: {e}")))?;
 
-        let node_id = <<T as Tagged>::N as Unsigned>::U32;
-        let outgoing_node_ids = <<T as Tagged>::E as NodeIdsFromList>::node_ids();
+        let port_id = P::U32;
+        register_vertex(
+            state,
+            port_id,
+            &[(port_id, initial_recv_id)],
+            E::node_ids(),
+            journey_id,
+        );
 
-        let mut inner = state.a.shared.lock().unwrap();
-        inner.journey_ids.insert(node_id, journey_id);
-        inner.p1_tx.insert(node_id, initial_recv_id);
-        inner.outgoing.insert(node_id, outgoing_node_ids.clone());
-        for target in outgoing_node_ids {
-            inner.incoming.entry(target).or_default().push(node_id);
-        }
+        Ok(())
+    }
+}
+
+/// Backwards-compatible name for the unary spawn action.
+pub type Spawn<P, A, E> = SpawnUnary<P, A, E>;
+
+/// Spawns and registers a [`Binary`](super::Binary) descriptor.
+pub struct SpawnBinary<P1, P2, A, E>(PhantomData<fn() -> (P1, P2, A, E)>);
+
+#[jungle::action]
+impl<P1, P2, A, E> Action for SpawnBinary<P1, P2, A, E>
+where
+    P1: Unsigned,
+    P2: Unsigned,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
+    A::Flow: crate::fusion::FusionFlow,
+    E: NodeIdsFromList,
+{
+    type Effect = super::effect::SpawnAnimal<A>;
+    type Input = FusionSeed;
+    type Output = ();
+    type Carry = FusionSeed;
+
+    fn emit(_state: &super::SunState, seed: Self::Input) -> (FusionSeed, FusionSeed) {
+        (seed, seed)
+    }
+
+    fn absorb(
+        state: &mut super::SunState,
+        output: EffectCompletion<Self::Effect>,
+        seed: Self::Carry,
+    ) -> Result<Self::Output, Failure> {
+        let journey_id = output.map_err(|e| Failure::Message(format!("spawn failed: {e}")))?;
+
+        let p1 = P1::U32;
+        let p2 = P2::U32;
+        register_vertex(
+            state,
+            p1,
+            &[(p1, seed.p1_recv_id), (p2, seed.p2_recv_id)],
+            E::node_ids(),
+            journey_id,
+        );
 
         Ok(())
     }
@@ -128,10 +198,10 @@ where
         for &node in &all_nodes {
             in_degree.entry(node).or_insert(0);
         }
-        for (_src, targets) in &outgoing {
-            for &target in targets {
-                if all_nodes.contains(&target) {
-                    *in_degree.entry(target).or_insert(0) += 1;
+        for targets in outgoing.values() {
+            for target in targets {
+                if all_nodes.contains(&target.vertex_id) {
+                    *in_degree.entry(target.vertex_id).or_insert(0) += 1;
                 }
             }
         }
@@ -155,8 +225,8 @@ where
             for node in &layer {
                 remaining.remove(node);
                 if let Some(targets) = outgoing.get(node) {
-                    for &target in targets {
-                        if let Some(deg) = remaining.get_mut(&target) {
+                    for target in targets {
+                        if let Some(deg) = remaining.get_mut(&target.vertex_id) {
                             *deg -= 1;
                         }
                     }
@@ -172,33 +242,169 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// BuildAddrs — build full set of recv/send addrs for all nodes
+// FinalizeGraph — resolve ports, validate the DAG, and allocate phase mailboxes
 // ---------------------------------------------------------------------------
 
-pub struct BuildAddrs;
+pub struct FinalizeGraph;
+
 #[jungle::action]
-impl Action for BuildAddrs {
+impl Action for FinalizeGraph {
     type Effect = NoEffect;
     type Input = ();
     type Output = ();
 
-    fn emit(state: &super::SunState, _input: Self::Input) {
-        let mut inner = state.a.shared.lock().unwrap();
-        for node in inner.journey_ids.keys().copied().collect::<Vec<_>>() {
-            inner.p1_rx.insert(node, Uuid::new_v4());
-            inner.p2_tx.insert(node, Uuid::new_v4());
-            inner.p2_rx.insert(node, Uuid::new_v4());
-            inner.po_tx.insert(node, Uuid::new_v4());
-        }
-    }
+    fn emit(_state: &super::SunState, _input: Self::Input) {}
 
     fn absorb(
-        _state: &mut super::SunState,
+        state: &mut super::SunState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_e| Failure::Message(format!("Build addrs failed")))
+        output.map_err(|_| Failure::Message("finalize graph failed".to_string()))?;
+
+        let mut inner = state.a.shared.lock().unwrap();
+
+        if !inner.duplicate_ports.is_empty() {
+            let mut ports: Vec<_> = inner.duplicate_ports.iter().copied().collect();
+            ports.sort_unstable();
+            return Err(Failure::Message(format!(
+                "duplicate input port ownership: {ports:?}"
+            )));
+        }
+
+        let vertices: HashSet<u32> = inner.journey_ids.keys().copied().collect();
+        if vertices.is_empty() {
+            return Err(Failure::Message(
+                "sun graph must contain at least one vertex".to_string(),
+            ));
+        }
+
+        let mut producer_counts: HashMap<u32, usize> = inner
+            .port_vertices
+            .keys()
+            .copied()
+            .map(|port_id| (port_id, 0))
+            .collect();
+        let mut outgoing: HashMap<u32, Vec<super::PortTarget>> = vertices
+            .iter()
+            .copied()
+            .map(|vertex_id| (vertex_id, Vec::new()))
+            .collect();
+        let mut incoming: HashMap<u32, Vec<u32>> = vertices
+            .iter()
+            .copied()
+            .map(|vertex_id| (vertex_id, Vec::new()))
+            .collect();
+
+        for (&source_vertex, output_ports) in &inner.declared_outputs {
+            for &port_id in output_ports {
+                let Some(&target_vertex) = inner.port_vertices.get(&port_id) else {
+                    return Err(Failure::Message(format!(
+                        "output from vertex {source_vertex} targets missing port {port_id}"
+                    )));
+                };
+
+                let producer_count = producer_counts
+                    .get_mut(&port_id)
+                    .expect("resolved port should have a producer counter");
+                *producer_count += 1;
+
+                outgoing
+                    .entry(source_vertex)
+                    .or_default()
+                    .push(super::PortTarget {
+                        port_id,
+                        vertex_id: target_vertex,
+                    });
+                incoming
+                    .entry(target_vertex)
+                    .or_default()
+                    .push(source_vertex);
+            }
+        }
+
+        for (&port_id, &producer_count) in &producer_counts {
+            if producer_count > 1 {
+                return Err(Failure::Message(format!(
+                    "input port {port_id} has {producer_count} producers; expected at most one"
+                )));
+            }
+        }
+
+        for (&vertex_id, ports) in &inner.vertex_ports {
+            let counts: Vec<_> = ports
+                .iter()
+                .map(|port_id| producer_counts.get(port_id).copied().unwrap_or(0))
+                .collect();
+            let is_root = counts.iter().all(|count| *count == 0);
+            let is_fully_connected = counts.iter().all(|count| *count == 1);
+            if !is_root && !is_fully_connected {
+                return Err(Failure::Message(format!(
+                    "vertex {vertex_id} has incorrect producer counts for ports {ports:?}: {counts:?}"
+                )));
+            }
+        }
+
+        let mut in_degree: HashMap<u32, usize> = incoming
+            .iter()
+            .map(|(&vertex_id, sources)| (vertex_id, sources.len()))
+            .collect();
+        let mut roots: Vec<_> = in_degree
+            .iter()
+            .filter_map(|(&vertex_id, &degree)| (degree == 0).then_some(vertex_id))
+            .collect();
+        roots.sort_unstable();
+        let mut queue: VecDeque<_> = roots.into();
+        let mut visited = 0;
+
+        while let Some(vertex_id) = queue.pop_front() {
+            visited += 1;
+            if let Some(targets) = outgoing.get(&vertex_id) {
+                for target in targets {
+                    let degree = in_degree
+                        .get_mut(&target.vertex_id)
+                        .expect("resolved target should have an in-degree");
+                    *degree -= 1;
+                    if *degree == 0 {
+                        queue.push_back(target.vertex_id);
+                    }
+                }
+            }
+        }
+
+        if visited != vertices.len() {
+            return Err(Failure::Message("sun graph contains a cycle".to_string()));
+        }
+
+        let mut sinks: Vec<_> = vertices
+            .iter()
+            .copied()
+            .filter(|vertex_id| outgoing.get(vertex_id).is_none_or(Vec::is_empty))
+            .collect();
+        sinks.sort_unstable();
+        if sinks.len() != 1 {
+            return Err(Failure::Message(format!(
+                "sun graph must contain exactly one sink; found {sinks:?}"
+            )));
+        }
+
+        inner.incoming = incoming;
+        inner.outgoing = outgoing;
+
+        for port_id in inner.port_vertices.keys().copied().collect::<Vec<_>>() {
+            inner.p2_tx.insert(port_id, Uuid::new_v4());
+            inner.po_tx.insert(port_id, Uuid::new_v4());
+        }
+        for vertex_id in vertices {
+            inner.p1_rx.insert(vertex_id, Uuid::new_v4());
+            inner.p2_rx.insert(vertex_id, Uuid::new_v4());
+        }
+
+        Ok(())
     }
 }
+
+/// Compatibility alias for the former mailbox-only graph setup action.
+pub type BuildAddrs = FinalizeGraph;
 
 // ---------------------------------------------------------------------------
 // PopLayer — pop the next topological layer into current
@@ -282,22 +488,24 @@ where
             }
         };
 
-        let target = |node_id| {
+        let target = |port_id| {
+            let node_id = *inner.port_vertices.get(&port_id)?;
             Some(PropagationTarget {
                 node_id,
-                input_id: *input_map.get(&node_id)?,
-                next_input_id: *next_input_map.get(&node_id)?,
+                port_id,
+                input_id: *input_map.get(&port_id)?,
+                next_input_id: *next_input_map.get(&port_id)?,
                 output_id: *output_map.get(&node_id)?,
             })
         };
 
-        // Parent-side mailboxes where cells publish their completed emissions.
+        // Parent-side mailboxes where vertices publish their completed emissions.
         let rx_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = current
             .iter()
             .filter_map(|&node_id| output_map.get(&node_id).map(|rx| (node_id, *rx)))
             .collect();
 
-        // Root cells receive the epoch's initial transmission directly.
+        // Every input port on a root vertex receives the initial transmission.
         let root_targets = current
             .iter()
             .copied()
@@ -307,16 +515,27 @@ where
                     .get(node_id)
                     .is_none_or(|sources| sources.is_empty())
             })
-            .filter_map(target)
+            .flat_map(|node_id| {
+                inner
+                    .vertex_ports
+                    .get(&node_id)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+            })
+            .filter_map(&target)
             .collect();
 
-        // A completed cell emission is forwarded to each downstream cell's
-        // current inbox with that cell's next/output mailboxes attached.
+        // A completed vertex emission is forwarded to every declared
+        // destination port with that port's next mailbox and its vertex's
+        // shared output mailbox attached.
         let mut downstream: HashMap<u32, Vec<PropagationTarget>> = HashMap::new();
         for &node_id in &current {
             if let Some(targets) = outgoing.get(&node_id) {
-                let targets_with_endpoints: Vec<_> =
-                    targets.iter().copied().filter_map(target).collect();
+                let targets_with_endpoints: Vec<_> = targets
+                    .iter()
+                    .filter_map(|target_port| target(target_port.port_id))
+                    .collect();
                 downstream.insert(node_id, targets_with_endpoints);
             }
         }
@@ -366,6 +585,25 @@ impl Action for GenUuid {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_e| Failure::Message("failed to generate a uuid...".to_string()))
+    }
+}
+
+/// Generates the two independent initial inboxes for a binary vertex.
+pub struct GenFusionSeed;
+
+#[jungle::action]
+impl Action for GenFusionSeed {
+    type Effect = GenFusionSeedEffect;
+    type Input = ();
+    type Output = FusionSeed;
+
+    fn emit(_state: &super::SunState, _input: Self::Input) {}
+
+    fn absorb(
+        _state: &mut super::SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("failed to generate fusion seed".to_string()))
     }
 }
 
@@ -423,11 +661,10 @@ impl Action for ComputeLoss {
 // BroadcastPotentiation — broadcast losses to all nodes
 // ---------------------------------------------------------------------------
 
-/// Action that broadcasts `Transmission::Potentiation` with the computed
-/// loss values to all nodes' potentiation endpoints (po_tx).
+/// Broadcasts matching potentiation envelopes to every input port.
 ///
-/// Sends losses to each cell's potentiation inbox, assigns each cell a fresh
-/// first-pass inbox, and rotates all intermediate mailboxes for the next epoch.
+/// Unary vertices receive one envelope and binary vertices receive one per
+/// independent port. Each envelope assigns that port a fresh first-pass inbox.
 pub struct BroadcastPotentiation;
 
 #[jungle::action]
@@ -439,17 +676,17 @@ impl Action for BroadcastPotentiation {
 
     fn emit(state: &super::SunState, input: Self::Input) -> BroadcastPotentiationInput {
         let inner = state.a.shared.lock().unwrap();
-        let node_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = inner
-            .journey_ids
+        let port_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = inner
+            .port_vertices
             .keys()
-            .filter_map(|&node_id| inner.po_tx.get(&node_id).map(|tx| (node_id, *tx)))
+            .filter_map(|&port_id| inner.po_tx.get(&port_id).map(|tx| (port_id, *tx)))
             .collect();
         drop(inner);
 
         BroadcastPotentiationInput {
             loss_up: input.0,
             loss_down: input.1,
-            node_endpoints,
+            port_endpoints,
         }
     }
 
@@ -461,12 +698,14 @@ impl Action for BroadcastPotentiation {
             output.map_err(|e| Failure::Message(format!("broadcast potentiation failed: {e}")))?;
 
         let mut inner = state.a.shared.lock().unwrap();
-        for (node_id, next_p1_tx) in &result.next_p1_tx_map {
-            inner.p1_tx.insert(*node_id, *next_p1_tx);
-            inner.p1_rx.insert(*node_id, Uuid::new_v4());
-            inner.p2_tx.insert(*node_id, Uuid::new_v4());
-            inner.p2_rx.insert(*node_id, Uuid::new_v4());
-            inner.po_tx.insert(*node_id, Uuid::new_v4());
+        for (port_id, next_p1_tx) in &result.next_p1_tx_map {
+            inner.p1_tx.insert(*port_id, *next_p1_tx);
+            inner.p2_tx.insert(*port_id, Uuid::new_v4());
+            inner.po_tx.insert(*port_id, Uuid::new_v4());
+        }
+        for vertex_id in inner.journey_ids.keys().copied().collect::<Vec<_>>() {
+            inner.p1_rx.insert(vertex_id, Uuid::new_v4());
+            inner.p2_rx.insert(vertex_id, Uuid::new_v4());
         }
         drop(inner);
 
@@ -479,8 +718,8 @@ impl Action for BroadcastPotentiation {
 pub struct BroadcastPotentiationInput {
     pub loss_up: f32,
     pub loss_down: f32,
-    /// (node_id, potentiation inbox) pairs.
-    pub node_endpoints: Vec<(u32, ObjectId)>,
+    /// (port_id, potentiation inbox) pairs.
+    pub port_endpoints: Vec<(u32, ObjectId)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -504,30 +743,6 @@ pub trait TopologyState {
 
     /// Set the current layer being processed.
     fn set_current(&mut self, current: std::collections::HashSet<u32>);
-
-    /// Get a reference to the branch-specific tx map from locked inner state.
-    fn get_tx<'a>(
-        &self,
-        inner: &'a super::SunInner,
-    ) -> &'a std::collections::HashMap<u32, ObjectId>;
-
-    /// Get a mutable reference to the branch-specific tx map from locked inner state.
-    fn get_tx_mut<'a>(
-        &self,
-        inner: &'a mut super::SunInner,
-    ) -> &'a mut std::collections::HashMap<u32, ObjectId>;
-
-    /// Get a reference to the branch-specific rx map from locked inner state.
-    fn get_rx<'a>(
-        &self,
-        inner: &'a super::SunInner,
-    ) -> &'a std::collections::HashMap<u32, ObjectId>;
-
-    /// Get a mutable reference to the branch-specific rx map from locked inner state.
-    fn get_rx_mut<'a>(
-        &self,
-        inner: &'a mut super::SunInner,
-    ) -> &'a mut std::collections::HashMap<u32, ObjectId>;
 }
 
 impl TopologyState for super::PropA {
@@ -545,30 +760,6 @@ impl TopologyState for super::PropA {
     }
     fn set_current(&mut self, current: std::collections::HashSet<u32>) {
         self.current = current;
-    }
-    fn get_tx<'a>(
-        &self,
-        inner: &'a super::SunInner,
-    ) -> &'a std::collections::HashMap<u32, ObjectId> {
-        &inner.p1_tx
-    }
-    fn get_tx_mut<'a>(
-        &self,
-        inner: &'a mut super::SunInner,
-    ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
-        &mut inner.p1_tx
-    }
-    fn get_rx<'a>(
-        &self,
-        inner: &'a super::SunInner,
-    ) -> &'a std::collections::HashMap<u32, ObjectId> {
-        &inner.p1_rx
-    }
-    fn get_rx_mut<'a>(
-        &self,
-        inner: &'a mut super::SunInner,
-    ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
-        &mut inner.p1_rx
     }
 }
 
@@ -588,28 +779,86 @@ impl TopologyState for super::PropB {
     fn set_current(&mut self, current: std::collections::HashSet<u32>) {
         self.current = current;
     }
-    fn get_tx<'a>(
-        &self,
-        inner: &'a super::SunInner,
-    ) -> &'a std::collections::HashMap<u32, ObjectId> {
-        &inner.p2_tx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestSunAnimal;
+
+    impl Animal for TestSunAnimal {
+        type Id = ();
+        type Generation = ();
+        type State = super::super::SunState;
+        type Seed = ();
+        type Flow = ();
     }
-    fn get_tx_mut<'a>(
-        &self,
-        inner: &'a mut super::SunInner,
-    ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
-        &mut inner.p2_tx
+
+    fn add_vertex(
+        state: &mut super::super::SunState,
+        vertex_id: u32,
+        port_ids: &[u32],
+        outputs: &[u32],
+    ) {
+        let ports: Vec<_> = port_ids
+            .iter()
+            .map(|&port_id| (port_id, Uuid::new_v4()))
+            .collect();
+        register_vertex(state, vertex_id, &ports, outputs.to_vec(), Uuid::new_v4());
     }
-    fn get_rx<'a>(
-        &self,
-        inner: &'a super::SunInner,
-    ) -> &'a std::collections::HashMap<u32, ObjectId> {
-        &inner.p2_rx
+
+    fn finalize(state: &mut super::super::SunState) -> Result<(), Failure> {
+        type Bound = <FinalizeGraph as Action>::Bind<TestSunAnimal>;
+        <Bound as BoundAction<TestSunAnimal>>::absorb(state, Ok(()))
     }
-    fn get_rx_mut<'a>(
-        &self,
-        inner: &'a mut super::SunInner,
-    ) -> &'a mut std::collections::HashMap<u32, ObjectId> {
-        &mut inner.p2_rx
+
+    #[test]
+    fn finalization_rejects_duplicate_port_ownership() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[]);
+        add_vertex(&mut state, 1, &[0], &[]);
+
+        let error = finalize(&mut state).unwrap_err();
+        assert!(error.to_string().contains("duplicate input port ownership"));
+    }
+
+    #[test]
+    fn finalization_rejects_missing_output_ports() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[9]);
+
+        let error = finalize(&mut state).unwrap_err();
+        assert!(error.to_string().contains("targets missing port 9"));
+    }
+
+    #[test]
+    fn finalization_rejects_partially_connected_binary_vertices() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[1]);
+        add_vertex(&mut state, 1, &[1, 2], &[]);
+
+        let error = finalize(&mut state).unwrap_err();
+        assert!(error.to_string().contains("incorrect producer counts"));
+    }
+
+    #[test]
+    fn finalization_rejects_cycles() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[1]);
+        add_vertex(&mut state, 1, &[1], &[0]);
+
+        let error = finalize(&mut state).unwrap_err();
+        assert!(error.to_string().contains("contains a cycle"));
+    }
+
+    #[test]
+    fn finalization_rejects_multiple_sinks() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[]);
+        add_vertex(&mut state, 1, &[1], &[]);
+
+        let error = finalize(&mut state).unwrap_err();
+        assert!(error.to_string().contains("exactly one sink"));
     }
 }

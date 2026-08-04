@@ -13,7 +13,7 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::ops::{SunOps, VoidInferOps};
-use crate::AtomError;
+use crate::{AtomError, FusionSeed};
 
 pub struct GenUuidEffect;
 #[jungle::effect]
@@ -28,6 +28,27 @@ impl<J> Effect<J> for GenUuidEffect {
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async { Ok(Uuid::new_v4()) }
+    }
+}
+
+pub struct GenFusionSeedEffect;
+#[jungle::effect]
+impl<J> Effect<J> for GenFusionSeedEffect {
+    type Id = u64;
+    type In = ();
+    type Out = FusionSeed;
+    type Err = AtomError;
+
+    fn effect(
+        _jungle: &J,
+        _input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async {
+            Ok(FusionSeed {
+                p1_recv_id: Uuid::new_v4(),
+                p2_recv_id: Uuid::new_v4(),
+            })
+        }
     }
 }
 
@@ -89,7 +110,10 @@ pub struct LayerTransmission {
 /// Mailboxes needed to drive one cell through a propagation pass.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PropagationTarget {
+    /// Internal vertex that owns this destination port.
     pub node_id: u32,
+    /// Public destination port whose independent mailbox receives the envelope.
+    pub port_id: u32,
     /// Object id where the cell is currently waiting for a transmission.
     pub input_id: ObjectId,
     /// Object id the cell should wait on after this propagation.
@@ -144,7 +168,10 @@ async fn send_propagation<J: VoidInferOps>(
         .upload_to_void_with(target.input_id, data)
         .await
         .map_err(|e| {
-            AtomError::Transmission(format!("send propagation to node {}: {e}", target.node_id))
+            AtomError::Transmission(format!(
+                "send propagation to vertex {} port {}: {e}",
+                target.node_id, target.port_id
+            ))
         })
 }
 
@@ -175,8 +202,9 @@ where
                 send_propagation(jungle, target, &input_transmission).await?;
                 debug!(
                     node_id = target.node_id,
+                    port_id = target.port_id,
                     input_id = %target.input_id,
-                    "sent initial propagation to root cell"
+                    "sent initial propagation to root vertex port"
                 );
             }
 
@@ -329,7 +357,7 @@ impl<J> Effect<J> for ComputeLossEffect {
 // BroadcastPotentiationEffect — broadcast losses to all nodes
 // ---------------------------------------------------------------------------
 
-/// Output from [`BroadcastPotentiationEffect`]: each cell's first inbox for
+/// Output from [`BroadcastPotentiationEffect`]: each port's first inbox for
 /// the next epoch.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BroadcastPotentiationResult {
@@ -337,8 +365,8 @@ pub struct BroadcastPotentiationResult {
 }
 
 /// Effect that broadcasts `Transmission::Potentiation` with the given loss
-/// values to all cells' potentiation inboxes. Each transmission gives the
-/// cell a fresh inbox for the next epoch.
+/// values to all input ports. Each transmission gives that port a fresh inbox
+/// for the next epoch.
 pub struct BroadcastPotentiationEffect;
 
 impl<J> EffectSchema<J> for BroadcastPotentiationEffect {
@@ -360,13 +388,13 @@ where
             debug!(
                 loss_up = input.loss_up,
                 loss_down = input.loss_down,
-                node_count = input.node_endpoints.len(),
-                "broadcasting potentiation to all nodes"
+                port_count = input.port_endpoints.len(),
+                "broadcasting potentiation to all input ports"
             );
 
             let mut next_p1_tx_map = Vec::<(u32, ObjectId)>::new();
 
-            for &(node_id, potentiation_input_id) in &input.node_endpoints {
+            for &(port_id, potentiation_input_id) in &input.port_endpoints {
                 let next_p1_tx = Uuid::new_v4();
                 let potentiation = black_hole_spec::Transmission::Potentiation {
                     loss_up: input.loss_up,
@@ -380,11 +408,11 @@ where
                     .upload_to_void_with(potentiation_input_id, data)
                     .await
                     .map_err(|e| {
-                        AtomError::Transmission(format!("send potentiation to node {node_id}: {e}"))
+                        AtomError::Transmission(format!("send potentiation to port {port_id}: {e}"))
                     })?;
 
-                next_p1_tx_map.push((node_id, next_p1_tx));
-                debug!(node_id, %next_p1_tx, "sent potentiation to cell");
+                next_p1_tx_map.push((port_id, next_p1_tx));
+                debug!(port_id, %next_p1_tx, "sent potentiation to input port");
             }
 
             Ok(BroadcastPotentiationResult { next_p1_tx_map })
