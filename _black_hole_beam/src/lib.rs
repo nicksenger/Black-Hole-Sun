@@ -59,7 +59,7 @@ pub struct BeamBuilder {
 impl Default for BeamBuilder {
     fn default() -> Self {
         Self {
-            title: "Black Hole Beam".to_string(),
+            title: "Black Hole Sun".to_string(),
             width: DEFAULT_WINDOW_WIDTH,
             height: DEFAULT_WINDOW_HEIGHT,
             animation_duration: None,
@@ -482,11 +482,11 @@ impl CellActivity {
 
     fn color(self) -> Color {
         match self {
-            Self::Idle => Color::from_rgb8(18, 9, 24),
-            Self::Processing => Color::from_rgb8(112, 42, 119),
-            Self::Propagating => Color::from_rgb8(224, 91, 31),
-            Self::Optimizing => Color::from_rgb8(171, 69, 202),
-            Self::Failed => Color::from_rgb8(169, 31, 77),
+            Self::Idle => Color::from_rgb8(224, 91, 31),
+            Self::Processing => Color::from_rgb8(139, 74, 224),
+            Self::Propagating => Color::from_rgb8(244, 190, 62),
+            Self::Optimizing => Color::from_rgb8(220, 55, 75),
+            Self::Failed => Color::from_rgb8(180, 31, 45),
         }
     }
 }
@@ -946,6 +946,25 @@ mod tests {
     type TestSun = <TestGraph as BlackHole>::Sun<Primordium, Primordium>;
     type TestBinaryGraph = List<(Binary<U0, U1, TestFusion, Empty>, Empty)>;
     type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium>;
+
+    #[test]
+    fn uses_black_hole_sun_title_and_activity_palette() {
+        assert_eq!(BeamBuilder::default().title, "Black Hole Sun");
+        assert_eq!(CellActivity::Idle.color(), Color::from_rgb8(224, 91, 31));
+        assert_eq!(
+            CellActivity::Processing.color(),
+            Color::from_rgb8(139, 74, 224)
+        );
+        assert_eq!(
+            CellActivity::Propagating.color(),
+            Color::from_rgb8(244, 190, 62)
+        );
+        assert_eq!(
+            CellActivity::Optimizing.color(),
+            Color::from_rgb8(220, 55, 75)
+        );
+        assert_eq!(CellActivity::Failed.color(), Color::from_rgb8(180, 31, 45));
+    }
 
     #[test]
     fn extracts_cells_edges_and_spawn_nodes_from_black_hole_sun() {

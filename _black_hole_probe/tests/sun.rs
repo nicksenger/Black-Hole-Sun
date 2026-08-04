@@ -700,7 +700,6 @@ pub(crate) fn run_beam() {
     });
 
     black_hole_beam::BeamBuilder::new()
-        .title("Expanded Diamond Sun")
         .view_live::<ExpandedBlackHoleAnimal>(client, journey_id)
         .expect("Black Hole Beam should run");
 }
