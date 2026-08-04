@@ -26,11 +26,10 @@ pub async fn migrate_postgres_v0(pool: &PgPool) -> sqlx::Result<()> {
     .execute(&mut *tx)
     .await?;
 
-    let version_row = sqlx::query_scalar::<_, i32>(
-        "SELECT version FROM void_schema_metadata WHERE id = 1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
+    let version_row =
+        sqlx::query_scalar::<_, i32>("SELECT version FROM void_schema_metadata WHERE id = 1")
+            .fetch_optional(&mut *tx)
+            .await?;
 
     if let Some(version) = version_row {
         if version != SCHEMA_VERSION {
@@ -67,12 +66,10 @@ pub async fn migrate_postgres_v0(pool: &PgPool) -> sqlx::Result<()> {
     .await?;
 
     if version_row.is_none() {
-        sqlx::query(
-            "INSERT INTO void_schema_metadata (id, version) VALUES (1, $1)",
-        )
-        .bind(SCHEMA_VERSION)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("INSERT INTO void_schema_metadata (id, version) VALUES (1, $1)")
+            .bind(SCHEMA_VERSION)
+            .execute(&mut *tx)
+            .await?;
     }
 
     tx.commit().await?;

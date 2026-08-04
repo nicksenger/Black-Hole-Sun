@@ -75,8 +75,7 @@ async fn regenerate_sqlx_offline_schema() {
     // 3) Copy generated cache into black-hole-void/.sqlx.
     let target_sqlx_dir = crate_dir.join(".sqlx");
     if target_sqlx_dir.exists() {
-        fs::remove_dir_all(&target_sqlx_dir)
-            .expect("existing .sqlx directory should be removable");
+        fs::remove_dir_all(&target_sqlx_dir).expect("existing .sqlx directory should be removable");
     }
     fs::create_dir_all(&target_sqlx_dir).expect(".sqlx directory should be creatable");
     copy_dir_all(&source_sqlx_dir, &target_sqlx_dir)

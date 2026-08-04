@@ -8,8 +8,8 @@ pub mod pg;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use thiserror::Error;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub type Error = PersistenceError;

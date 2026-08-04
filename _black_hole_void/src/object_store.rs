@@ -59,7 +59,8 @@ impl ObjectStore for S3Store {
     }
 
     async fn get(&self, key: &str) -> Result<Vec<u8>> {
-        let output = self.client
+        let output = self
+            .client
             .get_object()
             .bucket(&self.bucket)
             .key(key)
@@ -67,9 +68,11 @@ impl ObjectStore for S3Store {
             .await
             .map_err(|e| ObjectStoreError::S3(e.to_string()))?;
 
-        let body = output.body.collect().await.map_err(|e| {
-            ObjectStoreError::Message(format!("failed to read s3 body: {e}"))
-        })?;
+        let body = output
+            .body
+            .collect()
+            .await
+            .map_err(|e| ObjectStoreError::Message(format!("failed to read s3 body: {e}")))?;
 
         Ok(body.into_bytes().to_vec())
     }
@@ -96,7 +99,11 @@ impl ObjectStore for InMemoryObjectStore {
     }
 
     async fn get(&self, key: &str) -> Result<Vec<u8>> {
-        self.map.read().await.get(key).cloned()
+        self.map
+            .read()
+            .await
+            .get(key)
+            .cloned()
             .ok_or_else(|| ObjectStoreError::NotFound(key.to_string()))
     }
 }

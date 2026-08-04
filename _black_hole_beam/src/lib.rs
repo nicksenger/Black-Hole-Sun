@@ -1,9 +1,10 @@
 //! Visualize Black Hole Sun cell graphs.
 //!
 //! [`BeamBuilder`] renders the type-level cell topology of a
-//! [`BlackHole`](black_hole_flux::sun::BlackHole) with the circular `circo`
-//! layout. Live views discover the child journey IDs from the parent Sun
-//! journey and use each child's update stream to color its cell by activity.
+//! [`BlackHole`](black_hole_flux::sun::BlackHole), using the circular `circo`
+//! layout by default. Live views discover the child journey IDs from the
+//! parent Sun journey and use each child's update stream to color its cell by
+//! activity.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -56,8 +57,15 @@ pub struct BeamBuilder {
     title: String,
     width: f32,
     height: f32,
+    layout: BeamLayout,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
+}
+
+#[derive(Clone, Copy)]
+enum BeamLayout {
+    Circo,
+    Dot,
 }
 
 impl Default for BeamBuilder {
@@ -66,6 +74,7 @@ impl Default for BeamBuilder {
             title: "Black Hole Sun".to_string(),
             width: DEFAULT_WINDOW_WIDTH,
             height: DEFAULT_WINDOW_HEIGHT,
+            layout: BeamLayout::Circo,
             animation_duration: None,
             animation_easing: None,
         }
@@ -110,6 +119,12 @@ impl BeamBuilder {
         self
     }
 
+    /// Use iced-sugiyama's default layout (`dot`) for node placement.
+    pub fn dot_layout(mut self) -> Self {
+        self.layout = BeamLayout::Dot;
+        self
+    }
+
     pub fn animation_duration(mut self, duration: Duration) -> Self {
         self.animation_duration = Some(duration);
         self
@@ -125,6 +140,7 @@ impl BeamBuilder {
             title: self.title,
             width: self.width,
             height: self.height,
+            layout: self.layout,
             animation_duration: self.animation_duration,
             animation_easing: self.animation_easing,
         }
@@ -222,6 +238,7 @@ struct BeamConfig {
     title: String,
     width: f32,
     height: f32,
+    layout: BeamLayout,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
 }
@@ -806,8 +823,10 @@ impl BeamApp {
                 .style(move |_theme| cell_node_style(color))
                 .into()
             })
-            .id(iced_sugiyama::Id::new(CELL_GRAPH_ID))
-            .layout_fn(|input| {
+            .id(iced_sugiyama::Id::new(CELL_GRAPH_ID));
+
+        if matches!(self.config.layout, BeamLayout::Circo) {
+            graph = graph.layout_fn(|input| {
                 // circo's ported implementation addresses edge coordinates by
                 // node index. Remap public cell IDs so sparse port numbers keep
                 // their edges attached to the correct nodes.
@@ -846,7 +865,10 @@ impl BeamApp {
                     }),
                 };
                 circo_layout(&remapped_input)
-            })
+            });
+        }
+
+        graph = graph
             .edge_color(move |ctx| {
                 let start = colors_for_edges
                     .get(&ctx.edge.0)
@@ -1100,6 +1122,11 @@ mod tests {
     #[test]
     fn uses_black_hole_sun_title_and_activity_palette() {
         assert_eq!(BeamBuilder::default().title, "Black Hole Sun");
+        assert!(matches!(BeamBuilder::default().layout, BeamLayout::Circo));
+        assert!(matches!(
+            BeamBuilder::new().dot_layout().layout,
+            BeamLayout::Dot
+        ));
         assert_eq!(
             CellActivity::Idle.palette(),
             (

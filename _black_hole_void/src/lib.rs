@@ -8,10 +8,10 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::{error, info, warn};
 
-pub mod object_store;
-pub mod persist;
 #[cfg(feature = "postgres")]
 pub mod migrate;
+pub mod object_store;
+pub mod persist;
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4434";
 const S3_MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -92,9 +92,7 @@ impl ServerBuilder {
     }
 
     /// Build the server endpoint and context, returning them for reuse.
-    async fn setup(
-        self,
-    ) -> Result<(quinn::Endpoint, SocketAddr, Arc<VoidContext>)> {
+    async fn setup(self) -> Result<(quinn::Endpoint, SocketAddr, Arc<VoidContext>)> {
         // Run migrations before accepting connections.
         self.store.migrate().await.map_err(|e| {
             ServerError::Store(persist::PersistenceError::Message(format!(
@@ -117,20 +115,20 @@ impl ServerBuilder {
             server_config.key_log = Arc::new(rustls::KeyLogFile::new());
         }
 
-        let crypto = QuicServerConfig::try_from(server_config)
-            .map_err(ServerError::QuicServerConfig)?;
+        let crypto =
+            QuicServerConfig::try_from(server_config).map_err(ServerError::QuicServerConfig)?;
 
         let endpoint_cfg = quinn::ServerConfig::with_crypto(Arc::new(crypto));
 
-        let listener = std::net::UdpSocket::bind(self.listen)
-            .map_err(ServerError::BindEndpoint)?;
+        let listener = std::net::UdpSocket::bind(self.listen).map_err(ServerError::BindEndpoint)?;
         let runtime = quinn::TokioRuntime;
         let endpoint = quinn::Endpoint::new(
             Default::default(),
             Some(endpoint_cfg),
             listener,
             Arc::new(runtime),
-        ).map_err(ServerError::BindEndpoint)?;
+        )
+        .map_err(ServerError::BindEndpoint)?;
 
         let local_addr = endpoint.local_addr().map_err(ServerError::LocalAddr)?;
         info!(%local_addr, "listening");
@@ -263,12 +261,11 @@ async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<
     match context.object_store.put(key.clone(), data).await {
         Ok(_) => {
             // Persist the object metadata.
-            if let Err(e) = context.store.insert_object(
-                id,
-                "memory".to_string(),
-                key.clone(),
-                size_bytes,
-            ).await {
+            if let Err(e) = context
+                .store
+                .insert_object(id, "memory".to_string(), key.clone(), size_bytes)
+                .await
+            {
                 warn!(error = %e, "failed to persist object metadata");
             }
 
@@ -288,9 +285,11 @@ async fn handle_download(context: &VoidContext, id: uuid::Uuid) -> VoidOut {
     // Look up the object to get bucket+key.
     let record = match context.store.get_object(id).await {
         Ok(Some(r)) => r,
-        Ok(None) => return VoidOut::Error {
-            message: format!("object not found: {id}"),
-        },
+        Ok(None) => {
+            return VoidOut::Error {
+                message: format!("object not found: {id}"),
+            }
+        }
         Err(e) => {
             error!(error = %e, "failed to look up object");
             return VoidOut::Error {
@@ -330,21 +329,27 @@ async fn read_frame(mut recv: quinn::RecvStream) -> std::result::Result<VoidIn, 
     }
 
     let mut payload = vec![0u8; len];
-    recv.read_exact(&mut payload).await
+    recv.read_exact(&mut payload)
+        .await
         .map_err(ServerError::ReadFramePayload)?;
 
     from_bytes(&payload).map_err(ServerError::DecodeRequest)
 }
 
 /// Write a length-prefixed postcard frame to the stream.
-async fn write_frame(send: &mut quinn::SendStream, out: &VoidOut) -> std::result::Result<(), ServerError> {
+async fn write_frame(
+    send: &mut quinn::SendStream,
+    out: &VoidOut,
+) -> std::result::Result<(), ServerError> {
     let payload = to_allocvec(out).map_err(ServerError::EncodeResponse)?;
-    let len = u32::try_from(payload.len())
-        .map_err(|_| ServerError::FrameTooLarge(payload.len()))?;
+    let len =
+        u32::try_from(payload.len()).map_err(|_| ServerError::FrameTooLarge(payload.len()))?;
 
-    send.write_all(&len.to_be_bytes()).await
+    send.write_all(&len.to_be_bytes())
+        .await
         .map_err(ServerError::WriteFrame)?;
-    send.write_all(&payload).await
+    send.write_all(&payload)
+        .await
         .map_err(ServerError::WriteFrame)?;
     Ok(())
 }

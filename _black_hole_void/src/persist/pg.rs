@@ -92,12 +92,14 @@ impl VoidStore for PgStore {
         .await
         .map_err(PersistenceError::PostgresQuery)?;
 
-        row.map(|row| Ok(ObjectRecord {
-            id: row.get("id"),
-            bucket: row.get("bucket"),
-            key: row.get("key"),
-            size_bytes: row.get("size_bytes"),
-        }))
+        row.map(|row| {
+            Ok(ObjectRecord {
+                id: row.get("id"),
+                bucket: row.get("bucket"),
+                key: row.get("key"),
+                size_bytes: row.get("size_bytes"),
+            })
+        })
         .transpose()
     }
 

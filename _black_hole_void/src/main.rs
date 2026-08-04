@@ -63,9 +63,13 @@ fn main() {
     // Always true when --memory-store is set, or when postgres feature is disabled.
     let use_memory = opt.memory_store || {
         #[cfg(not(feature = "postgres"))]
-        { true }
+        {
+            true
+        }
         #[cfg(feature = "postgres")]
-        { false }
+        {
+            false
+        }
     };
 
     if use_memory {
@@ -105,16 +109,19 @@ fn main() {
                 eprintln!("ERROR: --postgres-connection-string is required");
                 std::process::exit(1);
             });
-            let store = rt.block_on(
-                black_hole_void::persist::pg::PgStore::builder()
-                    .connection_string(connection_string)
-                    .build(),
-            ).expect("failed to build postgres store");
+            let store = rt
+                .block_on(
+                    black_hole_void::persist::pg::PgStore::builder()
+                        .connection_string(connection_string)
+                        .build(),
+                )
+                .expect("failed to build postgres store");
             Box::new(store)
         };
 
-        let object_store: Box<dyn black_hole_void::object_store::ObjectStore> =
-            Box::new(black_hole_void::object_store::S3Store::new(s3_client, &opt.bucket));
+        let object_store: Box<dyn black_hole_void::object_store::ObjectStore> = Box::new(
+            black_hole_void::object_store::S3Store::new(s3_client, &opt.bucket),
+        );
 
         let mut builder = black_hole_void::ServerBuilder::new(object_store, store)
             .keylog(opt.keylog)
