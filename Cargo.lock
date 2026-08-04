@@ -4884,7 +4884,7 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "objc2-metal",
+ "objc2-metal 0.2.2",
 ]
 
 [[package]]
@@ -5002,6 +5002,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-metal"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
+dependencies = [
+ "bitflags 2.13.1",
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-quartz-core"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5011,7 +5025,7 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "objc2-metal",
+ "objc2-metal 0.2.2",
 ]
 
 [[package]]
@@ -5279,7 +5293,10 @@ dependencies = [
  "memmap2",
  "num-traits",
  "num_cpus",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
  "paramecia-cuda",
+ "paramecia-metal",
  "rand 0.9.5",
  "rand_distr",
  "rayon",
@@ -5319,6 +5336,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "paramecia-metal"
+version = "0.1.0"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#92189cd67b60c7a8c0a7b09930727dc775925c64"
+dependencies = [
+ "half",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "paramecia-model"
 version = "0.1.0"
 source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#92189cd67b60c7a8c0a7b09930727dc775925c64"
@@ -5352,6 +5381,7 @@ dependencies = [
  "half",
  "num-traits",
  "paramecia-core",
+ "paramecia-metal",
  "rayon",
  "serde",
 ]

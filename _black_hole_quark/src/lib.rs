@@ -196,13 +196,13 @@ async fn read_frame<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) 
 enum QuarkState {
     /// Initial or post-update: next expected step is PerturbUp.
     Idle,
-    /// After PerturbUp: waiting for Infer (up).
+    /// After PerturbUp: waiting for the first up-inference.
     PostPerturbUp,
-    /// After up-inference: waiting for PerturbDown with loss_up.
+    /// After one or more up-inferences: waiting for PerturbDown.
     AwaitingPerturbDown,
-    /// After PerturbDown: waiting for Infer (down).
+    /// After PerturbDown: waiting for the first down-inference.
     PostPerturbDown,
-    /// After down-inference: waiting for Optimize with loss_down.
+    /// After one or more down-inferences: waiting for Optimize.
     AwaitingOptimize,
 }
 
@@ -495,9 +495,19 @@ async fn handle_perturb_up(seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
 async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut> {
     let state = {
         let session = ctx.quark.lock().await;
-        if !matches!(session.state, QuarkState::Idle | QuarkState::PostPerturbUp | QuarkState::PostPerturbDown) {
+        if !matches!(
+            session.state,
+            QuarkState::Idle
+                | QuarkState::PostPerturbUp
+                | QuarkState::AwaitingPerturbDown
+                | QuarkState::PostPerturbDown
+                | QuarkState::AwaitingOptimize
+        ) {
             return Err(ServerError::InvalidQuarkState(
-                format!("inference requires Idle, PostPerturbUp, or PostPerturbDown state, got {:?}", session.state),
+                format!(
+                    "inference requires Idle or an active perturbation phase, got {:?}",
+                    session.state
+                ),
             ));
         }
         session.state
@@ -584,10 +594,13 @@ async fn handle_infer(input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut
     // Advance state.
     {
         let mut session = ctx.quark.lock().await;
-        session.state = if state == QuarkState::PostPerturbUp {
-            QuarkState::AwaitingPerturbDown
-        } else {
-            QuarkState::AwaitingOptimize
+        session.state = match state {
+            QuarkState::PostPerturbUp | QuarkState::AwaitingPerturbDown => {
+                QuarkState::AwaitingPerturbDown
+            }
+            QuarkState::Idle
+            | QuarkState::PostPerturbDown
+            | QuarkState::AwaitingOptimize => QuarkState::AwaitingOptimize,
         };
     }
 

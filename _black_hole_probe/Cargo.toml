@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 cuda = ["black-hole-sun/cuda"]
+metal = ["black-hole-sun/metal"]
 qwen35_0p8b = ["black-hole-sun/qwen35_0p8b"]
 qwen35_2b = ["black-hole-sun/qwen35_2b"]
 qwen35_4b = ["black-hole-sun/qwen35_4b"]

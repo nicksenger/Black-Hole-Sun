@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+metal = ["paramecia-engine/metal"]
 qwen35_0p8b = ["paramecia-engine/qwen35_0p8b"]
 qwen35_2b = ["paramecia-engine/qwen35_2b"]
 qwen35_4b = ["paramecia-engine/qwen35_4b"]

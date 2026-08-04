@@ -156,42 +156,93 @@ pub async fn void_download_result(
     }
 }
 
-pub async fn quark_infer(endpoint: &quinn::Endpoint, addr: SocketAddr, input_id: ObjectId) -> ObjectId {
+pub async fn quark_infer_result(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    input_id: ObjectId,
+) -> Result<ObjectId, String> {
     let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     send_frame(&mut send, &QuarkIn::Infer { input_id }).await;
     let resp: QuarkOut = read_frame(&mut recv).await;
     match resp {
-        QuarkOut::Inferred { output_id } => output_id,
-        QuarkOut::Error { message } => panic!("quark infer error: {message}"),
-        _ => panic!("unexpected quark response for infer"),
+        QuarkOut::Inferred { output_id } => Ok(output_id),
+        QuarkOut::Error { message } => Err(message),
+        _ => Err("unexpected quark response for infer".to_string()),
     }
 }
 
-pub async fn quark_perturb_up(endpoint: &quinn::Endpoint, addr: SocketAddr, seed: u64) {
+pub async fn quark_infer(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    input_id: ObjectId,
+) -> ObjectId {
+    quark_infer_result(endpoint, addr, input_id)
+        .await
+        .unwrap_or_else(|message| panic!("quark infer error: {message}"))
+}
+
+pub async fn quark_perturb_up_result(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    seed: u64,
+) -> Result<(), String> {
     let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     send_frame(&mut send, &QuarkIn::PerturbUp { seed }).await;
     let resp: QuarkOut = read_frame(&mut recv).await;
     match resp {
-        QuarkOut::Ack => {}
-        QuarkOut::Error { message } => panic!("quark perturb_up error: {message}"),
-        _ => panic!("unexpected quark response for perturb_up"),
+        QuarkOut::Ack => Ok(()),
+        QuarkOut::Error { message } => Err(message),
+        _ => Err("unexpected quark response for perturb_up".to_string()),
     }
 }
 
-pub async fn quark_perturb_down(endpoint: &quinn::Endpoint, addr: SocketAddr) {
+pub async fn quark_perturb_up(endpoint: &quinn::Endpoint, addr: SocketAddr, seed: u64) {
+    quark_perturb_up_result(endpoint, addr, seed)
+        .await
+        .unwrap_or_else(|message| panic!("quark perturb_up error: {message}"));
+}
+
+pub async fn quark_perturb_down_result(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+) -> Result<(), String> {
     let server_name = "localhost";
     let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     send_frame(&mut send, &QuarkIn::PerturbDown).await;
     let resp: QuarkOut = read_frame(&mut recv).await;
     match resp {
-        QuarkOut::Ack => {}
-        QuarkOut::Error { message } => panic!("quark perturb_down error: {message}"),
-        _ => panic!("unexpected quark response for perturb_down"),
+        QuarkOut::Ack => Ok(()),
+        QuarkOut::Error { message } => Err(message),
+        _ => Err("unexpected quark response for perturb_down".to_string()),
+    }
+}
+
+pub async fn quark_perturb_down(endpoint: &quinn::Endpoint, addr: SocketAddr) {
+    quark_perturb_down_result(endpoint, addr)
+        .await
+        .unwrap_or_else(|message| panic!("quark perturb_down error: {message}"));
+}
+
+pub async fn quark_optimize_result(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    loss_up: f32,
+    loss_down: f32,
+) -> Result<(), String> {
+    let server_name = "localhost";
+    let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send_frame(&mut send, &QuarkIn::Optimize { loss_up, loss_down }).await;
+    let resp: QuarkOut = read_frame(&mut recv).await;
+    match resp {
+        QuarkOut::Ack => Ok(()),
+        QuarkOut::Error { message } => Err(message),
+        _ => Err("unexpected quark response for optimize".to_string()),
     }
 }
 
@@ -201,16 +252,9 @@ pub async fn quark_optimize(
     loss_up: f32,
     loss_down: f32,
 ) {
-    let server_name = "localhost";
-    let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
-    let (mut send, mut recv) = conn.open_bi().await.unwrap();
-    send_frame(&mut send, &QuarkIn::Optimize { loss_up, loss_down }).await;
-    let resp: QuarkOut = read_frame(&mut recv).await;
-    match resp {
-        QuarkOut::Ack => {}
-        QuarkOut::Error { message } => panic!("quark optimize error: {message}"),
-        _ => panic!("unexpected quark response for optimize"),
-    }
+    quark_optimize_result(endpoint, addr, loss_up, loss_down)
+        .await
+        .unwrap_or_else(|message| panic!("quark optimize error: {message}"));
 }
 
 async fn send_frame(send: &mut quinn::SendStream, msg: &impl Serialize) {
