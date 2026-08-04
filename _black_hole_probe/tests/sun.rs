@@ -1,3 +1,4 @@
+#[path = "common/mod.rs"]
 mod common;
 
 use std::future::Future;
@@ -18,6 +19,7 @@ use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{EmissionId, InferenceRequest, ObjectId, Transmission, VoidServerBuilder};
+#[cfg(test)]
 use futures::stream::StreamExt;
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
@@ -417,6 +419,7 @@ async fn start_server() -> (SocketAddr, tokio::task::AbortHandle) {
 /// branch deliberately delayed so P2 arrives first. The explicit fusion
 /// transform records each pair, proving that declared `P1`, `P2` order remains
 /// stable on both propagation passes in every completed epoch.
+#[cfg(test)]
 #[tokio::test]
 async fn sun() {
     init_tracing();
@@ -564,41 +567,64 @@ async fn sun() {
 }
 
 /// Runs the diamond Sun indefinitely with a live Black Hole Beam viewer.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore]
-async fn forever() {
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn run_beam() {
     init_tracing();
     rustls::crypto::ring::default_provider()
         .install_default()
         .ok();
 
-    let (void_addr, _void_abort) = start_server().await;
-
-    let mut jungle = SpaceJungle::new(void_addr);
-    let client = FusedClient::builder()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
         .build()
-        .await
-        .expect("fused client should build");
-    jungle.set_client(client.clone());
+        .expect("Tokio runtime should build");
+    let (client, journey_id) = runtime.block_on(async {
+        let (void_addr, _void_abort) = start_server().await;
 
-    let journey_id = client
-        .spawn::<BlackHoleAnimal>(&())
-        .await
-        .expect("BlackHoleAnimal should spawn")
-        .journey_id;
-    println!("Spawned BlackHoleAnimal journey: {journey_id}");
+        let mut jungle = SpaceJungle::new(void_addr);
+        let client = FusedClient::builder()
+            .build()
+            .await
+            .expect("fused client should build");
+        jungle.set_client(client.clone());
 
-    let _worker_handles: Vec<_> = (0..6)
-        .map(|_| {
-            let worker = JungleWorker::new(jungle.clone(), client.clone());
-            tokio::spawn(async move {
-                let _ = worker.spawn().await;
+        let journey_id = client
+            .spawn::<BlackHoleAnimal>(&())
+            .await
+            .expect("BlackHoleAnimal should spawn")
+            .journey_id;
+        println!("Spawned BlackHoleAnimal journey: {journey_id}");
+
+        let _worker_handles: Vec<_> = (0..6)
+            .map(|_| {
+                let worker = JungleWorker::new(jungle.clone(), client.clone());
+                tokio::spawn(async move {
+                    let _ = worker.spawn().await;
+                })
             })
-        })
-        .collect();
+            .collect();
+
+        (client, journey_id)
+    });
 
     black_hole_beam::BeamBuilder::new()
         .title("Diamond Sun")
         .view_live::<BlackHoleAnimal>(client, journey_id)
         .expect("Black Hole Beam should run");
+}
+
+/// Launches the Beam example in a process whose UI runs on its main thread.
+#[cfg(test)]
+#[test]
+#[ignore]
+fn beam() {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = std::process::Command::new(cargo)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["run", "--quiet", "--example", "beam"])
+        .status()
+        .expect("Beam example should launch");
+
+    assert!(status.success(), "Beam example exited with {status}");
 }
