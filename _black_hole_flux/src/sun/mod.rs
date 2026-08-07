@@ -19,9 +19,10 @@ use crate::fusion::action::{FusionSeed, FusionState};
 use crate::fusion::FusionFlow;
 
 pub use action::{
-    BuildTopologicalSort, NodeIdsFromList, PopLayer, ProcessNode, Spawn, TopologyState,
+    BuildTopologicalSort, NodeIdsFromList, PopLayer, ProcessNode, SendRootPropagation, Spawn,
+    TopologyState,
 };
-pub use effect::SpawnAnimal;
+pub use effect::{SendRootPropagationEffect, SendRootPropagationInput, SpawnAnimal};
 
 // ---------------------------------------------------------------------------
 // Descriptors — type-level vertices and their input ports
@@ -51,6 +52,57 @@ pub struct Binary<P1: Unsigned, P2: Unsigned, A: Animal, E: NodeIdsFromList>(
 // ---------------------------------------------------------------------------
 // SunState — runtime state for sun orchestration
 // ---------------------------------------------------------------------------
+
+/// The latest orchestration phase reached by a Sun node.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum SunNodeState {
+    /// The node has been spawned but has not been sent propagation.
+    #[default]
+    Idle,
+    /// The first propagation pass has been sent to the node.
+    Propagation1,
+    /// The second propagation pass has been sent to the node.
+    Propagation2,
+    /// The epoch's loss has been sent to the node.
+    Optimization,
+}
+
+/// One node in the observable Sun topology.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SunNodeAppearance {
+    pub id: u32,
+    pub label: String,
+    pub input_ports: Vec<u32>,
+    pub state: SunNodeState,
+}
+
+/// One port-aware directed edge in the observable Sun topology.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SunEdgeAppearance {
+    pub source: u32,
+    pub target: u32,
+    pub target_port: u32,
+}
+
+/// Serializable projection of a running Black Hole Sun.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SunAppearance {
+    /// True after the runtime graph has been resolved and validated.
+    pub finalized: bool,
+    pub nodes: Vec<SunNodeAppearance>,
+    pub edges: Vec<SunEdgeAppearance>,
+}
 
 /// State for propagation branch A.
 #[derive(Optic, Clone, Default, Debug)]
@@ -102,11 +154,60 @@ impl Default for SunState {
     }
 }
 
+impl SunState {
+    /// Build a deterministic, serializable view of the runtime graph.
+    pub fn appearance(&self) -> SunAppearance {
+        let inner = self.a.shared.lock().unwrap();
+        let mut nodes = inner
+            .journey_ids
+            .keys()
+            .copied()
+            .map(|id| SunNodeAppearance {
+                id,
+                label: inner
+                    .node_labels
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("cell {id}")),
+                input_ports: inner.vertex_ports.get(&id).cloned().unwrap_or_default(),
+                state: inner.node_states.get(&id).copied().unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        nodes.sort_by_key(|node| node.id);
+
+        let mut edges = inner
+            .outgoing
+            .iter()
+            .flat_map(|(&source, targets)| {
+                targets.iter().map(move |target| SunEdgeAppearance {
+                    source,
+                    target: target.vertex_id,
+                    target_port: target.port_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        edges.sort_by_key(|edge| (edge.source, edge.target, edge.target_port));
+        edges.dedup();
+
+        SunAppearance {
+            finalized: inner.finalized,
+            nodes,
+            edges,
+        }
+    }
+}
+
 /// Shared inner state accessible by both propagation branches via Arc<Mutex>.
 #[derive(Optic, Clone, Default, Debug)]
 pub struct SunInner {
+    /// Whether the graph has passed runtime topology validation.
+    pub finalized: bool,
     /// Maps an internal vertex key to its associated journey ID.
     pub journey_ids: HashMap<u32, Uuid>,
+    /// Human-readable animal type names keyed by internal vertex.
+    pub node_labels: HashMap<u32, String>,
+    /// Latest orchestration phase sent to each internal vertex.
+    pub node_states: HashMap<u32, SunNodeState>,
     /// Input ports owned by each vertex, in descriptor order.
     pub vertex_ports: HashMap<u32, Vec<u32>>,
     /// Resolves every public input port to its internal vertex key.
@@ -129,6 +230,32 @@ pub struct SunInner {
     pub p2_rx: HashMap<u32, ObjectId>,
     /// Potentiation input endpoints keyed by port id.
     pub po_tx: HashMap<u32, ObjectId>,
+}
+
+impl SunInner {
+    pub(crate) fn record_propagation_sent(
+        &mut self,
+        node_ids: impl IntoIterator<Item = u32>,
+        phase: SunNodeState,
+    ) {
+        debug_assert!(matches!(
+            phase,
+            SunNodeState::Propagation1 | SunNodeState::Propagation2
+        ));
+        for node_id in node_ids {
+            let state = self.node_states.entry(node_id).or_default();
+            if *state == SunNodeState::Propagation2 && phase == SunNodeState::Propagation1 {
+                continue;
+            }
+            *state = phase;
+        }
+    }
+
+    pub(crate) fn record_optimization_sent(&mut self, node_ids: impl IntoIterator<Item = u32>) {
+        for node_id in node_ids {
+            self.node_states.insert(node_id, SunNodeState::Optimization);
+        }
+    }
 }
 
 /// A resolved edge target. `port_id` identifies the destination mailbox while
@@ -263,6 +390,7 @@ pub struct BranchABody(
 #[jungle(focus = PropB)]
 pub struct PropBFlow(
     Step<action::BuildTopologicalSort<PropB>>,
+    Step<action::SendRootPropagation<PropB>>,
     While<FocusedLoopCondition<TopoNotEmpty<PropB>, PropB>, BranchBBody>,
 );
 
@@ -270,6 +398,7 @@ pub struct PropBFlow(
 #[jungle(focus = PropA)]
 pub struct PropAFlow(
     Step<action::BuildTopologicalSort<PropA>>,
+    Step<action::SendRootPropagation<PropA>>,
     While<FocusedLoopCondition<TopoNotEmpty<PropA>, PropA>, BranchABody>,
 );
 

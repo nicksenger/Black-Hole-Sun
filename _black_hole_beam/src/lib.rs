@@ -2,41 +2,36 @@
 //!
 //! [`BeamBuilder`] renders the type-level cell topology of a
 //! [`BlackHole`](black_hole_flux::sun::BlackHole), using the circular `circo`
-//! layout by default. Live views discover the child journey IDs from the
-//! parent Sun journey and use each child's update stream to color its cell by
-//! activity.
+//! layout by default. Live views use the parent Sun animal's Jungle
+//! [`Observe`](jungle_sdk::Observe) appearance as the source of graph topology
+//! and node phase.
 
-use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::pin::Pin;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use black_hole_flux::sun::action::{SpawnBinary, SpawnUnary};
-use black_hole_flux::sun::{BinarySunStep, NodeIdsFromList, Sun, SunNode, UnarySunStep};
+use black_hole_flux::sun::{
+    BinarySunStep, NodeIdsFromList, Sun, SunAppearance, SunNode, SunNodeState, SunState,
+    UnarySunStep,
+};
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState, ObjectId};
-use iced::futures::{self, Stream, StreamExt};
 use iced::time::Instant;
 use iced::widget::{column, container, text};
 use iced::{Background, Color, Element, Font, Length, Shadow, Subscription, Task, Theme, Vector};
 use iced_sugiyama::motion::easing::Easing;
 use iced_sugiyama::{circo_layout, AutoFit, Cluster, Graph, LayoutInput, Sugiyama};
-use jungle_sdk::client::JourneyUpdateSubscription;
-use jungle_sdk::core::dag::{Dag, LiveDagState};
-use jungle_sdk::{
-    Action, Animal, AnimalIdValue, JourneyAst, JourneyAstSource, JourneyUpdateEvent, JungleClient,
-    RunnerOut,
-};
+use jungle_sdk::{Animal, AnimalIdValue, JungleClient, Observe};
 use typenum::Unsigned;
 use uuid::Uuid;
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
 const CELL_GRAPH_ID: &str = "black-hole-beam-cells";
-const DISCOVERY_INTERVAL: Duration = Duration::from_millis(750);
+const APPEARANCE_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
+const MAX_PENDING_PHASES: usize = 4;
 
 /// Builder for Black Hole Sun graph viewers.
 ///
@@ -92,20 +87,19 @@ impl BeamBuilder {
         A: Animal + 'static,
         A::Flow: BlackHoleSunFlow,
     {
-        run_beam::<A>(self.into_config(), None)
+        run_beam(self.into_config(), BeamModel::build::<A::Flow>(), None)
     }
 
-    /// Render a live Black Hole Sun colored by each spawned child journey.
+    /// Render a live Black Hole Sun from its Jungle appearance.
     pub fn view_live<A>(self, client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
     where
-        A: Animal + 'static,
-        A::Flow: BlackHoleSunFlow,
+        A: Animal<State = SunState> + Observe<Appearance = SunAppearance> + 'static,
     {
         let live = LiveConfig {
             client: Arc::new(client),
             journey_id,
         };
-        run_beam::<A>(self.into_config(), Some(live))
+        run_beam(self.into_config(), BeamModel::empty(), Some(live))
     }
 
     pub fn title(mut self, title: impl Into<String>) -> Self {
@@ -159,8 +153,7 @@ where
 /// Render a live Black Hole Sun with default viewer settings.
 pub fn view_live<A>(client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
 where
-    A: Animal + 'static,
-    A::Flow: BlackHoleSunFlow,
+    A: Animal<State = SunState> + Observe<Appearance = SunAppearance> + 'static,
 {
     BeamBuilder::new().view_live::<A>(client, journey_id)
 }
@@ -177,14 +170,11 @@ mod private {
 /// The trait is sealed and is only implemented for the `SunNode<…>` chain
 /// emitted by [`BlackHole`](black_hole_flux::sun::BlackHole).
 #[allow(private_bounds)]
-pub trait BlackHoleSunFlow: JourneyAstSource + private::DescribeSun {}
+pub trait BlackHoleSunFlow: private::DescribeSun {}
 
-impl<T> BlackHoleSunFlow for T where T: JourneyAstSource + private::DescribeSun {}
+impl<T> BlackHoleSunFlow for T where T: private::DescribeSun {}
 
-impl<Generator, Policy> private::DescribeSun for Sun<Generator, Policy>
-where
-    Sun<Generator, Policy>: JourneyAstSource,
-{
+impl<Generator, Policy> private::DescribeSun for Sun<Generator, Policy> {
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
 
@@ -192,18 +182,14 @@ impl<Port, A, Edges, Tail> private::DescribeSun for SunNode<UnarySunStep<Port, A
 where
     Port: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId> + 'static,
-    A::Flow: JourneyAstSource,
     Edges: NodeIdsFromList,
     Tail: private::DescribeSun,
-    SunNode<UnarySunStep<Port, A, Edges>, Tail>: JourneyAstSource,
-    SpawnUnary<Port, A, Edges>: Action,
 {
     fn append_cells(cells: &mut Vec<CellDefinition>) {
         cells.push(CellDefinition::new::<A>(
             Port::U32,
             vec![Port::U32],
             Edges::node_ids(),
-            <SpawnUnary<Port, A, Edges> as Action>::NAME,
         ));
         Tail::append_cells(cells);
     }
@@ -216,18 +202,15 @@ where
     PortB: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
         + 'static,
-    A::Flow: FusionFlow + JourneyAstSource,
+    A::Flow: FusionFlow,
     Edges: NodeIdsFromList,
     Tail: private::DescribeSun,
-    SunNode<BinarySunStep<PortA, PortB, A, Edges>, Tail>: JourneyAstSource,
-    SpawnBinary<PortA, PortB, A, Edges>: Action,
 {
     fn append_cells(cells: &mut Vec<CellDefinition>) {
         cells.push(CellDefinition::new::<A>(
             PortA::U32,
             vec![PortA::U32, PortB::U32],
             Edges::node_ids(),
-            <SpawnBinary<PortA, PortB, A, Edges> as Action>::NAME,
         ));
         Tail::append_cells(cells);
     }
@@ -255,42 +238,40 @@ struct CellDefinition {
     ports: Vec<u32>,
     outgoing_ports: Vec<u32>,
     animal_name: String,
-    dag: Dag,
-    spawn_action: &'static str,
+    state: SunNodeState,
 }
 
 impl CellDefinition {
-    fn new<A>(
-        id: u32,
-        ports: Vec<u32>,
-        outgoing_ports: Vec<u32>,
-        spawn_action: &'static str,
-    ) -> Self
+    fn new<A>(id: u32, ports: Vec<u32>, outgoing_ports: Vec<u32>) -> Self
     where
         A: Animal + 'static,
-        A::Flow: JourneyAstSource,
     {
-        let dag = Dag::from_ast(<A::Flow as JourneyAstSource>::journey_ast());
-
         Self {
             id,
             ports,
             outgoing_ports,
             animal_name: short_type_name::<A>(),
-            dag,
-            spawn_action,
+            state: SunNodeState::Idle,
         }
     }
 }
 
+#[derive(Clone)]
 struct BeamModel {
     cells: Vec<CellDefinition>,
     graph: Graph,
-    spawn_runtime_to_cell: HashMap<u32, usize>,
     errors: Vec<String>,
 }
 
 impl BeamModel {
+    fn empty() -> Self {
+        Self {
+            cells: Vec::new(),
+            graph: Graph::new(Vec::new(), Vec::new()),
+            errors: Vec::new(),
+        }
+    }
+
     fn build<F>() -> Self
     where
         F: BlackHoleSunFlow,
@@ -338,37 +319,8 @@ impl BeamModel {
         }
 
         let nodes = cells.iter().map(|cell| cell.id).collect::<Vec<_>>();
+        edges.sort_unstable();
         let graph = Graph::new(nodes, edges);
-
-        let ast = <F as JourneyAstSource>::journey_ast();
-        let mut next_runtime_id = 0;
-        let mut runtime_steps = Vec::new();
-        collect_runtime_steps(&ast, &mut next_runtime_id, &mut runtime_steps);
-        let spawn_steps = runtime_steps
-            .into_iter()
-            .filter(|(_, label)| cells.iter().any(|cell| cell.spawn_action == *label))
-            .collect::<Vec<_>>();
-        let mut spawn_runtime_to_cell = HashMap::new();
-
-        if spawn_steps.len() != cells.len() {
-            errors.push(format!(
-                "found {} spawn steps for {} cells",
-                spawn_steps.len(),
-                cells.len()
-            ));
-        }
-        for (index, ((runtime_id, label), cell)) in
-            spawn_steps.into_iter().zip(cells.iter()).enumerate()
-        {
-            if label != cell.spawn_action {
-                errors.push(format!(
-                    "spawn step {label} did not match {} for cell {}",
-                    cell.spawn_action, cell.id
-                ));
-                continue;
-            }
-            spawn_runtime_to_cell.insert(runtime_id, index);
-        }
 
         if cells.is_empty() {
             errors.push("the Black Hole Sun contains no cells".to_string());
@@ -377,55 +329,98 @@ impl BeamModel {
         Self {
             cells,
             graph,
-            spawn_runtime_to_cell,
             errors,
         }
     }
-}
 
-fn collect_runtime_steps<'a>(
-    ast: &'a JourneyAst,
-    next_runtime_id: &mut u32,
-    steps: &mut Vec<(u32, &'a str)>,
-) {
-    match ast {
-        JourneyAst::Empty => {}
-        JourneyAst::Sequence(items) => {
-            for item in items {
-                collect_runtime_steps(item, next_runtime_id, steps);
+    fn from_appearance(appearance: SunAppearance) -> Result<Self, String> {
+        if !appearance.finalized {
+            return Err("the Black Hole Sun topology is not finalized".to_string());
+        }
+
+        let mut errors = Vec::new();
+        let mut cells = appearance
+            .nodes
+            .into_iter()
+            .map(|node| CellDefinition {
+                id: node.id,
+                ports: node.input_ports,
+                outgoing_ports: Vec::new(),
+                animal_name: node.label,
+                state: node.state,
+            })
+            .collect::<Vec<_>>();
+        cells.sort_by_key(|cell| cell.id);
+
+        let mut node_ids = HashSet::new();
+        let mut port_owner = HashMap::new();
+        for cell in &cells {
+            if !node_ids.insert(cell.id) {
+                errors.push(format!("duplicate cell id {}", cell.id));
+            }
+            for &port in &cell.ports {
+                if let Some(owner) = port_owner.insert(port, cell.id) {
+                    errors.push(format!(
+                        "input port {port} belongs to both cell {owner} and cell {}",
+                        cell.id
+                    ));
+                }
             }
         }
-        JourneyAst::Step { label } => {
-            let runtime_id = *next_runtime_id;
-            *next_runtime_id = next_runtime_id.saturating_add(1);
-            steps.push((runtime_id, label));
+
+        let mut edges = Vec::new();
+        let mut seen_edges = HashSet::new();
+        for edge in appearance.edges {
+            if !node_ids.contains(&edge.source) {
+                errors.push(format!("edge starts at unknown cell {}", edge.source));
+                continue;
+            }
+            if !node_ids.contains(&edge.target) {
+                errors.push(format!("edge targets unknown cell {}", edge.target));
+                continue;
+            }
+            if edge.source == edge.target {
+                errors.push(format!(
+                    "cell {} has a self edge on port {}",
+                    edge.source, edge.target_port
+                ));
+                continue;
+            }
+            if port_owner.get(&edge.target_port) != Some(&edge.target) {
+                errors.push(format!(
+                    "edge to cell {} references unowned input port {}",
+                    edge.target, edge.target_port
+                ));
+                continue;
+            }
+            if seen_edges.insert((edge.source, edge.target)) {
+                edges.push((edge.source, edge.target));
+            }
         }
-        JourneyAst::Conditional { left, right, .. }
-        | JourneyAst::Select { left, right, .. }
-        | JourneyAst::Join { left, right, .. } => {
-            *next_runtime_id = next_runtime_id.saturating_add(1);
-            collect_runtime_steps(left, next_runtime_id, steps);
-            collect_runtime_steps(right, next_runtime_id, steps);
+        edges.sort_unstable();
+
+        if cells.is_empty() {
+            errors.push("the Black Hole Sun contains no cells".to_string());
         }
-        JourneyAst::While { body, .. }
-        | JourneyAst::Transparent { body, .. }
-        | JourneyAst::Attempt { body, .. } => {
-            *next_runtime_id = next_runtime_id.saturating_add(1);
-            collect_runtime_steps(body, next_runtime_id, steps);
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
         }
+
+        let nodes = cells.iter().map(|cell| cell.id).collect();
+        Ok(Self {
+            cells,
+            graph: Graph::new(nodes, edges),
+            errors,
+        })
     }
 }
 
-fn run_beam<A>(config: BeamConfig, live: Option<LiveConfig>) -> iced::Result
-where
-    A: Animal + 'static,
-    A::Flow: BlackHoleSunFlow,
-{
+fn run_beam(config: BeamConfig, model: BeamModel, live: Option<LiveConfig>) -> iced::Result {
     let title = config.title.clone();
     let width = config.width;
     let height = config.height;
     iced::application(
-        move || BeamApp::new::<A>(config.clone(), live.clone()),
+        move || BeamApp::new(config.clone(), model.clone(), live.clone()),
         BeamApp::update,
         BeamApp::view,
     )
@@ -440,86 +435,44 @@ where
 
 #[derive(Debug, Clone)]
 enum Message {
-    DiscoveryTick,
+    AppearanceTick,
+    AppearanceLoaded(Result<Option<SunAppearance>, String>),
     ColorTick(Instant),
-    ChildrenDiscovered(Result<Vec<(usize, Uuid)>, String>),
-    ChildUpdate {
-        cell_index: usize,
-        update: Result<JourneyUpdateEvent, String>,
-    },
 }
 
-struct CellRuntime {
-    journey_id: Option<Uuid>,
-    live: LiveDagState,
-    stream_error: Option<String>,
-    visual: CellVisualState,
+trait NodeStateVisual {
+    fn label(self) -> &'static str;
+    fn palette(self) -> (Color, Color);
+    fn color(self, cell_id: u32) -> Color;
 }
 
-impl CellRuntime {
-    fn new(cell: &CellDefinition) -> Self {
-        let mut live = LiveDagState::default();
-        live.bind_model(&cell.dag);
-        Self {
-            journey_id: None,
-            live,
-            stream_error: None,
-            visual: CellVisualState::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum CellActivity {
-    Idle,
-    Processing,
-    Propagating,
-    Optimizing,
-    Failed,
-}
-
-impl CellActivity {
-    fn from_step_label(label: &str) -> Self {
-        if label.starts_with("WaitFor") || matches!(label, "InitRecvId" | "InitFusion") {
-            Self::Idle
-        } else {
-            let label = label.to_ascii_lowercase();
-            if label.contains("optimiz") || label.contains("perturb") {
-                Self::Optimizing
-            } else if label.contains("transmit") || label.contains("propagat") {
-                Self::Propagating
-            } else {
-                Self::Processing
-            }
-        }
-    }
-
+impl NodeStateVisual for SunNodeState {
     fn label(self) -> &'static str {
         match self {
-            Self::Idle => "idle",
-            Self::Processing => "processing",
-            Self::Propagating => "propagating",
-            Self::Optimizing => "optimizing",
-            Self::Failed => "failed",
+            SunNodeState::Idle => "idle",
+            SunNodeState::Propagation1 => "propagation 1",
+            SunNodeState::Propagation2 => "propagation 2",
+            SunNodeState::Optimization => "optimization",
         }
     }
 
     fn palette(self) -> (Color, Color) {
         match self {
-            Self::Idle => (
+            SunNodeState::Idle => (
                 Color::from_rgb8(220, 76, 24),
                 Color::from_rgb8(246, 164, 46),
             ),
-            Self::Processing => (
-                Color::from_rgb8(123, 58, 202),
-                Color::from_rgb8(164, 87, 232),
-            ),
-            Self::Propagating => (
+            SunNodeState::Propagation1 => (
                 Color::from_rgb8(238, 161, 35),
                 Color::from_rgb8(250, 215, 72),
             ),
-            Self::Optimizing => (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57)),
-            Self::Failed => (Color::from_rgb8(151, 24, 40), Color::from_rgb8(194, 40, 49)),
+            SunNodeState::Propagation2 => {
+                (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57))
+            }
+            SunNodeState::Optimization => (
+                Color::from_rgb8(123, 58, 202),
+                Color::from_rgb8(164, 87, 232),
+            ),
         }
     }
 
@@ -529,55 +482,73 @@ impl CellActivity {
     }
 }
 
+fn phase_path(from: SunNodeState, to: SunNodeState) -> Vec<SunNodeState> {
+    if from == to {
+        return Vec::new();
+    }
+    if to == SunNodeState::Idle {
+        return vec![SunNodeState::Idle];
+    }
+
+    let mut path = Vec::new();
+    let mut phase = from;
+    for _ in 0..4 {
+        phase = match phase {
+            SunNodeState::Idle | SunNodeState::Optimization => SunNodeState::Propagation1,
+            SunNodeState::Propagation1 => SunNodeState::Propagation2,
+            SunNodeState::Propagation2 => SunNodeState::Optimization,
+        };
+        path.push(phase);
+        if phase == to {
+            return path;
+        }
+    }
+    vec![to]
+}
+
 #[derive(Debug, Clone)]
 struct CellVisualState {
-    previous: CellActivity,
-    current: CellActivity,
+    previous: SunNodeState,
+    current: SunNodeState,
     transition_started_at: Option<Instant>,
-    pending: Option<CellActivity>,
+    pending: VecDeque<SunNodeState>,
 }
 
 impl Default for CellVisualState {
     fn default() -> Self {
         Self {
-            previous: CellActivity::Idle,
-            current: CellActivity::Idle,
+            previous: SunNodeState::Idle,
+            current: SunNodeState::Idle,
             transition_started_at: None,
-            pending: None,
+            pending: VecDeque::new(),
         }
     }
 }
 
 impl CellVisualState {
-    fn observe(&mut self, activity: CellActivity, now: Instant) -> bool {
-        if activity == self.current {
-            self.pending = None;
+    fn observe(&mut self, activity: SunNodeState, now: Instant) -> bool {
+        let latest = self.pending.back().copied().unwrap_or(self.current);
+        if activity == latest {
             return false;
         }
 
-        if self.can_transition(now) {
-            self.begin_transition(activity, now);
-            true
+        let path = phase_path(latest, activity);
+        if self.pending.len() + path.len() > MAX_PENDING_PHASES {
+            self.pending = phase_path(self.current, activity).into();
         } else {
-            self.pending = Some(activity);
-            false
+            self.pending.extend(path);
         }
+        if self.can_transition(now) {
+            return self.begin_next_transition(now);
+        }
+        false
     }
 
     fn advance(&mut self, now: Instant) -> bool {
         if !self.can_transition(now) {
             return false;
         }
-
-        let Some(activity) = self.pending.take() else {
-            return false;
-        };
-        if activity == self.current {
-            return false;
-        }
-
-        self.begin_transition(activity, now);
-        true
+        self.begin_next_transition(now)
     }
 
     fn color(&self, cell_id: u32, now: Instant) -> Color {
@@ -602,7 +573,7 @@ impl CellVisualState {
     }
 
     fn needs_tick(&self, now: Instant) -> bool {
-        self.pending.is_some() || self.is_fading(now)
+        !self.pending.is_empty() || self.is_fading(now)
     }
 
     fn can_transition(&self, now: Instant) -> bool {
@@ -611,11 +582,17 @@ impl CellVisualState {
         })
     }
 
-    fn begin_transition(&mut self, activity: CellActivity, now: Instant) {
+    fn begin_next_transition(&mut self, now: Instant) -> bool {
+        let Some(activity) = self.pending.pop_front() else {
+            return false;
+        };
+        if activity == self.current {
+            return self.begin_next_transition(now);
+        }
         self.previous = self.current;
         self.current = activity;
         self.transition_started_at = Some(now);
-        self.pending = None;
+        true
     }
 }
 
@@ -623,28 +600,34 @@ struct BeamApp {
     config: BeamConfig,
     model: BeamModel,
     live: Option<LiveConfig>,
-    cell_runtime: Vec<CellRuntime>,
-    discovering: bool,
+    visuals: HashMap<u32, CellVisualState>,
+    appearance_loading: bool,
+    appearance_error: Option<String>,
     color_now: Instant,
 }
 
 impl BeamApp {
-    fn new<A>(config: BeamConfig, live: Option<LiveConfig>) -> (Self, Task<Message>)
-    where
-        A: Animal + 'static,
-        A::Flow: BlackHoleSunFlow,
-    {
-        let model = BeamModel::build::<A::Flow>();
+    fn new(
+        config: BeamConfig,
+        model: BeamModel,
+        live: Option<LiveConfig>,
+    ) -> (Self, Task<Message>) {
         debug_assert!(
             model.errors.is_empty(),
             "invalid Black Hole Sun: {:?}",
             &model.errors
         );
-        let cell_runtime = model.cells.iter().map(CellRuntime::new).collect();
-        let discovering = live.is_some();
+        let now = Instant::now();
+        let mut visuals = HashMap::new();
+        for cell in &model.cells {
+            let mut visual = CellVisualState::default();
+            visual.observe(cell.state, now);
+            visuals.insert(cell.id, visual);
+        }
+        let appearance_loading = live.is_some();
         let task = live
             .as_ref()
-            .map(|live| discovery_task(live.clone(), model.spawn_runtime_to_cell.clone()))
+            .map(|live| appearance_task(live.clone()))
             .unwrap_or_else(Task::none);
 
         (
@@ -652,9 +635,10 @@ impl BeamApp {
                 config,
                 model,
                 live,
-                cell_runtime,
-                discovering,
-                color_now: Instant::now(),
+                visuals,
+                appearance_loading,
+                appearance_error: None,
+                color_now: now,
             },
             task,
         )
@@ -662,76 +646,62 @@ impl BeamApp {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::DiscoveryTick => {
-                if !self.discovering
-                    && self.live.is_some()
-                    && self
-                        .cell_runtime
-                        .iter()
-                        .any(|runtime| runtime.journey_id.is_none())
-                {
-                    self.discovering = true;
+            Message::AppearanceTick => {
+                if !self.appearance_loading {
+                    self.appearance_loading = true;
                     if let Some(live) = self.live.clone() {
-                        return discovery_task(live, self.model.spawn_runtime_to_cell.clone());
+                        return appearance_task(live);
                     }
+                }
+            }
+            Message::AppearanceLoaded(result) => {
+                self.appearance_loading = false;
+                match result {
+                    Ok(Some(appearance)) if appearance.finalized => {
+                        match BeamModel::from_appearance(appearance) {
+                            Ok(model) => {
+                                let now = Instant::now();
+                                self.color_now = now;
+                                let node_ids = model
+                                    .cells
+                                    .iter()
+                                    .map(|cell| cell.id)
+                                    .collect::<HashSet<_>>();
+                                self.visuals.retain(|node_id, _| node_ids.contains(node_id));
+                                for cell in &model.cells {
+                                    self.visuals
+                                        .entry(cell.id)
+                                        .or_default()
+                                        .observe(cell.state, now);
+                                }
+                                self.model = model;
+                                self.appearance_error = None;
+                                return iced_sugiyama::force_review(iced_sugiyama::Id::new(
+                                    CELL_GRAPH_ID,
+                                ));
+                            }
+                            Err(error) => self.appearance_error = Some(error),
+                        }
+                    }
+                    Ok(Some(_)) | Ok(None) => {}
+                    Err(error) => self.appearance_error = Some(error),
                 }
             }
             Message::ColorTick(now) => {
                 let was_fading = self
-                    .cell_runtime
-                    .iter()
-                    .any(|runtime| runtime.visual.is_fading(self.color_now));
+                    .visuals
+                    .values()
+                    .any(|visual| visual.is_fading(self.color_now));
                 self.color_now = now;
                 let mut transitioned = false;
-                for runtime in &mut self.cell_runtime {
-                    transitioned |= runtime.visual.advance(now);
+                for visual in self.visuals.values_mut() {
+                    transitioned |= visual.advance(now);
                 }
-                let is_fading = self
-                    .cell_runtime
-                    .iter()
-                    .any(|runtime| runtime.visual.is_fading(now));
+                let is_fading = self.visuals.values().any(|visual| visual.is_fading(now));
 
                 if was_fading || transitioned || is_fading {
                     return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
                 }
-            }
-            Message::ChildrenDiscovered(result) => {
-                self.discovering = false;
-                if let Ok(children) = result {
-                    let now = Instant::now();
-                    self.color_now = now;
-                    for (index, journey_id) in children {
-                        let Some(runtime) = self.cell_runtime.get_mut(index) else {
-                            continue;
-                        };
-                        if runtime.journey_id != Some(journey_id) {
-                            runtime.journey_id = Some(journey_id);
-                            runtime.live = LiveDagState::default();
-                            runtime.live.bind_model(&self.model.cells[index].dag);
-                            runtime.stream_error = None;
-                            runtime.visual.observe(CellActivity::Idle, now);
-                        }
-                    }
-                    return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
-                }
-            }
-            Message::ChildUpdate { cell_index, update } => {
-                let Some(runtime) = self.cell_runtime.get_mut(cell_index) else {
-                    return Task::none();
-                };
-                match update {
-                    Ok(update) => {
-                        runtime.stream_error = None;
-                        runtime.live.apply_update(update);
-                    }
-                    Err(error) => runtime.stream_error = Some(error),
-                }
-                let now = Instant::now();
-                self.color_now = now;
-                let activity = cell_activity(&self.model.cells[cell_index], runtime);
-                runtime.visual.observe(activity, now);
-
-                return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
             }
         }
 
@@ -739,46 +709,36 @@ impl BeamApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let Some(live) = &self.live else {
-            return Subscription::none();
-        };
-
         let mut subscriptions = Vec::new();
-        if self
-            .cell_runtime
-            .iter()
-            .any(|runtime| runtime.journey_id.is_none())
-        {
+        if self.live.is_some() && !self.appearance_loading {
             subscriptions
-                .push(iced::time::every(DISCOVERY_INTERVAL).map(|_| Message::DiscoveryTick));
+                .push(iced::time::every(APPEARANCE_INTERVAL).map(|_| Message::AppearanceTick));
         }
         if self
-            .cell_runtime
-            .iter()
-            .any(|runtime| runtime.visual.needs_tick(self.color_now))
+            .visuals
+            .values()
+            .any(|visual| visual.needs_tick(self.color_now))
         {
             subscriptions.push(iced::time::every(COLOR_FRAME_INTERVAL).map(Message::ColorTick));
-        }
-
-        for (cell_index, runtime) in self.cell_runtime.iter().enumerate() {
-            let Some(journey_id) = runtime.journey_id else {
-                continue;
-            };
-            subscriptions.push(Subscription::run_with(
-                ChildSubscription {
-                    client: live.client.clone(),
-                    journey_id,
-                    cell_index,
-                },
-                child_updates_stream,
-            ));
         }
 
         Subscription::batch(subscriptions)
     }
 
     fn view(&self) -> Element<'_, Message> {
-        container(self.cell_graph())
+        let content: Element<'_, Message> = if self.model.cells.is_empty() {
+            text(
+                self.appearance_error
+                    .as_deref()
+                    .unwrap_or("Waiting for Black Hole Sun appearance…"),
+            )
+            .size(16)
+            .color(black_hole_text())
+            .into()
+        } else {
+            self.cell_graph()
+        };
+        container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(app_background_style)
@@ -790,9 +750,12 @@ impl BeamApp {
             .model
             .cells
             .iter()
-            .enumerate()
-            .map(|(index, cell)| {
-                let activity = self.cell_runtime[index].visual.current;
+            .map(|cell| {
+                let activity = self
+                    .visuals
+                    .get(&cell.id)
+                    .map(|visual| visual.current)
+                    .unwrap_or(cell.state);
                 (cell.id, (cell.animal_name.clone(), activity))
             })
             .collect::<HashMap<_, _>>();
@@ -805,11 +768,11 @@ impl BeamApp {
                 let (animal_name, activity) = labels
                     .get(&node_id)
                     .cloned()
-                    .unwrap_or((format!("cell {node_id}"), CellActivity::Idle));
+                    .unwrap_or((format!("cell {node_id}"), SunNodeState::Idle));
                 let color = colors_for_nodes
                     .get(&node_id)
                     .copied()
-                    .unwrap_or_else(|| CellActivity::Idle.color(node_id));
+                    .unwrap_or_else(|| SunNodeState::Idle.color(node_id));
                 container(
                     column![
                         text(animal_name).size(16).color(contrasting_text(color)),
@@ -873,11 +836,11 @@ impl BeamApp {
                 let start = colors_for_edges
                     .get(&ctx.edge.0)
                     .copied()
-                    .unwrap_or_else(|| CellActivity::Idle.color(ctx.edge.0));
+                    .unwrap_or_else(|| SunNodeState::Idle.color(ctx.edge.0));
                 let end = colors_for_edges
                     .get(&ctx.edge.1)
                     .copied()
-                    .unwrap_or_else(|| CellActivity::Idle.color(ctx.edge.1));
+                    .unwrap_or_else(|| SunNodeState::Idle.color(ctx.edge.1));
                 (lighten(start, 0.18), end)
             })
             .stroke_width(1.4)
@@ -903,121 +866,34 @@ impl BeamApp {
         self.model
             .cells
             .iter()
-            .enumerate()
-            .map(|(index, cell)| {
-                let runtime = &self.cell_runtime[index];
-                (cell.id, runtime.visual.color(cell.id, self.color_now))
+            .map(|cell| {
+                let color = self
+                    .visuals
+                    .get(&cell.id)
+                    .map(|visual| visual.color(cell.id, self.color_now))
+                    .unwrap_or_else(|| cell.state.color(cell.id));
+                (cell.id, color)
             })
             .collect()
     }
 }
 
-fn cell_activity(cell: &CellDefinition, runtime: &CellRuntime) -> CellActivity {
-    if runtime.stream_error.is_some() || !runtime.live.failed_runtime_ids.is_empty() {
-        return CellActivity::Failed;
-    }
-
-    cell.dag
-        .nodes
-        .iter()
-        .filter(|node| {
-            node.runtime_node_id
-                .is_some_and(|id| runtime.live.active_runtime_ids.contains(&id))
-                || node
-                    .proxy_runtime_ids
-                    .iter()
-                    .any(|id| runtime.live.active_runtime_ids.contains(id))
-        })
-        .map(|node| CellActivity::from_step_label(&node.label))
-        .max()
-        .unwrap_or(CellActivity::Idle)
+fn appearance_task(live: LiveConfig) -> Task<Message> {
+    Task::perform(fetch_appearance(live), Message::AppearanceLoaded)
 }
 
-#[derive(Clone)]
-struct ChildSubscription {
-    client: Arc<dyn JungleClient>,
-    journey_id: Uuid,
-    cell_index: usize,
-}
-
-impl Hash for ChildSubscription {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.journey_id.hash(state);
-        self.cell_index.hash(state);
-    }
-}
-
-fn child_updates_stream(config: &ChildSubscription) -> impl Stream<Item = Message> {
-    let client = config.client.clone();
-    let journey_id = config.journey_id;
-    let cell_index = config.cell_index;
-    futures::stream::once(async move {
-        let stream: Pin<Box<dyn Stream<Item = Message> + Send>> =
-            match client.subscribe_step_updates(journey_id, None).await {
-                Ok(subscription) => Box::pin(map_child_updates(subscription, cell_index)),
-                Err(error) => Box::pin(futures::stream::once(async move {
-                    Message::ChildUpdate {
-                        cell_index,
-                        update: Err(error.to_string()),
-                    }
-                })),
-            };
-        stream
-    })
-    .flatten()
-}
-
-fn map_child_updates(
-    subscription: JourneyUpdateSubscription,
-    cell_index: usize,
-) -> impl Stream<Item = Message> {
-    subscription.map(move |update| Message::ChildUpdate {
-        cell_index,
-        update: update.map_err(|error| error.to_string()),
-    })
-}
-
-fn discovery_task(live: LiveConfig, spawn_runtime_to_cell: HashMap<u32, usize>) -> Task<Message> {
-    Task::perform(
-        discover_children(live, spawn_runtime_to_cell),
-        Message::ChildrenDiscovered,
-    )
-}
-
-async fn discover_children(
-    live: LiveConfig,
-    spawn_runtime_to_cell: HashMap<u32, usize>,
-) -> Result<Vec<(usize, Uuid)>, String> {
-    let history = live
+async fn fetch_appearance(live: LiveConfig) -> Result<Option<SunAppearance>, String> {
+    let bytes = live
         .client
-        .journey_history(live.journey_id)
+        .animal_appearance(live.journey_id)
         .await
         .map_err(|error| error.to_string())?;
-    decode_child_journeys(history, &spawn_runtime_to_cell)
-}
-
-fn decode_child_journeys(
-    history: impl IntoIterator<Item = RunnerOut>,
-    spawn_runtime_to_cell: &HashMap<u32, usize>,
-) -> Result<Vec<(usize, Uuid)>, String> {
-    let mut children = HashMap::<usize, Uuid>::new();
-
-    for event in history {
-        let RunnerOut::EffectSuccessOutput { node_id, data, .. } = event else {
-            continue;
-        };
-        let Some(cell_index) = spawn_runtime_to_cell.get(&node_id).copied() else {
-            continue;
-        };
-        let journey_id = postcard::from_bytes::<Uuid>(&data).map_err(|error| {
-            format!("could not decode child journey for spawn node {node_id}: {error}")
-        })?;
-        children.insert(cell_index, journey_id);
-    }
-
-    let mut children = children.into_iter().collect::<Vec<_>>();
-    children.sort_by_key(|(index, _)| *index);
-    Ok(children)
+    bytes
+        .map(|bytes| {
+            postcard::from_bytes::<SunAppearance>(&bytes)
+                .map_err(|error| format!("could not decode Sun appearance: {error}"))
+        })
+        .transpose()
 }
 
 fn black_hole_text() -> Color {
@@ -1086,7 +962,7 @@ fn short_type_name<T: ?Sized>() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use black_hole_flux::sun::{Binary, BlackHole, Unary};
+    use black_hole_flux::sun::{Binary, BlackHole, SunEdgeAppearance, SunNodeAppearance, Unary};
     use black_hole_flux::{CellState, Fusion, Primordium};
     use jungle_sdk::typosaurus::collections::list::{Empty, List};
     use jungle_sdk::Id;
@@ -1128,36 +1004,32 @@ mod tests {
             BeamLayout::Dot
         ));
         assert_eq!(
-            CellActivity::Idle.palette(),
+            SunNodeState::Idle.palette(),
             (
                 Color::from_rgb8(220, 76, 24),
                 Color::from_rgb8(246, 164, 46)
             )
         );
         assert_eq!(
-            CellActivity::Processing.palette(),
-            (
-                Color::from_rgb8(123, 58, 202),
-                Color::from_rgb8(164, 87, 232)
-            )
-        );
-        assert_eq!(
-            CellActivity::Propagating.palette(),
+            SunNodeState::Propagation1.palette(),
             (
                 Color::from_rgb8(238, 161, 35),
                 Color::from_rgb8(250, 215, 72)
             )
         );
         assert_eq!(
-            CellActivity::Optimizing.palette(),
+            SunNodeState::Propagation2.palette(),
             (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57))
         );
         assert_eq!(
-            CellActivity::Failed.palette(),
-            (Color::from_rgb8(151, 24, 40), Color::from_rgb8(194, 40, 49))
+            SunNodeState::Optimization.palette(),
+            (
+                Color::from_rgb8(123, 58, 202),
+                Color::from_rgb8(164, 87, 232)
+            )
         );
-        assert_ne!(CellActivity::Idle.color(0), CellActivity::Idle.color(1));
-        assert!(CellActivity::Idle.color(1).g > CellActivity::Idle.color(0).g);
+        assert_ne!(SunNodeState::Idle.color(0), SunNodeState::Idle.color(1));
+        assert!(SunNodeState::Idle.color(1).g > SunNodeState::Idle.color(0).g);
     }
 
     #[test]
@@ -1167,42 +1039,70 @@ mod tests {
 
         assert_eq!(COLOR_FADE_DURATION, Duration::from_millis(400));
         assert_eq!(MIN_COLOR_STATE_DURATION, Duration::from_secs(1));
-        assert!(visual.observe(CellActivity::Processing, start));
+        assert!(visual.observe(SunNodeState::Propagation1, start));
         assert_eq!(
             visual.color(0, start),
-            CellActivity::Idle.color(0),
+            SunNodeState::Idle.color(0),
             "the fade starts from the previous activity color"
         );
         assert_eq!(
             visual.color(0, start + COLOR_FADE_DURATION / 2),
             lerp_color(
-                CellActivity::Idle.color(0),
-                CellActivity::Processing.color(0),
+                SunNodeState::Idle.color(0),
+                SunNodeState::Propagation1.color(0),
                 0.5
             ),
             "the color is blended halfway through the fade"
         );
         assert_eq!(
             visual.color(0, start + COLOR_FADE_DURATION),
-            CellActivity::Processing.color(0),
+            SunNodeState::Propagation1.color(0),
             "the fade reaches the new color after 400ms"
         );
 
-        assert!(!visual.observe(CellActivity::Propagating, start + COLOR_FADE_DURATION));
+        assert!(!visual.observe(SunNodeState::Propagation2, start + COLOR_FADE_DURATION));
         assert!(!visual.advance(start + MIN_COLOR_STATE_DURATION - Duration::from_millis(1)));
         assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
-        assert_eq!(visual.current, CellActivity::Propagating);
+        assert_eq!(visual.current, SunNodeState::Propagation2);
     }
 
     #[test]
-    fn extracts_cells_edges_and_spawn_nodes_from_black_hole_sun() {
+    fn queues_intermediate_phases_when_an_appearance_jumps() {
+        let start = Instant::now();
+        let mut visual = CellVisualState::default();
+
+        assert!(visual.observe(SunNodeState::Propagation2, start));
+        assert_eq!(visual.current, SunNodeState::Propagation1);
+        assert_eq!(visual.pending, VecDeque::from([SunNodeState::Propagation2]));
+        assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
+        assert_eq!(visual.current, SunNodeState::Propagation2);
+    }
+
+    #[test]
+    fn bounds_pending_phases_when_epochs_outpace_the_animation() {
+        let start = Instant::now();
+        let mut visual = CellVisualState::default();
+        for phase in [
+            SunNodeState::Propagation2,
+            SunNodeState::Optimization,
+            SunNodeState::Propagation1,
+            SunNodeState::Propagation2,
+            SunNodeState::Optimization,
+            SunNodeState::Propagation1,
+        ] {
+            visual.observe(phase, start);
+        }
+
+        assert!(visual.pending.len() <= MAX_PENDING_PHASES);
+    }
+
+    #[test]
+    fn extracts_static_cells_and_edges_from_black_hole_sun() {
         let model = BeamModel::build::<TestSun>();
 
         assert!(model.errors.is_empty(), "{:?}", model.errors);
         assert_eq!(model.graph.nodes, vec![0, 1]);
         assert_eq!(model.graph.edges, vec![(0, 1)]);
-        assert_eq!(model.spawn_runtime_to_cell.get(&1), Some(&0));
-        assert_eq!(model.spawn_runtime_to_cell.get(&3), Some(&1));
     }
 
     #[test]
@@ -1212,64 +1112,82 @@ mod tests {
         assert!(model.errors.is_empty(), "{:?}", model.errors);
         assert_eq!(model.graph.nodes, vec![0]);
         assert_eq!(model.cells[0].ports, vec![0, 1]);
-        assert_eq!(model.spawn_runtime_to_cell.get(&1), Some(&0));
     }
 
     #[test]
-    fn derives_cell_activity_from_the_active_child_step() {
-        let model = BeamModel::build::<TestSun>();
-        let cell = &model.cells[0];
-        let mut runtime = CellRuntime::new(cell);
+    fn builds_live_model_from_serialized_sun_appearance() {
+        let appearance = SunAppearance {
+            finalized: true,
+            nodes: vec![
+                SunNodeAppearance {
+                    id: 2,
+                    label: "Fusion".to_string(),
+                    input_ports: vec![2, 3],
+                    state: SunNodeState::Optimization,
+                },
+                SunNodeAppearance {
+                    id: 0,
+                    label: "Root".to_string(),
+                    input_ports: vec![0],
+                    state: SunNodeState::Propagation1,
+                },
+            ],
+            edges: vec![
+                SunEdgeAppearance {
+                    source: 0,
+                    target: 2,
+                    target_port: 3,
+                },
+                SunEdgeAppearance {
+                    source: 0,
+                    target: 2,
+                    target_port: 2,
+                },
+            ],
+        };
+        let bytes = postcard::to_allocvec(&appearance).unwrap();
+        let decoded = postcard::from_bytes::<SunAppearance>(&bytes).unwrap();
+        let model = BeamModel::from_appearance(decoded).unwrap();
 
-        for (label, expected) in [
-            ("WaitForPropagationAction", CellActivity::Idle),
-            ("QuarkInferStep", CellActivity::Processing),
-            ("Transmit", CellActivity::Propagating),
-            ("PerturbUp", CellActivity::Optimizing),
-            ("Optimize", CellActivity::Optimizing),
-        ] {
-            let runtime_id = cell
-                .dag
-                .nodes
-                .iter()
-                .find(|node| node.label == label)
-                .and_then(|node| node.runtime_node_id)
-                .unwrap_or_else(|| panic!("missing runtime node for {label}"));
-            runtime.live.active_runtime_ids.clear();
-            runtime.live.active_runtime_ids.insert(runtime_id);
-
-            assert_eq!(cell_activity(cell, &runtime), expected, "{label}");
-        }
-
-        runtime.stream_error = Some("subscription closed".to_string());
-        assert_eq!(cell_activity(cell, &runtime), CellActivity::Failed);
+        assert_eq!(model.graph.nodes, vec![0, 2]);
+        assert_eq!(
+            model.graph.edges,
+            vec![(0, 2)],
+            "parallel destination-port edges collapse only for rendering"
+        );
+        assert_eq!(model.cells[0].animal_name, "Root");
+        assert_eq!(model.cells[0].state, SunNodeState::Propagation1);
+        assert_eq!(model.cells[1].state, SunNodeState::Optimization);
     }
 
     #[test]
-    fn decodes_spawn_outputs_as_child_journeys() {
-        let first = Uuid::from_u128(1);
-        let second = Uuid::from_u128(2);
-        let history = vec![
-            RunnerOut::EffectSuccessOutput {
-                node_id: 99,
-                data: vec![0xff],
-                uuid: Uuid::nil(),
-            },
-            RunnerOut::EffectSuccessOutput {
-                node_id: 3,
-                data: postcard::to_allocvec(&second).unwrap(),
-                uuid: Uuid::nil(),
-            },
-            RunnerOut::EffectSuccessOutput {
-                node_id: 1,
-                data: postcard::to_allocvec(&first).unwrap(),
-                uuid: Uuid::nil(),
-            },
-        ];
-        let spawn_nodes = HashMap::from([(1, 0), (3, 1)]);
+    fn rejects_appearance_edges_with_the_wrong_destination_port() {
+        let appearance = SunAppearance {
+            finalized: true,
+            nodes: vec![
+                SunNodeAppearance {
+                    id: 0,
+                    label: "Root".to_string(),
+                    input_ports: vec![0],
+                    state: SunNodeState::Idle,
+                },
+                SunNodeAppearance {
+                    id: 1,
+                    label: "Sink".to_string(),
+                    input_ports: vec![1],
+                    state: SunNodeState::Idle,
+                },
+            ],
+            edges: vec![SunEdgeAppearance {
+                source: 0,
+                target: 1,
+                target_port: 9,
+            }],
+        };
 
-        let children = decode_child_journeys(history, &spawn_nodes).unwrap();
-
-        assert_eq!(children, vec![(0, first), (1, second)]);
+        let error = BeamModel::from_appearance(appearance)
+            .err()
+            .expect("appearance should be rejected");
+        assert!(error.contains("unowned input port 9"));
     }
 }

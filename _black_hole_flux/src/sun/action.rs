@@ -7,8 +7,8 @@ use crate::sun::effect::{GenFusionSeedEffect, GenUuidEffect};
 use crate::{FusionSeed, FusionState};
 
 use super::effect::{
-    BroadcastPotentiationEffect, PropagationTarget, WaitForLayerTransmission,
-    WaitForLayerTransmissionInput,
+    BroadcastPotentiationEffect, PropagationTarget, SendRootPropagationEffect,
+    SendRootPropagationInput, WaitForLayerTransmission, WaitForLayerTransmissionInput,
 };
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
@@ -51,6 +51,7 @@ where
 fn register_vertex(
     state: &mut super::SunState,
     vertex_id: u32,
+    node_label: String,
     ports: &[(u32, ObjectId)],
     declared_outputs: Vec<u32>,
     journey_id: Uuid,
@@ -58,6 +59,8 @@ fn register_vertex(
     let mut inner = state.a.shared.lock().unwrap();
 
     inner.journey_ids.entry(vertex_id).or_insert(journey_id);
+    inner.node_labels.entry(vertex_id).or_insert(node_label);
+    inner.node_states.entry(vertex_id).or_default();
     inner
         .vertex_ports
         .entry(vertex_id)
@@ -75,6 +78,11 @@ fn register_vertex(
         inner.port_vertices.insert(port_id, vertex_id);
         inner.p1_tx.insert(port_id, initial_recv_id);
     }
+}
+
+fn short_type_name<T: ?Sized>() -> String {
+    let full = core::any::type_name::<T>();
+    full.rsplit("::").next().unwrap_or(full).to_string()
 }
 
 /// Spawns and registers a [`Unary`](super::Unary) descriptor.
@@ -107,6 +115,7 @@ where
         register_vertex(
             state,
             port_id,
+            short_type_name::<A>(),
             &[(port_id, initial_recv_id)],
             E::node_ids(),
             journey_id,
@@ -152,6 +161,7 @@ where
         register_vertex(
             state,
             p1,
+            short_type_name::<A>(),
             &[(p1, seed.p1_recv_id), (p2, seed.p2_recv_id)],
             E::node_ids(),
             journey_id,
@@ -262,6 +272,7 @@ impl Action for FinalizeGraph {
         output.map_err(|_| Failure::Message("finalize graph failed".to_string()))?;
 
         let mut inner = state.a.shared.lock().unwrap();
+        inner.finalized = false;
 
         if !inner.duplicate_ports.is_empty() {
             let mut ports: Vec<_> = inner.duplicate_ports.iter().copied().collect();
@@ -398,6 +409,7 @@ impl Action for FinalizeGraph {
             inner.p1_rx.insert(vertex_id, Uuid::new_v4());
             inner.p2_rx.insert(vertex_id, Uuid::new_v4());
         }
+        inner.finalized = true;
 
         Ok(())
     }
@@ -405,6 +417,76 @@ impl Action for FinalizeGraph {
 
 /// Compatibility alias for the former mailbox-only graph setup action.
 pub type BuildAddrs = FinalizeGraph;
+
+// ---------------------------------------------------------------------------
+// SendRootPropagation — seed every root before waiting for layer output
+// ---------------------------------------------------------------------------
+
+pub struct SendRootPropagation<S>(PhantomData<fn() -> S>);
+
+#[jungle::action]
+impl<S> Action for SendRootPropagation<S>
+where
+    S: TopologyState,
+{
+    type Effect = SendRootPropagationEffect;
+    type Input = Transmission;
+    type Output = Transmission;
+    type Carry = Transmission;
+
+    fn emit(state: &S, input: Self::Input) -> (SendRootPropagationInput, Transmission) {
+        let carry = input.clone();
+        let inner = state.get_shared().lock().unwrap();
+        let (input_map, next_input_map, output_map) = S::transmission_maps(&inner);
+        let target = |port_id| {
+            let node_id = *inner.port_vertices.get(&port_id)?;
+            Some(PropagationTarget {
+                node_id,
+                port_id,
+                input_id: *input_map.get(&port_id)?,
+                next_input_id: *next_input_map.get(&port_id)?,
+                output_id: *output_map.get(&node_id)?,
+            })
+        };
+
+        let mut targets = inner
+            .vertex_ports
+            .iter()
+            .filter(|(node_id, _)| {
+                inner
+                    .incoming
+                    .get(node_id)
+                    .is_none_or(|sources| sources.is_empty())
+            })
+            .flat_map(|(_, ports)| ports.iter().copied())
+            .filter_map(target)
+            .collect::<Vec<_>>();
+        targets.sort_by_key(|target| (target.node_id, target.port_id));
+
+        (
+            SendRootPropagationInput {
+                targets,
+                transmission: input,
+            },
+            carry,
+        )
+    }
+
+    fn absorb(
+        state: &mut S,
+        output: EffectCompletion<Self::Effect>,
+        carry: Self::Carry,
+    ) -> Result<Self::Output, Failure> {
+        let sent_node_ids =
+            output.map_err(|e| Failure::Message(format!("send root propagation failed: {e}")))?;
+        state
+            .get_shared()
+            .lock()
+            .unwrap()
+            .record_propagation_sent(sent_node_ids, S::PROPAGATION_STATE);
+        Ok(carry)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PopLayer — pop the next topological layer into current
@@ -463,30 +545,20 @@ pub struct ProcessNode<S>(std::marker::PhantomData<fn() -> S>);
 #[jungle::action]
 impl<S> Action for ProcessNode<S>
 where
-    S: TopologyState + 'static,
+    S: TopologyState,
 {
     type Effect = WaitForLayerTransmission;
     type Input = Transmission;
     type Output = Transmission;
 
-    fn emit(state: &S, input: Self::Input) -> WaitForLayerTransmissionInput {
+    fn emit(state: &S, _input: Self::Input) -> WaitForLayerTransmissionInput {
         let current = state.get_current().clone();
         let inner = state.get_shared().lock().unwrap();
         let outgoing = &inner.outgoing;
 
         // Each branch writes to the cell's current inbox, tells the cell which
         // inbox to use next, and waits at a dedicated output mailbox.
-        let (input_map, next_input_map, output_map): (
-            &HashMap<u32, black_hole_spec::ObjectId>,
-            &HashMap<u32, black_hole_spec::ObjectId>,
-            &HashMap<u32, black_hole_spec::ObjectId>,
-        ) = {
-            if std::any::TypeId::of::<S>() == std::any::TypeId::of::<super::PropA>() {
-                (&inner.p1_tx, &inner.p2_tx, &inner.p1_rx)
-            } else {
-                (&inner.p2_tx, &inner.po_tx, &inner.p2_rx)
-            }
-        };
+        let (input_map, next_input_map, output_map) = S::transmission_maps(&inner);
 
         let target = |port_id| {
             let node_id = *inner.port_vertices.get(&port_id)?;
@@ -505,27 +577,6 @@ where
             .filter_map(|&node_id| output_map.get(&node_id).map(|rx| (node_id, *rx)))
             .collect();
 
-        // Every input port on a root vertex receives the initial transmission.
-        let root_targets = current
-            .iter()
-            .copied()
-            .filter(|node_id| {
-                inner
-                    .incoming
-                    .get(node_id)
-                    .is_none_or(|sources| sources.is_empty())
-            })
-            .flat_map(|node_id| {
-                inner
-                    .vertex_ports
-                    .get(&node_id)
-                    .into_iter()
-                    .flatten()
-                    .copied()
-            })
-            .filter_map(&target)
-            .collect();
-
         // A completed vertex emission is forwarded to every declared
         // destination port with that port's next mailbox and its vertex's
         // shared output mailbox attached.
@@ -542,9 +593,7 @@ where
 
         WaitForLayerTransmissionInput {
             rx_endpoints,
-            root_targets,
             downstream,
-            input_transmission: input,
         }
     }
 
@@ -556,6 +605,11 @@ where
             .map_err(|e| Failure::Message(format!("wait for layer transmission failed: {e}")))?;
 
         let node_id = layer_tx.node_id;
+        state
+            .get_shared()
+            .lock()
+            .unwrap()
+            .record_propagation_sent(layer_tx.sent_node_ids, S::PROPAGATION_STATE);
 
         // Remove the processed node from the current layer.
         let mut current = state.get_current().clone();
@@ -626,11 +680,12 @@ impl Action for BroadcastPotentiation {
 
     fn emit(state: &super::SunState, input: Self::Input) -> BroadcastPotentiationInput {
         let inner = state.a.shared.lock().unwrap();
-        let port_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = inner
+        let mut port_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = inner
             .port_vertices
             .keys()
             .filter_map(|&port_id| inner.po_tx.get(&port_id).map(|tx| (port_id, *tx)))
             .collect();
+        port_endpoints.sort_by_key(|(port_id, _)| *port_id);
         drop(inner);
 
         BroadcastPotentiationInput {
@@ -648,6 +703,11 @@ impl Action for BroadcastPotentiation {
             output.map_err(|e| Failure::Message(format!("broadcast potentiation failed: {e}")))?;
 
         let mut inner = state.a.shared.lock().unwrap();
+        let optimized_node_ids = result
+            .next_p1_tx_map
+            .iter()
+            .filter_map(|(port_id, _)| inner.port_vertices.get(port_id).copied())
+            .collect::<HashSet<_>>();
         for (port_id, next_p1_tx) in &result.next_p1_tx_map {
             inner.p1_tx.insert(*port_id, *next_p1_tx);
             inner.p2_tx.insert(*port_id, Uuid::new_v4());
@@ -657,6 +717,7 @@ impl Action for BroadcastPotentiation {
             inner.p1_rx.insert(vertex_id, Uuid::new_v4());
             inner.p2_rx.insert(vertex_id, Uuid::new_v4());
         }
+        inner.record_optimization_sent(optimized_node_ids);
         drop(inner);
 
         Ok(())
@@ -679,8 +740,20 @@ pub struct BroadcastPotentiationInput {
 /// Trait that provides accessors for the topology-related fields
 /// shared by [`PropA`](super::PropA) and [`PropB`](super::PropB).
 pub trait TopologyState {
+    /// Appearance phase corresponding to this propagation branch.
+    const PROPAGATION_STATE: super::SunNodeState;
+
     /// Access the shared inner state.
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>>;
+
+    /// Select this branch's current input, next input, and output mailboxes.
+    fn transmission_maps(
+        inner: &super::SunInner,
+    ) -> (
+        &HashMap<u32, ObjectId>,
+        &HashMap<u32, ObjectId>,
+        &HashMap<u32, ObjectId>,
+    );
 
     /// Get a reference to the topological layers.
     fn get_topo(&self) -> &Vec<std::collections::HashSet<u32>>;
@@ -696,8 +769,19 @@ pub trait TopologyState {
 }
 
 impl TopologyState for super::PropA {
+    const PROPAGATION_STATE: super::SunNodeState = super::SunNodeState::Propagation1;
+
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
         &self.shared
+    }
+    fn transmission_maps(
+        inner: &super::SunInner,
+    ) -> (
+        &HashMap<u32, ObjectId>,
+        &HashMap<u32, ObjectId>,
+        &HashMap<u32, ObjectId>,
+    ) {
+        (&inner.p1_tx, &inner.p2_tx, &inner.p1_rx)
     }
     fn get_topo(&self) -> &Vec<std::collections::HashSet<u32>> {
         &self.topo
@@ -714,8 +798,19 @@ impl TopologyState for super::PropA {
 }
 
 impl TopologyState for super::PropB {
+    const PROPAGATION_STATE: super::SunNodeState = super::SunNodeState::Propagation2;
+
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
         &self.shared
+    }
+    fn transmission_maps(
+        inner: &super::SunInner,
+    ) -> (
+        &HashMap<u32, ObjectId>,
+        &HashMap<u32, ObjectId>,
+        &HashMap<u32, ObjectId>,
+    ) {
+        (&inner.p2_tx, &inner.po_tx, &inner.p2_rx)
     }
     fn get_topo(&self) -> &Vec<std::collections::HashSet<u32>> {
         &self.topo
@@ -755,7 +850,14 @@ mod tests {
             .iter()
             .map(|&port_id| (port_id, Uuid::new_v4()))
             .collect();
-        register_vertex(state, vertex_id, &ports, outputs.to_vec(), Uuid::new_v4());
+        register_vertex(
+            state,
+            vertex_id,
+            format!("Node{vertex_id}"),
+            &ports,
+            outputs.to_vec(),
+            Uuid::new_v4(),
+        );
     }
 
     fn finalize(state: &mut super::super::SunState) -> Result<(), Failure> {
@@ -810,5 +912,83 @@ mod tests {
 
         let error = finalize(&mut state).unwrap_err();
         assert!(error.to_string().contains("exactly one sink"));
+    }
+
+    #[test]
+    fn appearance_contains_deterministic_port_aware_topology() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 1, &[1], &[3]);
+        add_vertex(&mut state, 0, &[0], &[2]);
+        add_vertex(&mut state, 2, &[2, 3], &[]);
+        finalize(&mut state).unwrap();
+
+        let appearance = state.appearance();
+        assert!(appearance.finalized);
+        assert_eq!(
+            appearance
+                .nodes
+                .iter()
+                .map(|node| (
+                    node.id,
+                    node.label.as_str(),
+                    node.input_ports.clone(),
+                    node.state
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "Node0", vec![0], super::super::SunNodeState::Idle),
+                (1, "Node1", vec![1], super::super::SunNodeState::Idle),
+                (2, "Node2", vec![2, 3], super::super::SunNodeState::Idle),
+            ]
+        );
+        assert_eq!(
+            appearance.edges,
+            vec![
+                super::super::SunEdgeAppearance {
+                    source: 0,
+                    target: 2,
+                    target_port: 2,
+                },
+                super::super::SunEdgeAppearance {
+                    source: 1,
+                    target: 2,
+                    target_port: 3,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn propagation_phases_do_not_regress_and_restart_after_optimization() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[]);
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_propagation_sent([0], super::super::SunNodeState::Propagation2);
+            inner.record_propagation_sent([0], super::super::SunNodeState::Propagation1);
+        }
+        assert_eq!(
+            state.appearance().nodes[0].state,
+            super::super::SunNodeState::Propagation2
+        );
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_optimization_sent([0]);
+        }
+        assert_eq!(
+            state.appearance().nodes[0].state,
+            super::super::SunNodeState::Optimization
+        );
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_propagation_sent([0], super::super::SunNodeState::Propagation1);
+        }
+        assert_eq!(
+            state.appearance().nodes[0].state,
+            super::super::SunNodeState::Propagation1
+        );
     }
 }

@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use black_hole_flux::cell::action::InitRecvId;
 use black_hole_flux::ops::{SunOps, VoidInferOps};
-use black_hole_flux::sun::{Binary, BlackHole, SunState, Unary};
+use black_hole_flux::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_flux::{
     AtomError, CellState, Fusion, FusionSeed, FusionState, Potentiation, Transmit,
     WaitForPotentiationAction, WaitForPropagationAction,
@@ -300,21 +300,37 @@ impl Animal for FusionAnimal {
 /// An animal that runs the full BlackHole orchestration flow over a Sun graph.
 pub struct BlackHoleAnimal;
 
-#[jungle::animal(id = 1, generation = 0)]
+#[jungle::animal(observe, id = 1, generation = 0)]
 impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
     type Flow = <DiamondSun as BlackHole>::Sun<Generator, Policy>;
 }
 
+impl Observe for BlackHoleAnimal {
+    type Appearance = SunAppearance;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        state.appearance()
+    }
+}
+
 /// Runs the expanded, three-fusion diamond topology.
 pub struct ExpandedBlackHoleAnimal;
 
-#[jungle::animal(id = 6, generation = 0)]
+#[jungle::animal(observe, id = 6, generation = 0)]
 impl Animal for ExpandedBlackHoleAnimal {
     type State = SunState;
     type Seed = ();
     type Flow = <ExpandedDiamondSun as BlackHole>::Sun<Generator, Policy>;
+}
+
+impl Observe for ExpandedBlackHoleAnimal {
+    type Appearance = SunAppearance;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        state.appearance()
+    }
 }
 
 // ─── Ecosystem ───────────────────────────────────────────────────────────────
@@ -477,7 +493,7 @@ async fn exercise_sun<A>(
     epochs: usize,
 ) -> Vec<FusionObservation>
 where
-    A: Animal<Seed = ()>,
+    A: Animal<Seed = (), State = SunState> + Observe<Appearance = SunAppearance>,
     A::Id: AnimalIdValue,
     A::Generation: jungle_sdk::typosaurus::num::Unsigned,
 {
@@ -576,6 +592,38 @@ where
             );
         }
     }
+
+    let appearance = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(bytes) = client
+                .animal_appearance(journey_id)
+                .await
+                .expect("animal_appearance should succeed")
+            {
+                let appearance = postcard::from_bytes::<SunAppearance>(&bytes)
+                    .expect("Sun appearance should deserialize");
+                if appearance.finalized && appearance.nodes.len() == vertex_count {
+                    break appearance;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("finalized Sun appearance should become available");
+    assert_eq!(appearance.nodes.len(), vertex_count);
+    assert!(appearance.nodes.iter().all(|node| !node.label.is_empty()));
+    assert!(
+        appearance
+            .nodes
+            .iter()
+            .all(|node| node.state != SunNodeState::Idle),
+        "every node should expose an orchestration phase after completed epochs"
+    );
+    assert!(
+        !appearance.edges.is_empty(),
+        "the exercised Sun should expose its runtime topology"
+    );
 
     let observed = fusion_inputs.lock().unwrap().clone();
     for worker_handle in worker_handles {
@@ -775,7 +823,7 @@ pub(crate) fn run_beam() {
 #[cfg(test)]
 #[test]
 #[ignore]
-fn beam() {
+fn beam_test() {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let status = std::process::Command::new(cargo)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -797,7 +845,7 @@ mod primordia_merged {
 
     use async_trait::async_trait;
     use black_hole_flux::ops::{SunOps, VoidInferOps};
-    use black_hole_flux::sun::{Binary, BlackHole, SunState, Unary};
+    use black_hole_flux::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
     use black_hole_flux::{AtomError, Emission, Fusion, FusionSeed, FusionState, Progenitor};
     use black_hole_sun::black_hole_flux;
     use black_hole_sun::object_store::InMemoryObjectStore;
@@ -1030,7 +1078,8 @@ mod primordia_merged {
             _state: &mut FusionState,
             output: EffectCompletion<Self::Effect>,
         ) -> Result<Self::Output, Failure> {
-            output.map_err(|error| Failure::Message(format!("fusion concatenation failed: {error}")))
+            output
+                .map_err(|error| Failure::Message(format!("fusion concatenation failed: {error}")))
         }
     }
 
@@ -1109,29 +1158,53 @@ mod primordia_merged {
 
     pub struct ProgenitorBlackHole;
 
-    #[jungle::animal(id = 1, generation = 0)]
+    #[jungle::animal(observe, id = 1, generation = 0)]
     impl Animal for ProgenitorBlackHole {
         type State = SunState;
         type Seed = ();
         type Flow = <ThreeProgenitorSun as BlackHole>::Sun<Generator, Policy>;
     }
 
+    impl Observe for ProgenitorBlackHole {
+        type Appearance = SunAppearance;
+
+        fn observe(state: &Self::State) -> Self::Appearance {
+            state.appearance()
+        }
+    }
+
     pub struct DarkStarBlackHole;
 
-    #[jungle::animal(id = 3, generation = 0)]
+    #[jungle::animal(observe, id = 3, generation = 0)]
     impl Animal for DarkStarBlackHole {
         type State = SunState;
         type Seed = ();
         type Flow = <DarkStarSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy>;
     }
 
+    impl Observe for DarkStarBlackHole {
+        type Appearance = SunAppearance;
+
+        fn observe(state: &Self::State) -> Self::Appearance {
+            state.appearance()
+        }
+    }
+
     pub struct BlackDwarfBlackHole;
 
-    #[jungle::animal(id = 4, generation = 0)]
+    #[jungle::animal(observe, id = 4, generation = 0)]
     impl Animal for BlackDwarfBlackHole {
         type State = SunState;
         type Seed = ();
         type Flow = <ThreeProgenitorSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy>;
+    }
+
+    impl Observe for BlackDwarfBlackHole {
+        type Appearance = SunAppearance;
+
+        fn observe(state: &Self::State) -> Self::Appearance {
+            state.appearance()
+        }
     }
 
     #[derive(Animals)]
@@ -1226,7 +1299,11 @@ mod primordia_merged {
             result
         }
 
-        async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
+        async fn infer(
+            &self,
+            model_id: Uuid,
+            request: InferenceRequest,
+        ) -> Result<ObjectId, String> {
             // One generated token is enough to prove each Progenitor atom reached
             // the real model while keeping this integration test bounded.
             let request = match request {
@@ -1261,10 +1338,16 @@ mod primordia_merged {
             result
         }
 
-        async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
+        async fn optimize(
+            &self,
+            model_id: Uuid,
+            loss_up: f32,
+            loss_down: f32,
+        ) -> Result<(), String> {
             let endpoint = make_client_endpoint().await;
             let result =
-                quark_optimize_result(&endpoint, self.quark_addr, model_id, loss_up, loss_down).await;
+                quark_optimize_result(&endpoint, self.quark_addr, model_id, loss_up, loss_down)
+                    .await;
             self.record_model_error("optimize", &result);
             if result.is_ok() {
                 self.optimized_cells.fetch_add(1, Ordering::SeqCst);
@@ -1556,7 +1639,8 @@ mod primordia_merged {
             .build()
             .expect("Tokio runtime should build");
         let (client, journey_id) = runtime.block_on(async {
-            let (void_addr, _void_abort, quark_addr, _quark_abort) = start_servers(&model_path).await;
+            let (void_addr, _void_abort, quark_addr, _quark_abort) =
+                start_servers(&model_path).await;
 
             let mut jungle = SpaceJungle::new(void_addr, quark_addr, DARK_STAR_MODEL_CELL_COUNT);
             let client = FusedClient::builder()
@@ -1607,7 +1691,8 @@ mod primordia_merged {
             .build()
             .expect("Tokio runtime should build");
         let (client, journey_id) = runtime.block_on(async {
-            let (void_addr, _void_abort, quark_addr, _quark_abort) = start_servers(&model_path).await;
+            let (void_addr, _void_abort, quark_addr, _quark_abort) =
+                start_servers(&model_path).await;
 
             let mut jungle = SpaceJungle::new(void_addr, quark_addr, PROGENITOR_NODE_COUNT);
             let client = FusedClient::builder()

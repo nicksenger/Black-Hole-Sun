@@ -1,6 +1,6 @@
 //! Sun effects — spawning, transmission waiting, and potentiation.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -102,6 +102,8 @@ pub struct LayerTransmission {
     pub node_id: u32,
     /// The transmission received.
     pub transmission: black_hole_spec::Transmission,
+    /// Downstream nodes that were sent this transmission.
+    pub sent_node_ids: Vec<u32>,
 }
 
 /// Mailboxes needed to drive one cell through a propagation pass.
@@ -119,19 +121,25 @@ pub struct PropagationTarget {
     pub output_id: ObjectId,
 }
 
+/// First-pass or second-pass propagation sent to every root port.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct SendRootPropagationInput {
+    pub targets: Vec<PropagationTarget>,
+    pub transmission: Transmission,
+}
+
+/// Sends one propagation pass to all root ports before the layer wait begins.
+pub struct SendRootPropagationEffect;
+
 /// Input for [`WaitForLayerTransmission`]: rx endpoints to wait on plus
 /// downstream forwarding targets keyed by source node id.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WaitForLayerTransmissionInput {
     /// (node_id, rx_object_id) pairs for the current layer nodes.
     pub rx_endpoints: Vec<(u32, ObjectId)>,
-    /// Root cells that receive the epoch's initial transmission.
-    pub root_targets: Vec<PropagationTarget>,
     /// Map from source node id to its downstream targets, each carrying
     /// the mailboxes needed to drive that target cell.
     pub downstream: HashMap<u32, Vec<PropagationTarget>>,
-    /// Input transmission to upload to root cells.
-    pub input_transmission: Transmission,
 }
 
 /// Effect that waits for the first available transmission from any of the
@@ -172,6 +180,38 @@ async fn send_propagation<J: VoidInferOps>(
         })
 }
 
+impl<J> EffectSchema<J> for SendRootPropagationEffect {
+    type Id = u64;
+    type In = SendRootPropagationInput;
+    type Out = Vec<u32>;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for SendRootPropagationEffect
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let mut sent_node_ids = BTreeSet::new();
+            for target in &input.targets {
+                send_propagation(jungle, target, &input.transmission).await?;
+                sent_node_ids.insert(target.node_id);
+                debug!(
+                    node_id = target.node_id,
+                    port_id = target.port_id,
+                    input_id = %target.input_id,
+                    "sent propagation to root vertex port"
+                );
+            }
+            Ok(sent_node_ids.into_iter().collect())
+        }
+    }
+}
+
 impl<J> EffectSchema<J> for WaitForLayerTransmission {
     type Id = u64;
     type In = WaitForLayerTransmissionInput;
@@ -190,20 +230,8 @@ where
         async move {
             let WaitForLayerTransmissionInput {
                 rx_endpoints,
-                root_targets,
                 downstream,
-                input_transmission,
             } = input;
-
-            for target in &root_targets {
-                send_propagation(jungle, target, &input_transmission).await?;
-                debug!(
-                    node_id = target.node_id,
-                    port_id = target.port_id,
-                    input_id = %target.input_id,
-                    "sent initial propagation to root vertex port"
-                );
-            }
 
             if rx_endpoints.is_empty() {
                 return Err(AtomError::Transmission(
@@ -226,6 +254,7 @@ where
                         Ok::<_, AtomError>(LayerTransmission {
                             node_id,
                             transmission,
+                            sent_node_ids: Vec::new(),
                         })
                     })
                 })
@@ -248,13 +277,16 @@ where
                         "layer transmission received, forwarding to downstream nodes"
                     );
 
+                    let mut sent_node_ids = BTreeSet::new();
                     for target in &forward_targets {
                         send_propagation(jungle, target, &transmission.transmission).await?;
+                        sent_node_ids.insert(target.node_id);
                     }
 
                     Ok(LayerTransmission {
                         node_id: transmission.node_id,
                         transmission: transmission.transmission,
+                        sent_node_ids: sent_node_ids.into_iter().collect(),
                     })
                 }
                 Err(e) => Err(e),
