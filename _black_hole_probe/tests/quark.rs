@@ -64,6 +64,203 @@ async fn start_servers(
 }
 
 #[tokio::test]
+async fn rejects_requests_for_unknown_model_instance() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let (quark_local, quark_handle) =
+        QuarkServerBuilder::new(PathBuf::from("model-is-not-loaded-for-this-test"))
+            .listen("127.0.0.1:0".parse().unwrap())
+            .serve()
+            .await
+            .expect("failed to start quark server");
+    let quark_abort = quark_handle.abort_handle();
+    drop(quark_handle);
+
+    let client = make_client_endpoint().await;
+    let model_id = Uuid::new_v4();
+
+    for _ in 0..2 {
+        let error = quark_start_result(&client, quark_local, model_id)
+            .await
+            .expect_err("invalid model path should fail to start");
+        assert!(
+            error.contains("Model path does not exist"),
+            "unexpected start error: {error}"
+        );
+    }
+
+    for result in [
+        quark_infer_result(&client, quark_local, model_id, Uuid::nil())
+            .await
+            .map(|_| ()),
+        quark_perturb_up_result(&client, quark_local, model_id, 42).await,
+        quark_perturb_down_result(&client, quark_local, model_id).await,
+        quark_optimize_result(&client, quark_local, model_id, 0.0, 0.0).await,
+        quark_shutdown_result(&client, quark_local, model_id).await,
+    ] {
+        let error = result.expect_err("unknown model request should fail");
+        assert!(
+            error.contains("is not running"),
+            "unexpected quark error: {error}"
+        );
+    }
+
+    quark_abort.abort();
+}
+
+#[tokio::test]
+async fn inference() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = match require_model_path("inference") {
+        Some(path) => path,
+        None => return,
+    };
+
+    let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
+
+    let void_client = make_client_endpoint().await;
+    let quark_client = make_client_endpoint().await;
+    let model_id = Uuid::new_v4();
+    quark_start(&quark_client, quark_local, model_id).await;
+
+    let tokenizer = get_tokenizer();
+
+    let input_text =
+        "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
+    println!("Input text: {input_text}");
+
+    let request = InferenceRequest::Sequences {
+        sequences: vec![
+            vec![InferenceInput::Text(input_text.into())],
+            vec![InferenceInput::Text(input_text.into())],
+        ],
+        limit: 100,
+    };
+    let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
+    let input_id = void_upload(&void_client, void_local, request_bytes).await;
+
+    let output_id = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+
+    let output_bytes = void_download(&void_client, void_local, output_id).await;
+    let output: black_hole_sun::InferenceOutput =
+        from_bytes(&output_bytes).expect("failed to decode inference output");
+
+    assert_eq!(output.results.len(), 2, "expected 2 batch results");
+
+    for (i, seq_result) in output.results.iter().enumerate() {
+        let label = i + 1;
+        assert!(
+            !seq_result.0.is_empty(),
+            "output {label} has zero predictions"
+        );
+        let output_text = decode_dark_tokens(&tokenizer, &seq_result.0);
+
+        println!("Output {label}: {output_text}");
+        assert!(
+            !output_text.is_empty(),
+            "output {label} has no decoded text"
+        );
+    }
+
+    quark_shutdown(&quark_client, quark_local, model_id).await;
+    drop(void_client);
+    drop(quark_client);
+    void_abort.abort();
+    quark_abort.abort();
+}
+
+#[tokio::test]
+async fn dark_inference() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = match require_model_path("dark_inference") {
+        Some(path) => path,
+        None => return,
+    };
+
+    let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
+
+    let void_client = make_client_endpoint().await;
+    let quark_client = make_client_endpoint().await;
+    let model_id = Uuid::new_v4();
+    quark_start(&quark_client, quark_local, model_id).await;
+
+    let input_text =
+        "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
+    println!("Input text: {input_text}");
+
+    let tokenizer = get_tokenizer();
+
+    let tokens: Vec<u32> = tokenizer
+        .encode(input_text, false)
+        .expect("failed to tokenize input")
+        .get_ids()
+        .iter()
+        .map(|&id| id as u32)
+        .collect();
+
+    let dark_tokens: Vec<DarkToken> = tokens
+        .iter()
+        .map(|&token_id| DarkToken {
+            predicted: token_id,
+            dark_knowledge: vec![LogitEntry {
+                token_id,
+                log_prob: 0.0,
+            }],
+        })
+        .collect();
+
+    let request = InferenceRequest::Sequences {
+        sequences: vec![
+            vec![InferenceInput::Dark(dark_tokens.clone())],
+            vec![InferenceInput::Dark(dark_tokens)],
+        ],
+        limit: 100,
+    };
+    let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
+    let input_id = void_upload(&void_client, void_local, request_bytes).await;
+
+    let output_id = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+
+    let output_bytes = void_download(&void_client, void_local, output_id).await;
+    let output: black_hole_sun::InferenceOutput =
+        from_bytes(&output_bytes).expect("failed to decode inference output");
+
+    assert_eq!(output.results.len(), 2, "expected 2 batch results");
+
+    for (i, seq_result) in output.results.iter().enumerate() {
+        let label = i + 1;
+        assert!(
+            !seq_result.0.is_empty(),
+            "output {label} has zero predictions"
+        );
+        let output_text = decode_dark_tokens(&tokenizer, &seq_result.0);
+
+        println!("Output {label}: {output_text}");
+        assert!(
+            !output_text.is_empty(),
+            "output {label} has no decoded text"
+        );
+    }
+
+    quark_shutdown(&quark_client, quark_local, model_id).await;
+    drop(void_client);
+    drop(quark_client);
+    void_abort.abort();
+    quark_abort.abort();
+}
+
+#[tokio::test]
 async fn optimization() {
     init_tracing();
     rustls::crypto::ring::default_provider()
