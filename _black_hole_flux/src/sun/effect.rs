@@ -92,12 +92,12 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// WaitForLayerTransmission — wait for any transmission from current layer nodes
+// WaitForNodeTransmission — wait for any currently-ready node
 // ---------------------------------------------------------------------------
 
-/// Result of waiting for a transmission from the current layer.
+/// Result of waiting for a transmission from the ready frontier.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct LayerTransmission {
+pub struct NodeTransmission {
     /// The node id (u32) that received this transmission.
     pub node_id: u32,
     /// The transmission received.
@@ -128,14 +128,14 @@ pub struct SendRootPropagationInput {
     pub transmission: Transmission,
 }
 
-/// Sends one propagation pass to all root ports before the layer wait begins.
+/// Sends one propagation pass to all root ports before output processing begins.
 pub struct SendRootPropagationEffect;
 
-/// Input for [`WaitForLayerTransmission`]: rx endpoints to wait on plus
+/// Input for [`WaitForNodeTransmission`]: ready rx endpoints plus
 /// downstream forwarding targets keyed by source node id.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct WaitForLayerTransmissionInput {
-    /// (node_id, rx_object_id) pairs for the current layer nodes.
+pub struct WaitForNodeTransmissionInput {
+    /// (node_id, rx_object_id) pairs for nodes in the ready frontier.
     pub rx_endpoints: Vec<(u32, ObjectId)>,
     /// Map from source node id to its downstream targets, each carrying
     /// the mailboxes needed to drive that target cell.
@@ -143,11 +143,11 @@ pub struct WaitForLayerTransmissionInput {
 }
 
 /// Effect that waits for the first available transmission from any of the
-/// rx ObjectIds associated with the current layer of nodes, then forwards
+/// rx ObjectIds associated with the current ready frontier, then forwards
 /// the received transmission to the rx endpoints of the downstream nodes
 /// for the specific node that received it, so propagation continues through
 /// the graph.
-pub struct WaitForLayerTransmission;
+pub struct WaitForNodeTransmission;
 
 async fn send_propagation<J: VoidInferOps>(
     jungle: &J,
@@ -212,14 +212,14 @@ where
     }
 }
 
-impl<J> EffectSchema<J> for WaitForLayerTransmission {
+impl<J> EffectSchema<J> for WaitForNodeTransmission {
     type Id = u64;
-    type In = WaitForLayerTransmissionInput;
-    type Out = LayerTransmission;
+    type In = WaitForNodeTransmissionInput;
+    type Out = NodeTransmission;
     type Err = AtomError;
 }
 
-impl<J> Effect<J> for WaitForLayerTransmission
+impl<J> Effect<J> for WaitForNodeTransmission
 where
     J: VoidInferOps,
 {
@@ -228,7 +228,7 @@ where
         input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let WaitForLayerTransmissionInput {
+            let WaitForNodeTransmissionInput {
                 rx_endpoints,
                 downstream,
             } = input;
@@ -239,7 +239,7 @@ where
                 ));
             }
 
-            debug!(count = rx_endpoints.len(), "waiting for layer transmission");
+            debug!(count = rx_endpoints.len(), "waiting for ready node");
 
             let futures: Vec<_> = rx_endpoints
                 .into_iter()
@@ -251,7 +251,7 @@ where
                             .wait_for_transmission(id)
                             .await
                             .map_err(AtomError::Transmission)?;
-                        Ok::<_, AtomError>(LayerTransmission {
+                        Ok::<_, AtomError>(NodeTransmission {
                             node_id,
                             transmission,
                             sent_node_ids: Vec::new(),
@@ -274,7 +274,7 @@ where
                     debug!(
                         node_id = transmission.node_id,
                         forward_count = forward_targets.len(),
-                        "layer transmission received, forwarding to downstream nodes"
+                        "node transmission received, forwarding to downstream nodes"
                     );
 
                     let mut sent_node_ids = BTreeSet::new();
@@ -283,7 +283,7 @@ where
                         sent_node_ids.insert(target.node_id);
                     }
 
-                    Ok(LayerTransmission {
+                    Ok(NodeTransmission {
                         node_id: transmission.node_id,
                         transmission: transmission.transmission,
                         sent_node_ids: sent_node_ids.into_iter().collect(),

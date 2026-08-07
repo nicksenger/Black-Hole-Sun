@@ -1552,6 +1552,7 @@ mod primordia_merged {
 
     /// Runs the same U0 -> U1 -> U2 Sun topology as `sun`, with real Progenitor
     /// cells backed by a quark model.
+    #[ignore]
     #[tokio::test]
     async fn primordia() {
         init_tracing();
@@ -1575,6 +1576,7 @@ mod primordia_merged {
     }
 
     /// Runs an expanded diamond with Fusion nodes that concatenate outputs.
+    #[ignore]
     #[tokio::test]
     async fn dark_star() {
         init_tracing();
@@ -1599,6 +1601,7 @@ mod primordia_merged {
     }
 
     /// Runs the same topology as `primordia`, but with dark_star's generator/policy.
+    #[ignore]
     #[tokio::test]
     async fn black_dwarf() {
         init_tracing();

@@ -8,7 +8,7 @@ use crate::{FusionSeed, FusionState};
 
 use super::effect::{
     BroadcastPotentiationEffect, PropagationTarget, SendRootPropagationEffect,
-    SendRootPropagationInput, WaitForLayerTransmission, WaitForLayerTransmissionInput,
+    SendRootPropagationInput, WaitForNodeTransmission, WaitForNodeTransmissionInput,
 };
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
@@ -172,15 +172,92 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// BuildTopologicalSort — build topological layers using Kahn's algorithm
+// InitializePropagation — initialize the dynamic Kahn frontier
 // ---------------------------------------------------------------------------
 
-pub struct BuildTopologicalSort<S>(std::marker::PhantomData<fn() -> S>);
+fn pending_dependency_counts(inner: &super::SunInner) -> HashMap<u32, usize> {
+    inner
+        .journey_ids
+        .keys()
+        .map(|&node_id| {
+            let unresolved = inner.incoming.get(&node_id).map_or(0, Vec::len);
+            (node_id, unresolved)
+        })
+        .collect()
+}
+
+fn initial_ready_nodes(pending: &HashMap<u32, usize>) -> HashSet<u32> {
+    pending
+        .iter()
+        .filter_map(|(&node_id, &unresolved)| (unresolved == 0).then_some(node_id))
+        .collect()
+}
+
+fn sorted_node_ids(nodes: &HashSet<u32>) -> Vec<u32> {
+    let mut ready: Vec<_> = nodes.iter().copied().collect();
+    ready.sort_unstable();
+    ready
+}
+
+fn advance_frontier(
+    pending: &mut HashMap<u32, usize>,
+    ready: &mut HashSet<u32>,
+    node_id: u32,
+    outgoing: &[super::PortTarget],
+) -> Result<(), Failure> {
+    let unresolved = pending
+        .get(&node_id)
+        .copied()
+        .ok_or_else(|| Failure::Message(format!("completed node {node_id} is not pending")))?;
+    if unresolved != 0 {
+        return Err(Failure::Message(format!(
+            "completed node {node_id} still has {unresolved} unresolved predecessors"
+        )));
+    }
+    if !ready.contains(&node_id) {
+        return Err(Failure::Message(format!(
+            "completed node {node_id} is not in the ready frontier"
+        )));
+    }
+
+    let mut decrements = HashMap::<u32, usize>::new();
+    for target in outgoing {
+        *decrements.entry(target.vertex_id).or_default() += 1;
+    }
+    for (&target_id, &decrement) in &decrements {
+        let target_unresolved = pending.get(&target_id).ok_or_else(|| {
+            Failure::Message(format!("downstream node {target_id} is not pending"))
+        })?;
+        if *target_unresolved < decrement {
+            return Err(Failure::Message(format!(
+                "downstream node {target_id} has {target_unresolved} unresolved predecessors, \
+                 cannot resolve {decrement}"
+            )));
+        }
+    }
+
+    pending.remove(&node_id);
+    ready.remove(&node_id);
+    for (target_id, decrement) in decrements {
+        let target_unresolved = pending
+            .get_mut(&target_id)
+            .expect("downstream node was validated above");
+        *target_unresolved -= decrement;
+        if *target_unresolved == 0 {
+            ready.insert(target_id);
+        }
+    }
+    Ok(())
+}
+
+/// Initializes one propagation pass with every node's unresolved predecessor
+/// count. Nodes whose count is zero form the initial ready frontier.
+pub struct InitializePropagation<S>(std::marker::PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl<S> Action for BuildTopologicalSort<S>
+impl<S> Action for InitializePropagation<S>
 where
-    S: TopologyState,
+    S: PropagationState,
 {
     type Effect = NoEffect;
     type Input = Transmission;
@@ -196,56 +273,15 @@ where
         _output: EffectCompletion<Self::Effect>,
         carry: Self::Carry,
     ) -> Result<Self::Output, Failure> {
-        let (all_nodes, outgoing) = {
+        let pending = {
             let inner = state.get_shared().lock().unwrap();
-            let all_nodes: std::collections::HashSet<u32> =
-                inner.journey_ids.keys().cloned().collect();
-            let outgoing = inner.outgoing.clone();
-            (all_nodes, outgoing)
+            pending_dependency_counts(&inner)
         };
+        let ready = initial_ready_nodes(&pending);
 
-        let mut in_degree: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        for &node in &all_nodes {
-            in_degree.entry(node).or_insert(0);
-        }
-        for targets in outgoing.values() {
-            for target in targets {
-                if all_nodes.contains(&target.vertex_id) {
-                    *in_degree.entry(target.vertex_id).or_insert(0) += 1;
-                }
-            }
-        }
-
-        let mut topo: Vec<std::collections::HashSet<u32>> = Vec::new();
-        let mut remaining = in_degree.clone();
-
-        loop {
-            let layer: std::collections::HashSet<u32> = remaining
-                .iter()
-                .filter(|(_, &deg)| deg == 0)
-                .map(|(&node, _)| node)
-                .collect();
-
-            if layer.is_empty() {
-                break;
-            }
-
-            topo.push(layer.clone());
-
-            for node in &layer {
-                remaining.remove(node);
-                if let Some(targets) = outgoing.get(node) {
-                    for target in targets {
-                        if let Some(deg) = remaining.get_mut(&target.vertex_id) {
-                            *deg -= 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        state.set_topo(topo);
-        state.set_current(std::collections::HashSet::new());
+        let (state_pending, state_ready) = state.scheduler_mut();
+        *state_pending = pending;
+        *state_ready = ready;
 
         Ok(carry)
     }
@@ -419,7 +455,7 @@ impl Action for FinalizeGraph {
 pub type BuildAddrs = FinalizeGraph;
 
 // ---------------------------------------------------------------------------
-// SendRootPropagation — seed every root before waiting for layer output
+// SendRootPropagation — seed every root before waiting for ready output
 // ---------------------------------------------------------------------------
 
 pub struct SendRootPropagation<S>(PhantomData<fn() -> S>);
@@ -427,7 +463,7 @@ pub struct SendRootPropagation<S>(PhantomData<fn() -> S>);
 #[jungle::action]
 impl<S> Action for SendRootPropagation<S>
 where
-    S: TopologyState,
+    S: PropagationState,
 {
     type Effect = SendRootPropagationEffect;
     type Input = Transmission;
@@ -489,70 +525,30 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// PopLayer — pop the next topological layer into current
+// ProcessNextNode — wait for a ready node, then advance the frontier
 // ---------------------------------------------------------------------------
 
-pub struct PopLayer<S>(std::marker::PhantomData<fn() -> S>);
-
-#[jungle::action]
-impl<S> Action for PopLayer<S>
-where
-    S: TopologyState,
-{
-    type Effect = NoEffect;
-    type Input = Transmission;
-    type Output = Transmission;
-    type Carry = Transmission;
-
-    fn emit(_state: &S, input: Self::Input) -> ((), Transmission) {
-        ((), input)
-    }
-
-    fn absorb(
-        state: &mut S,
-        _output: EffectCompletion<Self::Effect>,
-        carry: Transmission,
-    ) -> Result<Self::Output, Failure> {
-        let topo = state.get_topo().clone();
-        let layer = topo
-            .first()
-            .cloned()
-            .ok_or_else(|| Failure::Message("no topological layers remaining".to_string()))?;
-
-        let mut topo = state.get_topo().clone();
-        topo.drain(..1);
-        state.set_topo(topo);
-        state.set_current(layer);
-
-        Ok(carry)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ProcessNode — wait for transmission, forward to outgoing nodes
-// ---------------------------------------------------------------------------
-
-/// Action that processes a single node in the current topological layer.
+/// Action that processes whichever ready node completes first.
 ///
 /// Waits for a [`Transmission::Propagation`] on any of the rx endpoints for
-/// nodes in the current layer (using the branch-specific rx map). The
-/// [`WaitForLayerTransmission`] effect handles forwarding the received
-/// transmission to the rx endpoints of downstream nodes, so propagation
-/// continues through the graph. After receiving, removes the processed node
-/// from the current layer.
-pub struct ProcessNode<S>(std::marker::PhantomData<fn() -> S>);
+/// nodes with no unresolved predecessors (using the branch-specific rx map).
+/// The [`WaitForNodeTransmission`] effect forwards the received transmission
+/// to that node's downstream ports. The completed node is then removed and
+/// its successors' unresolved predecessor counts are decremented, making each
+/// successor eligible immediately when its count reaches zero.
+pub struct ProcessNextNode<S>(std::marker::PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl<S> Action for ProcessNode<S>
+impl<S> Action for ProcessNextNode<S>
 where
-    S: TopologyState,
+    S: PropagationState,
 {
-    type Effect = WaitForLayerTransmission;
+    type Effect = WaitForNodeTransmission;
     type Input = Transmission;
     type Output = Transmission;
 
-    fn emit(state: &S, _input: Self::Input) -> WaitForLayerTransmissionInput {
-        let current = state.get_current().clone();
+    fn emit(state: &S, _input: Self::Input) -> WaitForNodeTransmissionInput {
+        let ready = sorted_node_ids(state.ready());
         let inner = state.get_shared().lock().unwrap();
         let outgoing = &inner.outgoing;
 
@@ -572,7 +568,7 @@ where
         };
 
         // Parent-side mailboxes where vertices publish their completed emissions.
-        let rx_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = current
+        let rx_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = ready
             .iter()
             .filter_map(|&node_id| output_map.get(&node_id).map(|rx| (node_id, *rx)))
             .collect();
@@ -581,7 +577,7 @@ where
         // destination port with that port's next mailbox and its vertex's
         // shared output mailbox attached.
         let mut downstream: HashMap<u32, Vec<PropagationTarget>> = HashMap::new();
-        for &node_id in &current {
+        for &node_id in &ready {
             if let Some(targets) = outgoing.get(&node_id) {
                 let targets_with_endpoints: Vec<_> = targets
                     .iter()
@@ -591,7 +587,7 @@ where
             }
         }
 
-        WaitForLayerTransmissionInput {
+        WaitForNodeTransmissionInput {
             rx_endpoints,
             downstream,
         }
@@ -601,22 +597,29 @@ where
         state: &mut S,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let layer_tx = output
-            .map_err(|e| Failure::Message(format!("wait for layer transmission failed: {e}")))?;
+        let node_tx = output
+            .map_err(|e| Failure::Message(format!("wait for node transmission failed: {e}")))?;
 
-        let node_id = layer_tx.node_id;
+        let node_id = node_tx.node_id;
+        let outgoing = state
+            .get_shared()
+            .lock()
+            .unwrap()
+            .outgoing
+            .get(&node_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let (pending, ready) = state.scheduler_mut();
+        advance_frontier(pending, ready, node_id, &outgoing)?;
+
         state
             .get_shared()
             .lock()
             .unwrap()
-            .record_propagation_sent(layer_tx.sent_node_ids, S::PROPAGATION_STATE);
+            .record_propagation_sent(node_tx.sent_node_ids, S::PROPAGATION_STATE);
 
-        // Remove the processed node from the current layer.
-        let mut current = state.get_current().clone();
-        current.remove(&node_id);
-        state.set_current(current);
-
-        Ok(layer_tx.transmission)
+        Ok(node_tx.transmission)
     }
 }
 
@@ -734,12 +737,12 @@ pub struct BroadcastPotentiationInput {
 }
 
 // ---------------------------------------------------------------------------
-// TopologyState — trait for branch state types (PropA, PropB)
+// PropagationState — trait for branch state types (PropA, PropB)
 // ---------------------------------------------------------------------------
 
-/// Trait that provides accessors for the topology-related fields
+/// Trait that provides accessors for the propagation-related fields
 /// shared by [`PropA`](super::PropA) and [`PropB`](super::PropB).
-pub trait TopologyState {
+pub trait PropagationState {
     /// Appearance phase corresponding to this propagation branch.
     const PROPAGATION_STATE: super::SunNodeState;
 
@@ -755,20 +758,18 @@ pub trait TopologyState {
         &HashMap<u32, ObjectId>,
     );
 
-    /// Get a reference to the topological layers.
-    fn get_topo(&self) -> &Vec<std::collections::HashSet<u32>>;
+    /// Unfinished nodes and the number of incoming edges whose source has not
+    /// completed yet.
+    fn pending(&self) -> &HashMap<u32, usize>;
 
-    /// Set the topological layers.
-    fn set_topo(&mut self, topo: Vec<std::collections::HashSet<u32>>);
+    /// Nodes that are eligible to be processed now.
+    fn ready(&self) -> &HashSet<u32>;
 
-    /// Get a reference to the current layer being processed.
-    fn get_current(&self) -> &std::collections::HashSet<u32>;
-
-    /// Set the current layer being processed.
-    fn set_current(&mut self, current: std::collections::HashSet<u32>);
+    /// Mutable access to both scheduler collections.
+    fn scheduler_mut(&mut self) -> (&mut HashMap<u32, usize>, &mut HashSet<u32>);
 }
 
-impl TopologyState for super::PropA {
+impl PropagationState for super::PropA {
     const PROPAGATION_STATE: super::SunNodeState = super::SunNodeState::Propagation1;
 
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
@@ -783,21 +784,18 @@ impl TopologyState for super::PropA {
     ) {
         (&inner.p1_tx, &inner.p2_tx, &inner.p1_rx)
     }
-    fn get_topo(&self) -> &Vec<std::collections::HashSet<u32>> {
-        &self.topo
+    fn pending(&self) -> &HashMap<u32, usize> {
+        &self.pending
     }
-    fn set_topo(&mut self, topo: Vec<std::collections::HashSet<u32>>) {
-        self.topo = topo;
+    fn ready(&self) -> &HashSet<u32> {
+        &self.ready
     }
-    fn get_current(&self) -> &std::collections::HashSet<u32> {
-        &self.current
-    }
-    fn set_current(&mut self, current: std::collections::HashSet<u32>) {
-        self.current = current;
+    fn scheduler_mut(&mut self) -> (&mut HashMap<u32, usize>, &mut HashSet<u32>) {
+        (&mut self.pending, &mut self.ready)
     }
 }
 
-impl TopologyState for super::PropB {
+impl PropagationState for super::PropB {
     const PROPAGATION_STATE: super::SunNodeState = super::SunNodeState::Propagation2;
 
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
@@ -812,17 +810,14 @@ impl TopologyState for super::PropB {
     ) {
         (&inner.p2_tx, &inner.po_tx, &inner.p2_rx)
     }
-    fn get_topo(&self) -> &Vec<std::collections::HashSet<u32>> {
-        &self.topo
+    fn pending(&self) -> &HashMap<u32, usize> {
+        &self.pending
     }
-    fn set_topo(&mut self, topo: Vec<std::collections::HashSet<u32>>) {
-        self.topo = topo;
+    fn ready(&self) -> &HashSet<u32> {
+        &self.ready
     }
-    fn get_current(&self) -> &std::collections::HashSet<u32> {
-        &self.current
-    }
-    fn set_current(&mut self, current: std::collections::HashSet<u32>) {
-        self.current = current;
+    fn scheduler_mut(&mut self) -> (&mut HashMap<u32, usize>, &mut HashSet<u32>) {
+        (&mut self.pending, &mut self.ready)
     }
 }
 
@@ -912,6 +907,31 @@ mod tests {
 
         let error = finalize(&mut state).unwrap_err();
         assert!(error.to_string().contains("exactly one sink"));
+    }
+
+    #[test]
+    fn completed_node_immediately_unblocks_deeper_successor() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[1, 2]);
+        add_vertex(&mut state, 1, &[1], &[3]);
+        add_vertex(&mut state, 2, &[2], &[4]);
+        add_vertex(&mut state, 3, &[3], &[5]);
+        add_vertex(&mut state, 4, &[4, 5], &[]);
+        finalize(&mut state).unwrap();
+
+        let inner = state.a.shared.lock().unwrap();
+        let mut pending = pending_dependency_counts(&inner);
+        let mut ready = initial_ready_nodes(&pending);
+        assert_eq!(sorted_node_ids(&ready), vec![0]);
+
+        advance_frontier(&mut pending, &mut ready, 0, &inner.outgoing[&0]).unwrap();
+        assert_eq!(sorted_node_ids(&ready), vec![1, 2]);
+
+        // Node 1 finishes while its same-layer sibling, node 2, is still
+        // pending. Its child becomes ready immediately instead of waiting for
+        // all of the old topological layer to complete.
+        advance_frontier(&mut pending, &mut ready, 1, &inner.outgoing[&1]).unwrap();
+        assert_eq!(sorted_node_ids(&ready), vec![2, 3]);
     }
 
     #[test]

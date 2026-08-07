@@ -19,10 +19,13 @@ use crate::fusion::action::{FusionSeed, FusionState};
 use crate::fusion::FusionFlow;
 
 pub use action::{
-    BuildTopologicalSort, NodeIdsFromList, PopLayer, ProcessNode, SendRootPropagation, Spawn,
-    TopologyState,
+    InitializePropagation, NodeIdsFromList, ProcessNextNode, PropagationState, SendRootPropagation,
+    Spawn,
 };
-pub use effect::{SendRootPropagationEffect, SendRootPropagationInput, SpawnAnimal};
+pub use effect::{
+    SendRootPropagationEffect, SendRootPropagationInput, SpawnAnimal, WaitForNodeTransmission,
+    WaitForNodeTransmissionInput,
+};
 
 // ---------------------------------------------------------------------------
 // Descriptors — type-level vertices and their input ports
@@ -109,10 +112,10 @@ pub struct SunAppearance {
 pub struct PropA {
     /// Shared bookkeeping (Arc so both branches share topology data).
     pub shared: Arc<Mutex<SunInner>>,
-    /// Topological layers of node IDs (outer-to-inner).
-    pub topo: Vec<HashSet<u32>>,
-    /// Current layer being processed (popped from topo).
-    pub current: HashSet<u32>,
+    /// Unfinished nodes and their unresolved incoming-edge counts.
+    pub pending: HashMap<u32, usize>,
+    /// Unfinished nodes whose incoming edges have all completed.
+    pub ready: HashSet<u32>,
 }
 
 /// State for propagation branch B.
@@ -120,10 +123,10 @@ pub struct PropA {
 pub struct PropB {
     /// Shared bookkeeping (Arc so both branches share topology data).
     pub shared: Arc<Mutex<SunInner>>,
-    /// Topological layers of node IDs (outer-to-inner).
-    pub topo: Vec<HashSet<u32>>,
-    /// Current layer being processed (popped from topo).
-    pub current: HashSet<u32>,
+    /// Unfinished nodes and their unresolved incoming-edge counts.
+    pub pending: HashMap<u32, usize>,
+    /// Unfinished nodes whose incoming edges have all completed.
+    pub ready: HashSet<u32>,
 }
 
 /// Runtime state that tracks the topology and transmission endpoints
@@ -336,83 +339,51 @@ impl BlackHole for Empty {
 // Predicates — loop continuation conditions
 // ---------------------------------------------------------------------------
 
-/// Predicate that checks if the topological layer queue is non-empty.
-pub struct TopoNotEmpty<S>(PhantomData<fn() -> S>);
+/// Predicate that checks whether a propagation branch has unfinished nodes.
+pub struct PendingNotEmpty<S>(PhantomData<fn() -> S>);
 
-impl<S> Predicate<(&S, &Transmission)> for TopoNotEmpty<S>
+impl<S> Predicate<(&S, &Transmission)> for PendingNotEmpty<S>
 where
-    S: TopologyState,
+    S: PropagationState,
 {
     fn eval((state, _): &(&S, &Transmission)) -> bool {
-        !state.get_topo().is_empty()
-    }
-}
-
-/// Predicate that checks if the current layer has unprocessed nodes.
-pub struct CurrentNotEmpty<S>(PhantomData<fn() -> S>);
-
-impl<S> Predicate<(&S, &Transmission)> for CurrentNotEmpty<S>
-where
-    S: TopologyState,
-{
-    fn eval((state, _): &(&S, &Transmission)) -> bool {
-        !state.get_current().is_empty()
+        !state.pending().is_empty()
     }
 }
 
 // ---------------------------------------------------------------------------
-// Flow definitions — layer processing and orchestration
+// Flow definitions — ready-node processing and orchestration
 // ---------------------------------------------------------------------------
 //
-/// Body of the inner loop: process nodes in the current layer until empty.
+/// Processes the next ready node in propagation branch B.
 #[derive(Flow)]
-pub struct InnerBLoop(Step<action::ProcessNode<PropB>>);
+pub struct PropBLoop(Step<action::ProcessNextNode<PropB>>);
 
-/// Body of the inner loop: process nodes in the current layer until empty.
+/// Processes the next ready node in propagation branch A.
 #[derive(Flow)]
-pub struct InnerALoop(Step<action::ProcessNode<PropA>>);
-
-/// Body of the outer loop: pop a layer, then process all its nodes.
-#[derive(Flow)]
-pub struct BranchBBody(
-    Step<action::PopLayer<PropB>>,
-    While<FocusedLoopCondition<CurrentNotEmpty<PropB>, PropB>, InnerBLoop>,
-);
-
-/// Body of the outer loop: pop a layer, then process all its nodes.
-#[derive(Flow)]
-pub struct BranchABody(
-    Step<action::PopLayer<PropA>>,
-    While<FocusedLoopCondition<CurrentNotEmpty<PropA>, PropA>, InnerALoop>,
-);
+pub struct PropALoop(Step<action::ProcessNextNode<PropA>>);
 
 #[derive(Flow)]
 #[jungle(focus = PropB)]
 pub struct PropBFlow(
-    Step<action::BuildTopologicalSort<PropB>>,
+    Step<action::InitializePropagation<PropB>>,
     Step<action::SendRootPropagation<PropB>>,
-    While<FocusedLoopCondition<TopoNotEmpty<PropB>, PropB>, BranchBBody>,
+    While<FocusedLoopCondition<PendingNotEmpty<PropB>, PropB>, PropBLoop>,
 );
 
 #[derive(Flow)]
 #[jungle(focus = PropA)]
 pub struct PropAFlow(
-    Step<action::BuildTopologicalSort<PropA>>,
+    Step<action::InitializePropagation<PropA>>,
     Step<action::SendRootPropagation<PropA>>,
-    While<FocusedLoopCondition<TopoNotEmpty<PropA>, PropA>, BranchABody>,
+    While<FocusedLoopCondition<PendingNotEmpty<PropA>, PropA>, PropALoop>,
 );
 
 /// The two propagation branches (A and B) running in parallel via focused join.
 pub type PropagationFlows = Join<PropAFlow, PropBFlow>;
 
-/// Alias for the inner loop flow (inner A loop).
-pub type InnerLoop = InnerALoop;
-
-/// Alias for the branch body flow (branch A body).
-pub type BranchBody = BranchABody;
-
-/// Alias for the full propagation layer flow.
-pub type LayerFlow = PropagationFlows;
+/// Alias for one iteration of the propagation loop (branch A).
+pub type PropagationLoop = PropALoop;
 
 // ---------------------------------------------------------------------------
 // BlackHole — the top-level orchestration flow

@@ -84,16 +84,17 @@ pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
 
 pub use sun::{
     action::{
-        BroadcastPotentiation, BroadcastPotentiationInput, BuildTopologicalSort, NodeIdsFromList,
-        PopLayer, ProcessNode, SendRootPropagation, Spawn, TopologyState,
+        BroadcastPotentiation, BroadcastPotentiationInput, InitializePropagation, NodeIdsFromList,
+        ProcessNextNode, PropagationState, SendRootPropagation, Spawn,
     },
     effect::{
-        BroadcastPotentiationEffect, BroadcastPotentiationResult, LayerTransmission,
-        SendRootPropagationEffect, SendRootPropagationInput, WaitForLayerTransmission,
+        BroadcastPotentiationEffect, BroadcastPotentiationResult, NodeTransmission,
+        SendRootPropagationEffect, SendRootPropagationInput, WaitForNodeTransmission,
+        WaitForNodeTransmissionInput,
     },
-    Binary, BlackHole, BranchBody, CurrentNotEmpty, Epoch, InnerLoop, LayerFlow, PropA, PropB,
-    PropagationFlows, SpawnAnimal, SunAppearance, SunEdgeAppearance, SunInner, SunNodeAppearance,
-    SunNodeState, SunState, TopoNotEmpty, Unary,
+    Binary, BlackHole, Epoch, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
+    PropagationFlows, PropagationLoop, SpawnAnimal, SunAppearance, SunEdgeAppearance, SunInner,
+    SunNodeAppearance, SunNodeState, SunState, Unary,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]
