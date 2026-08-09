@@ -61,6 +61,7 @@ fn register_vertex(
     inner.journey_ids.entry(vertex_id).or_insert(journey_id);
     inner.node_labels.entry(vertex_id).or_insert(node_label);
     inner.node_states.entry(vertex_id).or_default();
+    inner.node_state_sequences.entry(vertex_id).or_default();
     inner
         .vertex_ports
         .entry(vertex_id)
@@ -992,6 +993,11 @@ mod tests {
             state.appearance().nodes[0].state,
             super::super::SunNodeState::Propagation2
         );
+        assert_eq!(
+            state.appearance().nodes[0].state_sequence,
+            2,
+            "jumping directly to propagation 2 records both logical phases"
+        );
 
         {
             let mut inner = state.a.shared.lock().unwrap();
@@ -1001,6 +1007,7 @@ mod tests {
             state.appearance().nodes[0].state,
             super::super::SunNodeState::Optimization
         );
+        assert_eq!(state.appearance().nodes[0].state_sequence, 3);
 
         {
             let mut inner = state.a.shared.lock().unwrap();
@@ -1010,5 +1017,6 @@ mod tests {
             state.appearance().nodes[0].state,
             super::super::SunNodeState::Propagation1
         );
+        assert_eq!(state.appearance().nodes[0].state_sequence, 4);
     }
 }

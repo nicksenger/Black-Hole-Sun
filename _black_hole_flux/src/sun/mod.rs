@@ -88,6 +88,8 @@ pub struct SunNodeAppearance {
     pub label: String,
     pub input_ports: Vec<u32>,
     pub state: SunNodeState,
+    /// Monotonic logical phase position, including phases crossed between snapshots.
+    pub state_sequence: u64,
 }
 
 /// One port-aware directed edge in the observable Sun topology.
@@ -174,6 +176,11 @@ impl SunState {
                     .unwrap_or_else(|| format!("cell {id}")),
                 input_ports: inner.vertex_ports.get(&id).cloned().unwrap_or_default(),
                 state: inner.node_states.get(&id).copied().unwrap_or_default(),
+                state_sequence: inner
+                    .node_state_sequences
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_default(),
             })
             .collect::<Vec<_>>();
         nodes.sort_by_key(|node| node.id);
@@ -211,6 +218,8 @@ pub struct SunInner {
     pub node_labels: HashMap<u32, String>,
     /// Latest orchestration phase sent to each internal vertex.
     pub node_states: HashMap<u32, SunNodeState>,
+    /// Logical phase position for each vertex, used to recover skipped observations.
+    pub node_state_sequences: HashMap<u32, u64>,
     /// Input ports owned by each vertex, in descriptor order.
     pub vertex_ports: HashMap<u32, Vec<u32>>,
     /// Resolves every public input port to its internal vertex key.
@@ -236,6 +245,27 @@ pub struct SunInner {
 }
 
 impl SunInner {
+    fn record_state_sent(&mut self, node_id: u32, phase: SunNodeState) {
+        let current = self.node_states.get(&node_id).copied().unwrap_or_default();
+        if current == phase {
+            return;
+        }
+
+        let mut next = current;
+        let mut distance = 0;
+        while next != phase {
+            next = match next {
+                SunNodeState::Idle | SunNodeState::Optimization => SunNodeState::Propagation1,
+                SunNodeState::Propagation1 => SunNodeState::Propagation2,
+                SunNodeState::Propagation2 => SunNodeState::Optimization,
+            };
+            distance += 1;
+        }
+
+        self.node_states.insert(node_id, phase);
+        *self.node_state_sequences.entry(node_id).or_default() += distance;
+    }
+
     pub(crate) fn record_propagation_sent(
         &mut self,
         node_ids: impl IntoIterator<Item = u32>,
@@ -246,17 +276,18 @@ impl SunInner {
             SunNodeState::Propagation1 | SunNodeState::Propagation2
         ));
         for node_id in node_ids {
-            let state = self.node_states.entry(node_id).or_default();
-            if *state == SunNodeState::Propagation2 && phase == SunNodeState::Propagation1 {
+            if self.node_states.get(&node_id) == Some(&SunNodeState::Propagation2)
+                && phase == SunNodeState::Propagation1
+            {
                 continue;
             }
-            *state = phase;
+            self.record_state_sent(node_id, phase);
         }
     }
 
     pub(crate) fn record_optimization_sent(&mut self, node_ids: impl IntoIterator<Item = u32>) {
         for node_id in node_ids {
-            self.node_states.insert(node_id, SunNodeState::Optimization);
+            self.record_state_sent(node_id, SunNodeState::Optimization);
         }
     }
 }

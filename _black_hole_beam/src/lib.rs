@@ -239,6 +239,7 @@ struct CellDefinition {
     outgoing_ports: Vec<u32>,
     animal_name: String,
     state: SunNodeState,
+    state_sequence: u64,
 }
 
 impl CellDefinition {
@@ -252,6 +253,7 @@ impl CellDefinition {
             outgoing_ports,
             animal_name: short_type_name::<A>(),
             state: SunNodeState::Idle,
+            state_sequence: 0,
         }
     }
 }
@@ -348,6 +350,7 @@ impl BeamModel {
                 outgoing_ports: Vec::new(),
                 animal_name: node.label,
                 state: node.state,
+                state_sequence: node.state_sequence,
             })
             .collect::<Vec<_>>();
         cells.sort_by_key(|cell| cell.id);
@@ -482,6 +485,14 @@ impl NodeStateVisual for SunNodeState {
     }
 }
 
+fn next_phase(phase: SunNodeState) -> SunNodeState {
+    match phase {
+        SunNodeState::Idle | SunNodeState::Optimization => SunNodeState::Propagation1,
+        SunNodeState::Propagation1 => SunNodeState::Propagation2,
+        SunNodeState::Propagation2 => SunNodeState::Optimization,
+    }
+}
+
 fn phase_path(from: SunNodeState, to: SunNodeState) -> Vec<SunNodeState> {
     if from == to {
         return Vec::new();
@@ -493,11 +504,7 @@ fn phase_path(from: SunNodeState, to: SunNodeState) -> Vec<SunNodeState> {
     let mut path = Vec::new();
     let mut phase = from;
     for _ in 0..4 {
-        phase = match phase {
-            SunNodeState::Idle | SunNodeState::Optimization => SunNodeState::Propagation1,
-            SunNodeState::Propagation1 => SunNodeState::Propagation2,
-            SunNodeState::Propagation2 => SunNodeState::Optimization,
-        };
+        phase = next_phase(phase);
         path.push(phase);
         if phase == to {
             return path;
@@ -506,12 +513,33 @@ fn phase_path(from: SunNodeState, to: SunNodeState) -> Vec<SunNodeState> {
     vec![to]
 }
 
+fn recent_phase_steps(mut phase: SunNodeState, count: u64) -> Vec<SunNodeState> {
+    let retained = count.min(MAX_PENDING_PHASES as u64);
+    let mut skipped = count - retained;
+
+    if skipped > 0 && phase == SunNodeState::Idle {
+        phase = next_phase(phase);
+        skipped -= 1;
+    }
+    for _ in 0..skipped % 3 {
+        phase = next_phase(phase);
+    }
+
+    (0..retained)
+        .map(|_| {
+            phase = next_phase(phase);
+            phase
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 struct CellVisualState {
     previous: SunNodeState,
     current: SunNodeState,
     transition_started_at: Option<Instant>,
     pending: VecDeque<SunNodeState>,
+    observed_sequence: u64,
 }
 
 impl Default for CellVisualState {
@@ -521,22 +549,36 @@ impl Default for CellVisualState {
             current: SunNodeState::Idle,
             transition_started_at: None,
             pending: VecDeque::new(),
+            observed_sequence: 0,
         }
     }
 }
 
 impl CellVisualState {
-    fn observe(&mut self, activity: SunNodeState, now: Instant) -> bool {
+    fn observe(&mut self, activity: SunNodeState, sequence: u64, now: Instant) -> bool {
         let latest = self.pending.back().copied().unwrap_or(self.current);
-        if activity == latest {
+        if sequence < self.observed_sequence {
             return false;
         }
 
-        let path = phase_path(latest, activity);
-        if self.pending.len() + path.len() > MAX_PENDING_PHASES {
-            self.pending = phase_path(self.current, activity).into();
+        let path = if sequence > self.observed_sequence {
+            let path = recent_phase_steps(latest, sequence - self.observed_sequence);
+            self.observed_sequence = sequence;
+            if path.last().copied() == Some(activity) {
+                path
+            } else {
+                phase_path(latest, activity)
+            }
         } else {
-            self.pending.extend(path);
+            phase_path(latest, activity)
+        };
+        if path.is_empty() {
+            return false;
+        }
+
+        self.pending.extend(path);
+        while self.pending.len() > MAX_PENDING_PHASES {
+            self.pending.pop_front();
         }
         if self.can_transition(now) {
             return self.begin_next_transition(now);
@@ -621,7 +663,7 @@ impl BeamApp {
         let mut visuals = HashMap::new();
         for cell in &model.cells {
             let mut visual = CellVisualState::default();
-            visual.observe(cell.state, now);
+            visual.observe(cell.state, cell.state_sequence, now);
             visuals.insert(cell.id, visual);
         }
         let appearance_loading = live.is_some();
@@ -669,10 +711,11 @@ impl BeamApp {
                                     .collect::<HashSet<_>>();
                                 self.visuals.retain(|node_id, _| node_ids.contains(node_id));
                                 for cell in &model.cells {
-                                    self.visuals
-                                        .entry(cell.id)
-                                        .or_default()
-                                        .observe(cell.state, now);
+                                    self.visuals.entry(cell.id).or_default().observe(
+                                        cell.state,
+                                        cell.state_sequence,
+                                        now,
+                                    );
                                 }
                                 self.model = model;
                                 self.appearance_error = None;
@@ -1039,7 +1082,7 @@ mod tests {
 
         assert_eq!(COLOR_FADE_DURATION, Duration::from_millis(400));
         assert_eq!(MIN_COLOR_STATE_DURATION, Duration::from_secs(1));
-        assert!(visual.observe(SunNodeState::Propagation1, start));
+        assert!(visual.observe(SunNodeState::Propagation1, 1, start));
         assert_eq!(
             visual.color(0, start),
             SunNodeState::Idle.color(0),
@@ -1060,7 +1103,7 @@ mod tests {
             "the fade reaches the new color after 400ms"
         );
 
-        assert!(!visual.observe(SunNodeState::Propagation2, start + COLOR_FADE_DURATION));
+        assert!(!visual.observe(SunNodeState::Propagation2, 2, start + COLOR_FADE_DURATION));
         assert!(!visual.advance(start + MIN_COLOR_STATE_DURATION - Duration::from_millis(1)));
         assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
         assert_eq!(visual.current, SunNodeState::Propagation2);
@@ -1071,7 +1114,7 @@ mod tests {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
 
-        assert!(visual.observe(SunNodeState::Propagation2, start));
+        assert!(visual.observe(SunNodeState::Propagation2, 2, start));
         assert_eq!(visual.current, SunNodeState::Propagation1);
         assert_eq!(visual.pending, VecDeque::from([SunNodeState::Propagation2]));
         assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
@@ -1079,18 +1122,40 @@ mod tests {
     }
 
     #[test]
+    fn replays_an_epoch_when_snapshots_repeat_the_same_phase() {
+        let start = Instant::now();
+        let mut visual = CellVisualState::default();
+
+        assert!(visual.observe(SunNodeState::Propagation2, 2, start));
+        assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
+        assert_eq!(visual.current, SunNodeState::Propagation2);
+        assert!(visual.pending.is_empty());
+
+        assert!(visual.observe(
+            SunNodeState::Propagation2,
+            5,
+            start + MIN_COLOR_STATE_DURATION * 2
+        ));
+        assert_eq!(visual.current, SunNodeState::Optimization);
+        assert_eq!(
+            visual.pending,
+            VecDeque::from([SunNodeState::Propagation1, SunNodeState::Propagation2])
+        );
+    }
+
+    #[test]
     fn bounds_pending_phases_when_epochs_outpace_the_animation() {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
-        for phase in [
-            SunNodeState::Propagation2,
-            SunNodeState::Optimization,
-            SunNodeState::Propagation1,
-            SunNodeState::Propagation2,
-            SunNodeState::Optimization,
-            SunNodeState::Propagation1,
+        for (sequence, phase) in [
+            (2, SunNodeState::Propagation2),
+            (3, SunNodeState::Optimization),
+            (4, SunNodeState::Propagation1),
+            (5, SunNodeState::Propagation2),
+            (6, SunNodeState::Optimization),
+            (7, SunNodeState::Propagation1),
         ] {
-            visual.observe(phase, start);
+            visual.observe(phase, sequence, start);
         }
 
         assert!(visual.pending.len() <= MAX_PENDING_PHASES);
@@ -1124,12 +1189,14 @@ mod tests {
                     label: "Fusion".to_string(),
                     input_ports: vec![2, 3],
                     state: SunNodeState::Optimization,
+                    state_sequence: 3,
                 },
                 SunNodeAppearance {
                     id: 0,
                     label: "Root".to_string(),
                     input_ports: vec![0],
                     state: SunNodeState::Propagation1,
+                    state_sequence: 1,
                 },
             ],
             edges: vec![
@@ -1157,7 +1224,9 @@ mod tests {
         );
         assert_eq!(model.cells[0].animal_name, "Root");
         assert_eq!(model.cells[0].state, SunNodeState::Propagation1);
+        assert_eq!(model.cells[0].state_sequence, 1);
         assert_eq!(model.cells[1].state, SunNodeState::Optimization);
+        assert_eq!(model.cells[1].state_sequence, 3);
     }
 
     #[test]
@@ -1170,12 +1239,14 @@ mod tests {
                     label: "Root".to_string(),
                     input_ports: vec![0],
                     state: SunNodeState::Idle,
+                    state_sequence: 0,
                 },
                 SunNodeAppearance {
                     id: 1,
                     label: "Sink".to_string(),
                     input_ports: vec![1],
                     state: SunNodeState::Idle,
+                    state_sequence: 0,
                 },
             ],
             edges: vec![SunEdgeAppearance {

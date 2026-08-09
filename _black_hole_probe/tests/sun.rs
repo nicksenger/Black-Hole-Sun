@@ -815,23 +815,59 @@ pub(crate) fn run_beam() {
     });
 
     black_hole_beam::BeamBuilder::new()
+        .dot_layout()
         .view_live::<ExpandedBlackHoleAnimal>(client, journey_id)
         .expect("Black Hole Beam should run");
 }
 
 /// Launches the Beam example in a process whose UI runs on its main thread.
 #[cfg(test)]
+fn run_beam_example(example: &str) {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = std::process::Command::new(cargo);
+    command.current_dir(env!("CARGO_MANIFEST_DIR")).args([
+        "run",
+        "--quiet",
+        "--no-default-features",
+    ]);
+
+    // This test launches a second Cargo process so that the UI can own its main
+    // thread. Cargo does not propagate the parent invocation's profile or
+    // features to that process, so mirror the active build explicitly.
+    if !cfg!(debug_assertions) {
+        command.arg("--release");
+    }
+
+    let features = [
+        (cfg!(feature = "cuda"), "cuda"),
+        (cfg!(feature = "metal"), "metal"),
+        (cfg!(feature = "qwen35_0p8b"), "qwen35_0p8b"),
+        (cfg!(feature = "qwen35_2b"), "qwen35_2b"),
+        (cfg!(feature = "qwen35_4b"), "qwen35_4b"),
+        (cfg!(feature = "qwen35_9b"), "qwen35_9b"),
+        (cfg!(feature = "qwen35_27b"), "qwen35_27b"),
+    ]
+    .into_iter()
+    .filter_map(|(enabled, feature)| enabled.then_some(feature))
+    .collect::<Vec<_>>()
+    .join(",");
+    if !features.is_empty() {
+        command.args(["--features", &features]);
+    }
+
+    let status = command
+        .args(["--example", example])
+        .status()
+        .unwrap_or_else(|error| panic!("{example} example should launch: {error}"));
+
+    assert!(status.success(), "{example} example exited with {status}");
+}
+
+#[cfg(test)]
 #[test]
 #[ignore]
 fn beam_test() {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = std::process::Command::new(cargo)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["run", "--quiet", "--example", "beam"])
-        .status()
-        .expect("Beam example should launch");
-
-    assert!(status.success(), "Beam example exited with {status}");
+    run_beam_example("beam");
 }
 
 /// Runs the dark_star Sun indefinitely with a live Black Hole Beam viewer.
@@ -1745,33 +1781,13 @@ mod primordia_merged {
     #[test]
     #[ignore]
     fn beam_dark_star() {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = std::process::Command::new(cargo)
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args(["run", "--quiet", "--example", "beam_dark_star"])
-            .status()
-            .expect("beam_dark_star example should launch");
-
-        assert!(
-            status.success(),
-            "beam_dark_star example exited with {status}"
-        );
+        super::run_beam_example("beam_dark_star");
     }
 
     /// Launches the Black Dwarf Beam example in a process whose UI runs on its main thread.
     #[test]
     #[ignore]
     fn beam_black_dwarf() {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = std::process::Command::new(cargo)
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args(["run", "--quiet", "--example", "beam_black_dwarf"])
-            .status()
-            .expect("beam_black_dwarf example should launch");
-
-        assert!(
-            status.success(),
-            "beam_black_dwarf example exited with {status}"
-        );
+        super::run_beam_example("beam_black_dwarf");
     }
 }

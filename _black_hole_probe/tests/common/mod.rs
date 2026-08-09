@@ -6,6 +6,7 @@ pub use sun::{Generator, Policy};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use black_hole_sun::{ObjectId, QuarkIn, QuarkOut};
 use postcard::{from_bytes, to_allocvec};
@@ -86,7 +87,10 @@ pub async fn make_client_endpoint() -> quinn::Endpoint {
         .with_no_client_auth();
 
     let quic_crypto = QuicClientConfig::try_from(Arc::new(crypto)).unwrap();
-    let client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(5)));
+    let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+    client_config.transport_config(Arc::new(transport));
 
     let local_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
     let mut endpoint = quinn::Endpoint::client(local_addr).unwrap();
