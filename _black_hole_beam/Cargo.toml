@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 black-hole-flux = { path = "../_black_hole_flux" }
-iced = { version = "0.14", features = ["tokio"] }
+iced = { version = "0.14", features = ["advanced", "canvas", "tokio"] }
 iced-sugiyama = { git = "https://github.com/nicksenger/iced-sugiyama.git", branch = "blackholesun", features = ["circo"] }
 jungle-sdk = { workspace = true }
 postcard = "1"

@@ -6,6 +6,7 @@
 //! [`Observe`](jungle_sdk::Observe) appearance as the source of graph topology
 //! and node phase.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,11 +16,18 @@ use black_hole_flux::sun::{
     UnarySunStep,
 };
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState, ObjectId};
+use iced::mouse;
 use iced::time::Instant;
+use iced::widget::canvas::{self, Path};
 use iced::widget::{column, container, text};
-use iced::{Background, Color, Element, Font, Length, Shadow, Subscription, Task, Theme, Vector};
+use iced::{
+    Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription, Task, Theme,
+    Vector,
+};
 use iced_sugiyama::motion::easing::Easing;
-use iced_sugiyama::{circo_layout, AutoFit, Cluster, Graph, LayoutInput, Sugiyama};
+use iced_sugiyama::{
+    circo_layout, AutoFit, Cluster, EdgeEndpointKind, Graph, LayoutInput, Sugiyama,
+};
 use jungle_sdk::{Animal, AnimalIdValue, JungleClient, Observe};
 use typenum::Unsigned;
 use uuid::Uuid;
@@ -27,11 +35,71 @@ use uuid::Uuid;
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
 const CELL_GRAPH_ID: &str = "black-hole-beam-cells";
+const DOT_VERTEX_SPACING: f64 = 128.0;
 const APPEARANCE_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
+
+#[derive(Debug, Clone, Copy)]
+enum EdgeEndpointGlyphKind {
+    NormalArrow,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EdgeEndpointGlyph {
+    kind: EdgeEndpointGlyphKind,
+    color: Color,
+    angle_radians: f32,
+}
+
+impl EdgeEndpointGlyph {
+    fn size(self) -> f32 {
+        match self.kind {
+            EdgeEndpointGlyphKind::NormalArrow => 20.0,
+        }
+    }
+}
+
+impl<Message, Theme, Renderer> canvas::Program<Message, Theme, Renderer> for EdgeEndpointGlyph
+where
+    Renderer: iced::advanced::graphics::geometry::Renderer,
+{
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry<Renderer>> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let anchor = frame.center();
+
+        match self.kind {
+            EdgeEndpointGlyphKind::NormalArrow => {
+                let arrow = Path::new(|path| {
+                    path.move_to(Point::new(0.0, 0.0));
+                    path.line_to(Point::new(-10.0, 4.0));
+                    path.line_to(Point::new(-7.25, 0.0));
+                    path.line_to(Point::new(-10.0, -4.0));
+                    path.close();
+                });
+
+                frame.with_save(|frame| {
+                    frame.translate(Vector::new(anchor.x, anchor.y));
+                    frame.rotate(self.angle_radians);
+                    frame.fill(&arrow, self.color);
+                });
+            }
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
 
 /// Builder for Black Hole Sun graph viewers.
 ///
@@ -789,6 +857,12 @@ impl BeamApp {
     }
 
     fn cell_graph(&self) -> Element<'_, Message> {
+        let mut layout_graph = self.model.graph.clone();
+        //if matches!(self.config.layout, BeamLayout::Dot) {
+        // Match the spacing used by iced-sugiyama's "moar" example.
+        layout_graph.config.vertex_spacing = DOT_VERTEX_SPACING;
+        //}
+
         let labels = self
             .model
             .cells
@@ -805,9 +879,11 @@ impl BeamApp {
         let colors = self.cell_colors();
         let colors_for_nodes = colors.clone();
         let colors_for_edges = colors.clone();
+        let colors_for_endpoints = colors;
 
-        let mut graph =
-            Sugiyama::<Message, Theme, iced::Renderer>::new(&self.model.graph, move |node_id| {
+        let mut graph = Sugiyama::<Message, Theme, iced::Renderer>::new(
+            Cow::Owned(layout_graph),
+            move |node_id| {
                 let (animal_name, activity) = labels
                     .get(&node_id)
                     .cloned()
@@ -828,8 +904,9 @@ impl BeamApp {
                 .padding([10, 12])
                 .style(move |_theme| cell_node_style(color))
                 .into()
-            })
-            .id(iced_sugiyama::Id::new(CELL_GRAPH_ID));
+            },
+        )
+        .id(iced_sugiyama::Id::new(CELL_GRAPH_ID));
 
         if matches!(self.config.layout, BeamLayout::Circo) {
             graph = graph.layout_fn(|input| {
@@ -885,6 +962,27 @@ impl BeamApp {
                     .copied()
                     .unwrap_or_else(|| SunNodeState::Idle.color(ctx.edge.1));
                 (lighten(start, 0.18), end)
+            })
+            .edge_endpoint(move |_, edge, kind, endpoint| {
+                if matches!(kind, EdgeEndpointKind::Source) {
+                    return None;
+                }
+                let node_id = edge.1;
+                let color = colors_for_endpoints
+                    .get(&node_id)
+                    .copied()
+                    .unwrap_or_else(|| SunNodeState::Idle.color(node_id));
+                let glyph = EdgeEndpointGlyph {
+                    kind: EdgeEndpointGlyphKind::NormalArrow,
+                    color,
+                    angle_radians: endpoint.angle_radians(),
+                };
+                Some(
+                    canvas::Canvas::new(glyph)
+                        .width(glyph.size())
+                        .height(glyph.size())
+                        .into(),
+                )
             })
             .stroke_width(1.4)
             .edge_corner_radius(16.0)
