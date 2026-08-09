@@ -1,8 +1,8 @@
 #[cfg(not(test))]
-#[path = "../tests/primordia.rs"]
-mod primordia;
+#[path = "../tests/sun.rs"]
+mod sun;
 
 #[cfg(not(test))]
 fn main() {
-    primordia::run_beam();
+    sun::run_beam_dark_star();
 }

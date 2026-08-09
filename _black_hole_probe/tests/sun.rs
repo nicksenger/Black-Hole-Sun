@@ -834,7 +834,18 @@ fn beam_test() {
     assert!(status.success(), "Beam example exited with {status}");
 }
 
-#[cfg(test)]
+/// Runs the dark_star Sun indefinitely with a live Black Hole Beam viewer.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn run_beam_dark_star() {
+    primordia_merged::run_beam();
+}
+
+/// Runs the black_dwarf Sun indefinitely with a live Black Hole Beam viewer.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn run_beam_black_dwarf() {
+    primordia_merged::run_beam_black_dwarf();
+}
+
 mod primordia_merged {
     use std::future::Future;
     use std::net::SocketAddr;
@@ -862,7 +873,7 @@ mod primordia_merged {
     use typosaurus::num::consts::*;
     use uuid::Uuid;
 
-    use crate::common::*;
+    use super::common::*;
 
     const PROGENITOR_NODE_COUNT: usize = 3;
     const SPACE_PROBE_DISTANCE_PROMPT: &str =
