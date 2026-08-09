@@ -75,7 +75,7 @@ pub enum SunNodeState {
     Idle,
     /// The first propagation pass has been sent to the node.
     Propagation1,
-    /// The second propagation pass has been sent to the node.
+    /// The first pass has emitted and the second pass has been sent to the node.
     Propagation2,
     /// The epoch's loss has been sent to the node.
     Optimization,
@@ -216,10 +216,14 @@ pub struct SunInner {
     pub journey_ids: HashMap<u32, Uuid>,
     /// Human-readable animal type names keyed by internal vertex.
     pub node_labels: HashMap<u32, String>,
-    /// Latest orchestration phase sent to each internal vertex.
+    /// Latest observable orchestration phase reached by each internal vertex.
     pub node_states: HashMap<u32, SunNodeState>,
     /// Logical phase position for each vertex, used to recover skipped observations.
     pub node_state_sequences: HashMap<u32, u64>,
+    /// Nodes whose first-pass output has been received in the current epoch.
+    pub p1_completed: HashSet<u32>,
+    /// Nodes whose second pass has been sent in the current epoch.
+    pub p2_sent: HashSet<u32>,
     /// Input ports owned by each vertex, in descriptor order.
     pub vertex_ports: HashMap<u32, Vec<u32>>,
     /// Resolves every public input port to its internal vertex key.
@@ -276,18 +280,37 @@ impl SunInner {
             SunNodeState::Propagation1 | SunNodeState::Propagation2
         ));
         for node_id in node_ids {
-            if self.node_states.get(&node_id) == Some(&SunNodeState::Propagation2)
-                && phase == SunNodeState::Propagation1
-            {
-                continue;
+            match phase {
+                SunNodeState::Propagation1 => {
+                    if self.node_states.get(&node_id) != Some(&SunNodeState::Propagation2) {
+                        self.record_state_sent(node_id, phase);
+                    }
+                }
+                SunNodeState::Propagation2 => {
+                    self.p2_sent.insert(node_id);
+                    if self.p1_completed.contains(&node_id) {
+                        self.record_state_sent(node_id, phase);
+                    }
+                }
+                _ => unreachable!("propagation phase was validated above"),
             }
-            self.record_state_sent(node_id, phase);
+        }
+    }
+
+    pub(crate) fn record_propagation_completed(&mut self, node_id: u32, phase: SunNodeState) {
+        if phase == SunNodeState::Propagation1 {
+            self.p1_completed.insert(node_id);
+            if self.p2_sent.contains(&node_id) {
+                self.record_state_sent(node_id, SunNodeState::Propagation2);
+            }
         }
     }
 
     pub(crate) fn record_optimization_sent(&mut self, node_ids: impl IntoIterator<Item = u32>) {
         for node_id in node_ids {
             self.record_state_sent(node_id, SunNodeState::Optimization);
+            self.p1_completed.remove(&node_id);
+            self.p2_sent.remove(&node_id);
         }
     }
 }

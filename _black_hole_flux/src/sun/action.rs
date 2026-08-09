@@ -614,11 +614,11 @@ where
         let (pending, ready) = state.scheduler_mut();
         advance_frontier(pending, ready, node_id, &outgoing)?;
 
-        state
-            .get_shared()
-            .lock()
-            .unwrap()
-            .record_propagation_sent(node_tx.sent_node_ids, S::PROPAGATION_STATE);
+        {
+            let mut inner = state.get_shared().lock().unwrap();
+            inner.record_propagation_completed(node_id, S::PROPAGATION_STATE);
+            inner.record_propagation_sent(node_tx.sent_node_ids, S::PROPAGATION_STATE);
+        }
 
         Ok(node_tx.transmission)
     }
@@ -980,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn propagation_phases_do_not_regress_and_restart_after_optimization() {
+    fn propagation_two_waits_for_propagation_one_completion() {
         let mut state = super::super::SunState::default();
         add_vertex(&mut state, 0, &[0], &[]);
 
@@ -991,12 +991,24 @@ mod tests {
         }
         assert_eq!(
             state.appearance().nodes[0].state,
-            super::super::SunNodeState::Propagation2
+            super::super::SunNodeState::Propagation1,
+            "sending propagation 2 must not hide in-flight propagation 1"
+        );
+        assert_eq!(state.appearance().nodes[0].state_sequence, 1);
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_propagation_completed(0, super::super::SunNodeState::Propagation1);
+        }
+        assert_eq!(
+            state.appearance().nodes[0].state,
+            super::super::SunNodeState::Propagation2,
+            "propagation 2 becomes visible after propagation 1 emits"
         );
         assert_eq!(
             state.appearance().nodes[0].state_sequence,
             2,
-            "jumping directly to propagation 2 records both logical phases"
+            "each visible propagation phase advances the sequence"
         );
 
         {
@@ -1018,5 +1030,45 @@ mod tests {
             super::super::SunNodeState::Propagation1
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 4);
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_propagation_sent([0], super::super::SunNodeState::Propagation2);
+        }
+        assert_eq!(
+            state.appearance().nodes[0].state,
+            super::super::SunNodeState::Propagation1,
+            "the prior epoch's completion must not expose propagation 2 early"
+        );
+        assert_eq!(state.appearance().nodes[0].state_sequence, 4);
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_propagation_completed(0, super::super::SunNodeState::Propagation1);
+        }
+        assert_eq!(
+            state.appearance().nodes[0].state,
+            super::super::SunNodeState::Propagation2
+        );
+        assert_eq!(state.appearance().nodes[0].state_sequence, 5);
+    }
+
+    #[test]
+    fn propagation_two_is_exposed_when_sent_after_propagation_one_completes() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[]);
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_propagation_sent([0], super::super::SunNodeState::Propagation1);
+            inner.record_propagation_completed(0, super::super::SunNodeState::Propagation1);
+            inner.record_propagation_sent([0], super::super::SunNodeState::Propagation2);
+        }
+
+        assert_eq!(
+            state.appearance().nodes[0].state,
+            super::super::SunNodeState::Propagation2
+        );
+        assert_eq!(state.appearance().nodes[0].state_sequence, 2);
     }
 }
