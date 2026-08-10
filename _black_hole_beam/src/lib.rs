@@ -534,8 +534,8 @@ impl NodeStateVisual for SunNodeState {
                 Color::from_rgb8(246, 164, 46),
             ),
             SunNodeState::Propagation1 => (
-                Color::from_rgb8(238, 161, 35),
-                Color::from_rgb8(250, 215, 72),
+                Color::from_rgb8(246, 223, 132),
+                Color::from_rgb8(255, 247, 198),
             ),
             SunNodeState::Propagation2 => {
                 (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57))
@@ -1154,8 +1154,8 @@ mod tests {
         assert_eq!(
             SunNodeState::Propagation1.palette(),
             (
-                Color::from_rgb8(238, 161, 35),
-                Color::from_rgb8(250, 215, 72)
+                Color::from_rgb8(246, 223, 132),
+                Color::from_rgb8(255, 247, 198)
             )
         );
         assert_eq!(
