@@ -10,16 +10,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use black_hole_flux::ops::{SunOps, VoidInferOps};
-use black_hole_flux::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
-use black_hole_flux::{Fusion, FusionSeed, FusionState, Progenitor};
-use black_hole_sun::black_hole_flux;
 use black_hole_sun::object_store::InMemoryObjectStore;
+use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::persist::InMemoryStore;
+use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
 use black_hole_sun::{
     DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkServerBuilder,
     Transmission, VoidServerBuilder,
 };
+use black_hole_sun::{Fusion, FusionSeed, FusionState, Progenitor};
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
@@ -215,7 +214,11 @@ pub(super) struct SpaceJungle {
 }
 
 impl SpaceJungle {
-    pub(super) fn new(void_addr: SocketAddr, quark_addr: SocketAddr, _model_cell_count: usize) -> Self {
+    pub(super) fn new(
+        void_addr: SocketAddr,
+        quark_addr: SocketAddr,
+        _model_cell_count: usize,
+    ) -> Self {
         Self {
             void_addr,
             quark_addr,

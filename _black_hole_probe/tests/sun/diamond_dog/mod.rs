@@ -95,7 +95,10 @@ impl Predicate<(&CellState, &())> for AlwaysEpoch {
 }
 
 #[derive(Flow)]
-pub(super) struct TestCellFlow<Transform>(Step<InitRecvId>, While<AlwaysEpoch, TestCellEpoch<Transform>>);
+pub(super) struct TestCellFlow<Transform>(
+    Step<InitRecvId>,
+    While<AlwaysEpoch, TestCellEpoch<Transform>>,
+);
 
 pub(super) struct PassEmission;
 pub(super) struct MarkLeft;

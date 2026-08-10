@@ -10,8 +10,8 @@ use jungle_sdk::JungleClient;
 use uuid::Uuid;
 
 use super::diamond_dog::{
-    exercise_diamond_dog, start_server, ExpandedBlackHoleAnimal, FUSED_EMISSION, LEFT_EMISSION,
-    ProbeSpaceJungle, RIGHT_EMISSION,
+    exercise_diamond_dog, start_server, ExpandedBlackHoleAnimal, ProbeSpaceJungle, FUSED_EMISSION,
+    LEFT_EMISSION, RIGHT_EMISSION,
 };
 use crate::common::init_tracing;
 

@@ -1,8 +1,7 @@
 use std::future::Future;
 
-use black_hole_flux::ops::VoidInferOps;
-use black_hole_flux::{AtomError, Emission};
-use black_hole_sun::{InferenceOutput, InferenceOutputId, SequenceOutput};
+use black_hole_sun::ops::VoidInferOps;
+use black_hole_sun::{AtomError, Emission, InferenceOutput, InferenceOutputId, SequenceOutput};
 use postcard::{from_bytes, to_allocvec};
 
 use super::*;

@@ -7,6 +7,9 @@ pub use black_hole_quark;
 pub use black_hole_spec;
 pub use black_hole_void;
 
+// Convenience re-exports — flux modules and core sun types
+pub use black_hole_flux::{ops, sun, AtomError, Fusion, FusionSeed, FusionState, Progenitor};
+
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
