@@ -750,7 +750,7 @@ fn beam_test() {
 }
 
 const PROGENITOR_NODE_COUNT: usize = 3;
-pub(super) const SPACE_PROBE_DISTANCE_PROMPT: &str =
+pub(crate) const SPACE_PROBE_DISTANCE_PROMPT: &str =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
 const DARK_STAR_MODEL_CELL_COUNT: usize = 7;
 const DARK_STAR_VERTEX_COUNT: usize = 10;
@@ -787,7 +787,7 @@ type DarkStarSun = list![
     DarkStarF2
 ];
 
-pub(super) fn dark_star_tokenizer() -> Result<&'static tokenizers::Tokenizer, String> {
+pub(crate) fn dark_star_tokenizer() -> Result<&'static tokenizers::Tokenizer, String> {
     let tokenizer_result = DARK_STAR_TOKENIZER.get_or_init(|| {
         let api = hf_hub::api::sync::Api::new()
             .map_err(|error| format!("failed to create hf hub api: {error}"))?;
@@ -808,7 +808,7 @@ pub(super) fn dark_star_tokenizer() -> Result<&'static tokenizers::Tokenizer, St
     }
 }
 
-pub(super) fn prompt_to_dark_tokens(
+pub(crate) fn prompt_to_dark_tokens(
     prompt: &str,
     tokenizer: &tokenizers::Tokenizer,
 ) -> Result<Vec<DarkToken>, String> {
@@ -846,7 +846,7 @@ pub struct DarkStarLossPolicy;
 
 pub struct DarkStarLossPolicyEffect;
 
-pub(super) trait FusionConcatOps: Send + Sync {
+pub(crate) trait FusionConcatOps: Send + Sync {
     fn record_fusion_concat(&self);
 }
 

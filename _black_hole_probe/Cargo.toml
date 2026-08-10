@@ -28,6 +28,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [lints]
 workspace = true
 
+[[test]]
+name = "sun"
+path = "tests/sun/mod.rs"
+
 [dev-dependencies]
 black-hole-beam = { path = "../_black_hole_beam" }
 tracing = "0.1"
