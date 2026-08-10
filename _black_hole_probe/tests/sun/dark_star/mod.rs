@@ -15,8 +15,8 @@ use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
 use black_hole_sun::{
-    DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkServerBuilder, Tokenizer,
-    Transmission, VoidClient, VoidServerBuilder,
+    DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkClient, QuarkServerBuilder,
+    Tokenizer, Transmission, VoidClient, VoidServerBuilder,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState, Progenitor};
 use jungle_sdk::core::JungleWorker;
@@ -273,7 +273,9 @@ impl VoidInferOps for SpaceJungle {
 
     async fn start_model(&self, model_id: Uuid) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        let result = quark_start_result(&endpoint, self.quark_addr, model_id).await;
+        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .start(model_id)
+            .await;
         self.record_model_error("start model", &result);
         result
     }
@@ -294,7 +296,9 @@ impl VoidInferOps for SpaceJungle {
             .upload(request_bytes)
             .await
             .unwrap();
-        let result = quark_infer_result(&endpoint, self.quark_addr, model_id, request_id).await;
+        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .infer(model_id, request_id)
+            .await;
         self.record_model_error("infer", &result);
         if result.is_ok() {
             self.inference_calls.fetch_add(1, Ordering::SeqCst);
@@ -304,22 +308,27 @@ impl VoidInferOps for SpaceJungle {
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        let result = quark_perturb_up_result(&endpoint, self.quark_addr, model_id, seed).await;
+        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .perturb_up(model_id, seed)
+            .await;
         self.record_model_error("perturb up", &result);
         result
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        let result = quark_perturb_down_result(&endpoint, self.quark_addr, model_id).await;
+        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .perturb_down(model_id)
+            .await;
         self.record_model_error("perturb down", &result);
         result
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        let result =
-            quark_optimize_result(&endpoint, self.quark_addr, model_id, loss_up, loss_down).await;
+        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .optimize(model_id, loss_up, loss_down)
+            .await;
         self.record_model_error("optimize", &result);
         if result.is_ok() {
             self.optimized_cells.fetch_add(1, Ordering::SeqCst);
@@ -329,7 +338,9 @@ impl VoidInferOps for SpaceJungle {
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        let result = quark_shutdown_result(&endpoint, self.quark_addr, model_id).await;
+        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .shutdown(model_id)
+            .await;
         self.record_model_error("shutdown model", &result);
         result
     }

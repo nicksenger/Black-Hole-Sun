@@ -14,8 +14,8 @@ use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    LogitEntry, ObjectId, Progenitor, QuarkServerBuilder, SequenceOutput, Tokenizer, Transmission,
-    VoidClient, VoidServerBuilder,
+    LogitEntry, ObjectId, Progenitor, QuarkClient, QuarkServerBuilder, SequenceOutput, Tokenizer,
+    Transmission, VoidClient, VoidServerBuilder,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -82,7 +82,9 @@ impl VoidInferOps for SpaceJungle {
 
     async fn start_model(&self, model_id: Uuid) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        quark_start_result(&endpoint, self.quark_addr, model_id).await
+        QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .start(model_id)
+            .await
     }
 
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
@@ -92,27 +94,37 @@ impl VoidInferOps for SpaceJungle {
             .upload(request_bytes)
             .await
             .unwrap();
-        quark_infer_result(&endpoint, self.quark_addr, model_id, request_id).await
+        QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .infer(model_id, request_id)
+            .await
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        quark_perturb_up_result(&endpoint, self.quark_addr, model_id, seed).await
+        QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .perturb_up(model_id, seed)
+            .await
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        quark_perturb_down_result(&endpoint, self.quark_addr, model_id).await
+        QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .perturb_down(model_id)
+            .await
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        quark_optimize_result(&endpoint, self.quark_addr, model_id, loss_up, loss_down).await
+        QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .optimize(model_id, loss_up, loss_down)
+            .await
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        quark_shutdown_result(&endpoint, self.quark_addr, model_id).await
+        QuarkClient::new(&endpoint, self.quark_addr, "localhost")
+            .shutdown(model_id)
+            .await
     }
 
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String> {

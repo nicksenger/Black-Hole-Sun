@@ -2,12 +2,14 @@
 //!
 //! Use this crate as the single dependency point for black-hole-probe.
 
+mod quark_client;
 mod tokenizer;
 mod void_client;
 
 pub use black_hole_quark;
 pub use black_hole_spec;
 pub use black_hole_void;
+pub use quark_client::QuarkClient;
 pub use tokenizer::{Tokenizer, TokenizerBuilder};
 pub use void_client::VoidClient;
 

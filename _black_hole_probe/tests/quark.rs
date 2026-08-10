@@ -7,7 +7,7 @@ use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::QuarkServerBuilder;
 use black_hole_sun::VoidServerBuilder;
 use black_hole_sun::{
-    DarkToken, InferenceInput, InferenceRequest, LogitEntry, Tokenizer, VoidClient,
+    DarkToken, InferenceInput, InferenceRequest, LogitEntry, QuarkClient, Tokenizer, VoidClient,
 };
 use postcard::{from_bytes, to_allocvec};
 use uuid::Uuid;
@@ -64,10 +64,12 @@ async fn rejects_requests_for_unknown_model_instance() {
     drop(quark_handle);
 
     let client = make_client_endpoint().await;
+    let quark_client = QuarkClient::new(&client, quark_local, "localhost");
     let model_id = Uuid::new_v4();
 
     for _ in 0..2 {
-        let error = quark_start_result(&client, quark_local, model_id)
+        let error = quark_client
+            .start(model_id)
             .await
             .expect_err("invalid model path should fail to start");
         assert!(
@@ -77,13 +79,11 @@ async fn rejects_requests_for_unknown_model_instance() {
     }
 
     for result in [
-        quark_infer_result(&client, quark_local, model_id, Uuid::nil())
-            .await
-            .map(|_| ()),
-        quark_perturb_up_result(&client, quark_local, model_id, 42).await,
-        quark_perturb_down_result(&client, quark_local, model_id).await,
-        quark_optimize_result(&client, quark_local, model_id, 0.0, 0.0).await,
-        quark_shutdown_result(&client, quark_local, model_id).await,
+        quark_client.infer(model_id, Uuid::nil()).await.map(|_| ()),
+        quark_client.perturb_up(model_id, 42).await,
+        quark_client.perturb_down(model_id).await,
+        quark_client.optimize(model_id, 0.0, 0.0).await,
+        quark_client.shutdown(model_id).await,
     ] {
         let error = result.expect_err("unknown model request should fail");
         assert!(
@@ -107,9 +107,10 @@ async fn inference() {
     let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
 
     let void_client = make_client_endpoint().await;
-    let quark_client = make_client_endpoint().await;
+    let quark_endpoint = make_client_endpoint().await;
+    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_start(&quark_client, quark_local, model_id).await;
+    quark_client.start(model_id).await.unwrap();
 
     let tokenizer = Tokenizer::init();
 
@@ -130,7 +131,7 @@ async fn inference() {
         .await
         .unwrap();
 
-    let output_id = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+    let output_id = quark_client.infer(model_id, input_id).await.unwrap();
 
     let output_bytes = VoidClient::new(&void_client, void_local, "localhost")
         .download(output_id)
@@ -156,9 +157,9 @@ async fn inference() {
         );
     }
 
-    quark_shutdown(&quark_client, quark_local, model_id).await;
+    quark_client.shutdown(model_id).await.unwrap();
     drop(void_client);
-    drop(quark_client);
+    drop(quark_endpoint);
     void_abort.abort();
     quark_abort.abort();
 }
@@ -175,9 +176,10 @@ async fn dark_inference() {
     let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
 
     let void_client = make_client_endpoint().await;
-    let quark_client = make_client_endpoint().await;
+    let quark_endpoint = make_client_endpoint().await;
+    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_start(&quark_client, quark_local, model_id).await;
+    quark_client.start(model_id).await.unwrap();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -213,7 +215,7 @@ async fn dark_inference() {
         .await
         .unwrap();
 
-    let output_id = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+    let output_id = quark_client.infer(model_id, input_id).await.unwrap();
 
     let output_bytes = VoidClient::new(&void_client, void_local, "localhost")
         .download(output_id)
@@ -239,9 +241,9 @@ async fn dark_inference() {
         );
     }
 
-    quark_shutdown(&quark_client, quark_local, model_id).await;
+    quark_client.shutdown(model_id).await.unwrap();
     drop(void_client);
-    drop(quark_client);
+    drop(quark_endpoint);
     void_abort.abort();
     quark_abort.abort();
 }
@@ -258,9 +260,10 @@ async fn optimization() {
     let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
 
     let void_client = make_client_endpoint().await;
-    let quark_client = make_client_endpoint().await;
+    let quark_endpoint = make_client_endpoint().await;
+    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_start(&quark_client, quark_local, model_id).await;
+    quark_client.start(model_id).await.unwrap();
 
     let tokenizer = Tokenizer::init();
 
@@ -287,11 +290,11 @@ async fn optimization() {
 
     // Step 1: PerturbUp
     println!("\n--- Step 1: PerturbUp (seed=42) ---");
-    quark_perturb_up(&quark_client, quark_local, model_id, 42).await;
+    quark_client.perturb_up(model_id, 42).await.unwrap();
 
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
-    let output_id_up = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+    let output_id_up = quark_client.infer(model_id, input_id).await.unwrap();
     let output_bytes_up = VoidClient::new(&void_client, void_local, "localhost")
         .download(output_id_up)
         .await
@@ -316,11 +319,11 @@ async fn optimization() {
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
-    quark_perturb_down(&quark_client, quark_local, model_id).await;
+    quark_client.perturb_down(model_id).await.unwrap();
 
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
-    let output_id_down = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+    let output_id_down = quark_client.infer(model_id, input_id).await.unwrap();
     let output_bytes_down = VoidClient::new(&void_client, void_local, "localhost")
         .download(output_id_down)
         .await
@@ -350,18 +353,14 @@ async fn optimization() {
         "\n--- Step 5: Optimize (loss_up={}, loss_down={}) ---",
         fake_loss_up, fake_loss_down
     );
-    quark_optimize(
-        &quark_client,
-        quark_local,
-        model_id,
-        fake_loss_up,
-        fake_loss_down,
-    )
-    .await;
+    quark_client
+        .optimize(model_id, fake_loss_up, fake_loss_down)
+        .await
+        .unwrap();
 
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
-    let output_id_final = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+    let output_id_final = quark_client.infer(model_id, input_id).await.unwrap();
     let output_bytes_final = VoidClient::new(&void_client, void_local, "localhost")
         .download(output_id_final)
         .await
@@ -399,9 +398,9 @@ async fn optimization() {
         "post-optimize sequence 1 predicted tokens had no decoded text"
     );
 
-    quark_shutdown(&quark_client, quark_local, model_id).await;
+    quark_client.shutdown(model_id).await.unwrap();
     drop(void_client);
-    drop(quark_client);
+    drop(quark_endpoint);
     void_abort.abort();
     quark_abort.abort();
 }
@@ -418,9 +417,10 @@ async fn dark_optimization() {
     let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
 
     let void_client = make_client_endpoint().await;
-    let quark_client = make_client_endpoint().await;
+    let quark_endpoint = make_client_endpoint().await;
+    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_start(&quark_client, quark_local, model_id).await;
+    quark_client.start(model_id).await.unwrap();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -466,11 +466,11 @@ async fn dark_optimization() {
 
     // Step 1: PerturbUp
     println!("\n--- Step 1: PerturbUp (seed=42) ---");
-    quark_perturb_up(&quark_client, quark_local, model_id, 42).await;
+    quark_client.perturb_up(model_id, 42).await.unwrap();
 
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
-    let output_id_up = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+    let output_id_up = quark_client.infer(model_id, input_id).await.unwrap();
     let output_bytes_up = VoidClient::new(&void_client, void_local, "localhost")
         .download(output_id_up)
         .await
@@ -495,11 +495,11 @@ async fn dark_optimization() {
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
-    quark_perturb_down(&quark_client, quark_local, model_id).await;
+    quark_client.perturb_down(model_id).await.unwrap();
 
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
-    let output_id_down = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+    let output_id_down = quark_client.infer(model_id, input_id).await.unwrap();
     let output_bytes_down = VoidClient::new(&void_client, void_local, "localhost")
         .download(output_id_down)
         .await
@@ -529,18 +529,14 @@ async fn dark_optimization() {
         "\n--- Step 5: Optimize (loss_up={}, loss_down={}) ---",
         fake_loss_up, fake_loss_down
     );
-    quark_optimize(
-        &quark_client,
-        quark_local,
-        model_id,
-        fake_loss_up,
-        fake_loss_down,
-    )
-    .await;
+    quark_client
+        .optimize(model_id, fake_loss_up, fake_loss_down)
+        .await
+        .unwrap();
 
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
-    let output_id_final = quark_infer(&quark_client, quark_local, model_id, input_id).await;
+    let output_id_final = quark_client.infer(model_id, input_id).await.unwrap();
     let output_bytes_final = VoidClient::new(&void_client, void_local, "localhost")
         .download(output_id_final)
         .await
@@ -578,9 +574,9 @@ async fn dark_optimization() {
         "post-optimize sequence 1 predicted tokens had no decoded text"
     );
 
-    quark_shutdown(&quark_client, quark_local, model_id).await;
+    quark_client.shutdown(model_id).await.unwrap();
     drop(void_client);
-    drop(quark_client);
+    drop(quark_endpoint);
     void_abort.abort();
     quark_abort.abort();
 }
