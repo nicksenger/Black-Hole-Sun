@@ -17,7 +17,7 @@ pub use black_hole_spec::{
 
 // Convenience re-exports — void types
 pub use black_hole_void::{
-    init_tracing, object_store, persist, ServerBuilder as VoidServerBuilder,
+    init_tracing, object_store, persist, ServerBuilder as VoidServerBuilder, VoidIn, VoidOut,
 };
 
 // Convenience re-exports — quark types

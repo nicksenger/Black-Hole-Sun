@@ -8,29 +8,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use black_hole_sun::{ObjectId, QuarkIn, QuarkOut};
+use black_hole_sun::{ObjectId, QuarkIn, QuarkOut, VoidIn, VoidOut};
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tracing::warn;
-
-// ─── Wire protocol for void (mirrors black-hole-void) ─────────────────────────
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum VoidIn {
-    Upload { data: Vec<u8> },
-    UploadWith { id: ObjectId, data: Vec<u8> },
-    Download { id: ObjectId },
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum VoidOut {
-    Uploaded { id: ObjectId },
-    Downloaded { data: Vec<u8> },
-    Error { message: String },
-}
 
 // ─── No-op cert verifier (self-signed certs in local dev) ──────────────────────
 
