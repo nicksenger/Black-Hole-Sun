@@ -363,9 +363,6 @@ where
     A::Generation: jungle_sdk::typosaurus::num::Unsigned,
 {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let (void_addr, void_abort) = start_server().await;
     let mut jungle = ProbeSpaceJungle::new(void_addr);

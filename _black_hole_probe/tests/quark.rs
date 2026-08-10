@@ -66,9 +66,6 @@ async fn start_servers(
 #[tokio::test]
 async fn rejects_requests_for_unknown_model_instance() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let (quark_local, quark_handle) =
         QuarkServerBuilder::new(PathBuf::from("model-is-not-loaded-for-this-test"))
@@ -114,9 +111,6 @@ async fn rejects_requests_for_unknown_model_instance() {
 #[tokio::test]
 async fn inference() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let model_path = match require_model_path("inference") {
         Some(path) => path,
@@ -179,9 +173,6 @@ async fn inference() {
 #[tokio::test]
 async fn dark_inference() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let model_path = match require_model_path("dark_inference") {
         Some(path) => path,
@@ -263,9 +254,6 @@ async fn dark_inference() {
 #[tokio::test]
 async fn optimization() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let model_path = match require_model_path("optimization") {
         Some(path) => path,
@@ -414,9 +402,6 @@ async fn optimization() {
 #[tokio::test]
 async fn dark_optimization() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let model_path = match require_model_path("dark_optimization") {
         Some(path) => path,

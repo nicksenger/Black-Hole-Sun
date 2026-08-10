@@ -5,7 +5,7 @@ mod sun;
 pub use sun::{Generator, Policy};
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use black_hole_sun::{ObjectId, QuarkIn, QuarkOut, VoidIn, VoidOut};
@@ -375,5 +375,11 @@ pub fn require_model_path(test_name: &str) -> Option<String> {
 
 /// Initialize tracing for the test process (delegates to black_hole_sun).
 pub fn init_tracing() {
+    static RUSTLS_PROVIDER: Once = Once::new();
+    RUSTLS_PROVIDER.call_once(|| {
+        // rustls is built with default-features = false + ring, so tests must
+        // install the process-wide crypto provider before TLS client setup.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
     let _ = black_hole_sun::init_tracing();
 }

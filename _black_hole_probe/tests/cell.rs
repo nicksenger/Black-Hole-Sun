@@ -258,9 +258,6 @@ async fn connect_client_with_retry(remote: SocketAddr) -> jungle_sdk::Client {
 #[tokio::test]
 async fn cell() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let listen_1 = Uuid::new_v4();
     let listen_2 = Uuid::new_v4();

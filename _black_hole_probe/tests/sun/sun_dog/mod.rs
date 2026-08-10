@@ -112,9 +112,6 @@ async fn sun_dog() {
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn run_beam() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

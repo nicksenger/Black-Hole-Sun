@@ -538,9 +538,6 @@ pub(super) async fn exercise_epoch<A>(
 #[tokio::test]
 async fn dark_star() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let model_path = match require_model_path("dark_star") {
         Some(path) => path,
@@ -562,9 +559,6 @@ async fn dark_star() {
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn run_beam_dark_star() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
         .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to run beam_dark_star");

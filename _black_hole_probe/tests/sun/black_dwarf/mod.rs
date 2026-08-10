@@ -21,9 +21,6 @@ use super::common::require_model_path;
 #[tokio::test]
 async fn primordia() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let model_path = match require_model_path("primordia") {
         Some(path) => path,
@@ -46,9 +43,6 @@ async fn primordia() {
 #[tokio::test]
 async fn black_dwarf() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let model_path = match require_model_path("black_dwarf") {
         Some(path) => path,
@@ -70,9 +64,6 @@ async fn black_dwarf() {
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn run_beam_black_dwarf() {
     init_tracing();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
 
     let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
         .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to run beam_black_dwarf");
