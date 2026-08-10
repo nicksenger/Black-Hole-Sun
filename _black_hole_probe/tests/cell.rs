@@ -15,7 +15,7 @@ use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
     LogitEntry, ObjectId, Progenitor, QuarkServerBuilder, SequenceOutput, Tokenizer, Transmission,
-    VoidServerBuilder,
+    VoidClient, VoidServerBuilder,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -57,17 +57,26 @@ impl Ecosystem for SpaceJungle {
 impl VoidInferOps for SpaceJungle {
     async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
         let endpoint = make_client_endpoint().await;
-        Ok(void_download(&endpoint, self.void_addr, id).await)
+        Ok(VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .download(id)
+            .await
+            .unwrap())
     }
 
     async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
         let endpoint = make_client_endpoint().await;
-        Ok(void_upload(&endpoint, self.void_addr, data).await)
+        Ok(VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload(data)
+            .await
+            .unwrap())
     }
 
     async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
         let endpoint = make_client_endpoint().await;
-        void_upload_with(&endpoint, self.void_addr, id, data).await;
+        VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload_with(id, data)
+            .await
+            .unwrap();
         Ok(())
     }
 
@@ -79,7 +88,10 @@ impl VoidInferOps for SpaceJungle {
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
         let request_bytes = to_allocvec(&request).map_err(|e| format!("serialize: {e}"))?;
         let endpoint = make_client_endpoint().await;
-        let request_id = void_upload(&endpoint, self.void_addr, request_bytes).await;
+        let request_id = VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload(request_bytes)
+            .await
+            .unwrap();
         quark_infer_result(&endpoint, self.quark_addr, model_id, request_id).await
     }
 
@@ -111,7 +123,10 @@ impl VoidInferOps for SpaceJungle {
         };
         let data = to_allocvec(&propagation).map_err(|e| format!("serialize: {e}"))?;
         let endpoint = make_client_endpoint().await;
-        void_upload_with(&endpoint, self.void_addr, send_id, data).await;
+        VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload_with(send_id, data)
+            .await
+            .unwrap();
         Ok(())
     }
 }
@@ -121,7 +136,10 @@ impl VoidInferOps for SpaceJungle {
 async fn upload_transmission(addr: SocketAddr, transmission: &Transmission) -> ObjectId {
     let endpoint = make_client_endpoint().await;
     let data = to_allocvec(transmission).expect("failed to serialize transmission");
-    void_upload(&endpoint, addr, data).await
+    VoidClient::new(&endpoint, addr, "localhost")
+        .upload(data)
+        .await
+        .unwrap()
 }
 
 /// Poll void until data appears at `id`, deserializing as `Transmission`.
@@ -129,7 +147,10 @@ async fn wait_for_void_transmission(addr: SocketAddr, id: ObjectId) -> Transmiss
     use tokio::time::{sleep, Duration};
     loop {
         let endpoint = make_client_endpoint().await;
-        match void_download_result(&endpoint, addr, id).await {
+        match VoidClient::new(&endpoint, addr, "localhost")
+            .download(id)
+            .await
+        {
             Ok(data) => {
                 return postcard::from_bytes(&data)
                     .expect("failed to deserialize Transmission from void");
@@ -288,31 +309,31 @@ async fn cell() {
     };
     let inference_output_bytes_4 =
         to_allocvec(&inference_output_4).expect("serialize inference output 4");
-    let inference_output_id_4 = void_upload(
-        &make_client_endpoint().await,
-        void_addr,
-        inference_output_bytes_4,
-    )
-    .await;
+    let inference_output_id_4 =
+        VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+            .upload(inference_output_bytes_4)
+            .await
+            .unwrap();
     let emission_4 = Emission {
         metadata: (),
         output_id: InferenceOutputId(inference_output_id_4),
     };
     let emission_bytes_4 = to_allocvec(&emission_4).expect("serialize emission 4");
-    let emission_void_id_4 =
-        void_upload(&make_client_endpoint().await, void_addr, emission_bytes_4).await;
+    let emission_void_id_4 = VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+        .upload(emission_bytes_4)
+        .await
+        .unwrap();
     let propagation_4 = Transmission::Propagation {
         emission_id: EmissionId(emission_void_id_4),
         recv: ObjectId::nil(),
         send: listen_4,
     };
     let propagation_bytes_4 = to_allocvec(&propagation_4).expect("serialize propagation 4");
-    let propagation_void_id_4 = void_upload(
-        &make_client_endpoint().await,
-        void_addr,
-        propagation_bytes_4,
-    )
-    .await;
+    let propagation_void_id_4 =
+        VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+            .upload(propagation_bytes_4)
+            .await
+            .unwrap();
 
     // ── Third propagation (points to fourth) ──
     let dark_tokens_3 = text_to_dark_tokens(input_text, &tokenizer);
@@ -321,31 +342,31 @@ async fn cell() {
     };
     let inference_output_bytes_3 =
         to_allocvec(&inference_output_3).expect("serialize inference output 3");
-    let inference_output_id_3 = void_upload(
-        &make_client_endpoint().await,
-        void_addr,
-        inference_output_bytes_3,
-    )
-    .await;
+    let inference_output_id_3 =
+        VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+            .upload(inference_output_bytes_3)
+            .await
+            .unwrap();
     let emission_3 = Emission {
         metadata: (),
         output_id: InferenceOutputId(inference_output_id_3),
     };
     let emission_bytes_3 = to_allocvec(&emission_3).expect("serialize emission 3");
-    let emission_void_id_3 =
-        void_upload(&make_client_endpoint().await, void_addr, emission_bytes_3).await;
+    let emission_void_id_3 = VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+        .upload(emission_bytes_3)
+        .await
+        .unwrap();
     let propagation_3 = Transmission::Propagation {
         emission_id: EmissionId(emission_void_id_3),
         recv: propagation_void_id_4,
         send: listen_3,
     };
     let propagation_bytes_3 = to_allocvec(&propagation_3).expect("serialize propagation 3");
-    let propagation_void_id_3 = void_upload(
-        &make_client_endpoint().await,
-        void_addr,
-        propagation_bytes_3,
-    )
-    .await;
+    let propagation_void_id_3 =
+        VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+            .upload(propagation_bytes_3)
+            .await
+            .unwrap();
 
     // ── Potentiation (links second propagation to third) ──
     let potentiation = Transmission::Potentiation {
@@ -355,7 +376,10 @@ async fn cell() {
     };
     let potentiation_bytes = to_allocvec(&potentiation).expect("serialize potentiation");
     let potentiation_void_id =
-        void_upload(&make_client_endpoint().await, void_addr, potentiation_bytes).await;
+        VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+            .upload(potentiation_bytes)
+            .await
+            .unwrap();
 
     // ── Second propagation (points to potentiation) ──
     let dark_tokens_2 = text_to_dark_tokens(input_text, &tokenizer);
@@ -364,31 +388,31 @@ async fn cell() {
     };
     let inference_output_bytes_2 =
         to_allocvec(&inference_output_2).expect("serialize inference output 2");
-    let inference_output_id_2 = void_upload(
-        &make_client_endpoint().await,
-        void_addr,
-        inference_output_bytes_2,
-    )
-    .await;
+    let inference_output_id_2 =
+        VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+            .upload(inference_output_bytes_2)
+            .await
+            .unwrap();
     let emission_2 = Emission {
         metadata: (),
         output_id: InferenceOutputId(inference_output_id_2),
     };
     let emission_bytes_2 = to_allocvec(&emission_2).expect("serialize emission 2");
-    let emission_void_id_2 =
-        void_upload(&make_client_endpoint().await, void_addr, emission_bytes_2).await;
+    let emission_void_id_2 = VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+        .upload(emission_bytes_2)
+        .await
+        .unwrap();
     let propagation_2 = Transmission::Propagation {
         emission_id: EmissionId(emission_void_id_2),
         recv: potentiation_void_id,
         send: listen_2,
     };
     let propagation_bytes_2 = to_allocvec(&propagation_2).expect("serialize propagation 2");
-    let propagation_void_id_2 = void_upload(
-        &make_client_endpoint().await,
-        void_addr,
-        propagation_bytes_2,
-    )
-    .await;
+    let propagation_void_id_2 =
+        VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+            .upload(propagation_bytes_2)
+            .await
+            .unwrap();
 
     // ── First propagation (points to second) ──
     let dark_tokens = text_to_dark_tokens(input_text, &tokenizer);
@@ -397,19 +421,20 @@ async fn cell() {
     };
     let inference_output_bytes =
         to_allocvec(&inference_output).expect("serialize inference output");
-    let inference_output_id = void_upload(
-        &make_client_endpoint().await,
-        void_addr,
-        inference_output_bytes,
-    )
-    .await;
+    let inference_output_id =
+        VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+            .upload(inference_output_bytes)
+            .await
+            .unwrap();
     let emission = Emission {
         metadata: (),
         output_id: InferenceOutputId(inference_output_id),
     };
     let emission_bytes = to_allocvec(&emission).expect("serialize emission");
-    let emission_void_id =
-        void_upload(&make_client_endpoint().await, void_addr, emission_bytes).await;
+    let emission_void_id = VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+        .upload(emission_bytes)
+        .await
+        .unwrap();
     let propagation = Transmission::Propagation {
         emission_id: EmissionId(emission_void_id),
         recv: propagation_void_id_2,
@@ -417,7 +442,10 @@ async fn cell() {
     };
     let propagation_bytes = to_allocvec(&propagation).expect("serialize propagation");
     let propagation_void_id =
-        void_upload(&make_client_endpoint().await, void_addr, propagation_bytes).await;
+        VoidClient::new(&make_client_endpoint().await, void_addr, "localhost")
+            .upload(propagation_bytes)
+            .await
+            .unwrap();
 
     // 5. Spawn the Progenitor with state pointing to the first propagation.
     let spawn_result = client.spawn::<Progenitor>(&propagation_void_id).await;

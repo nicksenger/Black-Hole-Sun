@@ -3,11 +3,13 @@
 //! Use this crate as the single dependency point for black-hole-probe.
 
 mod tokenizer;
+mod void_client;
 
 pub use black_hole_quark;
 pub use black_hole_spec;
 pub use black_hole_void;
 pub use tokenizer::{Tokenizer, TokenizerBuilder};
+pub use void_client::VoidClient;
 
 // Convenience re-exports — flux modules and core sun types
 pub use black_hole_flux::{

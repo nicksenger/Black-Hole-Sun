@@ -16,7 +16,7 @@ use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
 use black_hole_sun::{
     DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkServerBuilder, Tokenizer,
-    Transmission, VoidServerBuilder,
+    Transmission, VoidClient, VoidServerBuilder,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState, Progenitor};
 use jungle_sdk::core::JungleWorker;
@@ -242,12 +242,17 @@ impl Ecosystem for SpaceJungle {
 impl VoidInferOps for SpaceJungle {
     async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
         let endpoint = make_client_endpoint().await;
-        void_download_result(&endpoint, self.void_addr, id).await
+        VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .download(id)
+            .await
     }
 
     async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
         let endpoint = make_client_endpoint().await;
-        Ok(void_upload(&endpoint, self.void_addr, data).await)
+        Ok(VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload(data)
+            .await
+            .unwrap())
     }
 
     async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
@@ -256,7 +261,10 @@ impl VoidInferOps for SpaceJungle {
             Ok(Transmission::Potentiation { .. })
         );
         let endpoint = make_client_endpoint().await;
-        void_upload_with(&endpoint, self.void_addr, id, data).await;
+        VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload_with(id, data)
+            .await
+            .unwrap();
         if is_potentiation {
             self.potentiation_writes.fetch_add(1, Ordering::SeqCst);
         }
@@ -282,7 +290,10 @@ impl VoidInferOps for SpaceJungle {
         };
         let request_bytes = postcard::to_allocvec(&request).map_err(|error| error.to_string())?;
         let endpoint = make_client_endpoint().await;
-        let request_id = void_upload(&endpoint, self.void_addr, request_bytes).await;
+        let request_id = VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload(request_bytes)
+            .await
+            .unwrap();
         let result = quark_infer_result(&endpoint, self.quark_addr, model_id, request_id).await;
         self.record_model_error("infer", &result);
         if result.is_ok() {
@@ -331,7 +342,10 @@ impl VoidInferOps for SpaceJungle {
         };
         let data = postcard::to_allocvec(&propagation).map_err(|error| error.to_string())?;
         let endpoint = make_client_endpoint().await;
-        void_upload_with(&endpoint, self.void_addr, send_id, data).await;
+        VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload_with(send_id, data)
+            .await
+            .unwrap();
         Ok(())
     }
 }

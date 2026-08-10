@@ -10,14 +10,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use black_hole_sun::cell::action::{
-    CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiationAction, WaitForPropagationAction,
+    CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiationAction,
+    WaitForPropagationAction,
 };
-use black_hole_sun::ops::{SunOps, VoidInferOps};
-use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
-use black_hole_sun::{Fusion, FusionSeed, FusionState};
 use black_hole_sun::object_store::InMemoryObjectStore;
+use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::persist::InMemoryStore;
-use black_hole_sun::{EmissionId, InferenceRequest, ObjectId, Transmission, VoidServerBuilder};
+use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
+use black_hole_sun::{
+    EmissionId, InferenceRequest, ObjectId, Transmission, VoidClient, VoidServerBuilder,
+};
+use black_hole_sun::{Fusion, FusionSeed, FusionState};
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
@@ -253,12 +256,17 @@ impl Ecosystem for ProbeSpaceJungle {
 impl VoidInferOps for ProbeSpaceJungle {
     async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
         let endpoint = make_client_endpoint().await;
-        void_download_result(&endpoint, self.void_addr, id).await
+        VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .download(id)
+            .await
     }
 
     async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
         let endpoint = make_client_endpoint().await;
-        Ok(void_upload(&endpoint, self.void_addr, data).await)
+        Ok(VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload(data)
+            .await
+            .unwrap())
     }
 
     async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
@@ -267,7 +275,10 @@ impl VoidInferOps for ProbeSpaceJungle {
             Ok(Transmission::Potentiation { .. })
         );
         let endpoint = make_client_endpoint().await;
-        void_upload_with(&endpoint, self.void_addr, id, data).await;
+        VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload_with(id, data)
+            .await
+            .unwrap();
         if is_potentiation {
             self.potentiation_writes.fetch_add(1, Ordering::SeqCst);
         }
@@ -311,7 +322,10 @@ impl VoidInferOps for ProbeSpaceJungle {
         };
         let data = to_allocvec(&propagation).map_err(|e| format!("serialize: {e}"))?;
         let endpoint = make_client_endpoint().await;
-        void_upload_with(&endpoint, self.void_addr, send_id, data).await;
+        VoidClient::new(&endpoint, self.void_addr, "localhost")
+            .upload_with(send_id, data)
+            .await
+            .unwrap();
         Ok(())
     }
 }

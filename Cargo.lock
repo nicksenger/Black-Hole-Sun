@@ -935,7 +935,11 @@ dependencies = [
  "black-hole-spec",
  "black-hole-void",
  "hf-hub",
+ "postcard",
+ "quinn",
+ "serde",
  "tokenizers",
+ "tokio",
 ]
 
 [[package]]

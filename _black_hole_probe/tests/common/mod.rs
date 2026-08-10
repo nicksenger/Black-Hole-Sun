@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
-use black_hole_sun::{ObjectId, QuarkIn, QuarkOut, VoidIn, VoidOut};
+use black_hole_sun::{ObjectId, QuarkIn, QuarkOut};
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
@@ -80,73 +80,6 @@ pub async fn make_client_endpoint() -> quinn::Endpoint {
     let mut endpoint = quinn::Endpoint::client(local_addr).unwrap();
     endpoint.set_default_client_config(client_config);
     endpoint
-}
-
-pub async fn void_upload(endpoint: &quinn::Endpoint, addr: SocketAddr, data: Vec<u8>) -> ObjectId {
-    let server_name = "localhost";
-    let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
-    let (mut send, mut recv) = conn.open_bi().await.unwrap();
-    send_frame(&mut send, &VoidIn::Upload { data }).await;
-    let resp: VoidOut = read_frame(&mut recv).await;
-    match resp {
-        VoidOut::Uploaded { id } => id,
-        VoidOut::Error { message } => panic!("void upload error: {message}"),
-        _ => panic!("unexpected void response for upload"),
-    }
-}
-
-pub async fn void_upload_with(
-    endpoint: &quinn::Endpoint,
-    addr: SocketAddr,
-    id: ObjectId,
-    data: Vec<u8>,
-) -> ObjectId {
-    let server_name = "localhost";
-    let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
-    let (mut send, mut recv) = conn.open_bi().await.unwrap();
-    send_frame(&mut send, &VoidIn::UploadWith { id, data }).await;
-    let resp: VoidOut = read_frame(&mut recv).await;
-    match resp {
-        VoidOut::Uploaded { id } => id,
-        VoidOut::Error { message } => panic!("void upload error: {message}"),
-        _ => panic!("unexpected void response for upload with"),
-    }
-}
-
-pub async fn void_download(endpoint: &quinn::Endpoint, addr: SocketAddr, id: ObjectId) -> Vec<u8> {
-    let server_name = "localhost";
-    let conn = endpoint.connect(addr, &server_name).unwrap().await.unwrap();
-    let (mut send, mut recv) = conn.open_bi().await.unwrap();
-    send_frame(&mut send, &VoidIn::Download { id }).await;
-    let resp: VoidOut = read_frame(&mut recv).await;
-    match resp {
-        VoidOut::Downloaded { data } => data,
-        VoidOut::Error { message } => panic!("void download error: {message}"),
-        _ => panic!("unexpected void response for download"),
-    }
-}
-
-pub async fn void_download_result(
-    endpoint: &quinn::Endpoint,
-    addr: SocketAddr,
-    id: ObjectId,
-) -> Result<Vec<u8>, String> {
-    let server_name = "localhost";
-    let conn = match endpoint.connect(addr, &server_name).unwrap().await {
-        Ok(c) => c,
-        Err(e) => return Err(format!("connect failed: {e}")),
-    };
-    let (mut send, mut recv) = match conn.open_bi().await {
-        Ok(s) => s,
-        Err(e) => return Err(format!("open_bi failed: {e}")),
-    };
-    send_frame(&mut send, &VoidIn::Download { id }).await;
-    let resp: VoidOut = read_frame(&mut recv).await;
-    match resp {
-        VoidOut::Downloaded { data } => Ok(data),
-        VoidOut::Error { message } => Err(message),
-        _ => Err("unexpected void response for download".into()),
-    }
 }
 
 pub async fn quark_start_result(

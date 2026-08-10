@@ -6,7 +6,9 @@ use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::QuarkServerBuilder;
 use black_hole_sun::VoidServerBuilder;
-use black_hole_sun::{DarkToken, InferenceInput, InferenceRequest, LogitEntry, Tokenizer};
+use black_hole_sun::{
+    DarkToken, InferenceInput, InferenceRequest, LogitEntry, Tokenizer, VoidClient,
+};
 use postcard::{from_bytes, to_allocvec};
 use uuid::Uuid;
 
@@ -123,11 +125,17 @@ async fn inference() {
         limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
-    let input_id = void_upload(&void_client, void_local, request_bytes).await;
+    let input_id = VoidClient::new(&void_client, void_local, "localhost")
+        .upload(request_bytes)
+        .await
+        .unwrap();
 
     let output_id = quark_infer(&quark_client, quark_local, model_id, input_id).await;
 
-    let output_bytes = void_download(&void_client, void_local, output_id).await;
+    let output_bytes = VoidClient::new(&void_client, void_local, "localhost")
+        .download(output_id)
+        .await
+        .unwrap();
     let output: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes).expect("failed to decode inference output");
 
@@ -200,11 +208,17 @@ async fn dark_inference() {
         limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
-    let input_id = void_upload(&void_client, void_local, request_bytes).await;
+    let input_id = VoidClient::new(&void_client, void_local, "localhost")
+        .upload(request_bytes)
+        .await
+        .unwrap();
 
     let output_id = quark_infer(&quark_client, quark_local, model_id, input_id).await;
 
-    let output_bytes = void_download(&void_client, void_local, output_id).await;
+    let output_bytes = VoidClient::new(&void_client, void_local, "localhost")
+        .download(output_id)
+        .await
+        .unwrap();
     let output: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes).expect("failed to decode inference output");
 
@@ -264,7 +278,10 @@ async fn optimization() {
         limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
-    let input_id = void_upload(&void_client, void_local, request_bytes).await;
+    let input_id = VoidClient::new(&void_client, void_local, "localhost")
+        .upload(request_bytes)
+        .await
+        .unwrap();
 
     // ─── QuZO flow: PerturbUp -> Infer -> PerturbDown -> Infer -> Optimize -> Infer ───
 
@@ -275,7 +292,10 @@ async fn optimization() {
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
     let output_id_up = quark_infer(&quark_client, quark_local, model_id, input_id).await;
-    let output_bytes_up = void_download(&void_client, void_local, output_id_up).await;
+    let output_bytes_up = VoidClient::new(&void_client, void_local, "localhost")
+        .download(output_id_up)
+        .await
+        .unwrap();
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
     print_inference_output("PerturbUp Inference 1", &output_up, 0, &tokenizer);
@@ -301,7 +321,10 @@ async fn optimization() {
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
     let output_id_down = quark_infer(&quark_client, quark_local, model_id, input_id).await;
-    let output_bytes_down = void_download(&void_client, void_local, output_id_down).await;
+    let output_bytes_down = VoidClient::new(&void_client, void_local, "localhost")
+        .download(output_id_down)
+        .await
+        .unwrap();
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
     print_inference_output("PerturbDown Inference 1", &output_down, 0, &tokenizer);
@@ -339,7 +362,10 @@ async fn optimization() {
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
     let output_id_final = quark_infer(&quark_client, quark_local, model_id, input_id).await;
-    let output_bytes_final = void_download(&void_client, void_local, output_id_final).await;
+    let output_bytes_final = VoidClient::new(&void_client, void_local, "localhost")
+        .download(output_id_final)
+        .await
+        .unwrap();
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
     print_inference_output("Post-Optimize Inference 1", &output_final, 0, &tokenizer);
@@ -431,7 +457,10 @@ async fn dark_optimization() {
         limit: 100,
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
-    let input_id = void_upload(&void_client, void_local, request_bytes).await;
+    let input_id = VoidClient::new(&void_client, void_local, "localhost")
+        .upload(request_bytes)
+        .await
+        .unwrap();
 
     // ─── QuZO flow: PerturbUp -> Infer -> PerturbDown -> Infer -> Optimize -> Infer ───
 
@@ -442,7 +471,10 @@ async fn dark_optimization() {
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
     let output_id_up = quark_infer(&quark_client, quark_local, model_id, input_id).await;
-    let output_bytes_up = void_download(&void_client, void_local, output_id_up).await;
+    let output_bytes_up = VoidClient::new(&void_client, void_local, "localhost")
+        .download(output_id_up)
+        .await
+        .unwrap();
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
     print_inference_output("PerturbUp Inference 1", &output_up, 0, &tokenizer);
@@ -468,7 +500,10 @@ async fn dark_optimization() {
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
     let output_id_down = quark_infer(&quark_client, quark_local, model_id, input_id).await;
-    let output_bytes_down = void_download(&void_client, void_local, output_id_down).await;
+    let output_bytes_down = VoidClient::new(&void_client, void_local, "localhost")
+        .download(output_id_down)
+        .await
+        .unwrap();
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
     print_inference_output("PerturbDown Inference 1", &output_down, 0, &tokenizer);
@@ -506,7 +541,10 @@ async fn dark_optimization() {
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
     let output_id_final = quark_infer(&quark_client, quark_local, model_id, input_id).await;
-    let output_bytes_final = void_download(&void_client, void_local, output_id_final).await;
+    let output_bytes_final = VoidClient::new(&void_client, void_local, "localhost")
+        .download(output_id_final)
+        .await
+        .unwrap();
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
     print_inference_output("Post-Optimize Inference 1", &output_final, 0, &tokenizer);
