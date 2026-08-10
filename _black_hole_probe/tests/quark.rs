@@ -6,26 +6,11 @@ use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::QuarkServerBuilder;
 use black_hole_sun::VoidServerBuilder;
-use black_hole_sun::{DarkToken, InferenceInput, InferenceRequest, LogitEntry};
+use black_hole_sun::{DarkToken, InferenceInput, InferenceRequest, LogitEntry, Tokenizer};
 use postcard::{from_bytes, to_allocvec};
 use uuid::Uuid;
 
 use common::*;
-
-/// Download the Qwen tokenizer from HuggingFace.
-fn get_tokenizer() -> tokenizers::Tokenizer {
-    let tokenizer_repo = "Qwen/Qwen3.5-0.8B".to_string();
-    let api = hf_hub::api::sync::Api::new().expect("failed to create hf hub api");
-    let repo = api.repo(hf_hub::Repo::with_revision(
-        tokenizer_repo.clone(),
-        hf_hub::RepoType::Model,
-        "main".to_string(),
-    ));
-    let tokenizer_file = repo
-        .get("tokenizer.json")
-        .expect("failed to download tokenizer.json from HuggingFace");
-    tokenizers::Tokenizer::from_file(tokenizer_file).expect("failed to load tokenizer")
-}
 
 /// Start void and quark servers, returning their local addresses and abort handles.
 async fn start_servers(
@@ -124,7 +109,7 @@ async fn inference() {
     let model_id = Uuid::new_v4();
     quark_start(&quark_client, quark_local, model_id).await;
 
-    let tokenizer = get_tokenizer();
+    let tokenizer = Tokenizer::init();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -190,15 +175,11 @@ async fn dark_inference() {
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
     println!("Input text: {input_text}");
 
-    let tokenizer = get_tokenizer();
+    let tokenizer = Tokenizer::init();
 
-    let tokens: Vec<u32> = tokenizer
-        .encode(input_text, false)
-        .expect("failed to tokenize input")
-        .get_ids()
-        .iter()
-        .map(|&id| id as u32)
-        .collect();
+    let tokens = tokenizer
+        .encode_ids(input_text)
+        .expect("failed to tokenize input");
 
     let dark_tokens: Vec<DarkToken> = tokens
         .iter()
@@ -267,7 +248,7 @@ async fn optimization() {
     let model_id = Uuid::new_v4();
     quark_start(&quark_client, quark_local, model_id).await;
 
-    let tokenizer = get_tokenizer();
+    let tokenizer = Tokenizer::init();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -421,16 +402,12 @@ async fn dark_optimization() {
         "A starship traveling at constant velocity measures a distance of 1,200 light-years to a distant galaxy. After covering half the distance, it detects an anomaly and must divert, adding 300 light-years to its route. How many total light-years will the journey be?";
     println!("Input text: {input_text}");
 
-    let tokenizer = get_tokenizer();
+    let tokenizer = Tokenizer::init();
 
-    let fn_to_dark_tokens = |text: &str, tokenizer: &tokenizers::Tokenizer| -> Vec<DarkToken> {
-        let tokens: Vec<u32> = tokenizer
-            .encode(text, false)
-            .expect("failed to tokenize input")
-            .get_ids()
-            .iter()
-            .map(|&id| id as u32)
-            .collect();
+    let fn_to_dark_tokens = |text: &str, tokenizer: &Tokenizer| -> Vec<DarkToken> {
+        let tokens = tokenizer
+            .encode_ids(text)
+            .expect("failed to tokenize input");
         tokens
             .iter()
             .map(|&token_id| DarkToken {

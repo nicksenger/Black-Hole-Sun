@@ -15,7 +15,7 @@ use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
 use black_hole_sun::{
-    DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkServerBuilder,
+    DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkServerBuilder, Tokenizer,
     Transmission, VoidServerBuilder,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState, Progenitor};
@@ -32,8 +32,7 @@ const DARK_STAR_MODEL_CELL_COUNT: usize = 7;
 const DARK_STAR_VERTEX_COUNT: usize = 10;
 const DARK_STAR_PORT_COUNT: usize = 13;
 const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
-const QWEN_TOKENIZER_REPO: &str = "Qwen/Qwen3.5-0.8B";
-static DARK_STAR_TOKENIZER: OnceLock<Result<tokenizers::Tokenizer, String>> = OnceLock::new();
+static DARK_STAR_TOKENIZER: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
 
 pub(super) const SPACE_PROBE_DISTANCE_PROMPT: &str = "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
 
@@ -65,21 +64,8 @@ type DarkStarSun = list![
     DarkStarF2
 ];
 
-pub(super) fn dark_star_tokenizer() -> Result<&'static tokenizers::Tokenizer, String> {
-    let tokenizer_result = DARK_STAR_TOKENIZER.get_or_init(|| {
-        let api = hf_hub::api::sync::Api::new()
-            .map_err(|error| format!("failed to create hf hub api: {error}"))?;
-        let repo = api.repo(hf_hub::Repo::with_revision(
-            QWEN_TOKENIZER_REPO.to_string(),
-            hf_hub::RepoType::Model,
-            "main".to_string(),
-        ));
-        let tokenizer_file = repo.get("tokenizer.json").map_err(|error| {
-            format!("failed to download tokenizer.json from HuggingFace: {error}")
-        })?;
-        tokenizers::Tokenizer::from_file(tokenizer_file)
-            .map_err(|error| format!("failed to load tokenizer.json: {error}"))
-    });
+pub(super) fn dark_star_tokenizer() -> Result<&'static Tokenizer, String> {
+    let tokenizer_result = DARK_STAR_TOKENIZER.get_or_init(Tokenizer::try_init);
     match tokenizer_result {
         Ok(tokenizer) => Ok(tokenizer),
         Err(error) => Err(error.clone()),
@@ -88,24 +74,20 @@ pub(super) fn dark_star_tokenizer() -> Result<&'static tokenizers::Tokenizer, St
 
 pub(super) fn prompt_to_dark_tokens(
     prompt: &str,
-    tokenizer: &tokenizers::Tokenizer,
+    tokenizer: &Tokenizer,
 ) -> Result<Vec<DarkToken>, String> {
     let tokens = tokenizer
-        .encode(prompt, false)
+        .encode_ids(prompt)
         .map_err(|error| format!("failed to tokenize prompt: {error}"))?;
 
     Ok(tokens
-        .get_ids()
         .iter()
-        .map(|&id| {
-            let token_id = id as u32;
-            DarkToken {
-                predicted: token_id,
-                dark_knowledge: vec![LogitEntry {
-                    token_id,
-                    log_prob: 0.0,
-                }],
-            }
+        .map(|&token_id| DarkToken {
+            predicted: token_id,
+            dark_knowledge: vec![LogitEntry {
+                token_id,
+                log_prob: 0.0,
+            }],
         })
         .collect())
 }

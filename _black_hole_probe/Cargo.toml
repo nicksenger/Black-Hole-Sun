@@ -35,5 +35,3 @@ path = "tests/sun/mod.rs"
 [dev-dependencies]
 black-hole-beam = { path = "../_black_hole_beam" }
 tracing = "0.1"
-hf-hub = "0.4"
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }

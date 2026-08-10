@@ -9,12 +9,12 @@ use async_trait::async_trait;
 use black_hole_sun::atom::effect::QuarkInfer;
 use black_hole_sun::cell::action::CellState;
 use black_hole_sun::cell::effect::{QuarkPerturbDown, QuarkPerturbUp, WaitForPropagation};
-use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::object_store::InMemoryObjectStore;
+use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    LogitEntry, ObjectId, Progenitor, QuarkServerBuilder, SequenceOutput, Transmission,
+    LogitEntry, ObjectId, Progenitor, QuarkServerBuilder, SequenceOutput, Tokenizer, Transmission,
     VoidServerBuilder,
 };
 use futures::StreamExt;
@@ -142,30 +142,11 @@ async fn wait_for_void_transmission(addr: SocketAddr, id: ObjectId) -> Transmiss
     }
 }
 
-/// Download the Qwen tokenizer from HuggingFace.
-fn get_tokenizer() -> tokenizers::Tokenizer {
-    let tokenizer_repo = "Qwen/Qwen3.5-0.8B".to_string();
-    let api = hf_hub::api::sync::Api::new().expect("failed to create hf hub api");
-    let repo = api.repo(hf_hub::Repo::with_revision(
-        tokenizer_repo.clone(),
-        hf_hub::RepoType::Model,
-        "main".to_string(),
-    ));
-    let tokenizer_file = repo
-        .get("tokenizer.json")
-        .expect("failed to download tokenizer.json from HuggingFace");
-    tokenizers::Tokenizer::from_file(tokenizer_file).expect("failed to load tokenizer")
-}
-
 /// Tokenize text into DarkTokens suitable for InferenceOutput.
-fn text_to_dark_tokens(text: &str, tokenizer: &tokenizers::Tokenizer) -> Vec<DarkToken> {
-    let tokens: Vec<u32> = tokenizer
-        .encode(text, false)
-        .expect("failed to tokenize input")
-        .get_ids()
-        .iter()
-        .map(|&id| id as u32)
-        .collect();
+fn text_to_dark_tokens(text: &str, tokenizer: &Tokenizer) -> Vec<DarkToken> {
+    let tokens = tokenizer
+        .encode_ids(text)
+        .expect("failed to tokenize input");
     tokens
         .iter()
         .map(|&token_id| DarkToken {
@@ -298,7 +279,7 @@ async fn cell() {
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
-    let tokenizer = get_tokenizer();
+    let tokenizer = Tokenizer::init();
 
     // ── Fourth propagation (end of chain) ──
     let dark_tokens_4 = text_to_dark_tokens(input_text, &tokenizer);

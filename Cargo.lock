@@ -887,13 +887,11 @@ dependencies = [
  "black-hole-beam",
  "black-hole-sun",
  "futures",
- "hf-hub",
  "jungle-sdk",
  "postcard",
  "quinn",
  "rustls 0.23.43",
  "serde",
- "tokenizers",
  "tokio",
  "tracing",
  "typosaurus",
@@ -936,6 +934,8 @@ dependencies = [
  "black-hole-quark",
  "black-hole-spec",
  "black-hole-void",
+ "hf-hub",
+ "tokenizers",
 ]
 
 [[package]]
