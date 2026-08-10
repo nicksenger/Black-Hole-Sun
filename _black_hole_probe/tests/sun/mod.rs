@@ -564,7 +564,7 @@ async fn diamond_dog() {
 /// `[L1, R1] -> F0`, `[L2, R2] -> F1`, and `[F0, F1] -> F2`.
 #[cfg(test)]
 #[tokio::test]
-async fn expanded_diamond_dog() {
+async fn sun_dog() {
     const EPOCHS: usize = 3;
     const PROPAGATION_PASSES: usize = 2;
     const FIRST_LAYER_FUSIONS: usize = 2;
@@ -574,7 +574,7 @@ async fn expanded_diamond_dog() {
 
     // Ten vertices own thirteen input ports: seven unary and six binary.
     let observed = exercise_diamond_dog::<ExpandedBlackHoleAnimal>(
-        "expanded diamond_dog",
+        "sun_dog",
         10,
         13,
         EPOCHS,
