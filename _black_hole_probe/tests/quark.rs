@@ -139,7 +139,7 @@ async fn inference() {
             !seq_result.0.is_empty(),
             "output {label} has zero predictions"
         );
-        let output_text = decode_dark_tokens(&tokenizer, &seq_result.0);
+        let output_text = tokenizer.decode(&seq_result.0);
 
         println!("Output {label}: {output_text}");
         assert!(
@@ -216,7 +216,7 @@ async fn dark_inference() {
             !seq_result.0.is_empty(),
             "output {label} has zero predictions"
         );
-        let output_text = decode_dark_tokens(&tokenizer, &seq_result.0);
+        let output_text = tokenizer.decode(&seq_result.0);
 
         println!("Output {label}: {output_text}");
         assert!(
@@ -359,8 +359,8 @@ async fn optimization() {
     );
 
     // Verify the output contains plausible text.
-    let final_text = decode_dark_tokens(&tokenizer, &output_final.results[0].0);
-    let final_text_2 = decode_dark_tokens(&tokenizer, &output_final.results[1].0);
+    let final_text = tokenizer.decode(&output_final.results[0].0);
+    let final_text_2 = tokenizer.decode(&output_final.results[1].0);
 
     println!("\n--- Summary ---");
     println!("All QuZO steps completed successfully.");
@@ -526,8 +526,8 @@ async fn dark_optimization() {
     );
 
     // Verify the output contains plausible text.
-    let final_text = decode_dark_tokens(&tokenizer, &output_final.results[0].0);
-    let final_text_2 = decode_dark_tokens(&tokenizer, &output_final.results[1].0);
+    let final_text = tokenizer.decode(&output_final.results[0].0);
+    let final_text_2 = tokenizer.decode(&output_final.results[1].0);
 
     println!("\n--- Summary ---");
     println!("All QuZO steps completed successfully.");

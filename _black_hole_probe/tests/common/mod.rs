@@ -337,12 +337,7 @@ async fn read_frame<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) 
 
 // ─── Token decoding ───────────────────────────────────────────────────────────
 
-use black_hole_sun::{DarkToken, Tokenizer};
-
-/// Decode a sequence of DarkToken predicted IDs into text using a tokenizer.
-pub fn decode_dark_tokens(tokenizer: &Tokenizer, tokens: &[DarkToken]) -> String {
-    tokenizer.decode(tokens)
-}
+use black_hole_sun::Tokenizer;
 
 pub fn print_inference_output(
     label: &str,
@@ -350,7 +345,7 @@ pub fn print_inference_output(
     seq_idx: usize,
     tokenizer: &Tokenizer,
 ) {
-    let output_text = decode_dark_tokens(tokenizer, &output.results[seq_idx].0);
+    let output_text = tokenizer.decode(&output.results[seq_idx].0);
     println!("{}: {}", label, output_text);
 }
 
