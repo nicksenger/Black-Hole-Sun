@@ -10,7 +10,7 @@ use super::dark_star::{
 };
 #[cfg(test)]
 use super::dark_star::{exercise_epoch, ProgenitorBlackHole};
-use super::common::init_tracing;
+use super::common::{init_tracing, make_client_endpoint};
 #[cfg(test)]
 use super::common::require_model_path;
 
@@ -76,7 +76,10 @@ pub(crate) fn run_beam_black_dwarf() {
     let (client, journey_id) = runtime.block_on(async {
         let (void_addr, _void_abort, quark_addr, _quark_abort) = start_servers(&model_path).await;
 
-        let mut jungle = SpaceJungle::new(void_addr, quark_addr, PROGENITOR_NODE_COUNT);
+        let endpoint = make_client_endpoint().await;
+        let void_client = black_hole_sun::VoidClient::new(&endpoint, void_addr, "localhost");
+        let quark_client = black_hole_sun::QuarkClient::new(&endpoint, quark_addr, "localhost");
+        let mut jungle = SpaceJungle::new(void_client, quark_client, PROGENITOR_NODE_COUNT);
         let client = FusedClient::builder()
             .build()
             .await

@@ -185,8 +185,8 @@ pub(super) struct SpaceAnimals(
 
 #[derive(Clone)]
 pub(super) struct SpaceJungle {
-    void_addr: SocketAddr,
-    quark_addr: SocketAddr,
+    void_client: VoidClient,
+    quark_client: QuarkClient,
     client: Option<FusedClient>,
     pub(super) potentiation_writes: Arc<AtomicUsize>,
     pub(super) inference_calls: Arc<AtomicUsize>,
@@ -197,13 +197,13 @@ pub(super) struct SpaceJungle {
 
 impl SpaceJungle {
     pub(super) fn new(
-        void_addr: SocketAddr,
-        quark_addr: SocketAddr,
+        void_client: VoidClient,
+        quark_client: QuarkClient,
         _model_cell_count: usize,
     ) -> Self {
         Self {
-            void_addr,
-            quark_addr,
+            void_client,
+            quark_client,
             client: None,
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
             inference_calls: Arc::new(AtomicUsize::new(0)),
@@ -241,18 +241,11 @@ impl Ecosystem for SpaceJungle {
 #[async_trait]
 impl VoidInferOps for SpaceJungle {
     async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
-        let endpoint = make_client_endpoint().await;
-        VoidClient::new(&endpoint, self.void_addr, "localhost")
-            .download(id)
-            .await
+        self.void_client.download(id).await
     }
 
     async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
-        let endpoint = make_client_endpoint().await;
-        Ok(VoidClient::new(&endpoint, self.void_addr, "localhost")
-            .upload(data)
-            .await
-            .unwrap())
+        Ok(self.void_client.upload(data).await.unwrap())
     }
 
     async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
@@ -260,11 +253,7 @@ impl VoidInferOps for SpaceJungle {
             postcard::from_bytes(&data),
             Ok(Transmission::Potentiation { .. })
         );
-        let endpoint = make_client_endpoint().await;
-        VoidClient::new(&endpoint, self.void_addr, "localhost")
-            .upload_with(id, data)
-            .await
-            .unwrap();
+        self.void_client.upload_with(id, data).await.unwrap();
         if is_potentiation {
             self.potentiation_writes.fetch_add(1, Ordering::SeqCst);
         }
@@ -272,10 +261,7 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn start_model(&self, model_id: Uuid) -> Result<(), String> {
-        let endpoint = make_client_endpoint().await;
-        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
-            .start(model_id)
-            .await;
+        let result = self.quark_client.start(model_id).await;
         self.record_model_error("start model", &result);
         result
     }
@@ -291,14 +277,8 @@ impl VoidInferOps for SpaceJungle {
             InferenceRequest::VoidId { id, .. } => InferenceRequest::VoidId { id, limit: 1 },
         };
         let request_bytes = postcard::to_allocvec(&request).map_err(|error| error.to_string())?;
-        let endpoint = make_client_endpoint().await;
-        let request_id = VoidClient::new(&endpoint, self.void_addr, "localhost")
-            .upload(request_bytes)
-            .await
-            .unwrap();
-        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
-            .infer(model_id, request_id)
-            .await;
+        let request_id = self.void_client.upload(request_bytes).await.unwrap();
+        let result = self.quark_client.infer(model_id, request_id).await;
         self.record_model_error("infer", &result);
         if result.is_ok() {
             self.inference_calls.fetch_add(1, Ordering::SeqCst);
@@ -307,28 +287,19 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
-        let endpoint = make_client_endpoint().await;
-        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
-            .perturb_up(model_id, seed)
-            .await;
+        let result = self.quark_client.perturb_up(model_id, seed).await;
         self.record_model_error("perturb up", &result);
         result
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
-        let endpoint = make_client_endpoint().await;
-        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
-            .perturb_down(model_id)
-            .await;
+        let result = self.quark_client.perturb_down(model_id).await;
         self.record_model_error("perturb down", &result);
         result
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
-        let endpoint = make_client_endpoint().await;
-        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
-            .optimize(model_id, loss_up, loss_down)
-            .await;
+        let result = self.quark_client.optimize(model_id, loss_up, loss_down).await;
         self.record_model_error("optimize", &result);
         if result.is_ok() {
             self.optimized_cells.fetch_add(1, Ordering::SeqCst);
@@ -337,10 +308,7 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
-        let endpoint = make_client_endpoint().await;
-        let result = QuarkClient::new(&endpoint, self.quark_addr, "localhost")
-            .shutdown(model_id)
-            .await;
+        let result = self.quark_client.shutdown(model_id).await;
         self.record_model_error("shutdown model", &result);
         result
     }
@@ -352,11 +320,7 @@ impl VoidInferOps for SpaceJungle {
             send: ObjectId::nil(),
         };
         let data = postcard::to_allocvec(&propagation).map_err(|error| error.to_string())?;
-        let endpoint = make_client_endpoint().await;
-        VoidClient::new(&endpoint, self.void_addr, "localhost")
-            .upload_with(send_id, data)
-            .await
-            .unwrap();
+        self.void_client.upload_with(send_id, data).await.unwrap();
         Ok(())
     }
 }
@@ -429,7 +393,10 @@ pub(super) async fn exercise_epoch<A>(
         .build()
         .await
         .expect("fused client should build");
-    let mut jungle = SpaceJungle::new(void_addr, quark_addr, model_cell_count);
+    let endpoint = make_client_endpoint().await;
+    let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
+    let quark_client = QuarkClient::new(&endpoint, quark_addr, "localhost");
+    let mut jungle = SpaceJungle::new(void_client, quark_client, model_cell_count);
     jungle.set_client(client.clone());
 
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
@@ -578,7 +545,10 @@ pub(crate) fn run_beam_dark_star() {
     let (client, journey_id) = runtime.block_on(async {
         let (void_addr, _void_abort, quark_addr, _quark_abort) = start_servers(&model_path).await;
 
-        let mut jungle = SpaceJungle::new(void_addr, quark_addr, DARK_STAR_MODEL_CELL_COUNT);
+        let endpoint = make_client_endpoint().await;
+        let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
+        let quark_client = QuarkClient::new(&endpoint, quark_addr, "localhost");
+        let mut jungle = SpaceJungle::new(void_client, quark_client, DARK_STAR_MODEL_CELL_COUNT);
         let client = FusedClient::builder()
             .build()
             .await

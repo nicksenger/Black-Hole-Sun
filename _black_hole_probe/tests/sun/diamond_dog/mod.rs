@@ -217,16 +217,16 @@ pub(super) struct ProbeSpaceAnimals(
 /// A Jungle implementation backed by void over QUIC.
 #[derive(Clone)]
 pub(super) struct ProbeSpaceJungle {
-    void_addr: SocketAddr,
+    void_client: VoidClient,
     client: Option<FusedClient>,
     pub(super) potentiation_writes: Arc<AtomicUsize>,
     pub(super) fusion_inputs: Arc<Mutex<Vec<FusionObservation>>>,
 }
 
 impl ProbeSpaceJungle {
-    pub(super) fn new(void_addr: SocketAddr) -> Self {
+    pub(super) fn new(void_client: VoidClient) -> Self {
         Self {
-            void_addr,
+            void_client,
             client: None,
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
             fusion_inputs: Arc::new(Mutex::new(Vec::new())),
@@ -255,18 +255,11 @@ impl Ecosystem for ProbeSpaceJungle {
 #[async_trait]
 impl VoidInferOps for ProbeSpaceJungle {
     async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
-        let endpoint = make_client_endpoint().await;
-        VoidClient::new(&endpoint, self.void_addr, "localhost")
-            .download(id)
-            .await
+        self.void_client.download(id).await
     }
 
     async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
-        let endpoint = make_client_endpoint().await;
-        Ok(VoidClient::new(&endpoint, self.void_addr, "localhost")
-            .upload(data)
-            .await
-            .unwrap())
+        Ok(self.void_client.upload(data).await.unwrap())
     }
 
     async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
@@ -274,11 +267,7 @@ impl VoidInferOps for ProbeSpaceJungle {
             postcard::from_bytes(&data),
             Ok(Transmission::Potentiation { .. })
         );
-        let endpoint = make_client_endpoint().await;
-        VoidClient::new(&endpoint, self.void_addr, "localhost")
-            .upload_with(id, data)
-            .await
-            .unwrap();
+        self.void_client.upload_with(id, data).await.unwrap();
         if is_potentiation {
             self.potentiation_writes.fetch_add(1, Ordering::SeqCst);
         }
@@ -321,11 +310,7 @@ impl VoidInferOps for ProbeSpaceJungle {
             send: ObjectId::nil(),
         };
         let data = to_allocvec(&propagation).map_err(|e| format!("serialize: {e}"))?;
-        let endpoint = make_client_endpoint().await;
-        VoidClient::new(&endpoint, self.void_addr, "localhost")
-            .upload_with(send_id, data)
-            .await
-            .unwrap();
+        self.void_client.upload_with(send_id, data).await.unwrap();
         Ok(())
     }
 }
@@ -379,7 +364,9 @@ where
     init_tracing();
 
     let (void_addr, void_abort) = start_server().await;
-    let mut jungle = ProbeSpaceJungle::new(void_addr);
+    let endpoint = make_client_endpoint().await;
+    let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
+    let mut jungle = ProbeSpaceJungle::new(void_client);
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
     let fusion_inputs = Arc::clone(&jungle.fusion_inputs);
 

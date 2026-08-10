@@ -15,7 +15,7 @@ use super::diamond_dog::{
 };
 #[cfg(test)]
 use super::diamond_dog::{exercise_diamond_dog, FUSED_EMISSION, LEFT_EMISSION, RIGHT_EMISSION};
-use super::common::init_tracing;
+use super::common::{init_tracing, make_client_endpoint};
 
 /// Exercises an extra diamond layer ending in a third binary fusion:
 ///
@@ -121,7 +121,9 @@ pub(crate) fn run_beam() {
     let (client, journey_id) = runtime.block_on(async {
         let (void_addr, _void_abort) = start_server().await;
 
-        let mut jungle = ProbeSpaceJungle::new(void_addr);
+        let endpoint = make_client_endpoint().await;
+        let void_client = black_hole_sun::VoidClient::new(&endpoint, void_addr, "localhost");
+        let mut jungle = ProbeSpaceJungle::new(void_client);
         let client = FusedClient::builder()
             .build()
             .await
