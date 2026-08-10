@@ -25,7 +25,7 @@ use jungle_sdk::FusedClient;
 use typosaurus::num::consts::*;
 use uuid::Uuid;
 
-use crate::common::*;
+use super::common::*;
 
 pub(super) const PROGENITOR_NODE_COUNT: usize = 3;
 const DARK_STAR_MODEL_CELL_COUNT: usize = 7;
@@ -613,5 +613,5 @@ pub(crate) fn run_beam_dark_star() {
 #[test]
 #[ignore]
 fn beam_dark_star() {
-    crate::run_beam_example("beam_dark_star");
+    super::run_beam_example("beam_dark_star");
 }

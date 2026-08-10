@@ -6,10 +6,13 @@ use jungle_sdk::FusedClient;
 use jungle_sdk::JungleClient;
 
 use super::dark_star::{
-    exercise_epoch, start_servers, BlackDwarfBlackHole, ProgenitorBlackHole, SpaceJungle,
-    PROGENITOR_NODE_COUNT,
+    start_servers, BlackDwarfBlackHole, SpaceJungle, PROGENITOR_NODE_COUNT,
 };
-use crate::common::{init_tracing, require_model_path};
+#[cfg(test)]
+use super::dark_star::{exercise_epoch, ProgenitorBlackHole};
+use super::common::init_tracing;
+#[cfg(test)]
+use super::common::require_model_path;
 
 /// Runs the same U0 -> U1 -> U2 Sun topology as `diamond_dog`, with real Progenitor
 /// cells backed by a quark model.
@@ -119,5 +122,5 @@ pub(crate) fn run_beam_black_dwarf() {
 #[test]
 #[ignore]
 fn beam_black_dwarf() {
-    crate::run_beam_example("beam_black_dwarf");
+    super::run_beam_example("beam_black_dwarf");
 }

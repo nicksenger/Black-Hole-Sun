@@ -7,13 +7,15 @@ use std::collections::HashMap;
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::FusedClient;
 use jungle_sdk::JungleClient;
+#[cfg(test)]
 use uuid::Uuid;
 
 use super::diamond_dog::{
-    exercise_diamond_dog, start_server, ExpandedBlackHoleAnimal, ProbeSpaceJungle, FUSED_EMISSION,
-    LEFT_EMISSION, RIGHT_EMISSION,
+    start_server, ExpandedBlackHoleAnimal, ProbeSpaceJungle,
 };
-use crate::common::init_tracing;
+#[cfg(test)]
+use super::diamond_dog::{exercise_diamond_dog, FUSED_EMISSION, LEFT_EMISSION, RIGHT_EMISSION};
+use super::common::init_tracing;
 
 /// Exercises an extra diamond layer ending in a third binary fusion:
 ///
@@ -159,5 +161,5 @@ pub(crate) fn run_beam() {
 #[test]
 #[ignore]
 fn beam_test() {
-    crate::run_beam_example("beam");
+    super::run_beam_example("beam");
 }

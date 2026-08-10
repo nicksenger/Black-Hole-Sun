@@ -25,7 +25,7 @@ use postcard::to_allocvec;
 use typosaurus::num::consts::*;
 use uuid::Uuid;
 
-use crate::common::*;
+use super::common::*;
 
 pub(super) const LEFT_EMISSION: u128 = 1;
 pub(super) const RIGHT_EMISSION: u128 = 2;
