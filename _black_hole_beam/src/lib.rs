@@ -541,8 +541,8 @@ impl NodeStateVisual for SunNodeState {
                 (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57))
             }
             SunNodeState::Optimization => (
-                Color::from_rgb8(123, 58, 202),
-                Color::from_rgb8(164, 87, 232),
+                Color::from_rgb8(208, 107, 26),
+                Color::from_rgb8(242, 156, 56),
             ),
         }
     }
@@ -1165,8 +1165,8 @@ mod tests {
         assert_eq!(
             SunNodeState::Optimization.palette(),
             (
-                Color::from_rgb8(123, 58, 202),
-                Color::from_rgb8(164, 87, 232)
+                Color::from_rgb8(208, 107, 26),
+                Color::from_rgb8(242, 156, 56)
             )
         );
         assert_ne!(SunNodeState::Idle.color(0), SunNodeState::Idle.color(1));
