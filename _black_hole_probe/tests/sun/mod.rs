@@ -365,7 +365,7 @@ async fn start_server() -> (SocketAddr, tokio::task::AbortHandle) {
 // ─── Test ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-async fn exercise_sun<A>(
+async fn exercise_diamond_dog<A>(
     name: &str,
     vertex_count: usize,
     port_count: usize,
@@ -523,9 +523,9 @@ where
 /// declared `P1`, `P2` order remain stable on both propagation passes.
 #[cfg(test)]
 #[tokio::test]
-async fn sun() {
+async fn diamond_dog() {
     const EPOCHS: usize = 3;
-    let observed = exercise_sun::<BlackHoleAnimal>("diamond Sun", 5, 6, EPOCHS).await;
+    let observed = exercise_diamond_dog::<BlackHoleAnimal>("diamond_dog", 5, 6, EPOCHS).await;
 
     assert!(
         observed.len() >= EPOCHS * 2,
@@ -564,7 +564,7 @@ async fn sun() {
 /// `[L1, R1] -> F0`, `[L2, R2] -> F1`, and `[F0, F1] -> F2`.
 #[cfg(test)]
 #[tokio::test]
-async fn expanded_diamond_sun() {
+async fn expanded_diamond_dog() {
     const EPOCHS: usize = 3;
     const PROPAGATION_PASSES: usize = 2;
     const FIRST_LAYER_FUSIONS: usize = 2;
@@ -573,8 +573,13 @@ async fn expanded_diamond_sun() {
         EPOCHS * PROPAGATION_PASSES * (FIRST_LAYER_FUSIONS + FINAL_LAYER_FUSIONS);
 
     // Ten vertices own thirteen input ports: seven unary and six binary.
-    let observed =
-        exercise_sun::<ExpandedBlackHoleAnimal>("expanded diamond Sun", 10, 13, EPOCHS).await;
+    let observed = exercise_diamond_dog::<ExpandedBlackHoleAnimal>(
+        "expanded diamond_dog",
+        10,
+        13,
+        EPOCHS,
+    )
+    .await;
     assert!(
         observed.len() >= FUSION_TRANSFORMS,
         "expected {FUSION_TRANSFORMS} fusion transforms, observed {observed:?}"
@@ -1124,7 +1129,7 @@ async fn start_servers(
     (void_addr, void_abort, quark_addr, quark_abort)
 }
 
-async fn exercise_sun_epoch<A>(
+async fn exercise_diamond_dog_epoch<A>(
     test_name: &str,
     model_path: &str,
     model_cell_count: usize,
@@ -1250,7 +1255,7 @@ async fn exercise_sun_epoch<A>(
     quark_abort.abort();
 }
 
-/// Runs the same U0 -> U1 -> U2 Sun topology as `sun`, with real Progenitor
+/// Runs the same U0 -> U1 -> U2 Sun topology as `diamond_dog`, with real Progenitor
 /// cells backed by a quark model.
 #[ignore]
 #[tokio::test]
@@ -1264,7 +1269,7 @@ async fn primordia() {
         Some(path) => path,
         None => return,
     };
-    exercise_sun_epoch::<ProgenitorBlackHole>(
+    exercise_diamond_dog_epoch::<ProgenitorBlackHole>(
         "Progenitor Sun",
         &model_path,
         PROGENITOR_NODE_COUNT,
@@ -1289,7 +1294,7 @@ async fn dark_star() {
         None => return,
     };
 
-    exercise_sun_epoch::<DarkStarBlackHole>(
+    exercise_diamond_dog_epoch::<DarkStarBlackHole>(
         "dark_star Sun",
         &model_path,
         DARK_STAR_MODEL_CELL_COUNT,
@@ -1314,7 +1319,7 @@ async fn black_dwarf() {
         None => return,
     };
 
-    exercise_sun_epoch::<BlackDwarfBlackHole>(
+    exercise_diamond_dog_epoch::<BlackDwarfBlackHole>(
         "black_dwarf Sun",
         &model_path,
         PROGENITOR_NODE_COUNT,
