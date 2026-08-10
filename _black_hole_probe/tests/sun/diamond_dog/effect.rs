@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use black_hole_flux::AtomError;
+use black_hole_sun::AtomError;
 
 use super::*;
 

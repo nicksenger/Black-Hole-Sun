@@ -9,14 +9,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use black_hole_flux::cell::action::InitRecvId;
-use black_hole_flux::ops::{SunOps, VoidInferOps};
-use black_hole_flux::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
-use black_hole_flux::{
-    CellState, Fusion, FusionSeed, FusionState, Potentiation, Transmit, WaitForPotentiationAction,
-    WaitForPropagationAction,
+use black_hole_sun::cell::action::{
+    CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiationAction, WaitForPropagationAction,
 };
-use black_hole_sun::black_hole_flux;
+use black_hole_sun::ops::{SunOps, VoidInferOps};
+use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
+use black_hole_sun::{Fusion, FusionSeed, FusionState};
 use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{EmissionId, InferenceRequest, ObjectId, Transmission, VoidServerBuilder};

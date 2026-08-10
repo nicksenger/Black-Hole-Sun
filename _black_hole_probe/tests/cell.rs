@@ -6,15 +6,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use black_hole_flux::ops::VoidInferOps;
-use black_hole_flux::{CellState, Progenitor};
-use black_hole_flux::{QuarkInfer, QuarkPerturbDown, QuarkPerturbUp, WaitForPropagation};
-use black_hole_sun::black_hole_flux;
+use black_hole_sun::atom::effect::QuarkInfer;
+use black_hole_sun::cell::action::CellState;
+use black_hole_sun::cell::effect::{QuarkPerturbDown, QuarkPerturbUp, WaitForPropagation};
+use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    LogitEntry, ObjectId, QuarkServerBuilder, SequenceOutput, Transmission, VoidServerBuilder,
+    LogitEntry, ObjectId, Progenitor, QuarkServerBuilder, SequenceOutput, Transmission,
+    VoidServerBuilder,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;

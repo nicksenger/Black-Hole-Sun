@@ -2,8 +2,9 @@
 
 use std::future::Future;
 
-use black_hole_sun::black_hole_flux::ops::VoidInferOps;
-use black_hole_sun::black_hole_flux::{AtomError, SunState};
+use black_hole_sun::ops::VoidInferOps;
+use black_hole_sun::sun::SunState;
+use black_hole_sun::AtomError;
 use black_hole_sun::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, ObjectId, SequenceOutput,
     Transmission,
