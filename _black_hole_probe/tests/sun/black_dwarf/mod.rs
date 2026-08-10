@@ -1,0 +1,123 @@
+mod action;
+mod effect;
+
+use jungle_sdk::core::JungleWorker;
+use jungle_sdk::FusedClient;
+use jungle_sdk::JungleClient;
+
+use super::dark_star::{
+    exercise_epoch, start_servers, BlackDwarfBlackHole, ProgenitorBlackHole, SpaceJungle,
+    PROGENITOR_NODE_COUNT,
+};
+use crate::common::{init_tracing, require_model_path};
+
+/// Runs the same U0 -> U1 -> U2 Sun topology as `diamond_dog`, with real Progenitor
+/// cells backed by a quark model.
+#[cfg(test)]
+#[ignore]
+#[tokio::test]
+async fn primordia() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = match require_model_path("primordia") {
+        Some(path) => path,
+        None => return,
+    };
+    exercise_epoch::<ProgenitorBlackHole>(
+        "Progenitor Sun",
+        &model_path,
+        PROGENITOR_NODE_COUNT,
+        PROGENITOR_NODE_COUNT,
+        PROGENITOR_NODE_COUNT,
+        0,
+    )
+    .await;
+}
+
+/// Runs the same topology as `primordia`, but with dark_star's generator/policy.
+#[cfg(test)]
+#[ignore]
+#[tokio::test]
+async fn black_dwarf() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = match require_model_path("black_dwarf") {
+        Some(path) => path,
+        None => return,
+    };
+
+    exercise_epoch::<BlackDwarfBlackHole>(
+        "black_dwarf Sun",
+        &model_path,
+        PROGENITOR_NODE_COUNT,
+        PROGENITOR_NODE_COUNT,
+        PROGENITOR_NODE_COUNT,
+        0,
+    )
+    .await;
+}
+
+/// Runs the black_dwarf Sun indefinitely with a live Black Hole Beam viewer.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn run_beam_black_dwarf() {
+    init_tracing();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
+        .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to run beam_black_dwarf");
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("Tokio runtime should build");
+    let (client, journey_id) = runtime.block_on(async {
+        let (void_addr, _void_abort, quark_addr, _quark_abort) = start_servers(&model_path).await;
+
+        let mut jungle = SpaceJungle::new(void_addr, quark_addr, PROGENITOR_NODE_COUNT);
+        let client = FusedClient::builder()
+            .build()
+            .await
+            .expect("fused client should build");
+        jungle.set_client(client.clone());
+
+        let journey_id = client
+            .spawn::<BlackDwarfBlackHole>(&())
+            .await
+            .expect("BlackDwarfBlackHole should spawn")
+            .journey_id;
+        println!("Spawned BlackDwarfBlackHole journey: {journey_id}");
+
+        // One worker per journey: black_dwarf graph vertices plus the parent.
+        let _worker_handles: Vec<_> = (0..(PROGENITOR_NODE_COUNT + 1))
+            .map(|_| {
+                let worker = JungleWorker::new(jungle.clone(), client.clone());
+                tokio::spawn(async move {
+                    let _ = worker.spawn().await;
+                })
+            })
+            .collect();
+
+        (client, journey_id)
+    });
+
+    black_hole_beam::BeamBuilder::new()
+        .dot_layout()
+        .view_live::<BlackDwarfBlackHole>(client, journey_id)
+        .expect("Black Hole Beam should run");
+}
+
+#[cfg(test)]
+#[test]
+#[ignore]
+fn beam_black_dwarf() {
+    crate::run_beam_example("beam_black_dwarf");
+}
