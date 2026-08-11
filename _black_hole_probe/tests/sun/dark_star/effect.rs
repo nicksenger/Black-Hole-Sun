@@ -3,6 +3,7 @@ use std::future::Future;
 use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::{AtomError, Emission, InferenceOutput, InferenceOutputId, SequenceOutput};
 use postcard::{from_bytes, to_allocvec};
+use tracing::info;
 
 use super::*;
 
@@ -115,6 +116,74 @@ impl<J> Effect<J> for DarkStarLossPolicyEffect {
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move { Ok((0.4, 0.8)) }
+    }
+}
+
+fn propagation_emission_id(transmission: &Transmission) -> Result<EmissionId, AtomError> {
+    match transmission {
+        Transmission::Propagation { emission_id, .. } => Ok(emission_id.clone()),
+        Transmission::Potentiation { .. } => Err(AtomError::Inference(
+            "expected propagation transmission in black dwarf reward".to_string(),
+        )),
+    }
+}
+
+impl<J> EffectSchema<J> for BlackDwarfLossPolicyEffect {
+    type Id = u64;
+    type In = (Transmission, Transmission);
+    type Out = (f32, f32);
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for BlackDwarfLossPolicyEffect
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let up_emission_id = propagation_emission_id(&input.0)?;
+            let down_emission_id = propagation_emission_id(&input.1)?;
+
+            let up_emission: Emission<()> = jungle
+                .download_emission(up_emission_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+            let down_emission: Emission<()> = jungle
+                .download_emission(down_emission_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+
+            let up_bytes = jungle
+                .download_raw(up_emission.output_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+            let down_bytes = jungle
+                .download_raw(down_emission.output_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+
+            let output_up: InferenceOutput = from_bytes(&up_bytes)?;
+            let output_down: InferenceOutput = from_bytes(&down_bytes)?;
+            let up_batch_size = output_up.results.len();
+            let down_batch_size = output_down.results.len();
+
+            info!(
+                up_batch_size,
+                down_batch_size,
+                "black_dwarf reward received batch outputs"
+            );
+
+            if up_batch_size != 2 || down_batch_size != 2 {
+                return Err(AtomError::Inference(format!(
+                    "expected batch size 2 in black_dwarf reward fn, got up={up_batch_size}, down={down_batch_size}"
+                )));
+            }
+
+            Ok((0.4, 0.8))
+        }
     }
 }
 

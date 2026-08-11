@@ -52,6 +52,25 @@ impl Action for DarkStarLossPolicy {
 }
 
 #[jungle::action]
+impl Action for BlackDwarfLossPolicy {
+    type Effect = BlackDwarfLossPolicyEffect;
+    type Input = (Transmission, Transmission);
+    type Output = (f32, f32);
+    type Carry = ();
+
+    fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("black dwarf policy failed: {error}")))
+    }
+}
+
+#[jungle::action]
 impl Action for ConcatFusionOutputs {
     type Effect = ConcatFusionOutputsEffect;
     type Input = (Uuid, (EmissionId, EmissionId));

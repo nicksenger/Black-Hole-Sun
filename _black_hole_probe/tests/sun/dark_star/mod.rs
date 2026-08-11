@@ -106,6 +106,12 @@ pub(super) struct DarkStarPolicy(Step<DarkStarLossPolicy>);
 pub(super) struct DarkStarLossPolicy;
 pub struct DarkStarLossPolicyEffect;
 
+#[derive(Flow)]
+pub(super) struct BlackDwarfPolicy(Step<BlackDwarfLossPolicy>);
+
+pub(super) struct BlackDwarfLossPolicy;
+pub struct BlackDwarfLossPolicyEffect;
+
 pub(super) trait FusionConcatOps: Send + Sync {
     fn record_fusion_concat(&self);
 }
@@ -165,7 +171,7 @@ pub(super) struct BlackDwarfBlackHole;
 impl Animal for BlackDwarfBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<BlackDwarfGenerator, DarkStarPolicy>;
+    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<BlackDwarfGenerator, BlackDwarfPolicy>;
 }
 
 impl Observe for BlackDwarfBlackHole {
