@@ -17,9 +17,6 @@ struct Opt {
     /// Enable stateless retries
     #[clap(long = "stateless-retry")]
     stateless_retry: bool,
-    /// Disable weight mutations (perturb and optimize become no-ops)
-    #[clap(long = "frozen")]
-    frozen: bool,
     /// Address to listen on
     #[clap(long = "listen", default_value = "[::1]:4433")]
     listen: SocketAddr,
@@ -55,9 +52,6 @@ impl From<Opt> for black_hole_quark::ServerBuilder {
             .keylog(opt.keylog)
             .stateless_retry(opt.stateless_retry)
             .listen(opt.listen);
-        if opt.frozen {
-            builder = builder.frozen();
-        }
 
         if let Some(key) = opt.key {
             builder = builder.key(key);
