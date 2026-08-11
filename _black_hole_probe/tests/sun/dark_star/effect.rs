@@ -7,6 +7,8 @@ use tracing::info;
 
 use super::*;
 
+const BLACK_DWARF_BATCH_SIZE: usize = 32;
+
 impl<J> EffectSchema<J> for GenerateDarkStarPromptEffect {
     type Id = u64;
     type In = ();
@@ -74,10 +76,9 @@ where
             let dark_tokens = prompt_to_dark_tokens(SPACE_PROBE_DISTANCE_PROMPT, tokenizer)
                 .map_err(AtomError::Inference)?;
             let output = InferenceOutput {
-                results: vec![
-                    SequenceOutput(dark_tokens.clone()),
-                    SequenceOutput(dark_tokens),
-                ],
+                results: (0..BLACK_DWARF_BATCH_SIZE)
+                    .map(|_| SequenceOutput(dark_tokens.clone()))
+                    .collect(),
             };
             let output_bytes = to_allocvec(&output)?;
             let output_id = jungle
@@ -176,9 +177,11 @@ where
                 "black_dwarf reward received batch outputs"
             );
 
-            if up_batch_size != 2 || down_batch_size != 2 {
+            if up_batch_size != BLACK_DWARF_BATCH_SIZE
+                || down_batch_size != BLACK_DWARF_BATCH_SIZE
+            {
                 return Err(AtomError::Inference(format!(
-                    "expected batch size 2 in black_dwarf reward fn, got up={up_batch_size}, down={down_batch_size}"
+                    "expected batch size {BLACK_DWARF_BATCH_SIZE} in black_dwarf reward fn, got up={up_batch_size}, down={down_batch_size}"
                 )));
             }
 
