@@ -8,6 +8,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use black_hole_sun::cell::action::{
+    CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiationAction,
+    WaitForPropagationAction,
+};
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
 use black_hole_sun::{
@@ -24,7 +28,7 @@ use uuid::Uuid;
 use super::common::*;
 
 pub(super) const PROGENITOR_NODE_COUNT: usize = 3;
-const DARK_STAR_MODEL_NODE_COUNT: usize = 10;
+const DARK_STAR_MODEL_NODE_COUNT: usize = 3;
 const DARK_STAR_VERTEX_COUNT: usize = 10;
 const DARK_STAR_PORT_COUNT: usize = 13;
 const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
@@ -36,13 +40,88 @@ pub(super) type ThreeUnary1 = Unary<U1, Progenitor, list![U2]>;
 pub(super) type ThreeUnary2 = Unary<U2, Progenitor, list![]>;
 pub(super) type ThreeProgenitorSun = list![ThreeUnary0, ThreeUnary1, ThreeUnary2];
 
-type DarkStarInput = Unary<U0, Progenitor, list![U1, U2]>;
-type DarkStarL0 = Unary<U1, Progenitor, list![U3, U4]>;
-type DarkStarR0 = Unary<U2, Progenitor, list![U5, U6]>;
-type DarkStarL1 = Unary<U3, Progenitor, list![U7]>;
-type DarkStarR1 = Unary<U4, Progenitor, list![U8]>;
-type DarkStarL2 = Unary<U5, Progenitor, list![U9]>;
-type DarkStarR2 = Unary<U6, Progenitor, list![U10]>;
+pub(super) struct FinishDarkStarTestCellEpoch;
+
+#[derive(Flow)]
+pub(super) struct DarkStarTestCellEpoch<Transform>(
+    Step<WaitForPropagationAction>,
+    Transform,
+    Step<Transmit>,
+    Step<WaitForPropagationAction>,
+    Transform,
+    Step<Transmit>,
+    Step<WaitForPotentiationAction>,
+    Step<FinishDarkStarTestCellEpoch>,
+);
+
+pub(super) struct AlwaysDarkStarEpoch;
+
+impl Predicate<(&CellState, &())> for AlwaysDarkStarEpoch {
+    fn eval(_input: &(&CellState, &())) -> bool {
+        true
+    }
+}
+
+#[derive(Flow)]
+pub(super) struct DarkStarTestCellFlow<Transform>(
+    Step<InitRecvId>,
+    While<AlwaysDarkStarEpoch, DarkStarTestCellEpoch<Transform>>,
+);
+
+pub(super) struct PassDarkStarEmission;
+
+#[jungle::action]
+impl Action for FinishDarkStarTestCellEpoch {
+    type Effect = NoEffect;
+    type Input = Potentiation;
+    type Output = ();
+
+    fn emit(_state: &CellState, _input: Self::Input) {}
+
+    fn absorb(
+        _state: &mut CellState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("finish dark_star test-cell epoch failed".to_string()))
+    }
+}
+
+#[jungle::action(carry = EmissionId)]
+impl Action for PassDarkStarEmission {
+    type Effect = NoEffect;
+    type Input = EmissionId;
+    type Output = EmissionId;
+
+    fn emit(_state: &CellState, input: Self::Input) -> ((), EmissionId) {
+        ((), input)
+    }
+
+    fn absorb(
+        _state: &mut CellState,
+        output: EffectCompletion<Self::Effect>,
+        emission_id: EmissionId,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("pass dark_star emission failed".to_string()))?;
+        Ok(emission_id)
+    }
+}
+
+pub(super) struct DarkStarTestCell;
+
+#[jungle::animal(id = 7, generation = 0)]
+impl Animal for DarkStarTestCell {
+    type State = CellState;
+    type Seed = ObjectId;
+    type Flow = DarkStarTestCellFlow<Step<PassDarkStarEmission>>;
+}
+
+type DarkStarInput = Unary<U0, DarkStarTestCell, list![U1, U2]>;
+type DarkStarL0 = Unary<U1, DarkStarTestCell, list![U3, U4]>;
+type DarkStarR0 = Unary<U2, DarkStarTestCell, list![U5, U6]>;
+type DarkStarL1 = Unary<U3, DarkStarTestCell, list![U7]>;
+type DarkStarR1 = Unary<U4, DarkStarTestCell, list![U8]>;
+type DarkStarL2 = Unary<U5, DarkStarTestCell, list![U9]>;
+type DarkStarR2 = Unary<U6, DarkStarTestCell, list![U10]>;
 type DarkStarF0 = Binary<U7, U8, LeftStackTwinAnimal, list![U11]>;
 type DarkStarF1 = Binary<U9, U10, RightStackTwinAnimal, list![U12]>;
 type DarkStarF2 = Binary<U11, U12, RandStackTwinAnimal, list![]>;
@@ -192,6 +271,7 @@ impl Observe for BlackDwarfBlackHole {
 #[derive(Animals)]
 pub(super) struct SpaceAnimals(
     Progenitor,
+    DarkStarTestCell,
     ProgenitorBlackHole,
     LeftStackTwinAnimal,
     RightStackTwinAnimal,
