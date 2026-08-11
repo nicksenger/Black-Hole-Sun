@@ -133,8 +133,6 @@ pub trait TransmissionOps: Sized {
     async fn propagation_from_inference_output<J>(
         jungle: &J,
         output: &InferenceOutput,
-        recv: ObjectId,
-        send: ObjectId,
     ) -> Result<Self, AtomError>
     where
         J: VoidInferOps;
@@ -186,8 +184,6 @@ impl TransmissionOps for Transmission {
     async fn propagation_from_inference_output<J>(
         jungle: &J,
         output: &InferenceOutput,
-        recv: ObjectId,
-        send: ObjectId,
     ) -> Result<Self, AtomError>
     where
         J: VoidInferOps,
@@ -210,8 +206,8 @@ impl TransmissionOps for Transmission {
 
         Ok(Transmission::Propagation {
             emission_id: EmissionId(emission_id),
-            recv,
-            send,
+            recv: ObjectId::nil(),
+            send: ObjectId::nil(),
         })
     }
 

@@ -31,13 +31,8 @@ where
             let output = InferenceOutput {
                 results: vec![SequenceOutput(dark_tokens)],
             };
-            let propagation = Transmission::propagation_from_inference_output(
-                jungle,
-                &output,
-                ObjectId::nil(),
-                ObjectId::nil(),
-            )
-            .await?;
+            let propagation =
+                Transmission::propagation_from_inference_output(jungle, &output).await?;
             Ok((propagation.clone(), propagation))
         }
     }
@@ -67,13 +62,8 @@ where
                     .map(|_| SequenceOutput(dark_tokens.clone()))
                     .collect(),
             };
-            let propagation = Transmission::propagation_from_inference_output(
-                jungle,
-                &output,
-                ObjectId::nil(),
-                ObjectId::nil(),
-            )
-            .await?;
+            let propagation =
+                Transmission::propagation_from_inference_output(jungle, &output).await?;
             Ok((propagation.clone(), propagation))
         }
     }
