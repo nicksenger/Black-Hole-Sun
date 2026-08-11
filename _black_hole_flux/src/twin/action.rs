@@ -13,7 +13,7 @@ use super::effect::{LeftStackEffect, RandStackEffect, RightStackEffect};
 pub use crate::cell::action::QuarkInferStep;
 
 /// Default `Twin` input transform that keeps left metadata and appends right
-/// sequences onto left sequences.
+/// dark tokens onto each corresponding left sequence.
 pub struct LeftStack<S = (), M = ()>(PhantomData<fn() -> (S, M)>);
 
 #[jungle::action(carry = Uuid)]
@@ -41,7 +41,7 @@ where
 }
 
 /// Default `Twin` input transform that keeps right metadata and appends left
-/// sequences onto right sequences.
+/// dark tokens onto each corresponding right sequence.
 pub struct RightStack<S = (), M = ()>(PhantomData<fn() -> (S, M)>);
 
 #[jungle::action(carry = Uuid)]

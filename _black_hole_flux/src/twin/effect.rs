@@ -56,7 +56,38 @@ where
     Ok(EmissionId(emission_id))
 }
 
-/// Merge two emissions by appending right-hand sequences to the left-hand base.
+fn stack_dark_tokens(
+    base_side: &str,
+    stacked_side: &str,
+    mut base_output: InferenceOutput,
+    stacked_output: InferenceOutput,
+) -> Result<InferenceOutput, AtomError> {
+    let base_sequences = base_output.results.len();
+    let stacked_sequences = stacked_output.results.len();
+    if base_sequences != stacked_sequences {
+        return Err(AtomError::Inference(format!(
+            "twin {base_side} stack requires matching sequence counts: \
+             {base_side}={base_sequences}, {stacked_side}={stacked_sequences}"
+        )));
+    }
+
+    for (base_sequence, stacked_sequence) in base_output
+        .results
+        .iter_mut()
+        .zip(stacked_output.results.into_iter())
+    {
+        base_sequence.0.extend(stacked_sequence.0);
+    }
+
+    Ok(base_output)
+}
+
+fn total_dark_tokens(output: &InferenceOutput) -> usize {
+    output.results.iter().map(|sequence| sequence.0.len()).sum()
+}
+
+/// Merge two emissions by appending right-hand dark tokens into each
+/// corresponding left-hand sequence.
 pub struct LeftStackEffect<M>(PhantomData<fn() -> M>);
 
 impl<M, J> EffectSchema<J> for LeftStackEffect<M>
@@ -88,14 +119,15 @@ where
                 .await
                 .map_err(AtomError::Download)?;
 
-            let mut left_output = download_output(jungle, left_emission.output_id).await?;
+            let left_output = download_output(jungle, left_emission.output_id).await?;
             let right_output = download_output(jungle, right_emission.output_id).await?;
-            left_output.results.extend(right_output.results);
+            let left_output = stack_dark_tokens("left", "right", left_output, right_output)?;
 
             debug!(
                 left = %left_id.0,
                 right = %right_id.0,
-                combined_sequences = left_output.results.len(),
+                sequence_count = left_output.results.len(),
+                combined_dark_tokens = total_dark_tokens(&left_output),
                 "stacked twin emissions with left metadata"
             );
 
@@ -104,7 +136,8 @@ where
     }
 }
 
-/// Merge two emissions by appending left-hand sequences to the right-hand base.
+/// Merge two emissions by appending left-hand dark tokens into each
+/// corresponding right-hand sequence.
 pub struct RightStackEffect<M>(PhantomData<fn() -> M>);
 
 impl<M, J> EffectSchema<J> for RightStackEffect<M>
@@ -137,13 +170,14 @@ where
                 .map_err(AtomError::Download)?;
 
             let left_output = download_output(jungle, left_emission.output_id).await?;
-            let mut right_output = download_output(jungle, right_emission.output_id).await?;
-            right_output.results.extend(left_output.results);
+            let right_output = download_output(jungle, right_emission.output_id).await?;
+            let right_output = stack_dark_tokens("right", "left", right_output, left_output)?;
 
             debug!(
                 left = %left_id.0,
                 right = %right_id.0,
-                combined_sequences = right_output.results.len(),
+                sequence_count = right_output.results.len(),
+                combined_dark_tokens = total_dark_tokens(&right_output),
                 "stacked twin emissions with right metadata"
             );
 
@@ -152,7 +186,8 @@ where
     }
 }
 
-/// Merge two emissions by randomly choosing left- or right-based stacking.
+/// Merge two emissions by randomly choosing left- or right-based stacking of
+/// per-sequence dark tokens.
 pub struct RandStackEffect<M>(PhantomData<fn() -> M>);
 
 impl<M, J> EffectSchema<J> for RandStackEffect<M>
@@ -189,22 +224,24 @@ where
             let mut right_output = download_output(jungle, right_emission.output_id).await?;
 
             if choose_left {
-                left_output.results.extend(right_output.results);
+                left_output = stack_dark_tokens("left", "right", left_output, right_output)?;
                 debug!(
                     left = %left_id.0,
                     right = %right_id.0,
                     picked = "left",
-                    combined_sequences = left_output.results.len(),
+                    sequence_count = left_output.results.len(),
+                    combined_dark_tokens = total_dark_tokens(&left_output),
                     "stacked twin emissions with random-side metadata"
                 );
                 upload_stacked_emission(jungle, left_emission.metadata, left_output).await
             } else {
-                right_output.results.extend(left_output.results);
+                right_output = stack_dark_tokens("right", "left", right_output, left_output)?;
                 debug!(
                     left = %left_id.0,
                     right = %right_id.0,
                     picked = "right",
-                    combined_sequences = right_output.results.len(),
+                    sequence_count = right_output.results.len(),
+                    combined_dark_tokens = total_dark_tokens(&right_output),
                     "stacked twin emissions with random-side metadata"
                 );
                 upload_stacked_emission(jungle, right_emission.metadata, right_output).await
