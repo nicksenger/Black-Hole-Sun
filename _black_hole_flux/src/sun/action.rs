@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 
-use crate::sun::effect::{GenMeldSeedEffect, GenUuidEffect};
-use crate::{MeldSeed, MeldState};
+use crate::sun::effect::{GenFusionSeedEffect, GenUuidEffect};
+use crate::{FusionSeed, FusionState};
 
 use super::effect::{
     BroadcastPotentiationEffect, PropagationTarget, SendRootPropagationEffect,
@@ -137,16 +137,16 @@ impl<P1, P2, A, E, S> Action for SpawnBinary<P1, P2, A, E, S>
 where
     P1: Unsigned,
     P2: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = MeldSeed, State = MeldState>,
-    A::Flow: crate::meld::MeldFlow,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
+    A::Flow: crate::fusion::FusionFlow,
     E: NodeIdsFromList,
 {
     type Effect = super::effect::SpawnAnimal<A>;
-    type Input = MeldSeed;
+    type Input = FusionSeed;
     type Output = ();
-    type Carry = MeldSeed;
+    type Carry = FusionSeed;
 
-    fn emit(_state: &super::SunState<S>, seed: Self::Input) -> (MeldSeed, MeldSeed) {
+    fn emit(_state: &super::SunState<S>, seed: Self::Input) -> (FusionSeed, FusionSeed) {
         (seed, seed)
     }
 
@@ -647,13 +647,13 @@ impl<S> Action for GenUuid<S> {
 }
 
 /// Generates the two independent initial inboxes for a binary vertex.
-pub struct GenMeldSeed<S = ()>(PhantomData<fn() -> S>);
+pub struct GenFusionSeed<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl<S> Action for GenMeldSeed<S> {
-    type Effect = GenMeldSeedEffect;
+impl<S> Action for GenFusionSeed<S> {
+    type Effect = GenFusionSeedEffect;
     type Input = ();
-    type Output = MeldSeed;
+    type Output = FusionSeed;
 
     fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
 
@@ -661,7 +661,7 @@ impl<S> Action for GenMeldSeed<S> {
         _state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_| Failure::Message("failed to generate meld seed".to_string()))
+        output.map_err(|_| Failure::Message("failed to generate fusion seed".to_string()))
     }
 }
 
@@ -858,14 +858,14 @@ mod tests {
         type Flow = crate::Primordium;
     }
 
-    struct TestMeldChildAnimal;
+    struct TestFusionChildAnimal;
 
-    impl Animal for TestMeldChildAnimal {
+    impl Animal for TestFusionChildAnimal {
         type Id = Id<U2>;
         type Generation = U0;
-        type State = crate::MeldState;
-        type Seed = crate::MeldSeed;
-        type Flow = crate::Meld<crate::Primordium>;
+        type State = crate::FusionState;
+        type Seed = crate::FusionSeed;
+        type Flow = crate::Fusion<crate::Primordium>;
     }
 
     fn add_vertex(
@@ -910,8 +910,9 @@ mod tests {
         type GenUuidBound = <GenUuid<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
         <GenUuidBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
 
-        type GenMeldSeedBound = <GenMeldSeed<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
-        <GenMeldSeedBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
+        type GenFusionSeedBound =
+            <GenFusionSeed<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
+        <GenFusionSeedBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
 
         type FinalizeBound = <FinalizeGraph<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
         <FinalizeBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
@@ -930,10 +931,10 @@ mod tests {
         assert_eq!(effect_seed, seed);
 
         type SpawnBinaryBound =
-            <SpawnBinary<U1, U2, TestMeldChildAnimal, Empty, Payload> as Action>::Bind<
+            <SpawnBinary<U1, U2, TestFusionChildAnimal, Empty, Payload> as Action>::Bind<
                 TestSunAnimalWithPayload,
             >;
-        let seed = crate::MeldSeed {
+        let seed = crate::FusionSeed {
             p1_recv_id: Uuid::new_v4(),
             p2_recv_id: Uuid::new_v4(),
         };

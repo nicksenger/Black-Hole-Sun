@@ -122,16 +122,16 @@ where
     }
 }
 
-impl<J> EffectSchema<J> for ConcatMeldOutputsEffect {
+impl<J> EffectSchema<J> for ConcatFusionOutputsEffect {
     type Id = u64;
     type In = (Uuid, (EmissionId, EmissionId));
     type Out = EmissionId;
     type Err = AtomError;
 }
 
-impl<J> Effect<J> for ConcatMeldOutputsEffect
+impl<J> Effect<J> for ConcatFusionOutputsEffect
 where
-    J: VoidInferOps + MeldConcatOps,
+    J: VoidInferOps + FusionConcatOps,
 {
     fn effect(
         jungle: &J,
@@ -157,7 +157,7 @@ where
                 .await
                 .map_err(AtomError::Upload)?;
 
-            jungle.record_meld_concat();
+            jungle.record_fusion_concat();
             Ok(EmissionId(merged_emission_id))
         }
     }

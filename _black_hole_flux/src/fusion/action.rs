@@ -1,4 +1,4 @@
-//! Actions and state for the model-free two-input meld protocol.
+//! Actions and state for the model-free two-input fusion protocol.
 
 use jungle_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -6,19 +6,21 @@ use uuid::Uuid;
 
 use black_hole_spec::{EmissionId, ObjectId};
 
-use super::effect::{GenerateTransformIdEffect, WaitForMeldPotentiation, WaitForMeldPropagation};
+use super::effect::{
+    GenerateTransformIdEffect, WaitForFusionPotentiation, WaitForFusionPropagation,
+};
 use crate::cell::effect::Transmit as TransmitEffect;
 
 /// Initial receive mailboxes for a binary vertex, in declared `P1`, `P2` order.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub struct MeldSeed {
+pub struct FusionSeed {
     pub p1_recv_id: ObjectId,
     pub p2_recv_id: ObjectId,
 }
 
-/// Runtime identity and mailbox state for a [`Meld`](super::Meld) journey.
+/// Runtime identity and mailbox state for a [`Fusion`](super::Fusion) journey.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub struct MeldState {
+pub struct FusionState {
     /// Stable ID passed to the transform on every propagation pass.
     pub transform_id: Uuid,
     p1_recv_id: ObjectId,
@@ -26,32 +28,32 @@ pub struct MeldState {
     send_id: ObjectId,
 }
 
-/// Initializes both independent input-port mailbox chains from [`MeldSeed`].
-pub struct InitMeld;
+/// Initializes both independent input-port mailbox chains from [`FusionSeed`].
+pub struct InitFusion;
 
-#[jungle::action(carry = MeldSeed)]
-impl Action for InitMeld {
+#[jungle::action(carry = FusionSeed)]
+impl Action for InitFusion {
     type Effect = NoEffect;
-    type Input = MeldSeed;
+    type Input = FusionSeed;
     type Output = ();
 
-    fn emit(_state: &MeldState, seed: Self::Input) -> ((), MeldSeed) {
+    fn emit(_state: &FusionState, seed: Self::Input) -> ((), FusionSeed) {
         ((), seed)
     }
 
     fn absorb(
-        state: &mut MeldState,
+        state: &mut FusionState,
         output: EffectCompletion<Self::Effect>,
-        seed: MeldSeed,
+        seed: FusionSeed,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_| Failure::Message("initialize meld failed".to_string()))?;
+        output.map_err(|_| Failure::Message("initialize fusion failed".to_string()))?;
         state.p1_recv_id = seed.p1_recv_id;
         state.p2_recv_id = seed.p2_recv_id;
         Ok(())
     }
 }
 
-/// Generates and stores the stable ID for this meld journey's transform.
+/// Generates and stores the stable ID for this fusion journey's transform.
 pub struct GenerateTransformId;
 
 #[jungle::action]
@@ -60,10 +62,10 @@ impl Action for GenerateTransformId {
     type Input = ();
     type Output = ();
 
-    fn emit(_state: &MeldState, _input: Self::Input) {}
+    fn emit(_state: &FusionState, _input: Self::Input) {}
 
     fn absorb(
-        state: &mut MeldState,
+        state: &mut FusionState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         state.transform_id = output
@@ -73,28 +75,29 @@ impl Action for GenerateTransformId {
 }
 
 /// Receives both propagation envelopes and emits their IDs in `P1`, `P2` order.
-pub struct WaitForMeldPropagationAction;
+pub struct WaitForFusionPropagationAction;
 
 #[jungle::action]
-impl Action for WaitForMeldPropagationAction {
-    type Effect = WaitForMeldPropagation;
+impl Action for WaitForFusionPropagationAction {
+    type Effect = WaitForFusionPropagation;
     type Input = ();
     type Output = (EmissionId, EmissionId);
 
-    fn emit(state: &MeldState, _input: Self::Input) -> (ObjectId, ObjectId) {
+    fn emit(state: &FusionState, _input: Self::Input) -> (ObjectId, ObjectId) {
         (state.p1_recv_id, state.p2_recv_id)
     }
 
     fn absorb(
-        state: &mut MeldState,
+        state: &mut FusionState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (p1, p2) =
-            output.map_err(|error| Failure::Message(format!("wait for meld propagation failed: {error}")))?;
+        let (p1, p2) = output.map_err(|error| {
+            Failure::Message(format!("wait for fusion propagation failed: {error}"))
+        })?;
 
         if p1.send_id != p2.send_id {
             return Err(Failure::Message(format!(
-                "meld propagation send addresses disagree: P1={}, P2={}",
+                "fusion propagation send addresses disagree: P1={}, P2={}",
                 p1.send_id, p2.send_id
             )));
         }
@@ -107,7 +110,7 @@ impl Action for WaitForMeldPropagationAction {
     }
 }
 
-/// Adds this meld journey's stable ID to the pair passed into its transform.
+/// Adds this fusion journey's stable ID to the pair passed into its transform.
 pub struct PrepareTransformInput;
 
 #[jungle::action(carry = (EmissionId, EmissionId))]
@@ -116,12 +119,12 @@ impl Action for PrepareTransformInput {
     type Input = (EmissionId, EmissionId);
     type Output = (Uuid, (EmissionId, EmissionId));
 
-    fn emit(_state: &MeldState, emissions: Self::Input) -> ((), Self::Input) {
+    fn emit(_state: &FusionState, emissions: Self::Input) -> ((), Self::Input) {
         ((), emissions)
     }
 
     fn absorb(
-        state: &mut MeldState,
+        state: &mut FusionState,
         output: EffectCompletion<Self::Effect>,
         emissions: Self::Input,
     ) -> Result<Self::Output, Failure> {
@@ -131,51 +134,52 @@ impl Action for PrepareTransformInput {
 }
 
 /// Publishes one transformed emission to the binary vertex's shared output.
-pub struct MeldTransmit;
+pub struct FusionTransmit;
 
 #[jungle::action]
-impl Action for MeldTransmit {
+impl Action for FusionTransmit {
     type Effect = TransmitEffect;
     type Input = EmissionId;
     type Output = ();
 
-    fn emit(state: &MeldState, emission_id: Self::Input) -> (EmissionId, ObjectId) {
+    fn emit(state: &FusionState, emission_id: Self::Input) -> (EmissionId, ObjectId) {
         (emission_id, state.send_id)
     }
 
     fn absorb(
-        _state: &mut MeldState,
+        _state: &mut FusionState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("meld transmit failed: {error}")))
+        output.map_err(|error| Failure::Message(format!("fusion transmit failed: {error}")))
     }
 }
 
 /// Receives matching potentiation envelopes and advances both port chains.
-pub struct WaitForMeldPotentiationAction;
+pub struct WaitForFusionPotentiationAction;
 
 #[jungle::action]
-impl Action for WaitForMeldPotentiationAction {
-    type Effect = WaitForMeldPotentiation;
+impl Action for WaitForFusionPotentiationAction {
+    type Effect = WaitForFusionPotentiation;
     type Input = ();
     type Output = ();
 
-    fn emit(state: &MeldState, _input: Self::Input) -> (ObjectId, ObjectId) {
+    fn emit(state: &FusionState, _input: Self::Input) -> (ObjectId, ObjectId) {
         (state.p1_recv_id, state.p2_recv_id)
     }
 
     fn absorb(
-        state: &mut MeldState,
+        state: &mut FusionState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (p1, p2) =
-            output.map_err(|error| Failure::Message(format!("wait for meld potentiation failed: {error}")))?;
+        let (p1, p2) = output.map_err(|error| {
+            Failure::Message(format!("wait for fusion potentiation failed: {error}"))
+        })?;
 
         if p1.loss_up.to_bits() != p2.loss_up.to_bits()
             || p1.loss_down.to_bits() != p2.loss_down.to_bits()
         {
             return Err(Failure::Message(format!(
-                "meld potentiation losses disagree: P1=({}, {}), P2=({}, {})",
+                "fusion potentiation losses disagree: P1=({}, {}), P2=({}, {})",
                 p1.loss_up, p1.loss_down, p2.loss_up, p2.loss_down
             )));
         }

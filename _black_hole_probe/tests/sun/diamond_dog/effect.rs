@@ -23,22 +23,22 @@ impl<J> Effect<J> for DelayedLeftEffect {
     }
 }
 
-impl<J> EffectSchema<J> for RecordMeldInputsEffect {
+impl<J> EffectSchema<J> for RecordFusionInputsEffect {
     type Id = u64;
     type In = (Uuid, (EmissionId, EmissionId));
     type Out = EmissionId;
     type Err = AtomError;
 }
 
-impl<J> Effect<J> for RecordMeldInputsEffect
+impl<J> Effect<J> for RecordFusionInputsEffect
 where
-    J: MeldProbeOps,
+    J: FusionProbeOps,
 {
     fn effect(
         jungle: &J,
         (transform_id, (p1, p2)): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        jungle.record_meld_inputs(transform_id, p1.0, p2.0);
+        jungle.record_fusion_inputs(transform_id, p1.0, p2.0);
         std::future::ready(Ok(EmissionId(Uuid::from_u128(FUSED_EMISSION))))
     }
 }

@@ -14,7 +14,7 @@ use black_hole_sun::{
     EmissionId, InferenceRequest, ObjectId, QuarkClient, TestQuarkServer, TestVoidServer,
     Tokenizer, Transmission, VoidClient,
 };
-use black_hole_sun::{Meld, MeldSeed, MeldState, Progenitor};
+use black_hole_sun::{Fusion, FusionSeed, FusionState, Progenitor};
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
@@ -27,7 +27,7 @@ pub(super) const PROGENITOR_NODE_COUNT: usize = 3;
 const DARK_STAR_MODEL_CELL_COUNT: usize = 7;
 const DARK_STAR_VERTEX_COUNT: usize = 10;
 const DARK_STAR_PORT_COUNT: usize = 13;
-const DARK_STAR_MELD_TRANSFORMS_PER_EPOCH: usize = 6;
+const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
 
 pub(super) const SPACE_PROBE_DISTANCE_PROMPT: &str = "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
 
@@ -43,9 +43,9 @@ type DarkStarL1 = Unary<U3, Progenitor, list![U7]>;
 type DarkStarR1 = Unary<U4, Progenitor, list![U8]>;
 type DarkStarL2 = Unary<U5, Progenitor, list![U9]>;
 type DarkStarR2 = Unary<U6, Progenitor, list![U10]>;
-type DarkStarF0 = Binary<U7, U8, ConcatMeldAnimal, list![U11]>;
-type DarkStarF1 = Binary<U9, U10, ConcatMeldAnimal, list![U12]>;
-type DarkStarF2 = Binary<U11, U12, ConcatMeldAnimal, list![]>;
+type DarkStarF0 = Binary<U7, U8, ConcatFusionAnimal, list![U11]>;
+type DarkStarF1 = Binary<U9, U10, ConcatFusionAnimal, list![U12]>;
+type DarkStarF2 = Binary<U11, U12, ConcatFusionAnimal, list![]>;
 type DarkStarSun = list![
     DarkStarInput,
     DarkStarL0,
@@ -83,23 +83,23 @@ pub(super) struct BlackDwarfPolicy(Step<BlackDwarfLossPolicy>);
 pub(super) struct BlackDwarfLossPolicy;
 pub struct BlackDwarfLossPolicyEffect;
 
-pub(super) trait MeldConcatOps: Send + Sync {
-    fn record_meld_concat(&self);
+pub(super) trait FusionConcatOps: Send + Sync {
+    fn record_fusion_concat(&self);
 }
 
-pub(super) struct ConcatMeldOutputs;
-pub struct ConcatMeldOutputsEffect;
+pub(super) struct ConcatFusionOutputs;
+pub struct ConcatFusionOutputsEffect;
 
 #[derive(Flow)]
-pub(super) struct ConcatMeldTransform(Step<ConcatMeldOutputs>);
+pub(super) struct ConcatFusionTransform(Step<ConcatFusionOutputs>);
 
-pub(super) struct ConcatMeldAnimal;
+pub(super) struct ConcatFusionAnimal;
 
 #[jungle::animal(id = 2, generation = 0)]
-impl Animal for ConcatMeldAnimal {
-    type State = MeldState;
-    type Seed = MeldSeed;
-    type Flow = Meld<ConcatMeldTransform>;
+impl Animal for ConcatFusionAnimal {
+    type State = FusionState;
+    type Seed = FusionSeed;
+    type Flow = Fusion<ConcatFusionTransform>;
 }
 
 pub(super) struct ProgenitorBlackHole;
@@ -157,7 +157,7 @@ impl Observe for BlackDwarfBlackHole {
 pub(super) struct SpaceAnimals(
     Progenitor,
     ProgenitorBlackHole,
-    ConcatMeldAnimal,
+    ConcatFusionAnimal,
     DarkStarBlackHole,
     BlackDwarfBlackHole,
 );
@@ -171,7 +171,7 @@ pub(super) struct SpaceJungle {
     pub(super) potentiation_writes: Arc<AtomicUsize>,
     pub(super) inference_calls: Arc<AtomicUsize>,
     pub(super) optimized_cells: Arc<AtomicUsize>,
-    pub(super) meld_concat_calls: Arc<AtomicUsize>,
+    pub(super) fusion_concat_calls: Arc<AtomicUsize>,
     pub(super) model_error: Arc<Mutex<Option<String>>>,
 }
 
@@ -189,7 +189,7 @@ impl SpaceJungle {
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
             inference_calls: Arc::new(AtomicUsize::new(0)),
             optimized_cells: Arc::new(AtomicUsize::new(0)),
-            meld_concat_calls: Arc::new(AtomicUsize::new(0)),
+            fusion_concat_calls: Arc::new(AtomicUsize::new(0)),
             model_error: Arc::new(Mutex::new(None)),
         }
     }
@@ -208,9 +208,9 @@ impl SpaceJungle {
     }
 }
 
-impl MeldConcatOps for SpaceJungle {
-    fn record_meld_concat(&self) {
-        self.meld_concat_calls.fetch_add(1, Ordering::SeqCst);
+impl FusionConcatOps for SpaceJungle {
+    fn record_fusion_concat(&self) {
+        self.fusion_concat_calls.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -353,7 +353,7 @@ pub(super) async fn exercise_epoch<A>(
     model_cell_count: usize,
     vertex_count: usize,
     expected_potentiation_writes: usize,
-    expected_meld_concats: usize,
+    expected_fusion_concats: usize,
     quark_default_inference_limit: Option<u32>,
 ) where
     A: Animal<Seed = ()>,
@@ -388,7 +388,7 @@ pub(super) async fn exercise_epoch<A>(
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
     let inference_calls = Arc::clone(&jungle.inference_calls);
     let optimized_cells = Arc::clone(&jungle.optimized_cells);
-    let meld_concat_calls = Arc::clone(&jungle.meld_concat_calls);
+    let fusion_concat_calls = Arc::clone(&jungle.fusion_concat_calls);
     let model_error = Arc::clone(&jungle.model_error);
 
     let parent = client
@@ -418,7 +418,7 @@ pub(super) async fn exercise_epoch<A>(
             if potentiation_writes.load(Ordering::SeqCst) >= expected_potentiation_writes
                 && inference_calls.load(Ordering::SeqCst) >= model_cell_count * 2
                 && optimized_cells.load(Ordering::SeqCst) >= model_cell_count
-                && meld_concat_calls.load(Ordering::SeqCst) >= expected_meld_concats
+                && fusion_concat_calls.load(Ordering::SeqCst) >= expected_fusion_concats
             {
                 return Ok::<(), String>(());
             }
@@ -461,11 +461,11 @@ pub(super) async fn exercise_epoch<A>(
                 .await
                 .expect("parent journey details should be available");
             panic!(
-                "{test_name} failed: {error}; inferences={}, potentiations={}, optimized_cells={}, meld_concats={}, status={status:?}",
+                "{test_name} failed: {error}; inferences={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
                 inference_calls.load(Ordering::SeqCst),
                 potentiation_writes.load(Ordering::SeqCst),
                 optimized_cells.load(Ordering::SeqCst),
-                meld_concat_calls.load(Ordering::SeqCst),
+                fusion_concat_calls.load(Ordering::SeqCst),
             );
         }
         Err(error) => {
@@ -474,11 +474,11 @@ pub(super) async fn exercise_epoch<A>(
                 .await
                 .expect("parent journey details should be available");
             panic!(
-                "timeout waiting for {test_name} epoch (240s): {error}; inferences={}, potentiations={}, optimized_cells={}, meld_concats={}, status={status:?}",
+                "timeout waiting for {test_name} epoch (240s): {error}; inferences={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
                 inference_calls.load(Ordering::SeqCst),
                 potentiation_writes.load(Ordering::SeqCst),
                 optimized_cells.load(Ordering::SeqCst),
-                meld_concat_calls.load(Ordering::SeqCst),
+                fusion_concat_calls.load(Ordering::SeqCst),
             );
         }
     }
@@ -492,7 +492,7 @@ pub(super) async fn exercise_epoch<A>(
     quark_server.abort();
 }
 
-/// Runs an expanded diamond with Meld nodes that concatenate outputs.
+/// Runs an expanded diamond with Fusion nodes that concatenate outputs.
 #[cfg(test)]
 #[ignore]
 #[tokio::test]
@@ -510,7 +510,7 @@ async fn dark_star() {
         DARK_STAR_MODEL_CELL_COUNT,
         DARK_STAR_VERTEX_COUNT,
         DARK_STAR_PORT_COUNT,
-        DARK_STAR_MELD_TRANSFORMS_PER_EPOCH,
+        DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH,
         None,
     )
     .await;

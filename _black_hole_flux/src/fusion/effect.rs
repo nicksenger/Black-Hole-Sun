@@ -1,4 +1,4 @@
-//! Effects used by the model-free two-input meld protocol.
+//! Effects used by the model-free two-input fusion protocol.
 
 use std::future::Future;
 
@@ -11,7 +11,7 @@ use crate::cell::action::{Potentiation, Propagation};
 use crate::ops::VoidInferOps;
 use crate::AtomError;
 
-/// Generates the stable ID passed to one meld journey's transform.
+/// Generates the stable ID passed to one fusion journey's transform.
 pub struct GenerateTransformIdEffect;
 
 impl<J> EffectSchema<J> for GenerateTransformIdEffect {
@@ -42,29 +42,29 @@ where
         jungle
             .wait_for_transmission(p1_recv_id)
             .await
-            .map_err(|error| AtomError::Transmission(format!("wait for meld port P1: {error}")))
+            .map_err(|error| AtomError::Transmission(format!("wait for fusion port P1: {error}")))
     };
     let p2 = async {
         jungle
             .wait_for_transmission(p2_recv_id)
             .await
-            .map_err(|error| AtomError::Transmission(format!("wait for meld port P2: {error}")))
+            .map_err(|error| AtomError::Transmission(format!("wait for fusion port P2: {error}")))
     };
 
     futures::try_join!(p1, p2)
 }
 
-/// Waits for one propagation envelope on each meld input port.
-pub struct WaitForMeldPropagation;
+/// Waits for one propagation envelope on each fusion input port.
+pub struct WaitForFusionPropagation;
 
-impl<J> EffectSchema<J> for WaitForMeldPropagation {
+impl<J> EffectSchema<J> for WaitForFusionPropagation {
     type Id = u64;
     type In = (ObjectId, ObjectId);
     type Out = (Propagation, Propagation);
     type Err = AtomError;
 }
 
-impl<J> Effect<J> for WaitForMeldPropagation
+impl<J> Effect<J> for WaitForFusionPropagation
 where
     J: VoidInferOps,
 {
@@ -73,7 +73,7 @@ where
         (p1_recv_id, p2_recv_id): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(%p1_recv_id, %p2_recv_id, "awaiting meld propagation pair");
+            debug!(%p1_recv_id, %p2_recv_id, "awaiting fusion propagation pair");
             let (p1, p2) = wait_for_pair(jungle, p1_recv_id, p2_recv_id).await?;
 
             let p1 = match p1 {
@@ -88,7 +88,7 @@ where
                 },
                 other => {
                     return Err(AtomError::Transmission(format!(
-                        "expected Propagation on meld port P1, got {other:?}"
+                        "expected Propagation on fusion port P1, got {other:?}"
                     )));
                 }
             };
@@ -104,7 +104,7 @@ where
                 },
                 other => {
                     return Err(AtomError::Transmission(format!(
-                        "expected Propagation on meld port P2, got {other:?}"
+                        "expected Propagation on fusion port P2, got {other:?}"
                     )));
                 }
             };
@@ -114,17 +114,17 @@ where
     }
 }
 
-/// Waits for one potentiation envelope on each meld input port.
-pub struct WaitForMeldPotentiation;
+/// Waits for one potentiation envelope on each fusion input port.
+pub struct WaitForFusionPotentiation;
 
-impl<J> EffectSchema<J> for WaitForMeldPotentiation {
+impl<J> EffectSchema<J> for WaitForFusionPotentiation {
     type Id = u64;
     type In = (ObjectId, ObjectId);
     type Out = (Potentiation, Potentiation);
     type Err = AtomError;
 }
 
-impl<J> Effect<J> for WaitForMeldPotentiation
+impl<J> Effect<J> for WaitForFusionPotentiation
 where
     J: VoidInferOps,
 {
@@ -133,7 +133,7 @@ where
         (p1_recv_id, p2_recv_id): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(%p1_recv_id, %p2_recv_id, "awaiting meld potentiation pair");
+            debug!(%p1_recv_id, %p2_recv_id, "awaiting fusion potentiation pair");
             let (p1, p2) = wait_for_pair(jungle, p1_recv_id, p2_recv_id).await?;
 
             let p1 = match p1 {
@@ -148,7 +148,7 @@ where
                 },
                 other => {
                     return Err(AtomError::Transmission(format!(
-                        "expected Potentiation on meld port P1, got {other:?}"
+                        "expected Potentiation on fusion port P1, got {other:?}"
                     )));
                 }
             };
@@ -164,7 +164,7 @@ where
                 },
                 other => {
                     return Err(AtomError::Transmission(format!(
-                        "expected Potentiation on meld port P2, got {other:?}"
+                        "expected Potentiation on fusion port P2, got {other:?}"
                     )));
                 }
             };
