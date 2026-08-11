@@ -48,8 +48,8 @@ where
 // Spawn — descriptor-specific animal spawning and graph registration
 // ---------------------------------------------------------------------------
 
-fn register_vertex(
-    state: &mut super::SunState,
+fn register_vertex<S>(
+    state: &mut super::SunState<S>,
     vertex_id: u32,
     node_label: String,
     ports: &[(u32, ObjectId)],
@@ -87,10 +87,10 @@ fn short_type_name<T: ?Sized>() -> String {
 }
 
 /// Spawns and registers a [`Unary`](super::Unary) descriptor.
-pub struct SpawnUnary<P, A, E>(PhantomData<fn() -> (P, A, E)>);
+pub struct SpawnUnary<P, A, E, S = ()>(PhantomData<fn() -> (P, A, E, S)>);
 
 #[jungle::action]
-impl<P, A, E> Action for SpawnUnary<P, A, E>
+impl<P, A, E, S> Action for SpawnUnary<P, A, E, S>
 where
     P: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
@@ -101,12 +101,12 @@ where
     type Output = ();
     type Carry = ObjectId;
 
-    fn emit(_state: &super::SunState, input: Self::Input) -> (ObjectId, ObjectId) {
+    fn emit(_state: &super::SunState<S>, input: Self::Input) -> (ObjectId, ObjectId) {
         (input, input)
     }
 
     fn absorb(
-        state: &mut super::SunState,
+        state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
         initial_recv_id: Self::Carry,
     ) -> Result<Self::Output, Failure> {
@@ -127,13 +127,13 @@ where
 }
 
 /// Backwards-compatible name for the unary spawn action.
-pub type Spawn<P, A, E> = SpawnUnary<P, A, E>;
+pub type Spawn<P, A, E, S = ()> = SpawnUnary<P, A, E, S>;
 
 /// Spawns and registers a [`Binary`](super::Binary) descriptor.
-pub struct SpawnBinary<P1, P2, A, E>(PhantomData<fn() -> (P1, P2, A, E)>);
+pub struct SpawnBinary<P1, P2, A, E, S = ()>(PhantomData<fn() -> (P1, P2, A, E, S)>);
 
 #[jungle::action]
-impl<P1, P2, A, E> Action for SpawnBinary<P1, P2, A, E>
+impl<P1, P2, A, E, S> Action for SpawnBinary<P1, P2, A, E, S>
 where
     P1: Unsigned,
     P2: Unsigned,
@@ -146,12 +146,12 @@ where
     type Output = ();
     type Carry = FusionSeed;
 
-    fn emit(_state: &super::SunState, seed: Self::Input) -> (FusionSeed, FusionSeed) {
+    fn emit(_state: &super::SunState<S>, seed: Self::Input) -> (FusionSeed, FusionSeed) {
         (seed, seed)
     }
 
     fn absorb(
-        state: &mut super::SunState,
+        state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
         seed: Self::Carry,
     ) -> Result<Self::Output, Failure> {
@@ -292,18 +292,18 @@ where
 // FinalizeGraph — resolve ports, validate the DAG, and allocate phase mailboxes
 // ---------------------------------------------------------------------------
 
-pub struct FinalizeGraph;
+pub struct FinalizeGraph<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for FinalizeGraph {
+impl<S> Action for FinalizeGraph<S> {
     type Effect = NoEffect;
     type Input = ();
     type Output = ();
 
-    fn emit(_state: &super::SunState, _input: Self::Input) {}
+    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
 
     fn absorb(
-        state: &mut super::SunState,
+        state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_| Failure::Message("finalize graph failed".to_string()))?;
@@ -453,7 +453,7 @@ impl Action for FinalizeGraph {
 }
 
 /// Compatibility alias for the former mailbox-only graph setup action.
-pub type BuildAddrs = FinalizeGraph;
+pub type BuildAddrs<S = ()> = FinalizeGraph<S>;
 
 // ---------------------------------------------------------------------------
 // SendRootPropagation — seed every root before waiting for ready output
@@ -629,17 +629,17 @@ where
 // ---------------------------------------------------------------------------
 
 /// Generates the initial inbox used to seed one spawned cell journey.
-pub struct GenUuid;
+pub struct GenUuid<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for GenUuid {
+impl<S> Action for GenUuid<S> {
     type Effect = GenUuidEffect;
     type Input = ();
     type Output = Uuid;
 
-    fn emit(_state: &super::SunState, _input: Self::Input) {}
+    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
     fn absorb(
-        _state: &mut super::SunState,
+        _state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_e| Failure::Message("failed to generate a uuid...".to_string()))
@@ -647,18 +647,18 @@ impl Action for GenUuid {
 }
 
 /// Generates the two independent initial inboxes for a binary vertex.
-pub struct GenFusionSeed;
+pub struct GenFusionSeed<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for GenFusionSeed {
+impl<S> Action for GenFusionSeed<S> {
     type Effect = GenFusionSeedEffect;
     type Input = ();
     type Output = FusionSeed;
 
-    fn emit(_state: &super::SunState, _input: Self::Input) {}
+    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
 
     fn absorb(
-        _state: &mut super::SunState,
+        _state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_| Failure::Message("failed to generate fusion seed".to_string()))
@@ -673,16 +673,16 @@ impl Action for GenFusionSeed {
 ///
 /// Unary vertices receive one envelope and binary vertices receive one per
 /// independent port. Each envelope assigns that port a fresh first-pass inbox.
-pub struct BroadcastPotentiation;
+pub struct BroadcastPotentiation<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for BroadcastPotentiation {
+impl<S> Action for BroadcastPotentiation<S> {
     type Effect = BroadcastPotentiationEffect;
     type Input = (f32, f32);
     type Output = ();
     type Carry = ();
 
-    fn emit(state: &super::SunState, input: Self::Input) -> BroadcastPotentiationInput {
+    fn emit(state: &super::SunState<S>, input: Self::Input) -> BroadcastPotentiationInput {
         let inner = state.a.shared.lock().unwrap();
         let mut port_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = inner
             .port_vertices
@@ -700,7 +700,7 @@ impl Action for BroadcastPotentiation {
     }
 
     fn absorb(
-        state: &mut super::SunState,
+        state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         let result =
@@ -859,6 +859,14 @@ mod tests {
     fn finalize(state: &mut super::super::SunState) -> Result<(), Failure> {
         type Bound = <FinalizeGraph as Action>::Bind<TestSunAnimal>;
         <Bound as BoundAction<TestSunAnimal>>::absorb(state, Ok(()))
+    }
+
+    #[test]
+    fn sun_state_supports_custom_inner_payload() {
+        let mut state = super::super::SunState::<(String, String)>::default();
+        state.inner.0.push_str("left");
+        state.inner.1.push_str("right");
+        assert_eq!(state.inner, ("left".to_string(), "right".to_string()));
     }
 
     #[test]

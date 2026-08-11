@@ -160,9 +160,13 @@ impl BeamBuilder {
     }
 
     /// Render a live Black Hole Sun from its Jungle appearance.
-    pub fn view_live<A>(self, client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
+    pub fn view_live<A, S>(
+        self,
+        client: impl JungleClient + 'static,
+        journey_id: Uuid,
+    ) -> iced::Result
     where
-        A: Animal<State = SunState> + Observe<Appearance = SunAppearance> + 'static,
+        A: Animal<State = SunState<S>> + Observe<Appearance = SunAppearance> + 'static,
     {
         let live = LiveConfig {
             client: Arc::new(client),
@@ -220,11 +224,11 @@ where
 }
 
 /// Render a live Black Hole Sun with default viewer settings.
-pub fn view_live<A>(client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
+pub fn view_live<A, S>(client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
 where
-    A: Animal<State = SunState> + Observe<Appearance = SunAppearance> + 'static,
+    A: Animal<State = SunState<S>> + Observe<Appearance = SunAppearance> + 'static,
 {
-    BeamBuilder::new().view_live::<A>(client, journey_id)
+    BeamBuilder::new().view_live::<A, S>(client, journey_id)
 }
 
 mod private {
@@ -234,7 +238,7 @@ mod private {
 }
 
 /// Marker for the structural flow produced by
-/// `<Graph as BlackHole>::Sun<Generator, Policy>`.
+/// `<Graph as BlackHole>::Sun<Generator, Policy, S>`.
 ///
 /// The trait is sealed and is only implemented for the `SunNode<…>` chain
 /// emitted by [`BlackHole`](black_hole_flux::sun::BlackHole).
@@ -243,7 +247,7 @@ pub trait BlackHoleSunFlow: private::DescribeSun {}
 
 impl<T> BlackHoleSunFlow for T where T: private::DescribeSun {}
 
-impl<Generator, Policy> private::DescribeSun for Sun<Generator, Policy> {
+impl<Generator, Policy, S> private::DescribeSun for Sun<Generator, Policy, S> {
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
 

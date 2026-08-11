@@ -134,16 +134,27 @@ pub struct PropB {
 /// Runtime state that tracks the topology and transmission endpoints
 /// for a sun of spawned animals.
 #[derive(Optic, Clone, Debug)]
-pub struct SunState {
+pub struct SunStateWithInner<S> {
     /// State for propagation branch A — uses p1_tx / p1_rx maps.
     #[jungle(focus = a)]
     pub a: PropA,
     /// State for propagation branch B — uses p2_tx / p2_rx maps.
     #[jungle(focus = b)]
     pub b: PropB,
+    /// User-provided state threaded through Sun actions and flows.
+    pub inner: S,
 }
 
-impl Default for SunState {
+/// State available to Sun actions and flows.
+///
+/// The generic `S` payload is available to user flows via
+/// [`SunState::inner`] and defaults to `()`.
+pub type SunState<S = ()> = SunStateWithInner<S>;
+
+impl<S> Default for SunStateWithInner<S>
+where
+    S: Default,
+{
     fn default() -> Self {
         let shared = Arc::new(Mutex::new(SunInner::default()));
         Self {
@@ -155,11 +166,12 @@ impl Default for SunState {
                 shared,
                 ..PropB::default()
             },
+            inner: S::default(),
         }
     }
 }
 
-impl SunState {
+impl<S> SunStateWithInner<S> {
     /// Build a deterministic, serializable view of the runtime graph.
     pub fn appearance(&self) -> SunAppearance {
         let inner = self.a.shared.lock().unwrap();
@@ -325,15 +337,18 @@ pub struct PortTarget {
 
 /// Generate a unary seed, then spawn and register its animal.
 #[derive(Flow)]
-pub struct UnarySunStep<
+pub struct UnarySunStepWithState<
     P: Unsigned,
     AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
     E: NodeIdsFromList,
->(Step<GenUuid>, Step<action::SpawnUnary<P, AnimalT, E>>);
+    S,
+>(Step<GenUuid<S>>, Step<action::SpawnUnary<P, AnimalT, E, S>>);
+
+pub type UnarySunStep<P, AnimalT, E, S = ()> = UnarySunStepWithState<P, AnimalT, E, S>;
 
 /// Generate a two-port seed, then spawn and register one binary animal.
 #[derive(Flow)]
-pub struct BinarySunStep<
+pub struct BinarySunStepWithState<
     P1: Unsigned,
     P2: Unsigned,
     AnimalT: Animal<
@@ -344,10 +359,14 @@ pub struct BinarySunStep<
         Flow: FusionFlow,
     >,
     E: NodeIdsFromList,
+    S,
 >(
-    Step<action::GenFusionSeed>,
-    Step<action::SpawnBinary<P1, P2, AnimalT, E>>,
+    Step<action::GenFusionSeed<S>>,
+    Step<action::SpawnBinary<P1, P2, AnimalT, E, S>>,
 );
+
+pub type BinarySunStep<P1, P2, AnimalT, E, S = ()> =
+    BinarySunStepWithState<P1, P2, AnimalT, E, S>;
 
 /// One descriptor-specific spawn flow followed by the remaining descriptors.
 #[derive(Flow)]
@@ -359,9 +378,11 @@ pub struct SunNode<S, U>(S, U);
 /// `Policy` is a Jungle flow from `(Transmission, Transmission)` to
 /// `(f32, f32)`. Keeping both as flow parameters lets callers compose arbitrary
 /// generation and policy pipelines around the fixed graph propagation
-/// machinery.
+/// machinery. Use [`BlackHole::SunWithState`] when your generator/policy needs
+/// access to `SunState<S>::inner`.
 pub trait BlackHole {
     type Sun<Generator, Policy>;
+    type SunWithState<Generator, Policy, S>;
 }
 impl<P, A, E, U> BlackHole for List<(Unary<P, A, E>, U)>
 where
@@ -372,6 +393,10 @@ where
 {
     type Sun<Generator, Policy> =
         SunNode<UnarySunStep<P, A, E>, <U as BlackHole>::Sun<Generator, Policy>>;
+    type SunWithState<Generator, Policy, S> = SunNode<
+        UnarySunStep<P, A, E, S>,
+        <U as BlackHole>::SunWithState<Generator, Policy, S>,
+    >;
 }
 impl<P1, P2, A, E, U> BlackHole for List<(Binary<P1, P2, A, E>, U)>
 where
@@ -384,9 +409,14 @@ where
 {
     type Sun<Generator, Policy> =
         SunNode<BinarySunStep<P1, P2, A, E>, <U as BlackHole>::Sun<Generator, Policy>>;
+    type SunWithState<Generator, Policy, S> = SunNode<
+        BinarySunStep<P1, P2, A, E, S>,
+        <U as BlackHole>::SunWithState<Generator, Policy, S>,
+    >;
 }
 impl BlackHole for Empty {
     type Sun<Generator, Policy> = Sun<Generator, Policy>;
+    type SunWithState<Generator, Policy, S> = Sun<Generator, Policy, S>;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,17 +475,21 @@ pub type PropagationLoop = PropALoop;
 
 /// One complete training epoch: generate → propagate → apply policy → broadcast potentiation.
 #[derive(Flow)]
-pub struct Epoch<Generator, Policy>(
+pub struct EpochWithState<Generator, Policy, S>(
     Generator,
     PropagationFlows,
     Policy,
-    Step<action::BroadcastPotentiation>,
+    Step<action::BroadcastPotentiation<S>>,
 );
+
+pub type Epoch<Generator, Policy, S = ()> = EpochWithState<Generator, Policy, S>;
 
 /// Top-level orchestration flow that drives all underlying Cell flows
 /// associated with the BlackHoleSun graph.
 #[derive(Flow)]
-pub struct Sun<Generator, Policy>(
-    Step<action::BuildAddrs>,
-    While<Always<SunState, ()>, Epoch<Generator, Policy>>,
+pub struct SunWithState<Generator, Policy, S>(
+    Step<action::BuildAddrs<S>>,
+    While<Always<SunState<S>, ()>, EpochWithState<Generator, Policy, S>>,
 );
+
+pub type Sun<Generator, Policy, S = ()> = SunWithState<Generator, Policy, S>;
