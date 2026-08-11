@@ -15,8 +15,8 @@ use typenum::Unsigned;
 use typosaurus::collections::list::{Empty, List};
 use uuid::Uuid;
 
-use crate::fusion::action::{FusionSeed, FusionState};
-use crate::fusion::FusionFlow;
+use crate::meld::action::{MeldSeed, MeldState};
+use crate::meld::MeldFlow;
 
 pub use action::{
     InitializePropagation, NodeIdsFromList, ProcessNextNode, PropagationState, SendRootPropagation,
@@ -354,14 +354,14 @@ pub struct BinarySunStepWithState<
     AnimalT: Animal<
         Id: AnimalIdValue,
         Generation: Unsigned,
-        Seed = FusionSeed,
-        State = FusionState,
-        Flow: FusionFlow,
+        Seed = MeldSeed,
+        State = MeldState,
+        Flow: MeldFlow,
     >,
     E: NodeIdsFromList,
     S,
 >(
-    Step<action::GenFusionSeed<S>>,
+    Step<action::GenMeldSeed<S>>,
     Step<action::SpawnBinary<P1, P2, AnimalT, E, S>>,
 );
 
@@ -396,8 +396,8 @@ impl<P1, P2, A, E, U> BlackHole for List<(Binary<P1, P2, A, E>, U)>
 where
     P1: Unsigned,
     P2: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
-    A::Flow: FusionFlow,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = MeldSeed, State = MeldState>,
+    A::Flow: MeldFlow,
     E: NodeIdsFromList,
     U: BlackHole,
 {

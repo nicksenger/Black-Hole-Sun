@@ -57,7 +57,7 @@ use thiserror::Error;
 pub mod animal;
 pub mod atom;
 pub mod cell;
-pub mod fusion;
+pub mod meld;
 pub mod ops;
 pub mod sun;
 
@@ -77,8 +77,8 @@ pub use cell::effect::{
     GenerateModelIdEffect, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, QuarkShutdown,
     QuarkStart, Transmit as TransmitEffect, WaitForPotentiation, WaitForPropagation,
 };
-pub use fusion::action::{FusionSeed, FusionState};
-pub use fusion::{Fusion, FusionEpoch, FusionFlow};
+pub use meld::action::{MeldSeed, MeldState};
+pub use meld::{Meld, MeldEpoch, MeldFlow};
 pub use ops::VoidInferOps;
 
 pub use atom::Atom;

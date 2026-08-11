@@ -17,7 +17,7 @@ use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunSta
 use black_hole_sun::{
     EmissionId, InferenceRequest, ObjectId, TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
-use black_hole_sun::{Fusion, FusionSeed, FusionState};
+use black_hole_sun::{Meld, MeldSeed, MeldState};
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
@@ -31,14 +31,14 @@ pub(super) const LEFT_EMISSION: u128 = 1;
 pub(super) const RIGHT_EMISSION: u128 = 2;
 pub(super) const FUSED_EMISSION: u128 = 3;
 
-pub(super) type FusionObservation = (Uuid, ObjectId, ObjectId);
+pub(super) type MeldObservation = (Uuid, ObjectId, ObjectId);
 
 // ─── Multi-epoch diamond graph ───────────────────────────────────────────────
 
 type Root = Unary<U0, RootAnimal, list![U1, U2]>;
 type Left = Unary<U1, LeftAnimal, list![U3]>;
 type Right = Unary<U2, RightAnimal, list![U4]>;
-type Merge = Binary<U3, U4, FusionAnimal, list![U5]>;
+type Merge = Binary<U3, U4, MeldAnimal, list![U5]>;
 type Sink = Unary<U5, SinkAnimal, list![]>;
 type DiamondSun = list![Root, Left, Right, Merge, Sink];
 
@@ -51,9 +51,9 @@ type ExpandedL1 = Unary<U3, LeftAnimal, list![U7]>;
 type ExpandedR1 = Unary<U4, RightAnimal, list![U8]>;
 type ExpandedL2 = Unary<U5, LeftAnimal, list![U9]>;
 type ExpandedR2 = Unary<U6, RightAnimal, list![U10]>;
-type ExpandedF0 = Binary<U7, U8, FusionAnimal, list![U11]>;
-type ExpandedF1 = Binary<U9, U10, FusionAnimal, list![U12]>;
-type ExpandedF2 = Binary<U11, U12, FusionAnimal, list![]>;
+type ExpandedF0 = Binary<U7, U8, MeldAnimal, list![U11]>;
+type ExpandedF1 = Binary<U9, U10, MeldAnimal, list![U12]>;
+type ExpandedF2 = Binary<U11, U12, MeldAnimal, list![]>;
 type ExpandedDiamondSun = list![
     ExpandedInput,
     ExpandedL0,
@@ -139,25 +139,25 @@ impl Animal for SinkAnimal {
     type Flow = TestCellFlow<Step<PassEmission>>;
 }
 
-// ─── Explicit fusion transform animal ────────────────────────────────────────
+// ─── Explicit meld transform animal ──────────────────────────────────────────
 
-pub(super) trait FusionProbeOps: Send + Sync {
-    fn record_fusion_inputs(&self, transform_id: Uuid, p1: ObjectId, p2: ObjectId);
+pub(super) trait MeldProbeOps: Send + Sync {
+    fn record_meld_inputs(&self, transform_id: Uuid, p1: ObjectId, p2: ObjectId);
 }
 
-pub struct RecordFusionInputsEffect;
-pub(super) struct RecordFusionInputs;
+pub struct RecordMeldInputsEffect;
+pub(super) struct RecordMeldInputs;
 
 #[derive(Flow)]
-pub(super) struct FusionTransform(Step<RecordFusionInputs>);
+pub(super) struct MeldTransform(Step<RecordMeldInputs>);
 
-pub(super) struct FusionAnimal;
+pub(super) struct MeldAnimal;
 
 #[jungle::animal(id = 4, generation = 0)]
-impl Animal for FusionAnimal {
-    type State = FusionState;
-    type Seed = FusionSeed;
-    type Flow = Fusion<FusionTransform>;
+impl Animal for MeldAnimal {
+    type State = MeldState;
+    type Seed = MeldSeed;
+    type Flow = Meld<MeldTransform>;
 }
 
 // ─── BlackHoleAnimal ─────────────────────────────────────────────────────────
@@ -180,7 +180,7 @@ impl Observe for BlackHoleAnimal {
     }
 }
 
-/// Runs the expanded, three-fusion diamond topology.
+/// Runs the expanded, three-meld diamond topology.
 pub(super) struct ExpandedBlackHoleAnimal;
 
 #[jungle::animal(observe, id = 6, generation = 0)]
@@ -205,7 +205,7 @@ pub(super) struct ProbeSpaceAnimals(
     RootAnimal,
     LeftAnimal,
     RightAnimal,
-    FusionAnimal,
+    MeldAnimal,
     SinkAnimal,
     BlackHoleAnimal,
     ExpandedBlackHoleAnimal,
@@ -218,7 +218,7 @@ pub(super) struct ProbeSpaceJungle {
     tokenizer: Arc<OnceLock<Result<Tokenizer, String>>>,
     client: Option<FusedClient>,
     pub(super) potentiation_writes: Arc<AtomicUsize>,
-    pub(super) fusion_inputs: Arc<Mutex<Vec<FusionObservation>>>,
+    pub(super) meld_inputs: Arc<Mutex<Vec<MeldObservation>>>,
 }
 
 impl ProbeSpaceJungle {
@@ -228,7 +228,7 @@ impl ProbeSpaceJungle {
             tokenizer: Arc::new(OnceLock::new()),
             client: None,
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
-            fusion_inputs: Arc::new(Mutex::new(Vec::new())),
+            meld_inputs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -237,9 +237,9 @@ impl ProbeSpaceJungle {
     }
 }
 
-impl FusionProbeOps for ProbeSpaceJungle {
-    fn record_fusion_inputs(&self, transform_id: Uuid, p1: ObjectId, p2: ObjectId) {
-        self.fusion_inputs
+impl MeldProbeOps for ProbeSpaceJungle {
+    fn record_meld_inputs(&self, transform_id: Uuid, p1: ObjectId, p2: ObjectId) {
+        self.meld_inputs
             .lock()
             .unwrap()
             .push((transform_id, p1, p2));
@@ -365,7 +365,7 @@ pub(super) async fn exercise_diamond_dog<A>(
     vertex_count: usize,
     port_count: usize,
     epochs: usize,
-) -> Vec<FusionObservation>
+) -> Vec<MeldObservation>
 where
     A: Animal<Seed = (), State = SunState> + Observe<Appearance = SunAppearance>,
     A::Id: AnimalIdValue,
@@ -382,7 +382,7 @@ where
     let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
     let mut jungle = ProbeSpaceJungle::new(void_client);
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
-    let fusion_inputs = Arc::clone(&jungle.fusion_inputs);
+    let meld_inputs = Arc::clone(&jungle.meld_inputs);
 
     let client = FusedClient::builder()
         .build()
@@ -502,7 +502,7 @@ where
         "the exercised Sun should expose its runtime topology"
     );
 
-    let observed = fusion_inputs.lock().unwrap().clone();
+    let observed = meld_inputs.lock().unwrap().clone();
     for worker_handle in worker_handles {
         worker_handle.abort();
         let _ = worker_handle.await;
@@ -513,10 +513,10 @@ where
     observed
 }
 
-/// Exercises a multi-epoch unary diamond feeding one binary fusion vertex.
+/// Exercises a multi-epoch unary diamond feeding one binary meld vertex.
 ///
 /// The left and right unary branches stamp distinct emission IDs, with the P1
-/// branch deliberately delayed so P2 arrives first. The explicit fusion
+/// branch deliberately delayed so P2 arrives first. The explicit meld
 /// transform records its stable ID and each pair, proving that its identity and
 /// declared `P1`, `P2` order remain stable on both propagation passes.
 #[cfg(test)]
@@ -527,20 +527,20 @@ async fn diamond_dog() {
 
     assert!(
         observed.len() >= EPOCHS * 2,
-        "expected two fusion transforms per epoch, observed {observed:?}"
+        "expected two meld transforms per epoch, observed {observed:?}"
     );
     let expected_transform_id = observed[0].0;
     assert_ne!(
         expected_transform_id,
         Uuid::nil(),
-        "fusion transform ID should be generated"
+        "meld transform ID should be generated"
     );
     for epoch in 0..EPOCHS {
         for pass in 0..2 {
             let (transform_id, p1, p2) = observed[epoch * 2 + pass];
             assert_eq!(
                 transform_id, expected_transform_id,
-                "fusion transform ID changed in epoch {epoch} propagation pass {pass}"
+                "meld transform ID changed in epoch {epoch} propagation pass {pass}"
             );
             assert_eq!(
                 p1,

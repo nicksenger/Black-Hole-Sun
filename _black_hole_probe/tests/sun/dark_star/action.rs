@@ -71,19 +71,19 @@ impl Action for BlackDwarfLossPolicy {
 }
 
 #[jungle::action]
-impl Action for ConcatFusionOutputs {
-    type Effect = ConcatFusionOutputsEffect;
+impl Action for ConcatMeldOutputs {
+    type Effect = ConcatMeldOutputsEffect;
     type Input = (Uuid, (EmissionId, EmissionId));
     type Output = EmissionId;
 
-    fn emit(_state: &FusionState, input: Self::Input) -> Self::Input {
+    fn emit(_state: &MeldState, input: Self::Input) -> Self::Input {
         input
     }
 
     fn absorb(
-        _state: &mut FusionState,
+        _state: &mut MeldState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("fusion concatenation failed: {error}")))
+        output.map_err(|error| Failure::Message(format!("meld concatenation failed: {error}")))
     }
 }

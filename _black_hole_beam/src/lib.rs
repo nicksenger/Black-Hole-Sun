@@ -15,7 +15,7 @@ use black_hole_flux::sun::{
     BinarySunStep, NodeIdsFromList, Sun, SunAppearance, SunNode, SunNodeState, SunState,
     UnarySunStep,
 };
-use black_hole_flux::{FusionFlow, FusionSeed, FusionState, ObjectId};
+use black_hole_flux::{MeldFlow, MeldSeed, MeldState, ObjectId};
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
@@ -278,9 +278,9 @@ impl<PortA, PortB, A, Edges, Tail, S> private::DescribeSun
 where
     PortA: Unsigned,
     PortB: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = MeldSeed, State = MeldState>
         + 'static,
-    A::Flow: FusionFlow,
+    A::Flow: MeldFlow,
     Edges: NodeIdsFromList,
     Tail: private::DescribeSun,
 {
@@ -1141,7 +1141,7 @@ fn short_type_name<T: ?Sized>() -> String {
 mod tests {
     use super::*;
     use black_hole_flux::sun::{Binary, BlackHole, SunEdgeAppearance, SunNodeAppearance, Unary};
-    use black_hole_flux::{CellState, Fusion, Primordium};
+    use black_hole_flux::{CellState, Meld, Primordium};
     use jungle_sdk::typosaurus::collections::list::{Empty, List};
     use jungle_sdk::Id;
     use typenum::{U0, U1, U2};
@@ -1156,14 +1156,14 @@ mod tests {
         type Flow = Primordium;
     }
 
-    struct TestFusion;
+    struct TestMeld;
 
-    impl Animal for TestFusion {
+    impl Animal for TestMeld {
         type Id = Id<U2>;
         type Generation = U0;
-        type State = FusionState;
-        type Seed = FusionSeed;
-        type Flow = Fusion<Primordium>;
+        type State = MeldState;
+        type Seed = MeldSeed;
+        type Flow = Meld<Primordium>;
     }
 
     type PortOne = List<(U1, Empty)>;
@@ -1172,7 +1172,7 @@ mod tests {
     type TestSun = <TestGraph as BlackHole>::Sun<Primordium, Primordium, ()>;
     type TestSunWithCustomState =
         <TestGraph as BlackHole>::Sun<Primordium, Primordium, (String, String)>;
-    type TestBinaryGraph = List<(Binary<U0, U1, TestFusion, Empty>, Empty)>;
+    type TestBinaryGraph = List<(Binary<U0, U1, TestMeld, Empty>, Empty)>;
     type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium, ()>;
 
     #[test]
@@ -1344,7 +1344,7 @@ mod tests {
             nodes: vec![
                 SunNodeAppearance {
                     id: 2,
-                    label: "Fusion".to_string(),
+                    label: "Meld".to_string(),
                     input_ports: vec![2, 3],
                     state: SunNodeState::Optimization,
                     state_sequence: 3,

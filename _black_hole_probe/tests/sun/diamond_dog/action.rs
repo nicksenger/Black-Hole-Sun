@@ -70,19 +70,19 @@ impl Action for MarkRight {
 }
 
 #[jungle::action]
-impl Action for RecordFusionInputs {
-    type Effect = RecordFusionInputsEffect;
+impl Action for RecordMeldInputs {
+    type Effect = RecordMeldInputsEffect;
     type Input = (Uuid, (EmissionId, EmissionId));
     type Output = EmissionId;
 
-    fn emit(_state: &FusionState, input: Self::Input) -> Self::Input {
+    fn emit(_state: &MeldState, input: Self::Input) -> Self::Input {
         input
     }
 
     fn absorb(
-        _state: &mut FusionState,
+        _state: &mut MeldState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("record fusion inputs failed: {error}")))
+        output.map_err(|error| Failure::Message(format!("record meld inputs failed: {error}")))
     }
 }

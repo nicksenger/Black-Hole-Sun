@@ -10,7 +10,7 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::ops::{SunOps, VoidInferOps};
-use crate::{AtomError, FusionSeed};
+use crate::{AtomError, MeldSeed};
 
 pub struct GenUuidEffect;
 #[jungle::effect]
@@ -28,12 +28,12 @@ impl<J> Effect<J> for GenUuidEffect {
     }
 }
 
-pub struct GenFusionSeedEffect;
+pub struct GenMeldSeedEffect;
 #[jungle::effect]
-impl<J> Effect<J> for GenFusionSeedEffect {
+impl<J> Effect<J> for GenMeldSeedEffect {
     type Id = u64;
     type In = ();
-    type Out = FusionSeed;
+    type Out = MeldSeed;
     type Err = AtomError;
 
     fn effect(
@@ -41,7 +41,7 @@ impl<J> Effect<J> for GenFusionSeedEffect {
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async {
-            Ok(FusionSeed {
+            Ok(MeldSeed {
                 p1_recv_id: Uuid::new_v4(),
                 p2_recv_id: Uuid::new_v4(),
             })
