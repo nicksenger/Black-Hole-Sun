@@ -54,6 +54,22 @@ impl VoidClient {
         }
     }
 
+    pub async fn download_wait(
+        &self,
+        id: ObjectId,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let resp = self
+            .request(&VoidIn::DownloadWait { id, timeout_ms })
+            .await?;
+        match resp {
+            VoidOut::Downloaded { data } => Ok(Some(data)),
+            VoidOut::TimedOut { .. } => Ok(None),
+            VoidOut::Error { message } => Err(message),
+            _ => Err("unexpected void response for download_wait".to_string()),
+        }
+    }
+
     async fn request(&self, request: &VoidIn) -> Result<VoidOut, String> {
         let connecting = self
             .endpoint

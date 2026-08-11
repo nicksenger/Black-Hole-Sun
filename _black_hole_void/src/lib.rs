@@ -1,11 +1,15 @@
-use std::{fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
+use tokio::{
+    io::AsyncReadExt,
+    sync::Mutex,
+    time::{timeout, Duration},
+};
 use tracing::{error, info, warn};
 
 #[cfg(feature = "postgres")]
@@ -15,6 +19,7 @@ pub mod persist;
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4434";
 const S3_MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+const MAX_DOWNLOAD_WAIT_TIMEOUT_MS: u64 = 30_000;
 
 /// Wire request sent by the client.
 #[derive(Debug, Serialize, Deserialize)]
@@ -25,6 +30,8 @@ pub enum VoidIn {
     UploadWith { id: uuid::Uuid, data: Vec<u8> },
     /// Download an object by its opaque ID. Server responds with VoidOut::Downloaded(data).
     Download { id: uuid::Uuid },
+    /// Wait up to `timeout_ms` for an object to exist, then download it.
+    DownloadWait { id: uuid::Uuid, timeout_ms: u64 },
 }
 
 /// Wire response sent by the server.
@@ -34,6 +41,8 @@ pub enum VoidOut {
     Uploaded { id: uuid::Uuid },
     /// Returns downloaded data.
     Downloaded { data: Vec<u8> },
+    /// Request timed out while waiting for an upload.
+    TimedOut { id: uuid::Uuid },
     /// Error message for any failure.
     Error { message: String },
 }
@@ -136,6 +145,7 @@ impl ServerBuilder {
         let context = Arc::new(VoidContext {
             object_store: self.object_store,
             store: self.store,
+            wait_registry: WaitRegistry::default(),
         });
 
         Ok((endpoint, local_addr, context))
@@ -189,6 +199,41 @@ impl ServerBuilder {
 struct VoidContext {
     object_store: Box<dyn object_store::ObjectStore>,
     store: Box<dyn persist::VoidStore>,
+    wait_registry: WaitRegistry,
+}
+
+#[derive(Default)]
+struct WaitRegistry {
+    waiters: Mutex<HashMap<uuid::Uuid, Arc<tokio::sync::Notify>>>,
+}
+
+impl WaitRegistry {
+    async fn waiter_for(&self, id: uuid::Uuid) -> Arc<tokio::sync::Notify> {
+        let mut waiters = self.waiters.lock().await;
+        waiters
+            .entry(id)
+            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
+            .clone()
+    }
+
+    async fn notify_upload(&self, id: uuid::Uuid) {
+        let waiter = {
+            let mut waiters = self.waiters.lock().await;
+            waiters.remove(&id)
+        };
+        if let Some(waiter) = waiter {
+            waiter.notify_waiters();
+        }
+    }
+
+    async fn release_if_idle(&self, id: uuid::Uuid, waiter: &Arc<tokio::sync::Notify>) {
+        let mut waiters = self.waiters.lock().await;
+        if let Some(current) = waiters.get(&id) {
+            if Arc::ptr_eq(current, waiter) && Arc::strong_count(current) == 2 {
+                waiters.remove(&id);
+            }
+        }
+    }
 }
 
 async fn handle_connection(incoming: quinn::Incoming, context: Arc<VoidContext>) {
@@ -236,6 +281,9 @@ async fn handle_stream(
         VoidIn::Upload { data } => handle_upload(&context, None, data).await,
         VoidIn::UploadWith { id, data } => handle_upload(&context, Some(id), data).await,
         VoidIn::Download { id } => handle_download(&context, id).await,
+        VoidIn::DownloadWait { id, timeout_ms } => {
+            handle_download_wait(&context, id, timeout_ms).await
+        }
     };
 
     if let Err(e) = write_frame(&mut send, &response).await {
@@ -270,6 +318,7 @@ async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<
             }
 
             info!(%id, "uploaded");
+            context.wait_registry.notify_upload(id).await;
             VoidOut::Uploaded { id }
         }
         Err(e) => {
@@ -282,33 +331,89 @@ async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<
 }
 
 async fn handle_download(context: &VoidContext, id: uuid::Uuid) -> VoidOut {
-    // Look up the object to get bucket+key.
-    let record = match context.store.get_object(id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return VoidOut::Error {
-                message: format!("object not found: {id}"),
-            }
+    match try_download(context, id).await {
+        DownloadAttempt::Found(data) => {
+            info!(%id, bytes = data.len(), "downloaded");
+            VoidOut::Downloaded { data }
         }
+        DownloadAttempt::Missing => VoidOut::Error {
+            message: format!("object not found: {id}"),
+        },
+        DownloadAttempt::Failed(message) => {
+            warn!(%id, error = %message, "download failed");
+            VoidOut::Error { message }
+        }
+    }
+}
+
+async fn handle_download_wait(context: &VoidContext, id: uuid::Uuid, timeout_ms: u64) -> VoidOut {
+    if timeout_ms == 0 || timeout_ms > MAX_DOWNLOAD_WAIT_TIMEOUT_MS {
+        return VoidOut::Error {
+            message: format!(
+                "timeout_ms must be in 1..={MAX_DOWNLOAD_WAIT_TIMEOUT_MS}, got {timeout_ms}"
+            ),
+        };
+    }
+
+    match try_download(context, id).await {
+        DownloadAttempt::Found(data) => {
+            info!(%id, bytes = data.len(), "downloaded immediately");
+            return VoidOut::Downloaded { data };
+        }
+        DownloadAttempt::Failed(message) => return VoidOut::Error { message },
+        DownloadAttempt::Missing => {}
+    }
+
+    let waiter = context.wait_registry.waiter_for(id).await;
+    let notified = waiter.notified();
+    match try_download(context, id).await {
+        DownloadAttempt::Found(data) => {
+            info!(%id, bytes = data.len(), "downloaded after waiter registration");
+            return VoidOut::Downloaded { data };
+        }
+        DownloadAttempt::Failed(message) => return VoidOut::Error { message },
+        DownloadAttempt::Missing => {}
+    }
+
+    let wait_duration = Duration::from_millis(timeout_ms);
+    match timeout(wait_duration, notified).await {
+        Ok(()) => match try_download(context, id).await {
+            DownloadAttempt::Found(data) => {
+                info!(%id, bytes = data.len(), "downloaded after upload notification");
+                VoidOut::Downloaded { data }
+            }
+            DownloadAttempt::Failed(message) => VoidOut::Error { message },
+            DownloadAttempt::Missing => {
+                warn!(%id, "waiter notified but object is still missing");
+                VoidOut::TimedOut { id }
+            }
+        },
+        Err(_) => {
+            context.wait_registry.release_if_idle(id, &waiter).await;
+            VoidOut::TimedOut { id }
+        }
+    }
+}
+
+enum DownloadAttempt {
+    Found(Vec<u8>),
+    Missing,
+    Failed(String),
+}
+
+async fn try_download(context: &VoidContext, id: uuid::Uuid) -> DownloadAttempt {
+    let record = match context.store.get_object(id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => return DownloadAttempt::Missing,
         Err(e) => {
-            error!(error = %e, "failed to look up object");
-            return VoidOut::Error {
-                message: format!("lookup failed: {e}"),
-            };
+            error!(%id, error = %e, "failed to look up object");
+            return DownloadAttempt::Failed(format!("lookup failed: {e}"));
         }
     };
 
     match context.object_store.get(&record.key).await {
-        Ok(data) => {
-            info!(%id, bytes = data.len(), "downloaded");
-            VoidOut::Downloaded { data }
-        }
-        Err(e) => {
-            warn!(%id, error = %e, "get_object failed (object may not exist)");
-            VoidOut::Error {
-                message: format!("not found: {e}"),
-            }
-        }
+        Ok(data) => DownloadAttempt::Found(data),
+        Err(e) => DownloadAttempt::Failed(format!("not found: {e}")),
     }
 }
 

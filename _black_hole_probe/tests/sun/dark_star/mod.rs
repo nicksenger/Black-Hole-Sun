@@ -225,6 +225,14 @@ impl VoidInferOps for SpaceJungle {
         self.void_client.download(id).await
     }
 
+    async fn download_raw_wait(
+        &self,
+        id: ObjectId,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.void_client.download_wait(id, timeout_ms).await
+    }
+
     async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
         Ok(self.void_client.upload(data).await.unwrap())
     }

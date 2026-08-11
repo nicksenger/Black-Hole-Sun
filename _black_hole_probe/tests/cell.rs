@@ -58,6 +58,14 @@ impl VoidInferOps for SpaceJungle {
         Ok(self.void_client.download(id).await.unwrap())
     }
 
+    async fn download_raw_wait(
+        &self,
+        id: ObjectId,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.void_client.download_wait(id, timeout_ms).await
+    }
+
     async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
         Ok(self.void_client.upload(data).await.unwrap())
     }
@@ -137,18 +145,19 @@ async fn upload_transmission(void_client: &VoidClient, transmission: &Transmissi
 
 /// Poll void until data appears at `id`, deserializing as `Transmission`.
 async fn wait_for_void_transmission(void_client: VoidClient, id: ObjectId) -> Transmission {
-    use tokio::time::{sleep, Duration};
     loop {
-        match void_client.download(id).await {
-            Ok(data) => {
+        match void_client.download_wait(id, 30_000).await {
+            Ok(Some(data)) => {
                 return postcard::from_bytes(&data)
                     .expect("failed to deserialize Transmission from void");
             }
+            Ok(None) => {
+                tracing::debug!(%id, "download_wait timed out, retrying");
+            }
             Err(e) => {
-                tracing::debug!(%id, error = %e, "download failed, retrying in 1s");
+                tracing::debug!(%id, error = %e, "download_wait failed, retrying");
             }
         }
-        sleep(Duration::from_secs(1)).await;
     }
 }
 

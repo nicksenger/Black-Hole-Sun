@@ -3,6 +3,8 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
+
 // ---------------------------------------------------------------------------
 // Re-exports — keep common spec types handy alongside the trait
 // ---------------------------------------------------------------------------
@@ -22,6 +24,40 @@ use crate::AtomError;
 pub trait VoidInferOps: Send + Sync {
     /// Download raw bytes from void by object id.
     async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String>;
+
+    /// Download raw bytes from void, waiting up to `timeout_ms` for the object to appear.
+    ///
+    /// Default behavior preserves legacy 1-second polling against `download_raw` for
+    /// implementors that don't support server-side long-polling.
+    async fn download_raw_wait(
+        &self,
+        id: ObjectId,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        use tokio::time::{sleep, Duration, Instant};
+
+        if timeout_ms == 0 {
+            return Ok(None);
+        }
+
+        let timeout = Duration::from_millis(timeout_ms);
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            match self.download_raw(id).await {
+                Ok(data) => return Ok(Some(data)),
+                Err(error) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        tracing::debug!(?id, error = %error, "download wait timed out");
+                        return Ok(None);
+                    }
+                    let remaining = deadline.saturating_duration_since(now);
+                    sleep(remaining.min(Duration::from_secs(1))).await;
+                }
+            }
+        }
+    }
 
     /// Download a deserialized `Emission<M>` from void by its object id.
     ///
@@ -87,20 +123,27 @@ pub trait VoidInferOps: Send + Sync {
 
     /// Wait for a [`Transmission`] from the void by object id.
     ///
-    /// Downloads raw bytes and deserializes as `Transmission`.
+    /// Downloads raw bytes and deserializes as `Transmission`, using server-side long-polling
+    /// when available.
     async fn wait_for_transmission(&self, id: ObjectId) -> Result<Transmission, String> {
-        use tokio::time::{sleep, Duration};
         loop {
-            match self.download_raw(id).await {
-                Ok(data) => {
+            match self
+                .download_raw_wait(id, DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS)
+                .await
+            {
+                Ok(Some(data)) => {
                     return postcard::from_bytes(&data)
                         .map_err(|e| format!("postcard deserialize: {e}"));
                 }
-                Err(e) => {
-                    tracing::debug!(?id, error = %e, "download failed, retrying in 1s");
+                Ok(None) => {
+                    tracing::debug!(
+                        ?id,
+                        timeout_ms = DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS,
+                        "download wait timed out, retrying"
+                    );
                 }
+                Err(e) => tracing::debug!(?id, error = %e, "download wait failed, retrying"),
             }
-            sleep(Duration::from_secs(1)).await;
         }
     }
 
