@@ -9,6 +9,11 @@
 //!    contained output ID, uploads the result emission, and yields the new `EmissionId`.
 //! 3. Passes the resulting `EmissionId` through the **Out** flow.
 //!
+//! A **Twin** is the fusion parallel of Atom. It follows the same three-stage
+//! shape, but its **In** flow starts from a pair and converts
+//! `(Uuid, (EmissionId, EmissionId))` into `(Uuid, EmissionId)` before
+//! inference.
+//!
 //! A **Cell** wraps a atom flow in an infinite QuZO training loop driven by
 //! [`Transmission`] messages from void:
 //!
@@ -60,6 +65,7 @@ pub mod cell;
 pub mod fusion;
 pub mod ops;
 pub mod sun;
+pub mod twin;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
@@ -83,6 +89,7 @@ pub use ops::VoidInferOps;
 
 pub use atom::Atom;
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
+pub use twin::Twin;
 
 pub use sun::{
     action::{
