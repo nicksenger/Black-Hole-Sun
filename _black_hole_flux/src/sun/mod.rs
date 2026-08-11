@@ -377,11 +377,10 @@ pub struct SunNode<S, U>(S, U);
 /// `Policy` is a Jungle flow from `(Transmission, Transmission)` to
 /// `(f32, f32)`. Keeping both as flow parameters lets callers compose arbitrary
 /// generation and policy pipelines around the fixed graph propagation
-/// machinery. Use [`BlackHole::SunWithState`] when your generator/policy needs
-/// access to `SunState<S>::inner`.
+/// machinery. Set `S` when your generator/policy needs access to
+/// `SunState<S>::inner`.
 pub trait BlackHole {
-    type Sun<Generator, Policy>;
-    type SunWithState<Generator, Policy, S>;
+    type Sun<Generator, Policy, S>;
 }
 impl<P, A, E, U> BlackHole for List<(Unary<P, A, E>, U)>
 where
@@ -390,10 +389,8 @@ where
     E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun<Generator, Policy> =
-        SunNode<UnarySunStep<P, A, E>, <U as BlackHole>::Sun<Generator, Policy>>;
-    type SunWithState<Generator, Policy, S> =
-        SunNode<UnarySunStep<P, A, E, S>, <U as BlackHole>::SunWithState<Generator, Policy, S>>;
+    type Sun<Generator, Policy, S> =
+        SunNode<UnarySunStep<P, A, E, S>, <U as BlackHole>::Sun<Generator, Policy, S>>;
 }
 impl<P1, P2, A, E, U> BlackHole for List<(Binary<P1, P2, A, E>, U)>
 where
@@ -404,16 +401,13 @@ where
     E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun<Generator, Policy> =
-        SunNode<BinarySunStep<P1, P2, A, E>, <U as BlackHole>::Sun<Generator, Policy>>;
-    type SunWithState<Generator, Policy, S> = SunNode<
+    type Sun<Generator, Policy, S> = SunNode<
         BinarySunStep<P1, P2, A, E, S>,
-        <U as BlackHole>::SunWithState<Generator, Policy, S>,
+        <U as BlackHole>::Sun<Generator, Policy, S>,
     >;
 }
 impl BlackHole for Empty {
-    type Sun<Generator, Policy> = Sun<Generator, Policy>;
-    type SunWithState<Generator, Policy, S> = Sun<Generator, Policy, S>;
+    type Sun<Generator, Policy, S> = Sun<Generator, Policy, S>;
 }
 
 // ---------------------------------------------------------------------------
@@ -484,9 +478,9 @@ pub type Epoch<Generator, Policy, S = ()> = EpochWithState<Generator, Policy, S>
 /// Top-level orchestration flow that drives all underlying Cell flows
 /// associated with the BlackHoleSun graph.
 #[derive(Flow)]
-pub struct SunWithState<Generator, Policy, S>(
+pub struct SunFlow<Generator, Policy, S>(
     Step<action::BuildAddrs<S>>,
     While<Always<SunState<S>, ()>, EpochWithState<Generator, Policy, S>>,
 );
 
-pub type Sun<Generator, Policy, S = ()> = SunWithState<Generator, Policy, S>;
+pub type Sun<Generator, Policy, S = ()> = SunFlow<Generator, Policy, S>;

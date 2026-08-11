@@ -108,7 +108,7 @@ pub(super) struct ProgenitorBlackHole;
 impl Animal for ProgenitorBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<Generator, Policy>;
+    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<Generator, Policy, ()>;
 }
 
 impl Observe for ProgenitorBlackHole {
@@ -125,7 +125,7 @@ pub(super) struct DarkStarBlackHole;
 impl Animal for DarkStarBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <DarkStarSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy>;
+    type Flow = <DarkStarSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy, ()>;
 }
 
 impl Observe for DarkStarBlackHole {
@@ -142,7 +142,7 @@ pub(super) struct BlackDwarfBlackHole;
 impl Animal for BlackDwarfBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<BlackDwarfGenerator, BlackDwarfPolicy>;
+    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<BlackDwarfGenerator, BlackDwarfPolicy, ()>;
 }
 
 impl Observe for BlackDwarfBlackHole {

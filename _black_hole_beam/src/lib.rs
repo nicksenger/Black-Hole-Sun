@@ -1169,11 +1169,11 @@ mod tests {
     type PortOne = List<(U1, Empty)>;
     type Tail = List<(Unary<U1, TestCell, Empty>, Empty)>;
     type TestGraph = List<(Unary<U0, TestCell, PortOne>, Tail)>;
-    type TestSun = <TestGraph as BlackHole>::Sun<Primordium, Primordium>;
-    type TestSunWithState =
-        <TestGraph as BlackHole>::SunWithState<Primordium, Primordium, (String, String)>;
+    type TestSun = <TestGraph as BlackHole>::Sun<Primordium, Primordium, ()>;
+    type TestSunWithCustomState =
+        <TestGraph as BlackHole>::Sun<Primordium, Primordium, (String, String)>;
     type TestBinaryGraph = List<(Binary<U0, U1, TestFusion, Empty>, Empty)>;
-    type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium>;
+    type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium, ()>;
 
     #[test]
     fn uses_black_hole_sun_title_and_activity_palette() {
@@ -1321,7 +1321,7 @@ mod tests {
 
     #[test]
     fn extracts_static_cells_and_edges_from_stateful_black_hole_sun() {
-        let model = BeamModel::build::<TestSunWithState>();
+        let model = BeamModel::build::<TestSunWithCustomState>();
 
         assert!(model.errors.is_empty(), "{:?}", model.errors);
         assert_eq!(model.graph.nodes, vec![0, 1]);

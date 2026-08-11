@@ -169,7 +169,7 @@ pub(super) struct BlackHoleAnimal;
 impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <DiamondSun as BlackHole>::Sun<Generator, Policy>;
+    type Flow = <DiamondSun as BlackHole>::Sun<Generator, Policy, ()>;
 }
 
 impl Observe for BlackHoleAnimal {
@@ -187,7 +187,7 @@ pub(super) struct ExpandedBlackHoleAnimal;
 impl Animal for ExpandedBlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <ExpandedDiamondSun as BlackHole>::Sun<Generator, Policy>;
+    type Flow = <ExpandedDiamondSun as BlackHole>::Sun<Generator, Policy, ()>;
 }
 
 impl Observe for ExpandedBlackHoleAnimal {
