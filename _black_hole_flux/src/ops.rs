@@ -57,15 +57,8 @@ pub trait VoidInferOps: Send + Sync {
 
     /// Decode `DarkToken` predictions into text.
     ///
-    /// Implementors that manage a tokenizer should override this and delegate to
-    /// tokenizer decode. The default behavior provides a deterministic fallback
-    /// by concatenating predicted token IDs.
-    fn decode(&self, tokens: &[DarkToken]) -> String {
-        tokens
-            .iter()
-            .map(|token| token.predicted.to_string())
-            .collect()
-    }
+    /// Implementors that manage a tokenizer should delegate to tokenizer decode.
+    fn decode(&self, tokens: &[DarkToken]) -> String;
 
     /// Perturb the associated quark's weights in the positive direction.
     ///
