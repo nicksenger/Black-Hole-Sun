@@ -13,7 +13,7 @@ use super::dark_star::{exercise_epoch, ProgenitorBlackHole};
 use super::dark_star::{BlackDwarfBlackHole, SpaceJungle, PROGENITOR_NODE_COUNT};
 use black_hole_sun::{TestQuarkServer, TestVoidServer};
 
-const BLACK_DWARF_DEFAULT_INFERENCE_LIMIT: u32 = 1024;
+const BLACK_DWARF_DEFAULT_INFERENCE_LIMIT: u32 = 512;
 
 /// Runs the same U0 -> U1 -> U2 Sun topology as `diamond_dog`, with real Progenitor
 /// cells backed by a quark model.

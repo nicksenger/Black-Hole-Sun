@@ -7,7 +7,7 @@ use tracing::info;
 
 use super::*;
 
-const BLACK_DWARF_BATCH_SIZE: usize = 32;
+const BLACK_DWARF_BATCH_SIZE: usize = 8;
 
 impl<J> EffectSchema<J> for GenerateDarkStarPromptEffect {
     type Id = u64;
