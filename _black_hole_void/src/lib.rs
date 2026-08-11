@@ -10,7 +10,7 @@ use tokio::{
     sync::Mutex,
     time::{timeout, Duration},
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "postgres")]
 pub mod migrate;
@@ -287,7 +287,14 @@ async fn handle_stream(
     };
 
     if let Err(e) = write_frame(&mut send, &response).await {
-        error!("failed to write response frame: {e}");
+        match &e {
+            // High-throughput flows can cancel in-flight requests while this server
+            // is preparing a response. Treat those disconnects as expected churn.
+            ServerError::WriteFrame(quinn::WriteError::ConnectionLost(_)) => {
+                debug!("client disconnected before response frame write completed")
+            }
+            _ => error!("failed to write response frame: {e}"),
+        }
     }
 }
 
