@@ -160,11 +160,7 @@ impl BeamBuilder {
     }
 
     /// Render a live Black Hole Sun from its Jungle appearance.
-    pub fn view_live<A>(
-        self,
-        client: impl JungleClient + 'static,
-        journey_id: Uuid,
-    ) -> iced::Result
+    pub fn view_live<A>(self, client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
     where
         A: BlackHoleSunAnimal + 'static,
     {
@@ -732,9 +728,7 @@ fn model_display_changed(current: &BeamModel, next: &BeamModel) -> bool {
             .cells
             .iter()
             .zip(next.cells.iter())
-            .any(|(current, next)| {
-                current.id != next.id || current.animal_name != next.animal_name
-            })
+            .any(|(current, next)| current.id != next.id || current.animal_name != next.animal_name)
 }
 
 struct BeamApp {
@@ -810,11 +804,11 @@ impl BeamApp {
                                     .collect::<HashSet<_>>();
                                 self.visuals.retain(|node_id, _| node_ids.contains(node_id));
                                 for cell in &model.cells {
-                                    transitioned |= self.visuals.entry(cell.id).or_default().observe(
-                                        cell.state,
-                                        cell.state_sequence,
-                                        now,
-                                    );
+                                    transitioned |= self
+                                        .visuals
+                                        .entry(cell.id)
+                                        .or_default()
+                                        .observe(cell.state, cell.state_sequence, now);
                                 }
                                 let display_changed = model_display_changed(&self.model, &model);
                                 let had_error = self.appearance_error.is_some();
@@ -872,9 +866,8 @@ impl BeamApp {
         if needs_color_frame {
             subscriptions.push(iced::time::every(COLOR_FRAME_INTERVAL).map(Message::ColorTick));
         } else if needs_transition_poll {
-            subscriptions.push(
-                iced::time::every(COLOR_TRANSITION_POLL_INTERVAL).map(Message::ColorTick),
-            );
+            subscriptions
+                .push(iced::time::every(COLOR_TRANSITION_POLL_INTERVAL).map(Message::ColorTick));
         }
 
         Subscription::batch(subscriptions)
@@ -1177,11 +1170,8 @@ mod tests {
     type Tail = List<(Unary<U1, TestCell, Empty>, Empty)>;
     type TestGraph = List<(Unary<U0, TestCell, PortOne>, Tail)>;
     type TestSun = <TestGraph as BlackHole>::Sun<Primordium, Primordium>;
-    type TestSunWithState = <TestGraph as BlackHole>::SunWithState<
-        Primordium,
-        Primordium,
-        (String, String),
-    >;
+    type TestSunWithState =
+        <TestGraph as BlackHole>::SunWithState<Primordium, Primordium, (String, String)>;
     type TestBinaryGraph = List<(Binary<U0, U1, TestFusion, Empty>, Empty)>;
     type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium>;
 

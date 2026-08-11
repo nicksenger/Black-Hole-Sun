@@ -1,8 +1,8 @@
 use std::future::Future;
 
-use black_hole_sun::ops::VoidInferOps;
+use black_hole_sun::ops::{InferenceOutputOps, VoidInferOps};
 use black_hole_sun::{AtomError, Emission, InferenceOutput, InferenceOutputId, SequenceOutput};
-use postcard::{from_bytes, to_allocvec};
+use postcard::to_allocvec;
 use tracing::info;
 
 use super::*;
@@ -148,26 +148,8 @@ where
             let up_emission_id = propagation_emission_id(&input.0)?;
             let down_emission_id = propagation_emission_id(&input.1)?;
 
-            let up_emission: Emission<()> = jungle
-                .download_emission(up_emission_id.0)
-                .await
-                .map_err(AtomError::Download)?;
-            let down_emission: Emission<()> = jungle
-                .download_emission(down_emission_id.0)
-                .await
-                .map_err(AtomError::Download)?;
-
-            let up_bytes = jungle
-                .download_raw(up_emission.output_id.0)
-                .await
-                .map_err(AtomError::Download)?;
-            let down_bytes = jungle
-                .download_raw(down_emission.output_id.0)
-                .await
-                .map_err(AtomError::Download)?;
-
-            let output_up: InferenceOutput = from_bytes(&up_bytes)?;
-            let output_down: InferenceOutput = from_bytes(&down_bytes)?;
+            let output_up = InferenceOutput::from_emission(jungle, up_emission_id).await?;
+            let output_down = InferenceOutput::from_emission(jungle, down_emission_id).await?;
             let up_batch_size = output_up.results.len();
             let down_batch_size = output_down.results.len();
 
@@ -204,26 +186,8 @@ where
         (_transform_id, (left_id, right_id)): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let left_emission: Emission<()> = jungle
-                .download_emission(left_id.0)
-                .await
-                .map_err(AtomError::Download)?;
-            let right_emission: Emission<()> = jungle
-                .download_emission(right_id.0)
-                .await
-                .map_err(AtomError::Download)?;
-
-            let left_bytes = jungle
-                .download_raw(left_emission.output_id.0)
-                .await
-                .map_err(AtomError::Download)?;
-            let right_bytes = jungle
-                .download_raw(right_emission.output_id.0)
-                .await
-                .map_err(AtomError::Download)?;
-
-            let mut merged_output: InferenceOutput = from_bytes(&left_bytes)?;
-            let right_output: InferenceOutput = from_bytes(&right_bytes)?;
+            let mut merged_output = InferenceOutput::from_emission(jungle, left_id).await?;
+            let right_output = InferenceOutput::from_emission(jungle, right_id).await?;
             merged_output.results.extend(right_output.results);
 
             let merged_output_bytes = to_allocvec(&merged_output)?;

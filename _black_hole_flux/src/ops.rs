@@ -8,8 +8,11 @@ use serde::Serialize;
 // ---------------------------------------------------------------------------
 
 pub use black_hole_spec::{
-    DarkToken, Emission, EmissionId, InferenceRequest, ObjectId, Transmission,
+    DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
+    ObjectId, Transmission,
 };
+
+use crate::AtomError;
 
 /// Capability trait that guarantees a Jungle can talk to void and quark.
 ///
@@ -106,6 +109,41 @@ pub trait VoidInferOps: Send + Sync {
     /// Transmission::Propagation by supplying the recv and send void Ids
     /// for the next node.
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+pub trait InferenceOutputOps: Sized {
+    /// Download an [`Emission`] and then its referenced [`InferenceOutput`].
+    async fn from_emission<J>(jungle: &J, emission_id: EmissionId) -> Result<Self, AtomError>
+    where
+        J: VoidInferOps;
+}
+
+#[derive(serde::Deserialize)]
+struct EmissionOutputOnly {
+    #[serde(rename = "metadata")]
+    _metadata: serde::de::IgnoredAny,
+    output_id: InferenceOutputId,
+}
+
+#[async_trait::async_trait]
+impl InferenceOutputOps for InferenceOutput {
+    async fn from_emission<J>(jungle: &J, emission_id: EmissionId) -> Result<Self, AtomError>
+    where
+        J: VoidInferOps,
+    {
+        let emission_bytes = jungle
+            .download_raw(emission_id.0)
+            .await
+            .map_err(AtomError::Download)?;
+        let emission: EmissionOutputOnly = postcard::from_bytes(&emission_bytes)?;
+
+        let output_bytes = jungle
+            .download_raw(emission.output_id.0)
+            .await
+            .map_err(AtomError::Download)?;
+        postcard::from_bytes(&output_bytes).map_err(AtomError::from)
+    }
 }
 
 #[async_trait::async_trait]

@@ -272,7 +272,10 @@ impl VoidInferOps for SpaceJungle {
         let tokenizer_result = self.tokenizer.get_or_init(Tokenizer::try_init);
         match tokenizer_result.as_ref() {
             Ok(tokenizer) => tokenizer.decode(tokens),
-            Err(_) => tokens.iter().map(|token| token.predicted.to_string()).collect(),
+            Err(_) => tokens
+                .iter()
+                .map(|token| token.predicted.to_string())
+                .collect(),
         }
     }
 

@@ -910,7 +910,8 @@ mod tests {
         type GenUuidBound = <GenUuid<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
         <GenUuidBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
 
-        type GenFusionSeedBound = <GenFusionSeed<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
+        type GenFusionSeedBound =
+            <GenFusionSeed<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
         <GenFusionSeedBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
 
         type FinalizeBound = <FinalizeGraph<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
@@ -925,9 +926,8 @@ mod tests {
                 TestSunAnimalWithPayload,
             >;
         let seed = Uuid::new_v4();
-        let effect_seed = <SpawnUnaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(
-            &state, seed,
-        );
+        let effect_seed =
+            <SpawnUnaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, seed);
         assert_eq!(effect_seed, seed);
 
         type SpawnBinaryBound =
@@ -938,9 +938,8 @@ mod tests {
             p1_recv_id: Uuid::new_v4(),
             p2_recv_id: Uuid::new_v4(),
         };
-        let effect_seed = <SpawnBinaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(
-            &state, seed,
-        );
+        let effect_seed =
+            <SpawnBinaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, seed);
         assert_eq!(effect_seed.p1_recv_id, seed.p1_recv_id);
         assert_eq!(effect_seed.p2_recv_id, seed.p2_recv_id);
     }

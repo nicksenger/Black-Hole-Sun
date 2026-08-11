@@ -56,23 +56,13 @@ pub type Eukaryote<In, Out, M, S = ()> = Cell<Atom<In, Out, M, S>, S>;
 
 /// A prokaryotic cell: a [`Cell`] whose atom has no input/output processing.
 pub type Prokaryote<M, S = ()> = Cell<
-    Atom<
-        Step<Noop<CellState<S>, (Uuid, EmissionId)>>,
-        Step<Noop<CellState<S>, EmissionId>>,
-        M,
-        S,
-    >,
+    Atom<Step<Noop<CellState<S>, (Uuid, EmissionId)>>, Step<Noop<CellState<S>, EmissionId>>, M, S>,
     S,
 >;
 
 /// A primordial cell: the simplest possible [`Cell`] with no input/output
 /// processing and no metadata.
 pub type Primordium<S = ()> = Cell<
-    Atom<
-        Step<Noop<CellState<S>, (Uuid, EmissionId)>>,
-        Step<Noop<CellState<S>, EmissionId>>,
-        (),
-        S,
-    >,
+    Atom<Step<Noop<CellState<S>, (Uuid, EmissionId)>>, Step<Noop<CellState<S>, EmissionId>>, (), S>,
     S,
 >;

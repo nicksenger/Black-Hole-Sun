@@ -365,8 +365,7 @@ pub struct BinarySunStepWithState<
     Step<action::SpawnBinary<P1, P2, AnimalT, E, S>>,
 );
 
-pub type BinarySunStep<P1, P2, AnimalT, E, S = ()> =
-    BinarySunStepWithState<P1, P2, AnimalT, E, S>;
+pub type BinarySunStep<P1, P2, AnimalT, E, S = ()> = BinarySunStepWithState<P1, P2, AnimalT, E, S>;
 
 /// One descriptor-specific spawn flow followed by the remaining descriptors.
 #[derive(Flow)]
@@ -393,10 +392,8 @@ where
 {
     type Sun<Generator, Policy> =
         SunNode<UnarySunStep<P, A, E>, <U as BlackHole>::Sun<Generator, Policy>>;
-    type SunWithState<Generator, Policy, S> = SunNode<
-        UnarySunStep<P, A, E, S>,
-        <U as BlackHole>::SunWithState<Generator, Policy, S>,
-    >;
+    type SunWithState<Generator, Policy, S> =
+        SunNode<UnarySunStep<P, A, E, S>, <U as BlackHole>::SunWithState<Generator, Policy, S>>;
 }
 impl<P1, P2, A, E, U> BlackHole for List<(Binary<P1, P2, A, E>, U)>
 where
