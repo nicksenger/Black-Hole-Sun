@@ -181,6 +181,7 @@ pub struct TestQuarkServer {
     listen_addr: SocketAddr,
     void_addr: Option<SocketAddr>,
     default_inference_limit: Option<u32>,
+    frozen: bool,
 }
 
 impl TestQuarkServer {
@@ -190,6 +191,7 @@ impl TestQuarkServer {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             void_addr: None,
             default_inference_limit: None,
+            frozen: false,
         }
     }
 
@@ -208,8 +210,16 @@ impl TestQuarkServer {
         self
     }
 
+    pub fn frozen(mut self) -> Self {
+        self.frozen = true;
+        self
+    }
+
     pub async fn serve(self) -> Result<RunningTestQuarkServer, black_hole_quark::ServerError> {
         let mut builder = QuarkServerBuilder::new(self.model_path).listen(self.listen_addr);
+        if self.frozen {
+            builder = builder.frozen();
+        }
         if let Some(void_addr) = self.void_addr {
             builder = builder.void_addr(void_addr);
         }
