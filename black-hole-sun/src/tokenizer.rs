@@ -5,6 +5,7 @@ const DEFAULT_REVISION: &str = "main";
 const DEFAULT_FILE: &str = "tokenizer.json";
 
 /// Shared tokenizer loader and decoding helper for black-hole workspace tests.
+#[derive(Clone)]
 pub struct Tokenizer {
     inner: tokenizers::Tokenizer,
 }
