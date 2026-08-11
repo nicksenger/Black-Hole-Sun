@@ -268,6 +268,14 @@ impl VoidInferOps for SpaceJungle {
             .map_err(|error| format!("failed to darken prompt: {error}"))
     }
 
+    fn decode(&self, tokens: &[black_hole_sun::DarkToken]) -> String {
+        let tokenizer_result = self.tokenizer.get_or_init(Tokenizer::try_init);
+        match tokenizer_result.as_ref() {
+            Ok(tokenizer) => tokenizer.decode(tokens),
+            Err(_) => tokens.iter().map(|token| token.predicted.to_string()).collect(),
+        }
+    }
+
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
         let result = self.quark_client.perturb_up(model_id, seed).await;
         self.record_model_error("perturb up", &result);

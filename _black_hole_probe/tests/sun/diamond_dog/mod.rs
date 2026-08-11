@@ -283,6 +283,14 @@ impl VoidInferOps for ProbeSpaceJungle {
             .map_err(|error| format!("failed to darken prompt: {error}"))
     }
 
+    fn decode(&self, tokens: &[black_hole_sun::DarkToken]) -> String {
+        let tokenizer_result = self.tokenizer.get_or_init(Tokenizer::try_init);
+        match tokenizer_result.as_ref() {
+            Ok(tokenizer) => tokenizer.decode(tokens),
+            Err(_) => tokens.iter().map(|token| token.predicted.to_string()).collect(),
+        }
+    }
+
     async fn start_model(&self, _model_id: Uuid) -> Result<(), String> {
         Err("model lifecycle is not used by TestCell".to_string())
     }

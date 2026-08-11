@@ -55,6 +55,18 @@ pub trait VoidInferOps: Send + Sync {
     /// Convert text into dark-tokenized inputs for dark inference flows.
     fn darken(&self, prompt: &str) -> Result<Vec<DarkToken>, String>;
 
+    /// Decode `DarkToken` predictions into text.
+    ///
+    /// Implementors that manage a tokenizer should override this and delegate to
+    /// tokenizer decode. The default behavior provides a deterministic fallback
+    /// by concatenating predicted token IDs.
+    fn decode(&self, tokens: &[DarkToken]) -> String {
+        tokens
+            .iter()
+            .map(|token| token.predicted.to_string())
+            .collect()
+    }
+
     /// Perturb the associated quark's weights in the positive direction.
     ///
     /// The `seed` parameter controls the random perturbation for reproducibility.
