@@ -14,6 +14,7 @@ use black_hole_spec::{
     DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId, QuarkIn,
     QuarkOut, SequenceOutput,
 };
+pub use paramecia_engine::KvCacheQuantization;
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
@@ -262,6 +263,7 @@ struct QuarkServerDefaults {
     top_k: usize,
     temperature: f64,
     top_p: Option<f64>,
+    kv_cache_quant: KvCacheQuantization,
     repeat_penalty: f32,
     presence_penalty: f32,
     inference_limit: u32,
@@ -274,6 +276,7 @@ impl Default for QuarkServerDefaults {
             top_k: DEFAULT_ENGINE_TOP_K,
             temperature: DEFAULT_ENGINE_TEMPERATURE,
             top_p: None,
+            kv_cache_quant: KvCacheQuantization::Q8_0,
             repeat_penalty: DEFAULT_ENGINE_REPEAT_PENALTY,
             presence_penalty: DEFAULT_ENGINE_PRESENCE_PENALTY,
             inference_limit: DEFAULT_INFERENCE_LIMIT,
@@ -366,6 +369,18 @@ impl ServerBuilder {
     /// Configure the optional top-p sampler parameter for model instances.
     pub fn top_p(mut self, top_p: Option<f64>) -> Self {
         self.defaults.top_p = top_p;
+        self
+    }
+
+    /// Configure the KV-cache quantization used by model instances.
+    pub fn kv_cache_quant(mut self, quant: KvCacheQuantization) -> Self {
+        self.defaults.kv_cache_quant = quant;
+        self
+    }
+
+    /// Disable KV-cache quantization (uses f16 cache tensors).
+    pub fn disable_kv_cache_quantization(mut self) -> Self {
+        self.defaults.kv_cache_quant = KvCacheQuantization::F16;
         self
     }
 
@@ -619,6 +634,7 @@ async fn handle_start(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
         let mut builder = paramecia_engine::ModelEngineBuilder::new(model_path)
             .top_k(defaults.top_k)
             .temperature(defaults.temperature)
+            .kv_cache_quant(defaults.kv_cache_quant)
             .repeat_penalty(defaults.repeat_penalty)
             .presence_penalty(defaults.presence_penalty)
             .training_config(defaults.training_config);

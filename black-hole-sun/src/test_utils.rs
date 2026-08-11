@@ -183,6 +183,7 @@ pub struct TestQuarkServer {
     top_k: Option<usize>,
     temperature: Option<f64>,
     top_p: Option<f64>,
+    kv_cache_quant: black_hole_quark::KvCacheQuantization,
     repeat_penalty: Option<f32>,
     presence_penalty: Option<f32>,
     default_inference_limit: Option<u32>,
@@ -200,6 +201,7 @@ impl TestQuarkServer {
             top_k: None,
             temperature: None,
             top_p: None,
+            kv_cache_quant: black_hole_quark::KvCacheQuantization::Q8_0,
             repeat_penalty: None,
             presence_penalty: None,
             default_inference_limit: None,
@@ -234,6 +236,16 @@ impl TestQuarkServer {
         self
     }
 
+    pub fn kv_cache_quant(mut self, quant: black_hole_quark::KvCacheQuantization) -> Self {
+        self.kv_cache_quant = quant;
+        self
+    }
+
+    pub fn disable_kv_cache_quantization(mut self) -> Self {
+        self.kv_cache_quant = black_hole_quark::KvCacheQuantization::F16;
+        self
+    }
+
     pub fn repeat_penalty(mut self, penalty: f32) -> Self {
         self.repeat_penalty = Some(penalty);
         self
@@ -265,7 +277,9 @@ impl TestQuarkServer {
     }
 
     pub async fn serve(self) -> Result<RunningTestQuarkServer, black_hole_quark::ServerError> {
-        let mut builder = QuarkServerBuilder::new(self.model_path).listen(self.listen_addr);
+        let mut builder = QuarkServerBuilder::new(self.model_path)
+            .listen(self.listen_addr)
+            .kv_cache_quant(self.kv_cache_quant);
         if self.frozen {
             builder = builder.frozen();
         }
