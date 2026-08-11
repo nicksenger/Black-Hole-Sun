@@ -14,7 +14,7 @@ use black_hole_sun::{
     EmissionId, InferenceRequest, ObjectId, QuarkClient, TestQuarkServer, TestVoidServer,
     Tokenizer, Transmission, VoidClient,
 };
-use black_hole_sun::{Fusion, FusionSeed, FusionState, Progenitor};
+use black_hole_sun::{FusionSeed, FusionState, Progenitor, QuzoFusion};
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
@@ -24,7 +24,7 @@ use uuid::Uuid;
 use super::common::*;
 
 pub(super) const PROGENITOR_NODE_COUNT: usize = 3;
-const DARK_STAR_MODEL_CELL_COUNT: usize = 7;
+const DARK_STAR_MODEL_NODE_COUNT: usize = 10;
 const DARK_STAR_VERTEX_COUNT: usize = 10;
 const DARK_STAR_PORT_COUNT: usize = 13;
 const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
@@ -100,7 +100,7 @@ pub struct LeftStackTwinOutputsEffect;
 impl Animal for LeftStackTwinAnimal {
     type State = FusionState;
     type Seed = FusionSeed;
-    type Flow = Fusion<LeftStackTwinTransform>;
+    type Flow = QuzoFusion<LeftStackTwinTransform, ()>;
 }
 
 #[derive(Flow)]
@@ -120,7 +120,7 @@ pub(super) struct RightStackTwinAnimal;
 impl Animal for RightStackTwinAnimal {
     type State = FusionState;
     type Seed = FusionSeed;
-    type Flow = Fusion<RightStackTwinTransform>;
+    type Flow = QuzoFusion<RightStackTwinTransform, ()>;
 }
 
 pub(super) struct RandStackTwinOutputs;
@@ -135,7 +135,7 @@ pub(super) struct RandStackTwinAnimal;
 impl Animal for RandStackTwinAnimal {
     type State = FusionState;
     type Seed = FusionSeed;
-    type Flow = Fusion<RandStackTwinTransform>;
+    type Flow = QuzoFusion<RandStackTwinTransform, ()>;
 }
 
 pub(super) struct ProgenitorBlackHole;
@@ -208,6 +208,8 @@ pub(super) struct SpaceJungle {
     client: Option<FusedClient>,
     pub(super) potentiation_writes: Arc<AtomicUsize>,
     pub(super) inference_calls: Arc<AtomicUsize>,
+    pub(super) perturb_up_calls: Arc<AtomicUsize>,
+    pub(super) perturb_down_calls: Arc<AtomicUsize>,
     pub(super) optimized_cells: Arc<AtomicUsize>,
     pub(super) fusion_concat_calls: Arc<AtomicUsize>,
     pub(super) model_error: Arc<Mutex<Option<String>>>,
@@ -226,6 +228,8 @@ impl SpaceJungle {
             client: None,
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
             inference_calls: Arc::new(AtomicUsize::new(0)),
+            perturb_up_calls: Arc::new(AtomicUsize::new(0)),
+            perturb_down_calls: Arc::new(AtomicUsize::new(0)),
             optimized_cells: Arc::new(AtomicUsize::new(0)),
             fusion_concat_calls: Arc::new(AtomicUsize::new(0)),
             model_error: Arc::new(Mutex::new(None)),
@@ -328,12 +332,18 @@ impl VoidInferOps for SpaceJungle {
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
         let result = self.quark_client.perturb_up(model_id, seed).await;
         self.record_model_error("perturb up", &result);
+        if result.is_ok() {
+            self.perturb_up_calls.fetch_add(1, Ordering::SeqCst);
+        }
         result
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
         let result = self.quark_client.perturb_down(model_id).await;
         self.record_model_error("perturb down", &result);
+        if result.is_ok() {
+            self.perturb_down_calls.fetch_add(1, Ordering::SeqCst);
+        }
         result
     }
 
@@ -425,6 +435,8 @@ pub(super) async fn exercise_epoch<A>(
 
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
     let inference_calls = Arc::clone(&jungle.inference_calls);
+    let perturb_up_calls = Arc::clone(&jungle.perturb_up_calls);
+    let perturb_down_calls = Arc::clone(&jungle.perturb_down_calls);
     let optimized_cells = Arc::clone(&jungle.optimized_cells);
     let fusion_concat_calls = Arc::clone(&jungle.fusion_concat_calls);
     let model_error = Arc::clone(&jungle.model_error);
@@ -455,6 +467,8 @@ pub(super) async fn exercise_epoch<A>(
 
             if potentiation_writes.load(Ordering::SeqCst) >= expected_potentiation_writes
                 && inference_calls.load(Ordering::SeqCst) >= model_cell_count * 2
+                && perturb_up_calls.load(Ordering::SeqCst) >= model_cell_count
+                && perturb_down_calls.load(Ordering::SeqCst) >= model_cell_count
                 && optimized_cells.load(Ordering::SeqCst) >= model_cell_count
                 && fusion_concat_calls.load(Ordering::SeqCst) >= expected_fusion_concats
             {
@@ -499,8 +513,10 @@ pub(super) async fn exercise_epoch<A>(
                 .await
                 .expect("parent journey details should be available");
             panic!(
-                "{test_name} failed: {error}; inferences={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
+                "{test_name} failed: {error}; inferences={}, perturb_up={}, perturb_down={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
                 inference_calls.load(Ordering::SeqCst),
+                perturb_up_calls.load(Ordering::SeqCst),
+                perturb_down_calls.load(Ordering::SeqCst),
                 potentiation_writes.load(Ordering::SeqCst),
                 optimized_cells.load(Ordering::SeqCst),
                 fusion_concat_calls.load(Ordering::SeqCst),
@@ -512,8 +528,10 @@ pub(super) async fn exercise_epoch<A>(
                 .await
                 .expect("parent journey details should be available");
             panic!(
-                "timeout waiting for {test_name} epoch (240s): {error}; inferences={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
+                "timeout waiting for {test_name} epoch (240s): {error}; inferences={}, perturb_up={}, perturb_down={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
                 inference_calls.load(Ordering::SeqCst),
+                perturb_up_calls.load(Ordering::SeqCst),
+                perturb_down_calls.load(Ordering::SeqCst),
                 potentiation_writes.load(Ordering::SeqCst),
                 optimized_cells.load(Ordering::SeqCst),
                 fusion_concat_calls.load(Ordering::SeqCst),
@@ -545,7 +563,7 @@ async fn dark_star() {
     exercise_epoch::<DarkStarBlackHole>(
         "dark_star Sun",
         &model_path,
-        DARK_STAR_MODEL_CELL_COUNT,
+        DARK_STAR_MODEL_NODE_COUNT,
         DARK_STAR_VERTEX_COUNT,
         DARK_STAR_PORT_COUNT,
         DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH,
@@ -583,7 +601,7 @@ pub(crate) fn run_beam_dark_star() {
         let endpoint = make_client_endpoint().await;
         let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
         let quark_client = QuarkClient::new(&endpoint, quark_addr, "localhost");
-        let mut jungle = SpaceJungle::new(void_client, quark_client, DARK_STAR_MODEL_CELL_COUNT);
+        let mut jungle = SpaceJungle::new(void_client, quark_client, DARK_STAR_MODEL_NODE_COUNT);
         let client = FusedClient::builder()
             .build()
             .await

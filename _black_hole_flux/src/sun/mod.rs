@@ -401,10 +401,8 @@ where
     E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun<Generator, Policy, S> = SunNode<
-        BinarySunStep<P1, P2, A, E, S>,
-        <U as BlackHole>::Sun<Generator, Policy, S>,
-    >;
+    type Sun<Generator, Policy, S> =
+        SunNode<BinarySunStep<P1, P2, A, E, S>, <U as BlackHole>::Sun<Generator, Policy, S>>;
 }
 impl BlackHole for Empty {
     type Sun<Generator, Policy, S> = Sun<Generator, Policy, S>;

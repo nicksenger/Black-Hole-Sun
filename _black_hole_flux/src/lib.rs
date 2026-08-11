@@ -84,7 +84,7 @@ pub use cell::effect::{
     QuarkStart, Transmit as TransmitEffect, WaitForPotentiation, WaitForPropagation,
 };
 pub use fusion::action::{FusionSeed, FusionState};
-pub use fusion::{Fusion, FusionEpoch, FusionFlow};
+pub use fusion::{Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch};
 pub use ops::VoidInferOps;
 
 pub use atom::Atom;

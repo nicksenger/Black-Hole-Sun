@@ -15,8 +15,10 @@ use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 
 pub use action::{
-    FusionSeed, FusionState, FusionTransmit, GenerateTransformId, InitFusion,
-    PrepareTransformInput, WaitForFusionPotentiationAction, WaitForFusionPropagationAction,
+    FusionOptimize, FusionPerturbDown, FusionPerturbUp, FusionQuarkInferStep, FusionSeed,
+    FusionStartModel, FusionState, FusionTransmit, GenerateTransformId, InitFusion,
+    PrepareTransformInput, WaitForFusionPotentiationAction, WaitForFusionPotentiationForOptimize,
+    WaitForFusionPropagationAction,
 };
 
 pub use effect::{GenerateTransformIdEffect, WaitForFusionPotentiation, WaitForFusionPropagation};
@@ -43,13 +45,52 @@ pub struct Fusion<Transform>(
     While<Always<FusionState, ()>, FusionEpoch<Transform>>,
 );
 
+/// One complete model-aware two-pass fusion epoch.
+#[derive(Flow)]
+pub struct QuzoFusionEpoch<
+    Transform,
+    M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+>(
+    Step<FusionPerturbUp>,
+    Step<WaitForFusionPropagationAction>,
+    Step<PrepareTransformInput>,
+    Transform,
+    Step<FusionQuarkInferStep<M>>,
+    Step<FusionTransmit>,
+    Step<FusionPerturbDown>,
+    Step<WaitForFusionPropagationAction>,
+    Step<PrepareTransformInput>,
+    Transform,
+    Step<FusionQuarkInferStep<M>>,
+    Step<FusionTransmit>,
+    Step<WaitForFusionPotentiationForOptimize>,
+    Step<FusionOptimize>,
+);
+
+/// Infinite two-input QuZO loop for model-aware twin transforms.
+#[derive(Flow)]
+pub struct QuzoFusion<Transform, M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static>(
+    Step<InitFusion>,
+    Step<GenerateTransformId>,
+    Step<FusionStartModel>,
+    While<Always<FusionState, ()>, QuzoFusionEpoch<Transform, M>>,
+);
+
 /// Marker implemented only by model-free [`Fusion`] flow templates.
 pub trait FusionFlow: sealed::Sealed {}
 
 impl<Transform> FusionFlow for Fusion<Transform> {}
+impl<Transform, M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static> FusionFlow
+    for QuzoFusion<Transform, M>
+{
+}
 
 mod sealed {
     pub trait Sealed {}
 
     impl<Transform> Sealed for super::Fusion<Transform> {}
+    impl<Transform, M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static> Sealed
+        for super::QuzoFusion<Transform, M>
+    {
+    }
 }
