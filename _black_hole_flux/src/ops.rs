@@ -141,24 +141,16 @@ pub trait TransmissionOps: Sized {
     fn propagation_emission_id(&self) -> Result<EmissionId, AtomError>;
 }
 
-#[derive(serde::Deserialize)]
-struct EmissionOutputOnly {
-    #[serde(rename = "metadata")]
-    _metadata: serde::de::IgnoredAny,
-    output_id: InferenceOutputId,
-}
-
 #[async_trait::async_trait]
 impl InferenceOutputOps for InferenceOutput {
     async fn from_emission<J>(jungle: &J, emission_id: EmissionId) -> Result<Self, AtomError>
     where
         J: VoidInferOps,
     {
-        let emission_bytes = jungle
-            .download_raw(emission_id.0)
+        let emission: Emission<()> = jungle
+            .download_emission(emission_id.0)
             .await
             .map_err(AtomError::Download)?;
-        let emission: EmissionOutputOnly = postcard::from_bytes(&emission_bytes)?;
 
         let output_bytes = jungle
             .download_raw(emission.output_id.0)
