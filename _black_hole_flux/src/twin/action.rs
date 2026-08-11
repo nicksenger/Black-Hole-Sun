@@ -1,3 +1,69 @@
-//! Twin actions — re-exports for the Twin flow.
+//! Twin actions - default `In` transforms plus quark inference step.
+
+use std::marker::PhantomData;
+
+use black_hole_spec::EmissionId;
+use jungle_sdk::prelude::*;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use uuid::Uuid;
+
+use super::effect::{LeftStackEffect, RightStackEffect};
 
 pub use crate::cell::action::QuarkInferStep;
+
+/// Default `Twin` input transform that keeps left metadata and appends right
+/// sequences onto left sequences.
+pub struct LeftStack<S = (), M = ()>(PhantomData<fn() -> (S, M)>);
+
+#[jungle::action(carry = Uuid)]
+impl<S, M> Action for LeftStack<S, M>
+where
+    M: Serialize + DeserializeOwned + Send + 'static,
+{
+    type Effect = LeftStackEffect<M>;
+    type Input = (Uuid, (EmissionId, EmissionId));
+    type Output = (Uuid, EmissionId);
+
+    fn emit(_state: &S, (model_id, emissions): Self::Input) -> ((EmissionId, EmissionId), Uuid) {
+        (emissions, model_id)
+    }
+
+    fn absorb(
+        _state: &mut S,
+        output: EffectCompletion<Self::Effect>,
+        model_id: Uuid,
+    ) -> Result<Self::Output, Failure> {
+        let emission_id =
+            output.map_err(|error| Failure::Message(format!("left stack failed: {error}")))?;
+        Ok((model_id, emission_id))
+    }
+}
+
+/// Default `Twin` input transform that keeps right metadata and appends left
+/// sequences onto right sequences.
+pub struct RightStack<S = (), M = ()>(PhantomData<fn() -> (S, M)>);
+
+#[jungle::action(carry = Uuid)]
+impl<S, M> Action for RightStack<S, M>
+where
+    M: Serialize + DeserializeOwned + Send + 'static,
+{
+    type Effect = RightStackEffect<M>;
+    type Input = (Uuid, (EmissionId, EmissionId));
+    type Output = (Uuid, EmissionId);
+
+    fn emit(_state: &S, (model_id, emissions): Self::Input) -> ((EmissionId, EmissionId), Uuid) {
+        (emissions, model_id)
+    }
+
+    fn absorb(
+        _state: &mut S,
+        output: EffectCompletion<Self::Effect>,
+        model_id: Uuid,
+    ) -> Result<Self::Output, Failure> {
+        let emission_id =
+            output.map_err(|error| Failure::Message(format!("right stack failed: {error}")))?;
+        Ok((model_id, emission_id))
+    }
+}
