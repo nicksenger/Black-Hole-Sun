@@ -89,7 +89,7 @@ pub use ops::VoidInferOps;
 
 pub use atom::Atom;
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
-pub use twin::action::{LeftStack, RightStack};
+pub use twin::action::{LeftStack, RandStack, RightStack};
 pub use twin::Twin;
 
 pub use sun::{

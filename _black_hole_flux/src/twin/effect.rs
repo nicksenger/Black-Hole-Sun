@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 
 use black_hole_spec::InferenceOutput;
 use jungle_sdk::prelude::*;
+use rand::random;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tracing::debug;
@@ -147,6 +148,67 @@ where
             );
 
             upload_stacked_emission(jungle, right_emission.metadata, right_output).await
+        }
+    }
+}
+
+/// Merge two emissions by randomly choosing left- or right-based stacking.
+pub struct RandStackEffect<M>(PhantomData<fn() -> M>);
+
+impl<M, J> EffectSchema<J> for RandStackEffect<M>
+where
+    M: Serialize + DeserializeOwned + Send + 'static,
+{
+    type Id = u64;
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+}
+
+impl<M, J> Effect<J> for RandStackEffect<M>
+where
+    M: Serialize + DeserializeOwned + Send + 'static,
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        (left_id, right_id): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let left_emission: Emission<M> = jungle
+                .download_emission(left_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+            let right_emission: Emission<M> = jungle
+                .download_emission(right_id.0)
+                .await
+                .map_err(AtomError::Download)?;
+
+            let choose_left = random::<bool>();
+            let mut left_output = download_output(jungle, left_emission.output_id).await?;
+            let mut right_output = download_output(jungle, right_emission.output_id).await?;
+
+            if choose_left {
+                left_output.results.extend(right_output.results);
+                debug!(
+                    left = %left_id.0,
+                    right = %right_id.0,
+                    picked = "left",
+                    combined_sequences = left_output.results.len(),
+                    "stacked twin emissions with random-side metadata"
+                );
+                upload_stacked_emission(jungle, left_emission.metadata, left_output).await
+            } else {
+                right_output.results.extend(left_output.results);
+                debug!(
+                    left = %left_id.0,
+                    right = %right_id.0,
+                    picked = "right",
+                    combined_sequences = right_output.results.len(),
+                    "stacked twin emissions with random-side metadata"
+                );
+                upload_stacked_emission(jungle, right_emission.metadata, right_output).await
+            }
         }
     }
 }

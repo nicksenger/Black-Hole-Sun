@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use action::QuarkInferStep;
 
-pub use action::{LeftStack, RightStack};
+pub use action::{LeftStack, RandStack, RightStack};
 
 /// A Twin composes three sequential stages.
 ///
@@ -17,7 +17,8 @@ pub use action::{LeftStack, RightStack};
 /// `(Uuid, (EmissionId, EmissionId))` into `(Uuid, EmissionId)` so one
 /// quark-inference step can run before handing off to the output flow.
 ///
-/// Use [`LeftStack`] or [`RightStack`] for default "stack and infer" behavior.
+/// Use [`LeftStack`], [`RightStack`], or [`RandStack`] for default
+/// "stack and infer" behavior.
 #[derive(Flow)]
 pub struct TwinWithState<In, Out, M: Serialize + DeserializeOwned + Send + 'static, S>(
     In,
