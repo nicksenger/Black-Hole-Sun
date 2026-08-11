@@ -251,6 +251,7 @@ struct QuarkContext {
     model_path: PathBuf,
     void_client: Option<Arc<VoidClient>>,
     defaults: QuarkServerDefaults,
+    frozen: bool,
     instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
 }
 
@@ -284,6 +285,7 @@ pub struct ServerBuilder {
     key: Option<PathBuf>,
     cert: Option<PathBuf>,
     stateless_retry: bool,
+    frozen: bool,
     listen: SocketAddr,
     model_path: PathBuf,
     void_addr: Option<SocketAddr>,
@@ -297,6 +299,7 @@ impl ServerBuilder {
             key: None,
             cert: None,
             stateless_retry: false,
+            frozen: false,
             listen: DEFAULT_LISTEN_ADDR
                 .parse()
                 .expect("default listen address must be valid"),
@@ -323,6 +326,12 @@ impl ServerBuilder {
 
     pub fn stateless_retry(mut self, v: bool) -> Self {
         self.stateless_retry = v;
+        self
+    }
+
+    /// Freeze model weights by disabling perturb/update mutations.
+    pub fn frozen(mut self) -> Self {
+        self.frozen = true;
         self
     }
 
@@ -430,6 +439,7 @@ impl ServerBuilder {
             model_path: self.model_path,
             void_client,
             defaults: self.defaults,
+            frozen: self.frozen,
             instances: tokio::sync::RwLock::new(HashMap::new()),
         });
 
@@ -705,11 +715,15 @@ async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Res
     }
 
     reset_model(&instance.engine).await?;
-    instance
-        .engine
-        .perturb_up(Some(seed))
-        .await
-        .map_err(|e| ServerError::ModelError(e.to_string()))?;
+    if ctx.frozen {
+        info!(%model_id, "skipping perturb up because server is frozen");
+    } else {
+        instance
+            .engine
+            .perturb_up(Some(seed))
+            .await
+            .map_err(|e| ServerError::ModelError(e.to_string()))?;
+    }
 
     session.state = QuarkState::PostPerturbUp;
     Ok(QuarkOut::Ack)
@@ -881,11 +895,15 @@ async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<Quark
     }
 
     reset_model(&instance.engine).await?;
-    instance
-        .engine
-        .perturb_down()
-        .await
-        .map_err(|e| ServerError::ModelError(e.to_string()))?;
+    if ctx.frozen {
+        info!(%model_id, "skipping perturb down because server is frozen");
+    } else {
+        instance
+            .engine
+            .perturb_down()
+            .await
+            .map_err(|e| ServerError::ModelError(e.to_string()))?;
+    }
 
     session.state = QuarkState::PostPerturbDown;
     Ok(QuarkOut::Ack)
@@ -910,14 +928,18 @@ async fn handle_optimize(
     }
 
     reset_model(&instance.engine).await?;
-    instance
-        .engine
-        .update(loss_up, loss_down)
-        .await
-        .map_err(|e| {
-            warn!("optimization failed");
-            ServerError::ModelError(e.to_string())
-        })?;
+    if ctx.frozen {
+        info!(%model_id, "skipping optimization because server is frozen");
+    } else {
+        instance
+            .engine
+            .update(loss_up, loss_down)
+            .await
+            .map_err(|e| {
+                warn!("optimization failed");
+                ServerError::ModelError(e.to_string())
+            })?;
+    }
 
     session.state = QuarkState::Idle;
     info!(%model_id, "finished optimization update");
