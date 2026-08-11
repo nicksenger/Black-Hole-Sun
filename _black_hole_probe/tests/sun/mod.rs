@@ -9,6 +9,8 @@ mod sun_dog;
 #[cfg(not(test))]
 pub(crate) use black_dwarf::run_beam_black_dwarf;
 #[cfg(not(test))]
+pub(crate) use black_dwarf::run_continuous_black_dwarf;
+#[cfg(not(test))]
 pub(crate) use dark_star::run_beam_dark_star;
 #[cfg(not(test))]
 pub(crate) use sun_dog::run_beam;
