@@ -48,6 +48,30 @@ pub trait VoidStore: dyn_clone::DynClone + Send + Sync {
 
     /// Delete an object record.
     async fn delete_object(&self, id: Uuid) -> Result<()>;
+
+    /// Publish an upload notification for cross-instance waiters.
+    ///
+    /// Backends that do not support cross-instance notifications should keep
+    /// the default no-op behavior.
+    async fn publish_upload_notification(&self, _id: Uuid) -> Result<()> {
+        Ok(())
+    }
+
+    /// Whether this store supports backend wait notifications.
+    ///
+    /// Used by `DownloadWait` to avoid waiting on backends that do not
+    /// implement notification delivery.
+    fn supports_wait_notifications(&self) -> bool {
+        false
+    }
+
+    /// Wait for a backend upload notification for `id`.
+    ///
+    /// Returns `Ok(true)` if a matching notification is observed before
+    /// `timeout_ms`; `Ok(false)` on timeout.
+    async fn wait_for_upload_notification(&self, _id: Uuid, _timeout_ms: u64) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 dyn_clone::clone_trait_object!(VoidStore);

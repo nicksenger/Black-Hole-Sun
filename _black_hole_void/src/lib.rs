@@ -323,6 +323,9 @@ async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<
             {
                 warn!(error = %e, "failed to persist object metadata");
             }
+            if let Err(e) = context.store.publish_upload_notification(id).await {
+                warn!(error = %e, "failed to publish upload notification");
+            }
 
             info!(%id, "uploaded");
             context.wait_registry.notify_upload(id).await;
@@ -372,7 +375,6 @@ async fn handle_download_wait(context: &VoidContext, id: uuid::Uuid, timeout_ms:
     }
 
     let waiter = context.wait_registry.waiter_for(id).await;
-    let notified = waiter.notified();
     match try_download(context, id).await {
         DownloadAttempt::Found(data) => {
             info!(%id, bytes = data.len(), "downloaded after waiter registration");
@@ -383,20 +385,57 @@ async fn handle_download_wait(context: &VoidContext, id: uuid::Uuid, timeout_ms:
     }
 
     let wait_duration = Duration::from_millis(timeout_ms);
-    match timeout(wait_duration, notified).await {
-        Ok(()) => match try_download(context, id).await {
-            DownloadAttempt::Found(data) => {
-                info!(%id, bytes = data.len(), "downloaded after upload notification");
-                VoidOut::Downloaded { data }
-            }
-            DownloadAttempt::Failed(message) => VoidOut::Error { message },
-            DownloadAttempt::Missing => {
-                warn!(%id, "waiter notified but object is still missing");
-                VoidOut::TimedOut { id }
-            }
-        },
-        Err(_) => {
+    let deadline = tokio::time::Instant::now() + wait_duration;
+    let mut use_backend_wait = context.store.supports_wait_notifications();
+
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
             context.wait_registry.release_if_idle(id, &waiter).await;
+            return VoidOut::TimedOut { id };
+        }
+        let remaining = deadline.saturating_duration_since(now);
+
+        if use_backend_wait {
+            let remaining_ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX);
+            tokio::select! {
+                _ = waiter.notified() => break,
+                backend_wait = context.store.wait_for_upload_notification(id, remaining_ms) => {
+                    match backend_wait {
+                        Ok(true) => break,
+                        Ok(false) => {
+                            context.wait_registry.release_if_idle(id, &waiter).await;
+                            return VoidOut::TimedOut { id };
+                        }
+                        Err(e) => {
+                            warn!(%id, error = %e, "backend wait notification failed");
+                            use_backend_wait = false;
+                            continue;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(remaining) => {
+                    context.wait_registry.release_if_idle(id, &waiter).await;
+                    return VoidOut::TimedOut { id };
+                }
+            }
+        } else if timeout(remaining, waiter.notified()).await.is_err() {
+            context.wait_registry.release_if_idle(id, &waiter).await;
+            return VoidOut::TimedOut { id };
+        } else {
+            break;
+        }
+    }
+
+    context.wait_registry.release_if_idle(id, &waiter).await;
+    match try_download(context, id).await {
+        DownloadAttempt::Found(data) => {
+            info!(%id, bytes = data.len(), "downloaded after upload notification");
+            VoidOut::Downloaded { data }
+        }
+        DownloadAttempt::Failed(message) => VoidOut::Error { message },
+        DownloadAttempt::Missing => {
+            warn!(%id, "waiter notified but object is still missing");
             VoidOut::TimedOut { id }
         }
     }

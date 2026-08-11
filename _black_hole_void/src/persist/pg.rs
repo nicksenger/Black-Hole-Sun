@@ -3,8 +3,11 @@
 use crate::migrate;
 use crate::persist::{ObjectRecord, PersistenceError, Result, VoidStore};
 use async_trait::async_trait;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgListener, PgPoolOptions};
 use sqlx::Row;
+use tokio::time::{timeout, Duration};
+
+const OBJECT_UPLOADED_CHANNEL: &str = "void_object_uploaded";
 
 #[derive(Debug, Clone)]
 pub struct PgStore {
@@ -110,5 +113,67 @@ impl VoidStore for PgStore {
             .await
             .map_err(PersistenceError::PostgresQuery)?;
         Ok(())
+    }
+
+    async fn publish_upload_notification(&self, id: uuid::Uuid) -> Result<()> {
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(OBJECT_UPLOADED_CHANNEL)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(PersistenceError::PostgresQuery)?;
+        Ok(())
+    }
+
+    fn supports_wait_notifications(&self) -> bool {
+        true
+    }
+
+    async fn wait_for_upload_notification(&self, id: uuid::Uuid, timeout_ms: u64) -> Result<bool> {
+        if timeout_ms == 0 {
+            return Ok(false);
+        }
+
+        let mut listener = PgListener::connect_with(&self.pool)
+            .await
+            .map_err(PersistenceError::PostgresQuery)?;
+        listener
+            .listen(OBJECT_UPLOADED_CHANNEL)
+            .await
+            .map_err(PersistenceError::PostgresQuery)?;
+
+        let already_present = sqlx::query_scalar::<_, i32>(
+            r#"
+            SELECT 1
+            FROM void_objects
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(PersistenceError::PostgresQuery)?
+        .is_some();
+        if already_present {
+            return Ok(true);
+        }
+
+        let expected_payload = id.to_string();
+        let wait = async {
+            loop {
+                let notification = listener
+                    .recv()
+                    .await
+                    .map_err(PersistenceError::PostgresQuery)?;
+                if notification.payload() == expected_payload {
+                    return Ok(true);
+                }
+            }
+        };
+
+        match timeout(Duration::from_millis(timeout_ms), wait).await {
+            Ok(result) => result,
+            Err(_) => Ok(false),
+        }
     }
 }
