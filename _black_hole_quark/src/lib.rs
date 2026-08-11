@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
-use paramecia_engine::ModelEngine;
+use paramecia_engine::{ModelEngine, TrainingConfig};
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -17,6 +17,9 @@ use black_hole_spec::{
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+const DEFAULT_ENGINE_TOP_K: usize = 256;
+const DEFAULT_ENGINE_TEMPERATURE: f64 = 0.7;
+const DEFAULT_INFERENCE_LIMIT: u32 = 256;
 
 // ---------------------------------------------------------------------------
 // Void client — connects to black-hole-void over QUIC, sends/receives frames
@@ -247,7 +250,29 @@ enum ModelSlot {
 struct QuarkContext {
     model_path: PathBuf,
     void_client: Option<Arc<VoidClient>>,
+    defaults: QuarkServerDefaults,
     instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
+}
+
+#[derive(Clone)]
+struct QuarkServerDefaults {
+    top_k: usize,
+    temperature: f64,
+    top_p: Option<f64>,
+    inference_limit: u32,
+    training_config: TrainingConfig,
+}
+
+impl Default for QuarkServerDefaults {
+    fn default() -> Self {
+        Self {
+            top_k: DEFAULT_ENGINE_TOP_K,
+            temperature: DEFAULT_ENGINE_TEMPERATURE,
+            top_p: None,
+            inference_limit: DEFAULT_INFERENCE_LIMIT,
+            training_config: TrainingConfig::default(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +287,7 @@ pub struct ServerBuilder {
     listen: SocketAddr,
     model_path: PathBuf,
     void_addr: Option<SocketAddr>,
+    defaults: QuarkServerDefaults,
 }
 
 impl ServerBuilder {
@@ -276,6 +302,7 @@ impl ServerBuilder {
                 .expect("default listen address must be valid"),
             model_path: model_path.into(),
             void_addr: None,
+            defaults: QuarkServerDefaults::default(),
         }
     }
 
@@ -306,6 +333,48 @@ impl ServerBuilder {
 
     pub fn void_addr(mut self, addr: SocketAddr) -> Self {
         self.void_addr = Some(addr);
+        self
+    }
+
+    /// Configure the default top-k used by model instances spawned by this server.
+    pub fn top_k(mut self, top_k: usize) -> Self {
+        self.defaults.top_k = top_k;
+        self
+    }
+
+    /// Configure the default sampling temperature used by model instances.
+    pub fn temperature(mut self, temperature: f64) -> Self {
+        self.defaults.temperature = temperature;
+        self
+    }
+
+    /// Configure the optional top-p sampler parameter for model instances.
+    pub fn top_p(mut self, top_p: Option<f64>) -> Self {
+        self.defaults.top_p = top_p;
+        self
+    }
+
+    /// Configure the default max tokens generated when requests omit `limit`.
+    pub fn default_inference_limit(mut self, limit: u32) -> Self {
+        self.defaults.inference_limit = limit;
+        self
+    }
+
+    /// Configure the default QuZO learning rate.
+    pub fn training_lr(mut self, lr: f64) -> Self {
+        self.defaults.training_config.lr = lr;
+        self
+    }
+
+    /// Configure the default QuZO epsilon.
+    pub fn training_epsilon(mut self, epsilon: f64) -> Self {
+        self.defaults.training_config.epsilon = epsilon;
+        self
+    }
+
+    /// Configure the full default training config used for new model instances.
+    pub fn training_config(mut self, config: TrainingConfig) -> Self {
+        self.defaults.training_config = config;
         self
     }
 
@@ -360,6 +429,7 @@ impl ServerBuilder {
         let context = Arc::new(QuarkContext {
             model_path: self.model_path,
             void_client,
+            defaults: self.defaults,
             instances: tokio::sync::RwLock::new(HashMap::new()),
         });
 
@@ -516,9 +586,16 @@ async fn handle_start(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
 
     info!(%model_id, "starting model instance");
     let model_path = ctx.model_path.clone();
+    let defaults = ctx.defaults.clone();
     let engine_result = match tokio::task::spawn_blocking(move || {
-        paramecia_engine::ModelEngineBuilder::new(model_path)
-            .top_k(256)
+        let mut builder = paramecia_engine::ModelEngineBuilder::new(model_path)
+            .top_k(defaults.top_k)
+            .temperature(defaults.temperature)
+            .training_config(defaults.training_config);
+        if let Some(top_p) = defaults.top_p {
+            builder = builder.top_p(top_p);
+        }
+        builder
             .build()
             .map_err(|error| ServerError::ModelError(error.to_string()))
     })
@@ -742,6 +819,7 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &QuarkContext) ->
             (seqs, limit)
         }
     };
+    let limit = limit.unwrap_or(ctx.defaults.inference_limit);
 
     // Run batched inference.
     let seq_results = run_batched_inference(&instance.engine, &sequences, limit).await?;
@@ -855,6 +933,10 @@ async fn run_batched_inference(
     sequences: &[Vec<paramecia_engine::ModelInput>],
     limit: u32,
 ) -> Result<Vec<Vec<paramecia_engine::Predicted>>> {
+    if limit == 0 {
+        return Ok(vec![Vec::new(); sequences.len()]);
+    }
+
     // Start batched streaming completion — returns (result_rx, cancel_tx).
     let (mut result_rx, _cancel_tx) = engine
         .predict_completions_batched(sequences)

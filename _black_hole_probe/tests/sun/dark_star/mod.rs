@@ -275,15 +275,6 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
-        // One generated token is enough to prove each Progenitor atom reached
-        // the real model while keeping this integration test bounded.
-        let request = match request {
-            InferenceRequest::Sequences { sequences, .. } => InferenceRequest::Sequences {
-                sequences,
-                limit: 1,
-            },
-            InferenceRequest::VoidId { id, .. } => InferenceRequest::VoidId { id, limit: 1 },
-        };
         let request_bytes = postcard::to_allocvec(&request).map_err(|error| error.to_string())?;
         let request_id = self.void_client.upload(request_bytes).await.unwrap();
         let result = self.quark_client.infer(model_id, request_id).await;
@@ -361,6 +352,7 @@ pub(super) async fn exercise_epoch<A>(
     vertex_count: usize,
     expected_potentiation_writes: usize,
     expected_fusion_concats: usize,
+    quark_default_inference_limit: Option<u32>,
 ) where
     A: Animal<Seed = ()>,
     A::Id: AnimalIdValue,
@@ -370,8 +362,11 @@ pub(super) async fn exercise_epoch<A>(
         .serve()
         .await
         .expect("failed to start void server");
-    let quark_server = TestQuarkServer::new(model_path)
-        .void_addr(void_server.local_addr())
+    let mut quark_builder = TestQuarkServer::new(model_path).void_addr(void_server.local_addr());
+    if let Some(limit) = quark_default_inference_limit {
+        quark_builder = quark_builder.default_inference_limit(limit);
+    }
+    let quark_server = quark_builder
         .serve()
         .await
         .expect("failed to start quark server");
@@ -514,6 +509,7 @@ async fn dark_star() {
         DARK_STAR_VERTEX_COUNT,
         DARK_STAR_PORT_COUNT,
         DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH,
+        None,
     )
     .await;
 }

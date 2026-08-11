@@ -180,6 +180,7 @@ pub struct TestQuarkServer {
     model_path: PathBuf,
     listen_addr: SocketAddr,
     void_addr: Option<SocketAddr>,
+    default_inference_limit: Option<u32>,
 }
 
 impl TestQuarkServer {
@@ -188,6 +189,7 @@ impl TestQuarkServer {
             model_path: model_path.into(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             void_addr: None,
+            default_inference_limit: None,
         }
     }
 
@@ -201,10 +203,18 @@ impl TestQuarkServer {
         self
     }
 
+    pub fn default_inference_limit(mut self, limit: u32) -> Self {
+        self.default_inference_limit = Some(limit);
+        self
+    }
+
     pub async fn serve(self) -> Result<RunningTestQuarkServer, black_hole_quark::ServerError> {
         let mut builder = QuarkServerBuilder::new(self.model_path).listen(self.listen_addr);
         if let Some(void_addr) = self.void_addr {
             builder = builder.void_addr(void_addr);
+        }
+        if let Some(limit) = self.default_inference_limit {
+            builder = builder.default_inference_limit(limit);
         }
 
         let (local_addr, handle) = builder.serve().await?;

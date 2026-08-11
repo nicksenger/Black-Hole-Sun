@@ -26,6 +26,24 @@ struct Opt {
     /// Address of the void object store (e.g. [::1]:4434)
     #[clap(long = "void-addr")]
     void_addr: Option<SocketAddr>,
+    /// Default top-k sampler value for model instances
+    #[clap(long = "top-k")]
+    top_k: Option<usize>,
+    /// Default temperature for model instances (0 => greedy)
+    #[clap(long = "temperature")]
+    temperature: Option<f64>,
+    /// Optional top-p sampler value for model instances
+    #[clap(long = "top-p")]
+    top_p: Option<f64>,
+    /// Default max generation length when request limit is omitted
+    #[clap(long = "default-inference-limit")]
+    default_inference_limit: Option<u32>,
+    /// Default QuZO learning rate for model instances
+    #[clap(long = "training-lr")]
+    training_lr: Option<f64>,
+    /// Default QuZO epsilon for model instances
+    #[clap(long = "training-epsilon")]
+    training_epsilon: Option<f64>,
 }
 
 impl From<Opt> for black_hole_quark::ServerBuilder {
@@ -43,6 +61,24 @@ impl From<Opt> for black_hole_quark::ServerBuilder {
         }
         if let Some(addr) = opt.void_addr {
             builder = builder.void_addr(addr);
+        }
+        if let Some(top_k) = opt.top_k {
+            builder = builder.top_k(top_k);
+        }
+        if let Some(temperature) = opt.temperature {
+            builder = builder.temperature(temperature);
+        }
+        if let Some(top_p) = opt.top_p {
+            builder = builder.top_p(Some(top_p));
+        }
+        if let Some(limit) = opt.default_inference_limit {
+            builder = builder.default_inference_limit(limit);
+        }
+        if let Some(lr) = opt.training_lr {
+            builder = builder.training_lr(lr);
+        }
+        if let Some(epsilon) = opt.training_epsilon {
+            builder = builder.training_epsilon(epsilon);
         }
 
         builder

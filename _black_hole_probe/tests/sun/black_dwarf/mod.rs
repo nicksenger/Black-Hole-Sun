@@ -13,6 +13,8 @@ use super::dark_star::{exercise_epoch, ProgenitorBlackHole};
 use super::dark_star::{BlackDwarfBlackHole, SpaceJungle, PROGENITOR_NODE_COUNT};
 use black_hole_sun::{TestQuarkServer, TestVoidServer};
 
+const BLACK_DWARF_DEFAULT_INFERENCE_LIMIT: u32 = 1024;
+
 /// Runs the same U0 -> U1 -> U2 Sun topology as `diamond_dog`, with real Progenitor
 /// cells backed by a quark model.
 #[cfg(test)]
@@ -32,6 +34,7 @@ async fn primordia() {
         PROGENITOR_NODE_COUNT,
         PROGENITOR_NODE_COUNT,
         0,
+        None,
     )
     .await;
 }
@@ -55,6 +58,7 @@ async fn test_black_dwarf() {
         PROGENITOR_NODE_COUNT,
         PROGENITOR_NODE_COUNT,
         0,
+        Some(BLACK_DWARF_DEFAULT_INFERENCE_LIMIT),
     )
     .await;
 }
@@ -79,6 +83,7 @@ pub(crate) fn run_continuous_black_dwarf() {
             .expect("failed to start void server");
         let quark_server = TestQuarkServer::new(&model_path)
             .void_addr(void_server.local_addr())
+            .default_inference_limit(BLACK_DWARF_DEFAULT_INFERENCE_LIMIT)
             .serve()
             .await
             .expect("failed to start quark server");
@@ -139,6 +144,7 @@ pub(crate) fn run_beam_black_dwarf() {
             .expect("failed to start void server");
         let quark_server = TestQuarkServer::new(&model_path)
             .void_addr(void_server.local_addr())
+            .default_inference_limit(BLACK_DWARF_DEFAULT_INFERENCE_LIMIT)
             .serve()
             .await
             .expect("failed to start quark server");

@@ -86,14 +86,16 @@ pub enum InferenceRequest {
     Sequences {
         /// Each element is one sequence (a list of inputs concatenated in order).
         sequences: Vec<Vec<InferenceInput>>,
-        limit: u32,
+        /// Optional generation cap. If `None`, quark applies its server default.
+        limit: Option<u32>,
     },
     /// Reference to an existing InferenceOutput in void.
     /// Quark downloads it, converts the results to dark input, and proceeds.
     VoidId {
         /// Void object ID of the InferenceOutput to use as input.
         id: InferenceOutputId,
-        limit: u32,
+        /// Optional generation cap. If `None`, quark applies its server default.
+        limit: Option<u32>,
     },
 }
 

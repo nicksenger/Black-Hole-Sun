@@ -90,7 +90,7 @@ async fn inference() {
             vec![InferenceInput::Text(input_text.into())],
             vec![InferenceInput::Text(input_text.into())],
         ],
-        limit: 100,
+        limit: Some(100),
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
@@ -179,7 +179,7 @@ async fn dark_inference() {
             vec![InferenceInput::Dark(dark_tokens.clone())],
             vec![InferenceInput::Dark(dark_tokens)],
         ],
-        limit: 100,
+        limit: Some(100),
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
@@ -255,7 +255,7 @@ async fn optimization() {
             vec![InferenceInput::Text(input_text.into())],
             vec![InferenceInput::Text(input_text_2.into())],
         ],
-        limit: 100,
+        limit: Some(100),
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
@@ -430,7 +430,7 @@ async fn dark_optimization() {
             vec![InferenceInput::Dark(dark_tokens_1)],
             vec![InferenceInput::Dark(dark_tokens_2)],
         ],
-        limit: 100,
+        limit: Some(100),
     };
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();

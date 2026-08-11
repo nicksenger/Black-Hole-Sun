@@ -52,7 +52,7 @@ where
 
             let request = InferenceRequest::VoidId {
                 id: InferenceOutputId(input_output_id),
-                limit: 256,
+                limit: None,
             };
             let output_id = jungle
                 .infer(model_id, request)
