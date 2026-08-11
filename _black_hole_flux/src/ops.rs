@@ -117,6 +117,30 @@ pub trait InferenceOutputOps: Sized {
     async fn from_emission<J>(jungle: &J, emission_id: EmissionId) -> Result<Self, AtomError>
     where
         J: VoidInferOps;
+
+    /// Resolve an [`InferenceOutput`] from a propagation [`Transmission`].
+    async fn from_transmission<J>(
+        jungle: &J,
+        transmission: &Transmission,
+    ) -> Result<Self, AtomError>
+    where
+        J: VoidInferOps;
+}
+
+#[async_trait::async_trait]
+pub trait TransmissionOps: Sized {
+    /// Build a propagation [`Transmission`] by uploading an [`InferenceOutput`].
+    async fn propagation_from_inference_output<J>(
+        jungle: &J,
+        output: &InferenceOutput,
+        recv: ObjectId,
+        send: ObjectId,
+    ) -> Result<Self, AtomError>
+    where
+        J: VoidInferOps;
+
+    /// Extract an [`EmissionId`] from a propagation [`Transmission`].
+    fn propagation_emission_id(&self) -> Result<EmissionId, AtomError>;
 }
 
 #[derive(serde::Deserialize)]
@@ -143,6 +167,61 @@ impl InferenceOutputOps for InferenceOutput {
             .await
             .map_err(AtomError::Download)?;
         postcard::from_bytes(&output_bytes).map_err(AtomError::from)
+    }
+
+    async fn from_transmission<J>(
+        jungle: &J,
+        transmission: &Transmission,
+    ) -> Result<Self, AtomError>
+    where
+        J: VoidInferOps,
+    {
+        let emission_id = transmission.propagation_emission_id()?;
+        Self::from_emission(jungle, emission_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl TransmissionOps for Transmission {
+    async fn propagation_from_inference_output<J>(
+        jungle: &J,
+        output: &InferenceOutput,
+        recv: ObjectId,
+        send: ObjectId,
+    ) -> Result<Self, AtomError>
+    where
+        J: VoidInferOps,
+    {
+        let output_bytes = postcard::to_allocvec(output)?;
+        let output_id = jungle
+            .upload_to_void(output_bytes)
+            .await
+            .map_err(AtomError::Upload)?;
+
+        let emission = Emission {
+            metadata: (),
+            output_id: InferenceOutputId(output_id),
+        };
+        let emission_bytes = postcard::to_allocvec(&emission)?;
+        let emission_id = jungle
+            .upload_to_void(emission_bytes)
+            .await
+            .map_err(AtomError::Upload)?;
+
+        Ok(Transmission::Propagation {
+            emission_id: EmissionId(emission_id),
+            recv,
+            send,
+        })
+    }
+
+    fn propagation_emission_id(&self) -> Result<EmissionId, AtomError> {
+        match self {
+            Transmission::Propagation { emission_id, .. } => Ok(emission_id.clone()),
+            Transmission::Potentiation { .. } => Err(AtomError::Transmission(
+                "expected propagation transmission".to_string(),
+            )),
+        }
     }
 }
 

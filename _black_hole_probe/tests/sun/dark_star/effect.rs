@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use black_hole_sun::ops::{InferenceOutputOps, VoidInferOps};
+use black_hole_sun::ops::{InferenceOutputOps, TransmissionOps, VoidInferOps};
 use black_hole_sun::{AtomError, Emission, InferenceOutput, InferenceOutputId, SequenceOutput};
 use postcard::to_allocvec;
 use tracing::info;
@@ -31,26 +31,13 @@ where
             let output = InferenceOutput {
                 results: vec![SequenceOutput(dark_tokens)],
             };
-            let output_bytes = to_allocvec(&output)?;
-            let output_id = jungle
-                .upload_to_void(output_bytes)
-                .await
-                .map_err(AtomError::Upload)?;
-            let emission = Emission {
-                metadata: (),
-                output_id: InferenceOutputId(output_id),
-            };
-            let emission_bytes = to_allocvec(&emission)?;
-            let emission_id = jungle
-                .upload_to_void(emission_bytes)
-                .await
-                .map_err(AtomError::Upload)?;
-
-            let propagation = Transmission::Propagation {
-                emission_id: EmissionId(emission_id),
-                recv: ObjectId::nil(),
-                send: ObjectId::nil(),
-            };
+            let propagation = Transmission::propagation_from_inference_output(
+                jungle,
+                &output,
+                ObjectId::nil(),
+                ObjectId::nil(),
+            )
+            .await?;
             Ok((propagation.clone(), propagation))
         }
     }
@@ -80,26 +67,13 @@ where
                     .map(|_| SequenceOutput(dark_tokens.clone()))
                     .collect(),
             };
-            let output_bytes = to_allocvec(&output)?;
-            let output_id = jungle
-                .upload_to_void(output_bytes)
-                .await
-                .map_err(AtomError::Upload)?;
-            let emission = Emission {
-                metadata: (),
-                output_id: InferenceOutputId(output_id),
-            };
-            let emission_bytes = to_allocvec(&emission)?;
-            let emission_id = jungle
-                .upload_to_void(emission_bytes)
-                .await
-                .map_err(AtomError::Upload)?;
-
-            let propagation = Transmission::Propagation {
-                emission_id: EmissionId(emission_id),
-                recv: ObjectId::nil(),
-                send: ObjectId::nil(),
-            };
+            let propagation = Transmission::propagation_from_inference_output(
+                jungle,
+                &output,
+                ObjectId::nil(),
+                ObjectId::nil(),
+            )
+            .await?;
             Ok((propagation.clone(), propagation))
         }
     }
@@ -120,15 +94,6 @@ impl<J> Effect<J> for DarkStarLossPolicyEffect {
     }
 }
 
-fn propagation_emission_id(transmission: &Transmission) -> Result<EmissionId, AtomError> {
-    match transmission {
-        Transmission::Propagation { emission_id, .. } => Ok(emission_id.clone()),
-        Transmission::Potentiation { .. } => Err(AtomError::Inference(
-            "expected propagation transmission in black dwarf reward".to_string(),
-        )),
-    }
-}
-
 impl<J> EffectSchema<J> for BlackDwarfLossPolicyEffect {
     type Id = u64;
     type In = (Transmission, Transmission);
@@ -145,11 +110,8 @@ where
         input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let up_emission_id = propagation_emission_id(&input.0)?;
-            let down_emission_id = propagation_emission_id(&input.1)?;
-
-            let output_up = InferenceOutput::from_emission(jungle, up_emission_id).await?;
-            let output_down = InferenceOutput::from_emission(jungle, down_emission_id).await?;
+            let output_up = InferenceOutput::from_transmission(jungle, &input.0).await?;
+            let output_down = InferenceOutput::from_transmission(jungle, &input.1).await?;
             let up_batch_size = output_up.results.len();
             let down_batch_size = output_down.results.len();
 
