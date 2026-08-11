@@ -259,7 +259,8 @@ impl<Generator, Policy, S> private::DescribeSun for Sun<Generator, Policy, S> {
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
 
-impl<Port, A, Edges, Tail> private::DescribeSun for SunNode<UnarySunStep<Port, A, Edges>, Tail>
+impl<Port, A, Edges, Tail, S> private::DescribeSun
+    for SunNode<UnarySunStep<Port, A, Edges, S>, Tail>
 where
     Port: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId> + 'static,
@@ -276,8 +277,8 @@ where
     }
 }
 
-impl<PortA, PortB, A, Edges, Tail> private::DescribeSun
-    for SunNode<BinarySunStep<PortA, PortB, A, Edges>, Tail>
+impl<PortA, PortB, A, Edges, Tail, S> private::DescribeSun
+    for SunNode<BinarySunStep<PortA, PortB, A, Edges, S>, Tail>
 where
     PortA: Unsigned,
     PortB: Unsigned,
@@ -1176,6 +1177,11 @@ mod tests {
     type Tail = List<(Unary<U1, TestCell, Empty>, Empty)>;
     type TestGraph = List<(Unary<U0, TestCell, PortOne>, Tail)>;
     type TestSun = <TestGraph as BlackHole>::Sun<Primordium, Primordium>;
+    type TestSunWithState = <TestGraph as BlackHole>::SunWithState<
+        Primordium,
+        Primordium,
+        (String, String),
+    >;
     type TestBinaryGraph = List<(Binary<U0, U1, TestFusion, Empty>, Empty)>;
     type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium>;
 
@@ -1317,6 +1323,15 @@ mod tests {
     #[test]
     fn extracts_static_cells_and_edges_from_black_hole_sun() {
         let model = BeamModel::build::<TestSun>();
+
+        assert!(model.errors.is_empty(), "{:?}", model.errors);
+        assert_eq!(model.graph.nodes, vec![0, 1]);
+        assert_eq!(model.graph.edges, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn extracts_static_cells_and_edges_from_stateful_black_hole_sun() {
+        let model = BeamModel::build::<TestSunWithState>();
 
         assert!(model.errors.is_empty(), "{:?}", model.errors);
         assert_eq!(model.graph.nodes, vec![0, 1]);

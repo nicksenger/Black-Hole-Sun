@@ -825,6 +825,8 @@ impl PropagationState for super::PropB {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jungle_sdk::Id;
+    use typenum::{U0, U1, U2};
 
     struct TestSunAnimal;
 
@@ -834,6 +836,36 @@ mod tests {
         type State = super::super::SunState;
         type Seed = ();
         type Flow = ();
+    }
+
+    struct TestSunAnimalWithPayload;
+
+    impl Animal for TestSunAnimalWithPayload {
+        type Id = Id<U0>;
+        type Generation = U0;
+        type State = super::super::SunState<(String, String)>;
+        type Seed = ();
+        type Flow = ();
+    }
+
+    struct TestUnaryChildAnimal;
+
+    impl Animal for TestUnaryChildAnimal {
+        type Id = Id<U1>;
+        type Generation = U0;
+        type State = crate::CellState;
+        type Seed = ObjectId;
+        type Flow = crate::Primordium;
+    }
+
+    struct TestFusionChildAnimal;
+
+    impl Animal for TestFusionChildAnimal {
+        type Id = Id<U2>;
+        type Generation = U0;
+        type State = crate::FusionState;
+        type Seed = crate::FusionSeed;
+        type Flow = crate::Fusion<crate::Primordium>;
     }
 
     fn add_vertex(
@@ -867,6 +899,50 @@ mod tests {
         state.inner.0.push_str("left");
         state.inner.1.push_str("right");
         assert_eq!(state.inner, ("left".to_string(), "right".to_string()));
+    }
+
+    #[test]
+    fn sun_actions_bind_with_custom_state_payload() {
+        type Payload = (String, String);
+
+        let state = super::super::SunState::<Payload>::default();
+
+        type GenUuidBound = <GenUuid<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
+        <GenUuidBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
+
+        type GenFusionSeedBound = <GenFusionSeed<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
+        <GenFusionSeedBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
+
+        type FinalizeBound = <FinalizeGraph<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
+        <FinalizeBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
+
+        type BroadcastBound =
+            <BroadcastPotentiation<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
+        <BroadcastBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, (0.1, 0.2));
+
+        type SpawnUnaryBound =
+            <SpawnUnary<U1, TestUnaryChildAnimal, Empty, Payload> as Action>::Bind<
+                TestSunAnimalWithPayload,
+            >;
+        let seed = Uuid::new_v4();
+        let effect_seed = <SpawnUnaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(
+            &state, seed,
+        );
+        assert_eq!(effect_seed, seed);
+
+        type SpawnBinaryBound =
+            <SpawnBinary<U1, U2, TestFusionChildAnimal, Empty, Payload> as Action>::Bind<
+                TestSunAnimalWithPayload,
+            >;
+        let seed = crate::FusionSeed {
+            p1_recv_id: Uuid::new_v4(),
+            p2_recv_id: Uuid::new_v4(),
+        };
+        let effect_seed = <SpawnBinaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(
+            &state, seed,
+        );
+        assert_eq!(effect_seed.p1_recv_id, seed.p1_recv_id);
+        assert_eq!(effect_seed.p2_recv_id, seed.p2_recv_id);
     }
 
     #[test]
