@@ -43,9 +43,9 @@ type DarkStarL1 = Unary<U3, Progenitor, list![U7]>;
 type DarkStarR1 = Unary<U4, Progenitor, list![U8]>;
 type DarkStarL2 = Unary<U5, Progenitor, list![U9]>;
 type DarkStarR2 = Unary<U6, Progenitor, list![U10]>;
-type DarkStarF0 = Binary<U7, U8, ConcatFusionAnimal, list![U11]>;
-type DarkStarF1 = Binary<U9, U10, ConcatFusionAnimal, list![U12]>;
-type DarkStarF2 = Binary<U11, U12, ConcatFusionAnimal, list![]>;
+type DarkStarF0 = Binary<U7, U8, LeftStackTwinAnimal, list![U11]>;
+type DarkStarF1 = Binary<U9, U10, RightStackTwinAnimal, list![U12]>;
+type DarkStarF2 = Binary<U11, U12, RandStackTwinAnimal, list![]>;
 type DarkStarSun = list![
     DarkStarInput,
     DarkStarL0,
@@ -93,13 +93,49 @@ pub struct ConcatFusionOutputsEffect;
 #[derive(Flow)]
 pub(super) struct ConcatFusionTransform(Step<ConcatFusionOutputs>);
 
-pub(super) struct ConcatFusionAnimal;
+pub(super) struct LeftStackTwinOutputs;
+pub struct LeftStackTwinOutputsEffect;
 
 #[jungle::animal(id = 2, generation = 0)]
-impl Animal for ConcatFusionAnimal {
+impl Animal for LeftStackTwinAnimal {
     type State = FusionState;
     type Seed = FusionSeed;
-    type Flow = Fusion<ConcatFusionTransform>;
+    type Flow = Fusion<LeftStackTwinTransform>;
+}
+
+#[derive(Flow)]
+pub(super) struct LeftStackTwinTransform(Step<LeftStackTwinOutputs>);
+
+pub(super) struct LeftStackTwinAnimal;
+
+pub(super) struct RightStackTwinOutputs;
+pub struct RightStackTwinOutputsEffect;
+
+#[derive(Flow)]
+pub(super) struct RightStackTwinTransform(Step<RightStackTwinOutputs>);
+
+pub(super) struct RightStackTwinAnimal;
+
+#[jungle::animal(id = 5, generation = 0)]
+impl Animal for RightStackTwinAnimal {
+    type State = FusionState;
+    type Seed = FusionSeed;
+    type Flow = Fusion<RightStackTwinTransform>;
+}
+
+pub(super) struct RandStackTwinOutputs;
+pub struct RandStackTwinOutputsEffect;
+
+#[derive(Flow)]
+pub(super) struct RandStackTwinTransform(Step<RandStackTwinOutputs>);
+
+pub(super) struct RandStackTwinAnimal;
+
+#[jungle::animal(id = 6, generation = 0)]
+impl Animal for RandStackTwinAnimal {
+    type State = FusionState;
+    type Seed = FusionSeed;
+    type Flow = Fusion<RandStackTwinTransform>;
 }
 
 pub(super) struct ProgenitorBlackHole;
@@ -157,7 +193,9 @@ impl Observe for BlackDwarfBlackHole {
 pub(super) struct SpaceAnimals(
     Progenitor,
     ProgenitorBlackHole,
-    ConcatFusionAnimal,
+    LeftStackTwinAnimal,
+    RightStackTwinAnimal,
+    RandStackTwinAnimal,
     DarkStarBlackHole,
     BlackDwarfBlackHole,
 );
@@ -492,7 +530,7 @@ pub(super) async fn exercise_epoch<A>(
     quark_server.abort();
 }
 
-/// Runs an expanded diamond with Fusion nodes that concatenate outputs.
+/// Runs an expanded diamond with Fusion nodes using Twin stack transforms.
 #[cfg(test)]
 #[ignore]
 #[tokio::test]

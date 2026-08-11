@@ -1,6 +1,7 @@
 use std::future::Future;
 
 use black_hole_sun::ops::{InferenceOutputOps, TransmissionOps, VoidInferOps};
+use black_hole_sun::twin::effect::{LeftStackEffect, RandStackEffect, RightStackEffect};
 use black_hole_sun::{AtomError, Emission, InferenceOutput, InferenceOutputId, SequenceOutput};
 use postcard::to_allocvec;
 use tracing::info;
@@ -159,6 +160,75 @@ where
 
             jungle.record_fusion_concat();
             Ok(EmissionId(merged_emission_id))
+        }
+    }
+}
+
+impl<J> EffectSchema<J> for LeftStackTwinOutputsEffect {
+    type Id = u64;
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for LeftStackTwinOutputsEffect
+where
+    J: VoidInferOps + FusionConcatOps,
+{
+    fn effect(
+        jungle: &J,
+        (left_id, right_id): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let merged_id = LeftStackEffect::<()>::effect(jungle, (left_id, right_id)).await?;
+            jungle.record_fusion_concat();
+            Ok(merged_id)
+        }
+    }
+}
+
+impl<J> EffectSchema<J> for RightStackTwinOutputsEffect {
+    type Id = u64;
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for RightStackTwinOutputsEffect
+where
+    J: VoidInferOps + FusionConcatOps,
+{
+    fn effect(
+        jungle: &J,
+        (left_id, right_id): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let merged_id = RightStackEffect::<()>::effect(jungle, (left_id, right_id)).await?;
+            jungle.record_fusion_concat();
+            Ok(merged_id)
+        }
+    }
+}
+
+impl<J> EffectSchema<J> for RandStackTwinOutputsEffect {
+    type Id = u64;
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for RandStackTwinOutputsEffect
+where
+    J: VoidInferOps + FusionConcatOps,
+{
+    fn effect(
+        jungle: &J,
+        (left_id, right_id): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let merged_id = RandStackEffect::<()>::effect(jungle, (left_id, right_id)).await?;
+            jungle.record_fusion_concat();
+            Ok(merged_id)
         }
     }
 }

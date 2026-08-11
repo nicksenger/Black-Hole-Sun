@@ -87,3 +87,66 @@ impl Action for ConcatFusionOutputs {
         output.map_err(|error| Failure::Message(format!("fusion concatenation failed: {error}")))
     }
 }
+
+#[jungle::action]
+impl Action for LeftStackTwinOutputs {
+    type Effect = LeftStackTwinOutputsEffect;
+    type Input = (Uuid, (EmissionId, EmissionId));
+    type Output = EmissionId;
+
+    fn emit(
+        _state: &FusionState,
+        (_transform_id, emissions): Self::Input,
+    ) -> (EmissionId, EmissionId) {
+        emissions
+    }
+
+    fn absorb(
+        _state: &mut FusionState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("left stack twin failed: {error}")))
+    }
+}
+
+#[jungle::action]
+impl Action for RightStackTwinOutputs {
+    type Effect = RightStackTwinOutputsEffect;
+    type Input = (Uuid, (EmissionId, EmissionId));
+    type Output = EmissionId;
+
+    fn emit(
+        _state: &FusionState,
+        (_transform_id, emissions): Self::Input,
+    ) -> (EmissionId, EmissionId) {
+        emissions
+    }
+
+    fn absorb(
+        _state: &mut FusionState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("right stack twin failed: {error}")))
+    }
+}
+
+#[jungle::action]
+impl Action for RandStackTwinOutputs {
+    type Effect = RandStackTwinOutputsEffect;
+    type Input = (Uuid, (EmissionId, EmissionId));
+    type Output = EmissionId;
+
+    fn emit(
+        _state: &FusionState,
+        (_transform_id, emissions): Self::Input,
+    ) -> (EmissionId, EmissionId) {
+        emissions
+    }
+
+    fn absorb(
+        _state: &mut FusionState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("rand stack twin failed: {error}")))
+    }
+}
