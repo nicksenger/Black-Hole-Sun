@@ -19,6 +19,8 @@ const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 const DEFAULT_ENGINE_TOP_K: usize = 256;
 const DEFAULT_ENGINE_TEMPERATURE: f64 = 0.7;
+const DEFAULT_ENGINE_REPEAT_PENALTY: f32 = 1.0;
+const DEFAULT_ENGINE_PRESENCE_PENALTY: f32 = 0.0;
 const DEFAULT_INFERENCE_LIMIT: u32 = 256;
 
 // ---------------------------------------------------------------------------
@@ -260,6 +262,8 @@ struct QuarkServerDefaults {
     top_k: usize,
     temperature: f64,
     top_p: Option<f64>,
+    repeat_penalty: f32,
+    presence_penalty: f32,
     inference_limit: u32,
     training_config: TrainingConfig,
 }
@@ -270,6 +274,8 @@ impl Default for QuarkServerDefaults {
             top_k: DEFAULT_ENGINE_TOP_K,
             temperature: DEFAULT_ENGINE_TEMPERATURE,
             top_p: None,
+            repeat_penalty: DEFAULT_ENGINE_REPEAT_PENALTY,
+            presence_penalty: DEFAULT_ENGINE_PRESENCE_PENALTY,
             inference_limit: DEFAULT_INFERENCE_LIMIT,
             training_config: TrainingConfig::default(),
         }
@@ -360,6 +366,18 @@ impl ServerBuilder {
     /// Configure the optional top-p sampler parameter for model instances.
     pub fn top_p(mut self, top_p: Option<f64>) -> Self {
         self.defaults.top_p = top_p;
+        self
+    }
+
+    /// Configure the default repeat-penalty used by model instances.
+    pub fn repeat_penalty(mut self, penalty: f32) -> Self {
+        self.defaults.repeat_penalty = penalty;
+        self
+    }
+
+    /// Configure the default presence-penalty used by model instances.
+    pub fn presence_penalty(mut self, penalty: f32) -> Self {
+        self.defaults.presence_penalty = penalty;
         self
     }
 
@@ -601,6 +619,8 @@ async fn handle_start(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
         let mut builder = paramecia_engine::ModelEngineBuilder::new(model_path)
             .top_k(defaults.top_k)
             .temperature(defaults.temperature)
+            .repeat_penalty(defaults.repeat_penalty)
+            .presence_penalty(defaults.presence_penalty)
             .training_config(defaults.training_config);
         if let Some(top_p) = defaults.top_p {
             builder = builder.top_p(top_p);

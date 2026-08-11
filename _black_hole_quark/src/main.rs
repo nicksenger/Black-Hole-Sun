@@ -38,6 +38,12 @@ struct Opt {
     /// Optional top-p sampler value for model instances
     #[clap(long = "top-p")]
     top_p: Option<f64>,
+    /// Default repeat penalty for model instances
+    #[clap(long = "repeat-penalty")]
+    repeat_penalty: Option<f32>,
+    /// Default presence penalty for model instances
+    #[clap(long = "presence-penalty")]
+    presence_penalty: Option<f32>,
     /// Default max generation length when request limit is omitted
     #[clap(long = "default-inference-limit")]
     default_inference_limit: Option<u32>,
@@ -76,6 +82,12 @@ impl From<Opt> for black_hole_quark::ServerBuilder {
         }
         if let Some(top_p) = opt.top_p {
             builder = builder.top_p(Some(top_p));
+        }
+        if let Some(repeat_penalty) = opt.repeat_penalty {
+            builder = builder.repeat_penalty(repeat_penalty);
+        }
+        if let Some(presence_penalty) = opt.presence_penalty {
+            builder = builder.presence_penalty(presence_penalty);
         }
         if let Some(limit) = opt.default_inference_limit {
             builder = builder.default_inference_limit(limit);
