@@ -95,6 +95,12 @@ pub(super) struct GenerateDarkStarPrompt;
 pub struct GenerateDarkStarPromptEffect;
 
 #[derive(Flow)]
+pub(super) struct BlackDwarfGenerator(Step<GenerateBlackDwarfPrompt>);
+
+pub(super) struct GenerateBlackDwarfPrompt;
+pub struct GenerateBlackDwarfPromptEffect;
+
+#[derive(Flow)]
 pub(super) struct DarkStarPolicy(Step<DarkStarLossPolicy>);
 
 pub(super) struct DarkStarLossPolicy;
@@ -159,7 +165,7 @@ pub(super) struct BlackDwarfBlackHole;
 impl Animal for BlackDwarfBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy>;
+    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<BlackDwarfGenerator, DarkStarPolicy>;
 }
 
 impl Observe for BlackDwarfBlackHole {

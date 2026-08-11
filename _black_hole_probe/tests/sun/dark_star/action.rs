@@ -17,6 +17,22 @@ impl Action for GenerateDarkStarPrompt {
 }
 
 #[jungle::action]
+impl Action for GenerateBlackDwarfPrompt {
+    type Effect = GenerateBlackDwarfPromptEffect;
+    type Input = ();
+    type Output = (Transmission, Transmission);
+
+    fn emit(_state: &SunState, _input: Self::Input) {}
+
+    fn absorb(
+        _state: &mut SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("black dwarf generator failed: {error}")))
+    }
+}
+
+#[jungle::action]
 impl Action for DarkStarLossPolicy {
     type Effect = DarkStarLossPolicyEffect;
     type Input = (Transmission, Transmission);

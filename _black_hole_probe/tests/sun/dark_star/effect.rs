@@ -53,6 +53,56 @@ where
     }
 }
 
+impl<J> EffectSchema<J> for GenerateBlackDwarfPromptEffect {
+    type Id = u64;
+    type In = ();
+    type Out = (Transmission, Transmission);
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for GenerateBlackDwarfPromptEffect
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        _input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let tokenizer = dark_star_tokenizer().map_err(AtomError::Inference)?;
+            let dark_tokens = prompt_to_dark_tokens(SPACE_PROBE_DISTANCE_PROMPT, tokenizer)
+                .map_err(AtomError::Inference)?;
+            let output = InferenceOutput {
+                results: vec![
+                    SequenceOutput(dark_tokens.clone()),
+                    SequenceOutput(dark_tokens),
+                ],
+            };
+            let output_bytes = to_allocvec(&output)?;
+            let output_id = jungle
+                .upload_to_void(output_bytes)
+                .await
+                .map_err(AtomError::Upload)?;
+            let emission = Emission {
+                metadata: (),
+                output_id: InferenceOutputId(output_id),
+            };
+            let emission_bytes = to_allocvec(&emission)?;
+            let emission_id = jungle
+                .upload_to_void(emission_bytes)
+                .await
+                .map_err(AtomError::Upload)?;
+
+            let propagation = Transmission::Propagation {
+                emission_id: EmissionId(emission_id),
+                recv: ObjectId::nil(),
+                send: ObjectId::nil(),
+            };
+            Ok((propagation.clone(), propagation))
+        }
+    }
+}
+
 #[jungle::effect]
 impl<J> Effect<J> for DarkStarLossPolicyEffect {
     type Id = u64;
