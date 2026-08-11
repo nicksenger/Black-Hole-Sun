@@ -3,20 +3,16 @@ mod effect;
 
 #[cfg(test)]
 use futures::stream::StreamExt;
-use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::ops::{SunOps, VoidInferOps};
-use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
 use black_hole_sun::{
-    DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkClient, QuarkServerBuilder,
-    Tokenizer, Transmission, VoidClient, VoidServerBuilder,
+    DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkClient, TestQuarkServer,
+    TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState, Progenitor};
 use jungle_sdk::core::JungleWorker;
@@ -299,7 +295,10 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
-        let result = self.quark_client.optimize(model_id, loss_up, loss_down).await;
+        let result = self
+            .quark_client
+            .optimize(model_id, loss_up, loss_down)
+            .await;
         self.record_model_error("optimize", &result);
         if result.is_ok() {
             self.optimized_cells.fetch_add(1, Ordering::SeqCst);
@@ -342,38 +341,6 @@ impl SunOps for SpaceJungle {
     }
 }
 
-pub(super) async fn start_servers(
-    model_path: &str,
-) -> (
-    SocketAddr,
-    tokio::task::AbortHandle,
-    SocketAddr,
-    tokio::task::AbortHandle,
-) {
-    let object_store = Box::new(InMemoryObjectStore::new());
-    let store = Box::new(InMemoryStore::new());
-    let (void_addr, void_handle) = VoidServerBuilder::new(object_store, store)
-        .listen("127.0.0.1:0".parse().unwrap())
-        .serve()
-        .await
-        .expect("failed to start void server");
-    let void_abort = void_handle.abort_handle();
-
-    let (quark_addr, quark_handle) = QuarkServerBuilder::new(PathBuf::from(model_path))
-        .listen("127.0.0.1:0".parse().unwrap())
-        .void_addr(void_addr)
-        .serve()
-        .await
-        .expect("failed to start quark server");
-    let quark_abort = quark_handle.abort_handle();
-
-    drop(void_handle);
-    drop(quark_handle);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    (void_addr, void_abort, quark_addr, quark_abort)
-}
-
 #[cfg(test)]
 pub(super) async fn exercise_epoch<A>(
     test_name: &str,
@@ -387,7 +354,17 @@ pub(super) async fn exercise_epoch<A>(
     A::Id: AnimalIdValue,
     A::Generation: jungle_sdk::typosaurus::num::Unsigned,
 {
-    let (void_addr, void_abort, quark_addr, quark_abort) = start_servers(model_path).await;
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let quark_server = TestQuarkServer::new(model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start quark server");
+    let void_addr = void_server.local_addr();
+    let quark_addr = quark_server.local_addr();
 
     let client = FusedClient::builder()
         .build()
@@ -502,8 +479,8 @@ pub(super) async fn exercise_epoch<A>(
         let _ = worker_handle.await;
     }
     drop(client);
-    void_abort.abort();
-    quark_abort.abort();
+    void_server.abort();
+    quark_server.abort();
 }
 
 /// Runs an expanded diamond with Fusion nodes that concatenate outputs.
@@ -542,8 +519,18 @@ pub(crate) fn run_beam_dark_star() {
         .enable_all()
         .build()
         .expect("Tokio runtime should build");
-    let (client, journey_id) = runtime.block_on(async {
-        let (void_addr, _void_abort, quark_addr, _quark_abort) = start_servers(&model_path).await;
+    let (client, journey_id, _void_server, _quark_server) = runtime.block_on(async {
+        let void_server = TestVoidServer::new()
+            .serve()
+            .await
+            .expect("failed to start void server");
+        let quark_server = TestQuarkServer::new(&model_path)
+            .void_addr(void_server.local_addr())
+            .serve()
+            .await
+            .expect("failed to start quark server");
+        let void_addr = void_server.local_addr();
+        let quark_addr = quark_server.local_addr();
 
         let endpoint = make_client_endpoint().await;
         let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
@@ -572,7 +559,7 @@ pub(crate) fn run_beam_dark_star() {
             })
             .collect();
 
-        (client, journey_id)
+        (client, journey_id, void_server, quark_server)
     });
 
     black_hole_beam::BeamBuilder::new()

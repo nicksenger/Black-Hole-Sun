@@ -10,12 +10,11 @@ use jungle_sdk::JungleClient;
 #[cfg(test)]
 use uuid::Uuid;
 
-use super::diamond_dog::{
-    start_server, ExpandedBlackHoleAnimal, ProbeSpaceJungle,
-};
+use super::common::{init_tracing, make_client_endpoint};
 #[cfg(test)]
 use super::diamond_dog::{exercise_diamond_dog, FUSED_EMISSION, LEFT_EMISSION, RIGHT_EMISSION};
-use super::common::{init_tracing, make_client_endpoint};
+use super::diamond_dog::{ExpandedBlackHoleAnimal, ProbeSpaceJungle};
+use black_hole_sun::TestVoidServer;
 
 /// Exercises an extra diamond layer ending in a third binary fusion:
 ///
@@ -118,8 +117,12 @@ pub(crate) fn run_beam() {
         .enable_all()
         .build()
         .expect("Tokio runtime should build");
-    let (client, journey_id) = runtime.block_on(async {
-        let (void_addr, _void_abort) = start_server().await;
+    let (client, journey_id, _void_server) = runtime.block_on(async {
+        let void_server = TestVoidServer::new()
+            .serve()
+            .await
+            .expect("failed to start void server");
+        let void_addr = void_server.local_addr();
 
         let endpoint = make_client_endpoint().await;
         let void_client = black_hole_sun::VoidClient::new(&endpoint, void_addr, "localhost");
@@ -147,7 +150,7 @@ pub(crate) fn run_beam() {
             })
             .collect();
 
-        (client, journey_id)
+        (client, journey_id, void_server)
     });
 
     black_hole_beam::BeamBuilder::new()

@@ -5,6 +5,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+test = ["dep:rustls"]
 cuda = ["black-hole-quark/cuda"]
 metal = ["black-hole-quark/metal"]
 qwen35_0p8b = ["black-hole-quark/qwen35_0p8b"]
@@ -21,6 +22,7 @@ black-hole-quark = { path = "../_black_hole_quark" }
 hf-hub = "0.4"
 postcard = { version = "1", features = ["alloc"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 serde = "1"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 tokio = { version = "1", features = ["io-util"] }

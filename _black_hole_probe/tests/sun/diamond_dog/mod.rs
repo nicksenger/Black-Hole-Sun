@@ -3,7 +3,6 @@ mod effect;
 
 #[cfg(test)]
 use futures::stream::StreamExt;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,12 +12,10 @@ use black_hole_sun::cell::action::{
     CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiationAction,
     WaitForPropagationAction,
 };
-use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::ops::{SunOps, VoidInferOps};
-use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, Transmission, VoidClient, VoidServerBuilder,
+    EmissionId, InferenceRequest, ObjectId, TestVoidServer, Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState};
 use jungle_sdk::core::JungleWorker;
@@ -329,24 +326,6 @@ impl SunOps for ProbeSpaceJungle {
     }
 }
 
-// ─── Server helper ───────────────────────────────────────────────────────────
-
-pub(super) async fn start_server() -> (SocketAddr, tokio::task::AbortHandle) {
-    let object_store = Box::new(InMemoryObjectStore::new());
-    let store = Box::new(InMemoryStore::new());
-    let void_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let (void_local, void_handle) = VoidServerBuilder::new(object_store, store)
-        .listen(void_addr)
-        .serve()
-        .await
-        .expect("failed to start void server");
-    let void_abort = void_handle.abort_handle();
-
-    drop(void_handle);
-
-    (void_local, void_abort)
-}
-
 // ─── Harness ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -363,7 +342,11 @@ where
 {
     init_tracing();
 
-    let (void_addr, void_abort) = start_server().await;
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let void_addr = void_server.local_addr();
     let endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
     let mut jungle = ProbeSpaceJungle::new(void_client);
@@ -494,7 +477,7 @@ where
         let _ = worker_handle.await;
     }
     drop(client);
-    void_abort.abort();
+    void_server.abort();
 
     observed
 }

@@ -1,7 +1,6 @@
 mod common;
 
 use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,13 +8,11 @@ use async_trait::async_trait;
 use black_hole_sun::atom::effect::QuarkInfer;
 use black_hole_sun::cell::action::CellState;
 use black_hole_sun::cell::effect::{QuarkPerturbDown, QuarkPerturbUp, WaitForPropagation};
-use black_hole_sun::object_store::InMemoryObjectStore;
 use black_hole_sun::ops::VoidInferOps;
-use black_hole_sun::persist::InMemoryStore;
 use black_hole_sun::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    LogitEntry, ObjectId, Progenitor, QuarkClient, QuarkServerBuilder, SequenceOutput, Tokenizer,
-    Transmission, VoidClient, VoidServerBuilder,
+    LogitEntry, ObjectId, Progenitor, QuarkClient, SequenceOutput, TestQuarkServer, TestVoidServer,
+    Tokenizer, Transmission, VoidClient,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -87,7 +84,9 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
-        self.quark_client.optimize(model_id, loss_up, loss_down).await
+        self.quark_client
+            .optimize(model_id, loss_up, loss_down)
+            .await
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
@@ -145,40 +144,6 @@ fn text_to_dark_tokens(text: &str, tokenizer: &Tokenizer) -> Vec<DarkToken> {
             }],
         })
         .collect()
-}
-
-async fn start_servers(
-    model_path: &str,
-) -> (
-    SocketAddr,
-    tokio::task::AbortHandle,
-    SocketAddr,
-    tokio::task::AbortHandle,
-) {
-    let object_store = Box::new(InMemoryObjectStore::new());
-    let store = Box::new(InMemoryStore::new());
-    let void_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let (void_local, void_handle) = VoidServerBuilder::new(object_store, store)
-        .listen(void_addr)
-        .serve()
-        .await
-        .expect("failed to start void server");
-    let void_abort = void_handle.abort_handle();
-
-    let quark_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let (quark_local, quark_handle) = QuarkServerBuilder::new(PathBuf::from(model_path))
-        .listen(quark_addr)
-        .void_addr(void_local)
-        .serve()
-        .await
-        .expect("failed to start quark server");
-    let quark_abort = quark_handle.abort_handle();
-
-    drop(void_handle);
-    drop(quark_handle);
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    (void_local, void_abort, quark_local, quark_abort)
 }
 
 fn reserve_local_addr() -> SocketAddr {
@@ -239,7 +204,17 @@ async fn cell() {
     };
 
     // 1. Start void and quark servers on random ports.
-    let (void_addr, void_abort, quark_addr, quark_abort) = start_servers(&model_path).await;
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let quark_server = TestQuarkServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start quark server");
+    let void_addr = void_server.local_addr();
+    let quark_addr = quark_server.local_addr();
 
     // 2. Build the SpaceJungle with void/quark capabilities.
     let endpoint = make_client_endpoint().await;
@@ -442,6 +417,6 @@ async fn cell() {
     server_handle.abort();
     let _ = server_handle.await;
     drop(client);
-    void_abort.abort();
-    quark_abort.abort();
+    void_server.abort();
+    quark_server.abort();
 }

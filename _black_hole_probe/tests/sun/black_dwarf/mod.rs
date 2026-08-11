@@ -5,14 +5,13 @@ use jungle_sdk::core::JungleWorker;
 use jungle_sdk::FusedClient;
 use jungle_sdk::JungleClient;
 
-use super::dark_star::{
-    start_servers, BlackDwarfBlackHole, SpaceJungle, PROGENITOR_NODE_COUNT,
-};
-#[cfg(test)]
-use super::dark_star::{exercise_epoch, ProgenitorBlackHole};
-use super::common::{init_tracing, make_client_endpoint};
 #[cfg(test)]
 use super::common::require_model_path;
+use super::common::{init_tracing, make_client_endpoint};
+#[cfg(test)]
+use super::dark_star::{exercise_epoch, ProgenitorBlackHole};
+use super::dark_star::{BlackDwarfBlackHole, SpaceJungle, PROGENITOR_NODE_COUNT};
+use black_hole_sun::{TestQuarkServer, TestVoidServer};
 
 /// Runs the same U0 -> U1 -> U2 Sun topology as `diamond_dog`, with real Progenitor
 /// cells backed by a quark model.
@@ -73,8 +72,18 @@ pub(crate) fn run_beam_black_dwarf() {
         .enable_all()
         .build()
         .expect("Tokio runtime should build");
-    let (client, journey_id) = runtime.block_on(async {
-        let (void_addr, _void_abort, quark_addr, _quark_abort) = start_servers(&model_path).await;
+    let (client, journey_id, _void_server, _quark_server) = runtime.block_on(async {
+        let void_server = TestVoidServer::new()
+            .serve()
+            .await
+            .expect("failed to start void server");
+        let quark_server = TestQuarkServer::new(&model_path)
+            .void_addr(void_server.local_addr())
+            .serve()
+            .await
+            .expect("failed to start quark server");
+        let void_addr = void_server.local_addr();
+        let quark_addr = quark_server.local_addr();
 
         let endpoint = make_client_endpoint().await;
         let void_client = black_hole_sun::VoidClient::new(&endpoint, void_addr, "localhost");
@@ -103,7 +112,7 @@ pub(crate) fn run_beam_black_dwarf() {
             })
             .collect();
 
-        (client, journey_id)
+        (client, journey_id, void_server, quark_server)
     });
 
     black_hole_beam::BeamBuilder::new()

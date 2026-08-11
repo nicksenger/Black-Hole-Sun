@@ -34,4 +34,5 @@ path = "tests/sun/mod.rs"
 
 [dev-dependencies]
 black-hole-beam = { path = "../_black_hole_beam" }
+black-hole-sun = { path = "../black-hole-sun", features = ["test"] }
 tracing = "0.1"

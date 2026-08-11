@@ -1,67 +1,23 @@
 mod common;
 
-use std::path::PathBuf;
-
-use black_hole_sun::object_store::InMemoryObjectStore;
-use black_hole_sun::persist::InMemoryStore;
-use black_hole_sun::QuarkServerBuilder;
-use black_hole_sun::VoidServerBuilder;
 use black_hole_sun::{
-    DarkToken, InferenceInput, InferenceRequest, LogitEntry, QuarkClient, Tokenizer, VoidClient,
+    DarkToken, InferenceInput, InferenceRequest, LogitEntry, QuarkClient, TestQuarkServer,
+    TestVoidServer, Tokenizer, VoidClient,
 };
 use postcard::{from_bytes, to_allocvec};
 use uuid::Uuid;
 
 use common::*;
 
-/// Start void and quark servers, returning their local addresses and abort handles.
-async fn start_servers(
-    model_path: &str,
-) -> (
-    std::net::SocketAddr,
-    tokio::task::AbortHandle,
-    std::net::SocketAddr,
-    tokio::task::AbortHandle,
-) {
-    let object_store = Box::new(InMemoryObjectStore::new());
-    let store = Box::new(InMemoryStore::new());
-    let void_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let (void_local, void_handle) = VoidServerBuilder::new(object_store, store)
-        .listen(void_addr)
-        .serve()
-        .await
-        .expect("failed to start void server");
-    let void_abort = void_handle.abort_handle();
-
-    let quark_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let (quark_local, quark_handle) = QuarkServerBuilder::new(PathBuf::from(model_path))
-        .listen(quark_addr)
-        .void_addr(void_local)
-        .serve()
-        .await
-        .expect("failed to start quark server");
-    let quark_abort = quark_handle.abort_handle();
-
-    // Drop the join handles so tasks run independently (abort via handles below).
-    drop(void_handle);
-    drop(quark_handle);
-
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    (void_local, void_abort, quark_local, quark_abort)
-}
-
 #[tokio::test]
 async fn rejects_requests_for_unknown_model_instance() {
     init_tracing();
 
-    let (quark_local, quark_handle) =
-        QuarkServerBuilder::new(PathBuf::from("model-is-not-loaded-for-this-test"))
-            .listen("127.0.0.1:0".parse().unwrap())
-            .serve()
-            .await
-            .expect("failed to start quark server");
-    let quark_abort = quark_handle.abort_handle();
-    drop(quark_handle);
+    let quark_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .serve()
+        .await
+        .expect("failed to start quark server");
+    let quark_local = quark_server.local_addr();
 
     let client = make_client_endpoint().await;
     let quark_client = QuarkClient::new(&client, quark_local, "localhost");
@@ -92,7 +48,7 @@ async fn rejects_requests_for_unknown_model_instance() {
         );
     }
 
-    quark_abort.abort();
+    quark_server.abort();
 }
 
 #[tokio::test]
@@ -104,7 +60,17 @@ async fn inference() {
         None => return,
     };
 
-    let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let quark_server = TestQuarkServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start quark server");
+    let void_local = void_server.local_addr();
+    let quark_local = quark_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
@@ -155,8 +121,8 @@ async fn inference() {
     quark_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
     drop(quark_endpoint);
-    void_abort.abort();
-    quark_abort.abort();
+    void_server.abort();
+    quark_server.abort();
 }
 
 #[tokio::test]
@@ -168,7 +134,17 @@ async fn dark_inference() {
         None => return,
     };
 
-    let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let quark_server = TestQuarkServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start quark server");
+    let void_local = void_server.local_addr();
+    let quark_local = quark_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
@@ -234,8 +210,8 @@ async fn dark_inference() {
     quark_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
     drop(quark_endpoint);
-    void_abort.abort();
-    quark_abort.abort();
+    void_server.abort();
+    quark_server.abort();
 }
 
 #[tokio::test]
@@ -247,7 +223,17 @@ async fn optimization() {
         None => return,
     };
 
-    let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let quark_server = TestQuarkServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start quark server");
+    let void_local = void_server.local_addr();
+    let quark_local = quark_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
@@ -380,8 +366,8 @@ async fn optimization() {
     quark_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
     drop(quark_endpoint);
-    void_abort.abort();
-    quark_abort.abort();
+    void_server.abort();
+    quark_server.abort();
 }
 
 #[tokio::test]
@@ -393,7 +379,17 @@ async fn dark_optimization() {
         None => return,
     };
 
-    let (void_local, void_abort, quark_local, quark_abort) = start_servers(&model_path).await;
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let quark_server = TestQuarkServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start quark server");
+    let void_local = void_server.local_addr();
+    let quark_local = quark_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
@@ -545,6 +541,6 @@ async fn dark_optimization() {
     quark_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
     drop(quark_endpoint);
-    void_abort.abort();
-    quark_abort.abort();
+    void_server.abort();
+    quark_server.abort();
 }
