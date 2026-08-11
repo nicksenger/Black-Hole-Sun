@@ -38,6 +38,7 @@ const CELL_GRAPH_ID: &str = "black-hole-beam-cells";
 const DOT_VERTEX_SPACING: f64 = 128.0;
 const APPEARANCE_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
@@ -682,8 +683,12 @@ impl CellVisualState {
         })
     }
 
-    fn needs_tick(&self, now: Instant) -> bool {
-        !self.pending.is_empty() || self.is_fading(now)
+    fn needs_color_frame(&self, now: Instant) -> bool {
+        self.is_fading(now)
+    }
+
+    fn needs_transition_poll(&self, now: Instant) -> bool {
+        !self.pending.is_empty() && !self.is_fading(now)
     }
 
     fn can_transition(&self, now: Instant) -> bool {
@@ -704,6 +709,19 @@ impl CellVisualState {
         self.transition_started_at = Some(now);
         true
     }
+}
+
+fn model_display_changed(current: &BeamModel, next: &BeamModel) -> bool {
+    current.graph.nodes != next.graph.nodes
+        || current.graph.edges != next.graph.edges
+        || current.cells.len() != next.cells.len()
+        || current
+            .cells
+            .iter()
+            .zip(next.cells.iter())
+            .any(|(current, next)| {
+                current.id != next.id || current.animal_name != next.animal_name
+            })
 }
 
 struct BeamApp {
@@ -771,7 +789,7 @@ impl BeamApp {
                         match BeamModel::from_appearance(appearance) {
                             Ok(model) => {
                                 let now = Instant::now();
-                                self.color_now = now;
+                                let mut transitioned = false;
                                 let node_ids = model
                                     .cells
                                     .iter()
@@ -779,17 +797,22 @@ impl BeamApp {
                                     .collect::<HashSet<_>>();
                                 self.visuals.retain(|node_id, _| node_ids.contains(node_id));
                                 for cell in &model.cells {
-                                    self.visuals.entry(cell.id).or_default().observe(
+                                    transitioned |= self.visuals.entry(cell.id).or_default().observe(
                                         cell.state,
                                         cell.state_sequence,
                                         now,
                                     );
                                 }
+                                let display_changed = model_display_changed(&self.model, &model);
+                                let had_error = self.appearance_error.is_some();
                                 self.model = model;
                                 self.appearance_error = None;
-                                return iced_sugiyama::force_review(iced_sugiyama::Id::new(
-                                    CELL_GRAPH_ID,
-                                ));
+                                if display_changed || transitioned || had_error {
+                                    self.color_now = now;
+                                    return iced_sugiyama::force_review(iced_sugiyama::Id::new(
+                                        CELL_GRAPH_ID,
+                                    ));
+                                }
                             }
                             Err(error) => self.appearance_error = Some(error),
                         }
@@ -803,7 +826,6 @@ impl BeamApp {
                     .visuals
                     .values()
                     .any(|visual| visual.is_fading(self.color_now));
-                self.color_now = now;
                 let mut transitioned = false;
                 for visual in self.visuals.values_mut() {
                     transitioned |= visual.advance(now);
@@ -811,6 +833,7 @@ impl BeamApp {
                 let is_fading = self.visuals.values().any(|visual| visual.is_fading(now));
 
                 if was_fading || transitioned || is_fading {
+                    self.color_now = now;
                     return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
                 }
             }
@@ -825,12 +848,20 @@ impl BeamApp {
             subscriptions
                 .push(iced::time::every(APPEARANCE_INTERVAL).map(|_| Message::AppearanceTick));
         }
-        if self
+        let needs_color_frame = self
             .visuals
             .values()
-            .any(|visual| visual.needs_tick(self.color_now))
-        {
+            .any(|visual| visual.needs_color_frame(self.color_now));
+        let needs_transition_poll = self
+            .visuals
+            .values()
+            .any(|visual| visual.needs_transition_poll(self.color_now));
+        if needs_color_frame {
             subscriptions.push(iced::time::every(COLOR_FRAME_INTERVAL).map(Message::ColorTick));
+        } else if needs_transition_poll {
+            subscriptions.push(
+                iced::time::every(COLOR_TRANSITION_POLL_INTERVAL).map(Message::ColorTick),
+            );
         }
 
         Subscription::batch(subscriptions)
@@ -1257,6 +1288,18 @@ mod tests {
         }
 
         assert!(visual.pending.len() <= MAX_PENDING_PHASES);
+    }
+
+    #[test]
+    fn throttles_color_ticks_while_waiting_for_next_transition() {
+        let start = Instant::now();
+        let mut visual = CellVisualState::default();
+        assert!(visual.observe(SunNodeState::Propagation2, 2, start));
+        assert_eq!(visual.current, SunNodeState::Propagation1);
+
+        let fade_end = start + COLOR_FADE_DURATION;
+        assert!(!visual.needs_color_frame(fade_end));
+        assert!(visual.needs_transition_poll(fade_end));
     }
 
     #[test]
