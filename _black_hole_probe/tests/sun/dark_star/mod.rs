@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
 use black_hole_sun::{
-    DarkToken, EmissionId, InferenceRequest, LogitEntry, ObjectId, QuarkClient, TestQuarkServer,
-    TestVoidServer, Tokenizer, Transmission, VoidClient,
+    EmissionId, InferenceRequest, ObjectId, QuarkClient, TestQuarkServer, TestVoidServer,
+    Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState, Progenitor};
 use jungle_sdk::core::JungleWorker;
@@ -28,7 +28,6 @@ const DARK_STAR_MODEL_CELL_COUNT: usize = 7;
 const DARK_STAR_VERTEX_COUNT: usize = 10;
 const DARK_STAR_PORT_COUNT: usize = 13;
 const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
-static DARK_STAR_TOKENIZER: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
 
 pub(super) const SPACE_PROBE_DISTANCE_PROMPT: &str = "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
 
@@ -59,34 +58,6 @@ type DarkStarSun = list![
     DarkStarF1,
     DarkStarF2
 ];
-
-pub(super) fn dark_star_tokenizer() -> Result<&'static Tokenizer, String> {
-    let tokenizer_result = DARK_STAR_TOKENIZER.get_or_init(Tokenizer::try_init);
-    match tokenizer_result {
-        Ok(tokenizer) => Ok(tokenizer),
-        Err(error) => Err(error.clone()),
-    }
-}
-
-pub(super) fn prompt_to_dark_tokens(
-    prompt: &str,
-    tokenizer: &Tokenizer,
-) -> Result<Vec<DarkToken>, String> {
-    let tokens = tokenizer
-        .encode_ids(prompt)
-        .map_err(|error| format!("failed to tokenize prompt: {error}"))?;
-
-    Ok(tokens
-        .iter()
-        .map(|&token_id| DarkToken {
-            predicted: token_id,
-            dark_knowledge: vec![LogitEntry {
-                token_id,
-                log_prob: 0.0,
-            }],
-        })
-        .collect())
-}
 
 #[derive(Flow)]
 pub(super) struct DarkStarGenerator(Step<GenerateDarkStarPrompt>);
@@ -195,6 +166,7 @@ pub(super) struct SpaceAnimals(
 pub(super) struct SpaceJungle {
     void_client: VoidClient,
     quark_client: QuarkClient,
+    tokenizer: Arc<OnceLock<Result<Tokenizer, String>>>,
     client: Option<FusedClient>,
     pub(super) potentiation_writes: Arc<AtomicUsize>,
     pub(super) inference_calls: Arc<AtomicUsize>,
@@ -212,6 +184,7 @@ impl SpaceJungle {
         Self {
             void_client,
             quark_client,
+            tokenizer: Arc::new(OnceLock::new()),
             client: None,
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
             inference_calls: Arc::new(AtomicUsize::new(0)),
@@ -283,6 +256,16 @@ impl VoidInferOps for SpaceJungle {
             self.inference_calls.fetch_add(1, Ordering::SeqCst);
         }
         result
+    }
+
+    fn darken(&self, prompt: &str) -> Result<Vec<black_hole_sun::DarkToken>, String> {
+        let tokenizer_result = self.tokenizer.get_or_init(Tokenizer::try_init);
+        let tokenizer = tokenizer_result
+            .as_ref()
+            .map_err(|error| format!("failed to initialize tokenizer: {error}"))?;
+        tokenizer
+            .darken(prompt)
+            .map_err(|error| format!("failed to darken prompt: {error}"))
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {

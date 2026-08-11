@@ -1,4 +1,4 @@
-use crate::DarkToken;
+use crate::{DarkToken, LogitEntry};
 
 const DEFAULT_REPO: &str = "Qwen/Qwen3.5-0.8B";
 const DEFAULT_REVISION: &str = "main";
@@ -41,6 +41,21 @@ impl Tokenizer {
             .map_err(|error| format!("failed to tokenize input: {error}"))?;
 
         Ok(encoded.get_ids().iter().map(|&id| id as u32).collect())
+    }
+
+    /// Encode text into `DarkToken`s suitable for dark inference requests.
+    pub fn darken(&self, text: &str) -> Result<Vec<DarkToken>, String> {
+        let token_ids = self.encode_ids(text)?;
+        Ok(token_ids
+            .into_iter()
+            .map(|token_id| DarkToken {
+                predicted: token_id,
+                dark_knowledge: vec![LogitEntry {
+                    token_id,
+                    log_prob: 0.0,
+                }],
+            })
+            .collect())
     }
 
     /// Access the underlying tokenizer for advanced operations.

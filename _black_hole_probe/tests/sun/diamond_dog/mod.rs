@@ -4,7 +4,7 @@ mod effect;
 #[cfg(test)]
 use futures::stream::StreamExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -15,7 +15,7 @@ use black_hole_sun::cell::action::{
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, TestVoidServer, Transmission, VoidClient,
+    EmissionId, InferenceRequest, ObjectId, TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState};
 use jungle_sdk::core::JungleWorker;
@@ -215,6 +215,7 @@ pub(super) struct ProbeSpaceAnimals(
 #[derive(Clone)]
 pub(super) struct ProbeSpaceJungle {
     void_client: VoidClient,
+    tokenizer: Arc<OnceLock<Result<Tokenizer, String>>>,
     client: Option<FusedClient>,
     pub(super) potentiation_writes: Arc<AtomicUsize>,
     pub(super) fusion_inputs: Arc<Mutex<Vec<FusionObservation>>>,
@@ -224,6 +225,7 @@ impl ProbeSpaceJungle {
     pub(super) fn new(void_client: VoidClient) -> Self {
         Self {
             void_client,
+            tokenizer: Arc::new(OnceLock::new()),
             client: None,
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
             fusion_inputs: Arc::new(Mutex::new(Vec::new())),
@@ -269,6 +271,16 @@ impl VoidInferOps for ProbeSpaceJungle {
             self.potentiation_writes.fetch_add(1, Ordering::SeqCst);
         }
         Ok(())
+    }
+
+    fn darken(&self, prompt: &str) -> Result<Vec<black_hole_sun::DarkToken>, String> {
+        let tokenizer_result = self.tokenizer.get_or_init(Tokenizer::try_init);
+        let tokenizer = tokenizer_result
+            .as_ref()
+            .map_err(|error| format!("failed to initialize tokenizer: {error}"))?;
+        tokenizer
+            .darken(prompt)
+            .map_err(|error| format!("failed to darken prompt: {error}"))
     }
 
     async fn start_model(&self, _model_id: Uuid) -> Result<(), String> {

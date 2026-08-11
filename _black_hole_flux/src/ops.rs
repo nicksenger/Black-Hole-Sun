@@ -7,7 +7,9 @@ use serde::Serialize;
 // Re-exports — keep common spec types handy alongside the trait
 // ---------------------------------------------------------------------------
 
-pub use black_hole_spec::{Emission, EmissionId, InferenceRequest, ObjectId, Transmission};
+pub use black_hole_spec::{
+    DarkToken, Emission, EmissionId, InferenceRequest, ObjectId, Transmission,
+};
 
 /// Capability trait that guarantees a Jungle can talk to void and quark.
 ///
@@ -49,6 +51,9 @@ pub trait VoidInferOps: Send + Sync {
         model_id: uuid::Uuid,
         request: InferenceRequest,
     ) -> Result<ObjectId, String>;
+
+    /// Convert text into dark-tokenized inputs for dark inference flows.
+    fn darken(&self, prompt: &str) -> Result<Vec<DarkToken>, String>;
 
     /// Perturb the associated quark's weights in the positive direction.
     ///

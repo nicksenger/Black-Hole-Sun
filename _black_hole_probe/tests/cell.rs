@@ -1,7 +1,7 @@
 mod common;
 
 use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -10,9 +10,9 @@ use black_hole_sun::cell::action::CellState;
 use black_hole_sun::cell::effect::{QuarkPerturbDown, QuarkPerturbUp, WaitForPropagation};
 use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::{
-    DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    LogitEntry, ObjectId, Progenitor, QuarkClient, SequenceOutput, TestQuarkServer, TestVoidServer,
-    Tokenizer, Transmission, VoidClient,
+    Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest, ObjectId,
+    Progenitor, QuarkClient, SequenceOutput, TestQuarkServer, TestVoidServer, Tokenizer,
+    Transmission, VoidClient,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -34,6 +34,7 @@ pub struct SpaceAnimals(Progenitor);
 pub struct SpaceJungle {
     void_client: VoidClient,
     quark_client: QuarkClient,
+    tokenizer: Arc<OnceLock<Result<Tokenizer, String>>>,
 }
 
 impl SpaceJungle {
@@ -41,6 +42,7 @@ impl SpaceJungle {
         Self {
             void_client,
             quark_client,
+            tokenizer: Arc::new(OnceLock::new()),
         }
     }
 }
@@ -63,6 +65,16 @@ impl VoidInferOps for SpaceJungle {
     async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
         self.void_client.upload_with(id, data).await.unwrap();
         Ok(())
+    }
+
+    fn darken(&self, prompt: &str) -> Result<Vec<black_hole_sun::DarkToken>, String> {
+        let tokenizer_result = self.tokenizer.get_or_init(Tokenizer::try_init);
+        let tokenizer = tokenizer_result
+            .as_ref()
+            .map_err(|error| format!("failed to initialize tokenizer: {error}"))?;
+        tokenizer
+            .darken(prompt)
+            .map_err(|error| format!("failed to darken prompt: {error}"))
     }
 
     async fn start_model(&self, model_id: Uuid) -> Result<(), String> {
@@ -127,23 +139,6 @@ async fn wait_for_void_transmission(void_client: VoidClient, id: ObjectId) -> Tr
         }
         sleep(Duration::from_secs(1)).await;
     }
-}
-
-/// Tokenize text into DarkTokens suitable for InferenceOutput.
-fn text_to_dark_tokens(text: &str, tokenizer: &Tokenizer) -> Vec<DarkToken> {
-    let tokens = tokenizer
-        .encode_ids(text)
-        .expect("failed to tokenize input");
-    tokens
-        .iter()
-        .map(|&token_id| DarkToken {
-            predicted: token_id,
-            dark_knowledge: vec![LogitEntry {
-                token_id,
-                log_prob: 0.0,
-            }],
-        })
-        .collect()
 }
 
 fn reserve_local_addr() -> SocketAddr {
@@ -248,7 +243,9 @@ async fn cell() {
     let tokenizer = Tokenizer::init();
 
     // ── Fourth propagation (end of chain) ──
-    let dark_tokens_4 = text_to_dark_tokens(input_text, &tokenizer);
+    let dark_tokens_4 = tokenizer
+        .darken(input_text)
+        .expect("failed to darken input for inference output 4");
     let inference_output_4 = InferenceOutput {
         results: vec![SequenceOutput(dark_tokens_4)],
     };
@@ -270,7 +267,9 @@ async fn cell() {
     let propagation_void_id_4 = void_client.upload(propagation_bytes_4).await.unwrap();
 
     // ── Third propagation (points to fourth) ──
-    let dark_tokens_3 = text_to_dark_tokens(input_text, &tokenizer);
+    let dark_tokens_3 = tokenizer
+        .darken(input_text)
+        .expect("failed to darken input for inference output 3");
     let inference_output_3 = InferenceOutput {
         results: vec![SequenceOutput(dark_tokens_3)],
     };
@@ -301,7 +300,9 @@ async fn cell() {
     let potentiation_void_id = void_client.upload(potentiation_bytes).await.unwrap();
 
     // ── Second propagation (points to potentiation) ──
-    let dark_tokens_2 = text_to_dark_tokens(input_text, &tokenizer);
+    let dark_tokens_2 = tokenizer
+        .darken(input_text)
+        .expect("failed to darken input for inference output 2");
     let inference_output_2 = InferenceOutput {
         results: vec![SequenceOutput(dark_tokens_2)],
     };
@@ -323,7 +324,9 @@ async fn cell() {
     let propagation_void_id_2 = void_client.upload(propagation_bytes_2).await.unwrap();
 
     // ── First propagation (points to second) ──
-    let dark_tokens = text_to_dark_tokens(input_text, &tokenizer);
+    let dark_tokens = tokenizer
+        .darken(input_text)
+        .expect("failed to darken input for inference output 1");
     let inference_output = InferenceOutput {
         results: vec![SequenceOutput(dark_tokens)],
     };

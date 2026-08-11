@@ -25,8 +25,8 @@ where
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let tokenizer = dark_star_tokenizer().map_err(AtomError::Inference)?;
-            let dark_tokens = prompt_to_dark_tokens(SPACE_PROBE_DISTANCE_PROMPT, tokenizer)
+            let dark_tokens = jungle
+                .darken(SPACE_PROBE_DISTANCE_PROMPT)
                 .map_err(AtomError::Inference)?;
             let output = InferenceOutput {
                 results: vec![SequenceOutput(dark_tokens)],
@@ -72,8 +72,8 @@ where
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let tokenizer = dark_star_tokenizer().map_err(AtomError::Inference)?;
-            let dark_tokens = prompt_to_dark_tokens(SPACE_PROBE_DISTANCE_PROMPT, tokenizer)
+            let dark_tokens = jungle
+                .darken(SPACE_PROBE_DISTANCE_PROMPT)
                 .map_err(AtomError::Inference)?;
             let output = InferenceOutput {
                 results: (0..BLACK_DWARF_BATCH_SIZE)
@@ -173,12 +173,10 @@ where
 
             info!(
                 up_batch_size,
-                down_batch_size,
-                "black_dwarf reward received batch outputs"
+                down_batch_size, "black_dwarf reward received batch outputs"
             );
 
-            if up_batch_size != BLACK_DWARF_BATCH_SIZE
-                || down_batch_size != BLACK_DWARF_BATCH_SIZE
+            if up_batch_size != BLACK_DWARF_BATCH_SIZE || down_batch_size != BLACK_DWARF_BATCH_SIZE
             {
                 return Err(AtomError::Inference(format!(
                     "expected batch size {BLACK_DWARF_BATCH_SIZE} in black_dwarf reward fn, got up={up_batch_size}, down={down_batch_size}"
