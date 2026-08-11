@@ -14,8 +14,10 @@ use action::QuarkInferStep;
 /// Its input flow receives `(model_id, emission_id)` so inference is routed to
 /// the model instance owned by the surrounding Cell.
 #[derive(Flow)]
-pub struct Atom<In, Out, M: Serialize + DeserializeOwned + Send + 'static>(
+pub struct AtomWithState<In, Out, M: Serialize + DeserializeOwned + Send + 'static, S>(
     In,
-    Step<QuarkInferStep<M>>,
+    Step<QuarkInferStep<M, S>>,
     Out,
 );
+
+pub type Atom<In, Out, M, S = ()> = AtomWithState<In, Out, M, S>;

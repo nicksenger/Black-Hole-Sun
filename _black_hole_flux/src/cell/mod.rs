@@ -23,38 +23,56 @@ use crate::Atom;
 /// A Cell wraps a atom flow in an infinite QuZO training loop driven by
 /// [`Transmission`](black_hole_spec::Transmission) messages from void.
 #[derive(Flow)]
-pub struct Cell<N>(
-    Step<InitRecvId_>,
-    Step<GenerateModelId_>,
-    Step<StartModel_>,
-    While<Always<CellState, ()>, Cytoplasm<N>>,
+pub struct CellWithState<N, S>(
+    Step<InitRecvId_<S>>,
+    Step<GenerateModelId_<S>>,
+    Step<StartModel_<S>>,
+    While<Always<CellState<S>, ()>, CytoplasmWithState<N, S>>,
 );
+
+pub type Cell<N, S = ()> = CellWithState<N, S>;
 
 /// The body of one iteration of a [`Cell`] loop.
 #[derive(Flow)]
-pub struct Cytoplasm<N>(
-    Step<PerturbUp_>,
-    Step<WaitForPropagationAction_>,
-    Step<PrepareAtomInput_>,
+pub struct CytoplasmWithState<N, S>(
+    Step<PerturbUp_<S>>,
+    Step<WaitForPropagationAction_<S>>,
+    Step<PrepareAtomInput_<S>>,
     N,
-    Step<Transmit_>,
-    Step<PerturbDown_>,
-    Step<WaitForPropagationAction_>,
-    Step<PrepareAtomInput_>,
+    Step<Transmit_<S>>,
+    Step<PerturbDown_<S>>,
+    Step<WaitForPropagationAction_<S>>,
+    Step<PrepareAtomInput_<S>>,
     N,
-    Step<Transmit_>,
-    Step<WaitForPotentiationAction_>,
-    Step<Optimize_>,
+    Step<Transmit_<S>>,
+    Step<WaitForPotentiationAction_<S>>,
+    Step<Optimize_<S>>,
 );
 
+pub type Cytoplasm<N, S = ()> = CytoplasmWithState<N, S>;
+
 /// A eukaryotic cell: a [`Cell`] with an arbitrarily complex atom.
-pub type Eukaryote<In, Out, M> = Cell<Atom<In, Out, M>>;
+pub type Eukaryote<In, Out, M, S = ()> = Cell<Atom<In, Out, M, S>, S>;
 
 /// A prokaryotic cell: a [`Cell`] whose atom has no input/output processing.
-pub type Prokaryote<M> =
-    Cell<Atom<Step<Noop<CellState, (Uuid, EmissionId)>>, Step<Noop<CellState, EmissionId>>, M>>;
+pub type Prokaryote<M, S = ()> = Cell<
+    Atom<
+        Step<Noop<CellState<S>, (Uuid, EmissionId)>>,
+        Step<Noop<CellState<S>, EmissionId>>,
+        M,
+        S,
+    >,
+    S,
+>;
 
 /// A primordial cell: the simplest possible [`Cell`] with no input/output
 /// processing and no metadata.
-pub type Primordium =
-    Cell<Atom<Step<Noop<CellState, (Uuid, EmissionId)>>, Step<Noop<CellState, EmissionId>>, ()>>;
+pub type Primordium<S = ()> = Cell<
+    Atom<
+        Step<Noop<CellState<S>, (Uuid, EmissionId)>>,
+        Step<Noop<CellState<S>, EmissionId>>,
+        (),
+        S,
+    >,
+    S,
+>;

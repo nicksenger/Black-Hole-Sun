@@ -33,8 +33,10 @@
 //!
 //! The [`CellState`] type holds the Cell's stable `model_id`, `recv_id` (void
 //! key of the next [`Transmission`] to download), and `send_id` (void key of
-//! the last received send transmission). Animals that use [`Cell`] as their
-//! Journey should use [`CellState`] (or a superset) as their state type.
+//! the last received send transmission). `CellState` is generic and includes
+//! an `inner` payload for user-provided state (`CellState<T>` defaults to
+//! `CellState<()>`). Animals that use [`Cell`] as their Journey should use
+//! [`CellState`] (or a superset) as their state type.
 //!
 //! # Flow pattern
 //!

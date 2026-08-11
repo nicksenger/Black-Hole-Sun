@@ -15,9 +15,10 @@ use uuid::Uuid;
 ///
 /// Animals that use [`Cell`](crate::Cell) as their Journey should use this as
 /// their state type so the wait-for actions can read and write the next
-/// transmission ID.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub struct CellState {
+/// transmission ID. The generic `S` payload is available to user flows via
+/// [`CellState::inner`] and defaults to `()`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CellState<S = ()> {
     /// Stable ID of the quark model instance owned by this cell.
     pub model_id: Uuid,
     /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
@@ -26,6 +27,9 @@ pub struct CellState {
     pub send_id: black_hole_spec::ObjectId,
     /// Random seed passed to the perturb-up step each iteration.
     pub perturbation_seed: u64,
+    /// User-provided state threaded through all cell actions.
+    #[serde(default)]
+    pub inner: S,
 }
 
 pub use black_hole_spec::EmissionId;
@@ -44,20 +48,20 @@ use super::effect::{
 ///
 /// This is the very first step of a [`Cell`](crate::Cell) flow, converting the
 /// animal seed into the initial receive ID for the training loop.
-pub struct InitRecvId;
+pub struct InitRecvId<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action(carry = black_hole_spec::ObjectId)]
-impl Action for InitRecvId {
+impl<S> Action for InitRecvId<S> {
     type Effect = NoEffect;
     type Input = black_hole_spec::ObjectId;
     type Output = ();
 
-    fn emit(_state: &CellState, input: Self::Input) -> ((), black_hole_spec::ObjectId) {
+    fn emit(_state: &CellState<S>, input: Self::Input) -> ((), black_hole_spec::ObjectId) {
         ((), input)
     }
 
     fn absorb(
-        state: &mut CellState,
+        state: &mut CellState<S>,
         _output: EffectCompletion<Self::Effect>,
         carry: black_hole_spec::ObjectId,
     ) -> Result<Self::Output, Failure> {
@@ -71,18 +75,18 @@ impl Action for InitRecvId {
 // ---------------------------------------------------------------------------
 
 /// Generates the stable model instance ID owned by this cell.
-pub struct GenerateModelId;
+pub struct GenerateModelId<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for GenerateModelId {
+impl<S> Action for GenerateModelId<S> {
     type Effect = GenerateModelIdEffect;
     type Input = ();
     type Output = Uuid;
 
-    fn emit(_state: &CellState, _input: Self::Input) {}
+    fn emit(_state: &CellState<S>, _input: Self::Input) {}
 
     fn absorb(
-        _state: &mut CellState,
+        _state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|error| Failure::Message(format!("generate model ID failed: {error}")))
@@ -90,20 +94,20 @@ impl Action for GenerateModelId {
 }
 
 /// Starts the generated quark model instance and stores its ID in cell state.
-pub struct StartModel;
+pub struct StartModel<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action(carry = Uuid)]
-impl Action for StartModel {
+impl<S> Action for StartModel<S> {
     type Effect = QuarkStart;
     type Input = Uuid;
     type Output = ();
 
-    fn emit(_state: &CellState, model_id: Self::Input) -> (Uuid, Uuid) {
+    fn emit(_state: &CellState<S>, model_id: Self::Input) -> (Uuid, Uuid) {
         (model_id, model_id)
     }
 
     fn absorb(
-        state: &mut CellState,
+        state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
         model_id: Uuid,
     ) -> Result<Self::Output, Failure> {
@@ -114,20 +118,20 @@ impl Action for StartModel {
 }
 
 /// Shuts down the quark model instance owned by this cell.
-pub struct ShutdownModel;
+pub struct ShutdownModel<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for ShutdownModel {
+impl<S> Action for ShutdownModel<S> {
     type Effect = QuarkShutdown;
     type Input = ();
     type Output = ();
 
-    fn emit(state: &CellState, _input: Self::Input) -> Uuid {
+    fn emit(state: &CellState<S>, _input: Self::Input) -> Uuid {
         state.model_id
     }
 
     fn absorb(
-        _state: &mut CellState,
+        _state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|error| Failure::Message(format!("shutdown model failed: {error}")))
@@ -135,20 +139,20 @@ impl Action for ShutdownModel {
 }
 
 /// Adds this cell's model ID to the input passed into its Atom.
-pub struct PrepareAtomInput;
+pub struct PrepareAtomInput<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action(carry = EmissionId)]
-impl Action for PrepareAtomInput {
+impl<S> Action for PrepareAtomInput<S> {
     type Effect = NoEffect;
     type Input = EmissionId;
     type Output = (Uuid, EmissionId);
 
-    fn emit(_state: &CellState, emission_id: Self::Input) -> ((), EmissionId) {
+    fn emit(_state: &CellState<S>, emission_id: Self::Input) -> ((), EmissionId) {
         ((), emission_id)
     }
 
     fn absorb(
-        state: &mut CellState,
+        state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
         emission_id: EmissionId,
     ) -> Result<Self::Output, Failure> {
@@ -186,10 +190,10 @@ pub struct Propagation {
 // ---------------------------------------------------------------------------
 
 /// Action that performs quark inference for one model instance.
-pub struct QuarkInferStep<M>(PhantomData<fn() -> M>);
+pub struct QuarkInferStep<M, S = ()>(PhantomData<fn() -> (M, S)>);
 
 #[jungle::action]
-impl<M> Action for QuarkInferStep<M>
+impl<M, S> Action for QuarkInferStep<M, S>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
 {
@@ -197,12 +201,12 @@ where
     type Input = (Uuid, EmissionId);
     type Output = EmissionId;
 
-    fn emit(_state: &CellState, input: Self::Input) -> Self::Input {
+    fn emit(_state: &CellState<S>, input: Self::Input) -> Self::Input {
         input
     }
 
     fn absorb(
-        _state: &mut CellState,
+        _state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("quark inference failed: {e}")))
@@ -213,20 +217,20 @@ where
 // PerturbUp — perturb quark weights upward (no carry)
 // ---------------------------------------------------------------------------
 
-pub struct PerturbUp;
+pub struct PerturbUp<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for PerturbUp {
+impl<S> Action for PerturbUp<S> {
     type Effect = QuarkPerturbUp;
     type Input = ();
     type Output = ();
 
-    fn emit(state: &CellState, _input: Self::Input) -> (Uuid, u64) {
+    fn emit(state: &CellState<S>, _input: Self::Input) -> (Uuid, u64) {
         (state.model_id, state.perturbation_seed)
     }
 
     fn absorb(
-        _: &mut CellState,
+        _: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("perturb up failed: {e}")))
@@ -237,20 +241,20 @@ impl Action for PerturbUp {
 // PerturbDown — perturb quark weights downward (no carry)
 // ---------------------------------------------------------------------------
 
-pub struct PerturbDown;
+pub struct PerturbDown<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for PerturbDown {
+impl<S> Action for PerturbDown<S> {
     type Effect = QuarkPerturbDown;
     type Input = ();
     type Output = ();
 
-    fn emit(state: &CellState, _input: Self::Input) -> Uuid {
+    fn emit(state: &CellState<S>, _input: Self::Input) -> Uuid {
         state.model_id
     }
 
     fn absorb(
-        _state: &mut CellState,
+        _state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("perturb down failed: {e}")))
@@ -261,20 +265,20 @@ impl Action for PerturbDown {
 // Optimize — apply QuZO optimization (no carry)
 // ---------------------------------------------------------------------------
 
-pub struct Optimize;
+pub struct Optimize<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for Optimize {
+impl<S> Action for Optimize<S> {
     type Effect = QuarkOptimize;
     type Input = Potentiation;
     type Output = ();
 
-    fn emit(state: &CellState, input: Self::Input) -> (Uuid, Potentiation) {
+    fn emit(state: &CellState<S>, input: Self::Input) -> (Uuid, Potentiation) {
         (state.model_id, input)
     }
 
     fn absorb(
-        _state: &mut CellState,
+        _state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("optimize failed: {e}")))
@@ -290,21 +294,21 @@ impl Action for Optimize {
 ///
 /// Reads `recv_id` from state, downloads the transmission, stores the new
 /// `recv_id` and `send_id` in state, and emits the [`Propagation`] payload.
-pub struct WaitForPropagationAction;
+pub struct WaitForPropagationAction<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for WaitForPropagationAction {
+impl<S> Action for WaitForPropagationAction<S> {
     type Effect = WaitForPropagation;
     type Input = ();
     type Output = EmissionId;
     type Carry = ();
 
-    fn emit(state: &CellState, _input: Self::Input) -> black_hole_spec::ObjectId {
+    fn emit(state: &CellState<S>, _input: Self::Input) -> black_hole_spec::ObjectId {
         state.recv_id
     }
 
     fn absorb(
-        state: &mut CellState,
+        state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         let propagation =
@@ -324,21 +328,21 @@ impl Action for WaitForPropagationAction {
 ///
 /// Reads `recv_id` from state, downloads the transmission, stores the new
 /// `recv_id` in state, and emits the [`Potentiation`] payload.
-pub struct WaitForPotentiationAction;
+pub struct WaitForPotentiationAction<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for WaitForPotentiationAction {
+impl<S> Action for WaitForPotentiationAction<S> {
     type Effect = WaitForPotentiation;
     type Input = ();
     type Output = Potentiation;
     type Carry = ();
 
-    fn emit(state: &CellState, _input: Self::Input) -> black_hole_spec::ObjectId {
+    fn emit(state: &CellState<S>, _input: Self::Input) -> black_hole_spec::ObjectId {
         state.recv_id
     }
 
     fn absorb(
-        state: &mut CellState,
+        state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         let (potentiation, recv_id) =
@@ -356,20 +360,20 @@ impl Action for WaitForPotentiationAction {
 ///
 /// Replaces the previous `DiscardEmission` action by actually transmitting
 /// the emission output rather than discarding it.
-pub struct Transmit;
+pub struct Transmit<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl Action for Transmit {
+impl<S> Action for Transmit<S> {
     type Effect = TransmitEffect;
     type Input = EmissionId;
     type Output = ();
 
-    fn emit(state: &CellState, input: Self::Input) -> (EmissionId, black_hole_spec::ObjectId) {
+    fn emit(state: &CellState<S>, input: Self::Input) -> (EmissionId, black_hole_spec::ObjectId) {
         (input, state.send_id)
     }
 
     fn absorb(
-        _state: &mut CellState,
+        _state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("transmit failed: {e}")))
