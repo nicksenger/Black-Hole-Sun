@@ -106,26 +106,16 @@ pub enum InferenceRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SequenceOutput(pub Vec<DarkToken>);
 impl SequenceOutput {
-    /// Removes trailing pad tokens (248044, 248046) from the sequence,
-    /// preserving the first occuring <|im_end|> (248046) if it appears.
+    /// Removes trailing pad tokens (248044, 248046) from the sequence.
     pub fn trim_padding(&mut self) {
-        if !self.0.is_empty() {
-            let mut im_end = None;
-            let mut idx = self.0.len();
-            while idx > 0
-                && (self.0[idx - 1].predicted == 248044 || self.0[idx - 1].predicted == 248046)
-            {
-                if self.0[idx - 1].predicted == 248046 {
-                    im_end = Some(idx - 1);
-                }
-                idx -= 1;
-            }
-
-            let im_end = im_end.map(|i| self.0[i].clone());
-            let _ = self.0.split_off(idx);
-            if let Some(im_end) = im_end {
-                self.0.push(im_end);
-            }
+        if let Some(last_non_padding) = self
+            .0
+            .iter()
+            .rposition(|dt| dt.predicted != 248044 && dt.predicted != 248046)
+        {
+            self.0.truncate(last_non_padding + 1);
+        } else {
+            self.0.clear();
         }
     }
 
@@ -223,7 +213,7 @@ mod test {
         seq.trim_padding();
         assert_eq!(
             seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
-            vec![1, 2, 3, 4, 5, 248046]
+            vec![1, 2, 3, 4, 5]
         );
 
         let mut seq = SequenceOutput(
@@ -235,7 +225,7 @@ mod test {
         seq.trim_padding();
         assert_eq!(
             seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
-            vec![1, 2, 3, 4, 5, 248046]
+            vec![1, 2, 3, 4, 5]
         );
 
         let mut seq = SequenceOutput(
@@ -275,7 +265,7 @@ mod test {
         seq.trim_padding();
         assert_eq!(
             seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
-            vec![248046]
+            vec![]
         );
 
         let mut seq = SequenceOutput(vec![
@@ -314,7 +304,7 @@ mod test {
                 .into_iter()
                 .map(|dt| dt.dark_knowledge[0].log_prob)
                 .collect::<Vec<_>>(),
-            vec![0.4]
+            vec![]
         );
     }
 
@@ -353,7 +343,7 @@ mod test {
                 .iter()
                 .map(|dt| dt.predicted)
                 .collect::<Vec<_>>(),
-            vec![248044, 1, 2, 3, 248046]
+            vec![248044, 248044, 1, 2, 3]
         );
         assert_eq!(
             out.results[2]
