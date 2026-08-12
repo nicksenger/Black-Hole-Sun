@@ -105,12 +105,67 @@ pub enum InferenceRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SequenceOutput(pub Vec<DarkToken>);
+impl SequenceOutput {
+    /// Removes trailing pad tokens (248044, 248046) from the sequence,
+    /// preserving the first occuring <|im_end|> (248046) if it appears.
+    pub fn trim_padding(&mut self) {
+        if !self.0.is_empty() {
+            let mut im_end = None;
+            let mut idx = self.0.len();
+            while idx > 0
+                && (self.0[idx - 1].predicted == 248044 || self.0[idx - 1].predicted == 248046)
+            {
+                if self.0[idx - 1].predicted == 248046 {
+                    im_end = Some(idx - 1);
+                }
+                idx -= 1;
+            }
+
+            let im_end = im_end.map(|i| self.0[i].clone());
+            let _ = self.0.split_off(idx);
+            if let Some(im_end) = im_end {
+                self.0.push(im_end);
+            }
+        }
+    }
+
+    /// Pads the sequence from the start to the specified length
+    pub fn pad_start_to(&mut self, len: usize) {
+        let mut pad = vec![
+            DarkToken {
+                predicted: 248044,
+                dark_knowledge: vec![LogitEntry {
+                    token_id: 248044,
+                    log_prob: 0.0
+                }]
+            };
+            len.saturating_sub(self.0.len())
+        ];
+        pad.append(&mut self.0);
+        self.0 = pad;
+    }
+}
 
 /// Serializable inference output stored in void objects.
 /// Contains per-sequence results from a batched forward pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceOutput {
     pub results: Vec<SequenceOutput>,
+}
+
+impl InferenceOutput {
+    /// Trims padding from sequences, then re-pads from the start to
+    /// match the length of the longest sequence.
+    pub fn pad_for_input(&mut self) {
+        let mut max = 0;
+        for seq in &mut self.results {
+            seq.trim_padding();
+            max = seq.0.len().max(max);
+        }
+        for seq in &mut self.results {
+            seq.pad_start_to(max);
+        }
+    }
 }
 
 /// Void ID for an InferenceOutput
@@ -141,4 +196,172 @@ pub enum Transmission {
         loss_down: f32,
         recv: ObjectId,
     },
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn tok(token_id: u32) -> DarkToken {
+        DarkToken {
+            predicted: token_id,
+            dark_knowledge: vec![LogitEntry {
+                token_id,
+                log_prob: 0.0,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_trim() {
+        let mut seq = SequenceOutput(
+            [1, 2, 3, 4, 5, 248046, 248044, 248044, 248044]
+                .into_iter()
+                .map(tok)
+                .collect(),
+        );
+        seq.trim_padding();
+        assert_eq!(
+            seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5, 248046]
+        );
+
+        let mut seq = SequenceOutput(
+            [1, 2, 3, 4, 5, 248046, 248044, 248046, 248044]
+                .into_iter()
+                .map(tok)
+                .collect(),
+        );
+        seq.trim_padding();
+        assert_eq!(
+            seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5, 248046]
+        );
+
+        let mut seq = SequenceOutput(
+            [1, 2, 3, 4, 5, 248044, 248044, 248044, 248044]
+                .into_iter()
+                .map(tok)
+                .collect(),
+        );
+        seq.trim_padding();
+        assert_eq!(
+            seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+
+        let mut seq = SequenceOutput([1, 2, 3, 4, 5].into_iter().map(tok).collect());
+        seq.trim_padding();
+        assert_eq!(
+            seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+
+        let mut seq = SequenceOutput([].into_iter().map(tok).collect());
+        seq.trim_padding();
+        assert_eq!(
+            seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
+            vec![]
+        );
+
+        let mut seq = SequenceOutput([248044, 248044, 248044].into_iter().map(tok).collect());
+        seq.trim_padding();
+        assert_eq!(
+            seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
+            vec![]
+        );
+
+        let mut seq = SequenceOutput([248044, 248046].into_iter().map(tok).collect());
+        seq.trim_padding();
+        assert_eq!(
+            seq.0.into_iter().map(|dt| dt.predicted).collect::<Vec<_>>(),
+            vec![248046]
+        );
+
+        let mut seq = SequenceOutput(vec![
+            DarkToken {
+                predicted: 248044,
+                dark_knowledge: vec![LogitEntry {
+                    token_id: 248044,
+                    log_prob: 0.0,
+                }],
+            },
+            DarkToken {
+                predicted: 248046,
+                dark_knowledge: vec![LogitEntry {
+                    token_id: 248046,
+                    log_prob: 0.4,
+                }],
+            },
+            DarkToken {
+                predicted: 248044,
+                dark_knowledge: vec![LogitEntry {
+                    token_id: 248044,
+                    log_prob: 0.0,
+                }],
+            },
+            DarkToken {
+                predicted: 248046,
+                dark_knowledge: vec![LogitEntry {
+                    token_id: 248046,
+                    log_prob: 0.8,
+                }],
+            },
+        ]);
+        seq.trim_padding();
+        assert_eq!(
+            seq.0
+                .into_iter()
+                .map(|dt| dt.dark_knowledge[0].log_prob)
+                .collect::<Vec<_>>(),
+            vec![0.4]
+        );
+    }
+
+    #[test]
+    fn test_pad() {
+        let mut out = InferenceOutput {
+            results: vec![
+                SequenceOutput(
+                    [1, 2, 3, 4, 5, 248044, 248044, 248044, 248044]
+                        .into_iter()
+                        .map(tok)
+                        .collect(),
+                ),
+                SequenceOutput(
+                    [1, 2, 3, 248046, 248044, 248044, 248044]
+                        .into_iter()
+                        .map(tok)
+                        .collect(),
+                ),
+                SequenceOutput([1, 248044, 248044].into_iter().map(tok).collect()),
+            ],
+        };
+        out.pad_for_input();
+
+        assert_eq!(
+            out.results[0]
+                .0
+                .iter()
+                .map(|dt| dt.predicted)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+        assert_eq!(
+            out.results[1]
+                .0
+                .iter()
+                .map(|dt| dt.predicted)
+                .collect::<Vec<_>>(),
+            vec![248044, 1, 2, 3, 248046]
+        );
+        assert_eq!(
+            out.results[2]
+                .0
+                .iter()
+                .map(|dt| dt.predicted)
+                .collect::<Vec<_>>(),
+            vec![248044, 248044, 248044, 248044, 1]
+        );
+    }
 }
