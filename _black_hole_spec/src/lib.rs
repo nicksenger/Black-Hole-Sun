@@ -3,6 +3,10 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub const IM_START: u32 = 248045;
+pub const IM_END: u32 = 248046;
+pub const PAD: u32 = 248044;
+
 /// Opaque identifier for objects stored in void.
 pub type ObjectId = Uuid;
 
@@ -62,6 +66,18 @@ pub struct DarkToken {
     pub predicted: u32,
     /// Top-K logit entries representing the teacher model's distribution at this position.
     pub dark_knowledge: Vec<LogitEntry>,
+}
+
+impl DarkToken {
+    pub fn one_hot(token_id: u32) -> Self {
+        Self {
+            predicted: token_id,
+            dark_knowledge: vec![LogitEntry {
+                token_id,
+                log_prob: 0.0,
+            }],
+        }
+    }
 }
 
 /// Serializable inference input, mirroring paramecia-engine's ModelInput.
@@ -144,7 +160,7 @@ pub struct InferenceOutput {
 }
 
 impl InferenceOutput {
-    fn pad_start(&mut self) {
+    pub fn pad_start(&mut self) {
         let max = self
             .results
             .iter()
@@ -156,7 +172,7 @@ impl InferenceOutput {
         }
     }
 
-    fn trim_padding(&mut self) {
+    pub fn trim_padding(&mut self) {
         for seq in &mut self.results {
             seq.trim_padding();
         }
