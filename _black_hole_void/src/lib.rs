@@ -18,7 +18,7 @@ pub mod object_store;
 pub mod persist;
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4434";
-const S3_MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+const S3_MAX_FRAME_SIZE: usize = 1024 * 1024 * 1024; // 1 GB
 const MAX_DOWNLOAD_WAIT_TIMEOUT_MS: u64 = 30_000;
 
 /// Wire request sent by the client.
