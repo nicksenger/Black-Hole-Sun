@@ -156,29 +156,75 @@ pub trait VoidInferOps: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait InferenceOutputOps: Sized {
-    /// Download an [`Emission`] and then its referenced [`InferenceOutput`].
+    /// Download an [`Emission`] and then its referenced [`InferenceOutput`],
+    /// preserving the emission metadata.
+    async fn from_emission_with_metadata<J, M>(
+        jungle: &J,
+        emission_id: EmissionId,
+    ) -> Result<(Self, M), AtomError>
+    where
+        J: VoidInferOps,
+        M: Serialize + DeserializeOwned + Send;
+
+    /// Download an [`Emission`] and then its referenced [`InferenceOutput`],
+    /// assuming unit metadata.
     async fn from_emission<J>(jungle: &J, emission_id: EmissionId) -> Result<Self, AtomError>
     where
-        J: VoidInferOps;
+        J: VoidInferOps,
+    {
+        let (output, _metadata) =
+            Self::from_emission_with_metadata::<J, ()>(jungle, emission_id).await?;
+        Ok(output)
+    }
 
-    /// Resolve an [`InferenceOutput`] from a propagation [`Transmission`].
+    /// Resolve an [`InferenceOutput`] and metadata from a propagation [`Transmission`].
+    async fn from_transmission_with_metadata<J, M>(
+        jungle: &J,
+        transmission: &Transmission,
+    ) -> Result<(Self, M), AtomError>
+    where
+        J: VoidInferOps,
+        M: Serialize + DeserializeOwned + Send;
+
+    /// Resolve an [`InferenceOutput`] from a propagation [`Transmission`],
+    /// assuming unit metadata.
     async fn from_transmission<J>(
         jungle: &J,
         transmission: &Transmission,
     ) -> Result<Self, AtomError>
     where
-        J: VoidInferOps;
+        J: VoidInferOps,
+    {
+        let (output, _metadata) =
+            Self::from_transmission_with_metadata::<J, ()>(jungle, transmission).await?;
+        Ok(output)
+    }
 }
 
 #[async_trait::async_trait]
 pub trait TransmissionOps: Sized {
-    /// Build a propagation [`Transmission`] by uploading an [`InferenceOutput`].
+    /// Build a propagation [`Transmission`] by uploading an [`InferenceOutput`]
+    /// and its metadata payload.
+    async fn propagation_from_inference_output_with_metadata<J, M>(
+        jungle: &J,
+        output: &InferenceOutput,
+        metadata: M,
+    ) -> Result<Self, AtomError>
+    where
+        J: VoidInferOps,
+        M: Serialize + Send;
+
+    /// Build a propagation [`Transmission`] by uploading an [`InferenceOutput`]
+    /// with unit metadata.
     async fn propagation_from_inference_output<J>(
         jungle: &J,
         output: &InferenceOutput,
     ) -> Result<Self, AtomError>
     where
-        J: VoidInferOps;
+        J: VoidInferOps,
+    {
+        Self::propagation_from_inference_output_with_metadata(jungle, output, ()).await
+    }
 
     /// Extract an [`EmissionId`] from a propagation [`Transmission`].
     fn propagation_emission_id(&self) -> Result<EmissionId, AtomError>;
@@ -186,11 +232,15 @@ pub trait TransmissionOps: Sized {
 
 #[async_trait::async_trait]
 impl InferenceOutputOps for InferenceOutput {
-    async fn from_emission<J>(jungle: &J, emission_id: EmissionId) -> Result<Self, AtomError>
+    async fn from_emission_with_metadata<J, M>(
+        jungle: &J,
+        emission_id: EmissionId,
+    ) -> Result<(Self, M), AtomError>
     where
         J: VoidInferOps,
+        M: Serialize + DeserializeOwned + Send,
     {
-        let emission: Emission<()> = jungle
+        let emission: Emission<M> = jungle
             .download_emission(emission_id.0)
             .await
             .map_err(AtomError::Download)?;
@@ -199,29 +249,33 @@ impl InferenceOutputOps for InferenceOutput {
             .download_raw(emission.output_id.0)
             .await
             .map_err(AtomError::Download)?;
-        postcard::from_bytes(&output_bytes).map_err(AtomError::from)
+        let output = postcard::from_bytes(&output_bytes).map_err(AtomError::from)?;
+        Ok((output, emission.metadata))
     }
 
-    async fn from_transmission<J>(
+    async fn from_transmission_with_metadata<J, M>(
         jungle: &J,
         transmission: &Transmission,
-    ) -> Result<Self, AtomError>
+    ) -> Result<(Self, M), AtomError>
     where
         J: VoidInferOps,
+        M: Serialize + DeserializeOwned + Send,
     {
         let emission_id = transmission.propagation_emission_id()?;
-        Self::from_emission(jungle, emission_id).await
+        Self::from_emission_with_metadata::<J, M>(jungle, emission_id).await
     }
 }
 
 #[async_trait::async_trait]
 impl TransmissionOps for Transmission {
-    async fn propagation_from_inference_output<J>(
+    async fn propagation_from_inference_output_with_metadata<J, M>(
         jungle: &J,
         output: &InferenceOutput,
+        metadata: M,
     ) -> Result<Self, AtomError>
     where
         J: VoidInferOps,
+        M: Serialize + Send,
     {
         let output_bytes = postcard::to_allocvec(output)?;
         let output_id = jungle
@@ -230,7 +284,7 @@ impl TransmissionOps for Transmission {
             .map_err(AtomError::Upload)?;
 
         let emission = Emission {
-            metadata: (),
+            metadata,
             output_id: InferenceOutputId(output_id),
         };
         let emission_bytes = postcard::to_allocvec(&emission)?;
@@ -268,4 +322,187 @@ pub trait SunOps: Send + Sync {
         A::Id: jungle_sdk::AnimalIdValue,
         A::Generation: typosaurus::num::Unsigned,
         A::Seed: Sync + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use black_hole_spec::SequenceOutput;
+    use futures::executor::block_on;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct TestJungle {
+        objects: Arc<Mutex<HashMap<ObjectId, Vec<u8>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl VoidInferOps for TestJungle {
+        async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
+            self.objects
+                .lock()
+                .map_err(|error| format!("mutex lock failed: {error}"))?
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| format!("object not found: {id}"))
+        }
+
+        async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
+            let id = ObjectId::new_v4();
+            self.objects
+                .lock()
+                .map_err(|error| format!("mutex lock failed: {error}"))?
+                .insert(id, data);
+            Ok(id)
+        }
+
+        async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
+            self.objects
+                .lock()
+                .map_err(|error| format!("mutex lock failed: {error}"))?
+                .insert(id, data);
+            Ok(())
+        }
+
+        async fn start_model(&self, _model_id: uuid::Uuid) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn infer(
+            &self,
+            _model_id: uuid::Uuid,
+            _request: InferenceRequest,
+        ) -> Result<ObjectId, String> {
+            Err("unsupported in tests".to_string())
+        }
+
+        fn darken(&self, _prompt: &str) -> Result<Vec<DarkToken>, String> {
+            Err("unsupported in tests".to_string())
+        }
+
+        fn decode(&self, tokens: &[DarkToken]) -> String {
+            tokens
+                .iter()
+                .map(|token| token.predicted.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+
+        async fn perturb_up(&self, _model_id: uuid::Uuid, _seed: u64) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn perturb_down(&self, _model_id: uuid::Uuid) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn optimize(
+            &self,
+            _model_id: uuid::Uuid,
+            _loss_up: f32,
+            _loss_down: f32,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn shutdown_model(&self, _model_id: uuid::Uuid) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn transmit(
+            &self,
+            _emission_id: EmissionId,
+            _send_id: ObjectId,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn sample_output(token_id: u32) -> InferenceOutput {
+        InferenceOutput {
+            results: vec![SequenceOutput(vec![DarkToken::one_hot(token_id)])],
+        }
+    }
+
+    #[test]
+    fn from_emission_with_metadata_preserves_metadata() {
+        block_on(async {
+            let jungle = TestJungle::default();
+            let output = sample_output(7);
+            let output_bytes = postcard::to_allocvec(&output).unwrap();
+            let output_id = jungle.upload_to_void(output_bytes).await.unwrap();
+            let emission = Emission {
+                metadata: "cell-a".to_string(),
+                output_id: InferenceOutputId(output_id),
+            };
+            let emission_bytes = postcard::to_allocvec(&emission).unwrap();
+            let emission_id = EmissionId(jungle.upload_to_void(emission_bytes).await.unwrap());
+
+            let (resolved_output, metadata) =
+                InferenceOutput::from_emission_with_metadata::<_, String>(&jungle, emission_id)
+                    .await
+                    .unwrap();
+
+            assert_eq!(metadata, "cell-a");
+            assert_eq!(resolved_output.results.len(), 1);
+            assert_eq!(resolved_output.results[0].0[0].predicted, 7);
+        });
+    }
+
+    #[test]
+    fn from_transmission_with_metadata_preserves_metadata() {
+        block_on(async {
+            let jungle = TestJungle::default();
+            let output = sample_output(11);
+            let output_bytes = postcard::to_allocvec(&output).unwrap();
+            let output_id = jungle.upload_to_void(output_bytes).await.unwrap();
+            let emission = Emission {
+                metadata: vec!["left".to_string(), "right".to_string()],
+                output_id: InferenceOutputId(output_id),
+            };
+            let emission_bytes = postcard::to_allocvec(&emission).unwrap();
+            let emission_id = EmissionId(jungle.upload_to_void(emission_bytes).await.unwrap());
+            let transmission = Transmission::Propagation {
+                emission_id,
+                recv: ObjectId::nil(),
+                send: ObjectId::nil(),
+            };
+
+            let (resolved_output, metadata) = InferenceOutput::from_transmission_with_metadata::<
+                _,
+                Vec<String>,
+            >(&jungle, &transmission)
+            .await
+            .unwrap();
+
+            assert_eq!(metadata, vec!["left".to_string(), "right".to_string()]);
+            assert_eq!(resolved_output.results.len(), 1);
+            assert_eq!(resolved_output.results[0].0[0].predicted, 11);
+        });
+    }
+
+    #[test]
+    fn propagation_from_inference_output_with_metadata_uploads_metadata() {
+        block_on(async {
+            let jungle = TestJungle::default();
+            let output = sample_output(21);
+
+            let transmission = Transmission::propagation_from_inference_output_with_metadata(
+                &jungle,
+                &output,
+                ("black-hole".to_string(), 2_u32),
+            )
+            .await
+            .unwrap();
+
+            let emission_id = transmission.propagation_emission_id().unwrap();
+            let uploaded: Emission<(String, u32)> =
+                jungle.download_emission(emission_id.0).await.unwrap();
+
+            assert_eq!(uploaded.metadata, ("black-hole".to_string(), 2_u32));
+        });
+    }
 }
