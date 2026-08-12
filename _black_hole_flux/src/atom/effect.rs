@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 pub use black_hole_spec::{Emission, EmissionId, InferenceOutputId, InferenceRequest};
 
+use crate::model_config::DefaultConfig;
 use crate::ops::VoidInferOps;
 use crate::AtomError;
 
@@ -19,9 +20,9 @@ use crate::AtomError;
 // ---------------------------------------------------------------------------
 
 /// Effect that performs one quark-inference step.
-pub struct QuarkInfer<M>(PhantomData<fn() -> M>);
+pub struct QuarkInfer<M, H = DefaultConfig>(PhantomData<fn() -> (M, H)>);
 
-impl<M, J> EffectSchema<J> for QuarkInfer<M>
+impl<M, H, J> EffectSchema<J> for QuarkInfer<M, H>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
 {
@@ -31,7 +32,7 @@ where
     type Err = AtomError;
 }
 
-impl<M, J> Effect<J> for QuarkInfer<M>
+impl<M, H, J> Effect<J> for QuarkInfer<M, H>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
     J: VoidInferOps,

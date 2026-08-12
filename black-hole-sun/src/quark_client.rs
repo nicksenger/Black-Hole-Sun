@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use black_hole_spec::{ObjectId, QuarkIn, QuarkOut};
+use black_hole_spec::{ObjectId, QuarkIn, QuarkModelConfig, QuarkOut};
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
@@ -26,8 +26,17 @@ impl QuarkClient {
         }
     }
 
-    pub async fn start(&self, model_id: ObjectId) -> Result<(), String> {
-        let resp = self.request(&QuarkIn::Start { model_id }).await?;
+    pub async fn start(
+        &self,
+        model_id: ObjectId,
+        model_config: Option<QuarkModelConfig>,
+    ) -> Result<(), String> {
+        let resp = self
+            .request(&QuarkIn::Start {
+                model_id,
+                model_config,
+            })
+            .await?;
         match resp {
             QuarkOut::Ack => Ok(()),
             QuarkOut::Error { message } => Err(message),

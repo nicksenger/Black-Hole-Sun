@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use black_hole_spec::{
     DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId, QuarkIn,
-    QuarkOut, SequenceOutput,
+    QuarkModelConfig, QuarkOut, SequenceOutput,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -241,6 +241,7 @@ impl QuarkSession {
 
 struct QuarkInstance {
     engine: ModelEngine,
+    inference_limit: u32,
     session: tokio::sync::Mutex<QuarkSession>,
 }
 
@@ -282,6 +283,39 @@ impl Default for QuarkServerDefaults {
             inference_limit: DEFAULT_INFERENCE_LIMIT,
             training_config: TrainingConfig::default(),
         }
+    }
+}
+
+impl QuarkServerDefaults {
+    fn with_overrides(&self, model_config: Option<&QuarkModelConfig>) -> Self {
+        let mut resolved = self.clone();
+        if let Some(model_config) = model_config {
+            if let Some(top_k) = model_config.top_k {
+                resolved.top_k = top_k;
+            }
+            if let Some(temperature) = model_config.temperature {
+                resolved.temperature = temperature;
+            }
+            if let Some(top_p) = model_config.top_p {
+                resolved.top_p = Some(top_p);
+            }
+            if let Some(repeat_penalty) = model_config.repeat_penalty {
+                resolved.repeat_penalty = repeat_penalty;
+            }
+            if let Some(presence_penalty) = model_config.presence_penalty {
+                resolved.presence_penalty = presence_penalty;
+            }
+            if let Some(inference_limit) = model_config.inference_limit {
+                resolved.inference_limit = inference_limit;
+            }
+            if let Some(training_lr) = model_config.training_lr {
+                resolved.training_config.lr = training_lr;
+            }
+            if let Some(training_epsilon) = model_config.training_epsilon {
+                resolved.training_config.epsilon = training_epsilon;
+            }
+        }
+        resolved
     }
 }
 
@@ -597,7 +631,10 @@ async fn handle_stream(
 
 async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
     match req {
-        QuarkIn::Start { model_id } => handle_start(model_id, ctx).await,
+        QuarkIn::Start {
+            model_id,
+            model_config,
+        } => handle_start(model_id, model_config, ctx).await,
         QuarkIn::PerturbUp { model_id, seed } => handle_perturb_up(model_id, seed, ctx).await,
         QuarkIn::Infer { model_id, input_id } => handle_infer(model_id, input_id, ctx).await,
         QuarkIn::PerturbDown { model_id } => handle_perturb_down(model_id, ctx).await,
@@ -614,7 +651,11 @@ async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
 // Model instance lifecycle
 // ---------------------------------------------------------------------------
 
-async fn handle_start(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_start(
+    model_id: Uuid,
+    model_config: Option<QuarkModelConfig>,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
     {
         let mut instances = ctx.instances.write().await;
         match instances.entry(model_id) {
@@ -629,7 +670,8 @@ async fn handle_start(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
 
     info!(%model_id, "starting model instance");
     let model_path = ctx.model_path.clone();
-    let defaults = ctx.defaults.clone();
+    let defaults = ctx.defaults.with_overrides(model_config.as_ref());
+    let inference_limit = defaults.inference_limit;
     let engine_result = match tokio::task::spawn_blocking(move || {
         let mut builder = paramecia_engine::ModelEngineBuilder::new(model_path)
             .top_k(defaults.top_k)
@@ -666,6 +708,7 @@ async fn handle_start(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
 
     let instance = Arc::new(QuarkInstance {
         engine,
+        inference_limit,
         session: tokio::sync::Mutex::new(QuarkSession::new()),
     });
     ctx.instances
@@ -869,7 +912,7 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &QuarkContext) ->
             (seqs, limit)
         }
     };
-    let limit = limit.unwrap_or(ctx.defaults.inference_limit);
+    let limit = limit.unwrap_or(instance.inference_limit);
 
     // Run batched inference.
     let seq_results = run_batched_inference(&instance.engine, &sequences, limit).await?;
@@ -1159,6 +1202,55 @@ pub enum ServerError {
     EncodeFrame(postcard::Error),
     #[error("failed to write frame: {0}")]
     WriteFrame(quinn::WriteError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QuarkServerDefaults, DEFAULT_INFERENCE_LIMIT};
+    use black_hole_spec::QuarkModelConfig;
+
+    #[test]
+    fn model_config_none_passes_through_server_defaults() {
+        let defaults = QuarkServerDefaults::default();
+        let resolved = defaults.with_overrides(None);
+
+        assert_eq!(resolved.top_k, defaults.top_k);
+        assert_eq!(resolved.temperature, defaults.temperature);
+        assert_eq!(resolved.top_p, defaults.top_p);
+        assert_eq!(resolved.repeat_penalty, defaults.repeat_penalty);
+        assert_eq!(resolved.presence_penalty, defaults.presence_penalty);
+        assert_eq!(resolved.inference_limit, defaults.inference_limit);
+        assert_eq!(resolved.training_config.lr, defaults.training_config.lr);
+        assert_eq!(
+            resolved.training_config.epsilon,
+            defaults.training_config.epsilon
+        );
+    }
+
+    #[test]
+    fn model_config_overrides_selected_fields() {
+        let defaults = QuarkServerDefaults::default();
+        let resolved = defaults.with_overrides(Some(&QuarkModelConfig {
+            top_k: Some(64),
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            repeat_penalty: Some(1.3),
+            presence_penalty: None,
+            inference_limit: Some(12),
+            training_lr: Some(0.0002),
+            training_epsilon: Some(0.001),
+        }));
+
+        assert_eq!(resolved.top_k, 64);
+        assert_eq!(resolved.temperature, 0.2);
+        assert_eq!(resolved.top_p, Some(0.9));
+        assert_eq!(resolved.repeat_penalty, 1.3);
+        assert_eq!(resolved.presence_penalty, defaults.presence_penalty);
+        assert_eq!(resolved.inference_limit, 12);
+        assert_eq!(resolved.training_config.lr, 0.0002);
+        assert_eq!(resolved.training_config.epsilon, 0.001);
+        assert_ne!(resolved.inference_limit, DEFAULT_INFERENCE_LIMIT);
+    }
 }
 
 pub type Result<T> = std::result::Result<T, ServerError>;

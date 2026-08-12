@@ -15,8 +15,8 @@ use black_hole_sun::cell::action::{
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, QuarkClient, TestQuarkServer, TestVoidServer,
-    Tokenizer, Transmission, VoidClient,
+    EmissionId, InferenceRequest, ObjectId, QuarkClient, QuarkModelConfig, TestQuarkServer,
+    TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{FusionSeed, FusionState, Progenitor, QuzoFusion};
 use jungle_sdk::core::JungleWorker;
@@ -371,8 +371,12 @@ impl VoidInferOps for SpaceJungle {
         Ok(())
     }
 
-    async fn start_model(&self, model_id: Uuid) -> Result<(), String> {
-        let result = self.quark_client.start(model_id).await;
+    async fn start_model(
+        &self,
+        model_id: Uuid,
+        model_config: Option<QuarkModelConfig>,
+    ) -> Result<(), String> {
+        let result = self.quark_client.start(model_id, model_config).await;
         self.record_model_error("start model", &result);
         result
     }

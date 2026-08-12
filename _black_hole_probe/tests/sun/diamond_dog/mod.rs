@@ -15,7 +15,8 @@ use black_hole_sun::cell::action::{
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, TestVoidServer, Tokenizer, Transmission, VoidClient,
+    EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, TestVoidServer, Tokenizer,
+    Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState};
 use jungle_sdk::core::JungleWorker;
@@ -302,7 +303,11 @@ impl VoidInferOps for ProbeSpaceJungle {
         }
     }
 
-    async fn start_model(&self, _model_id: Uuid) -> Result<(), String> {
+    async fn start_model(
+        &self,
+        _model_id: Uuid,
+        _model_config: Option<QuarkModelConfig>,
+    ) -> Result<(), String> {
         Err("model lifecycle is not used by TestCell".to_string())
     }
 

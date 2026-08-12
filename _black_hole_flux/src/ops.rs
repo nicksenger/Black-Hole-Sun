@@ -11,7 +11,7 @@ const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    ObjectId, Transmission,
+    ObjectId, QuarkModelConfig, Transmission,
 };
 
 use crate::AtomError;
@@ -80,8 +80,12 @@ pub trait VoidInferOps: Send + Sync {
     /// spawned cells, so these writes must preserve the requested id.
     async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String>;
 
-    /// Start a quark model instance with a stable ID.
-    async fn start_model(&self, model_id: uuid::Uuid) -> Result<(), String>;
+    /// Start a quark model instance with a stable ID and optional per-instance config overrides.
+    async fn start_model(
+        &self,
+        model_id: uuid::Uuid,
+        model_config: Option<QuarkModelConfig>,
+    ) -> Result<(), String>;
 
     /// Run quark inference on an emission stored at `input_id` in void.
     /// Returns the void id of the resulting `InferenceOutput`.
@@ -367,7 +371,11 @@ mod tests {
             Ok(())
         }
 
-        async fn start_model(&self, _model_id: uuid::Uuid) -> Result<(), String> {
+        async fn start_model(
+            &self,
+            _model_id: uuid::Uuid,
+            _model_config: Option<QuarkModelConfig>,
+        ) -> Result<(), String> {
             Ok(())
         }
 

@@ -22,14 +22,15 @@ pub use void_client::VoidClient;
 
 // Convenience re-exports — flux modules and core sun types
 pub use black_hole_flux::{
-    atom, cell, ops, sun, twin, AtomError, Fusion, FusionSeed, FusionState, LeftStack, Progenitor,
-    QuzoFusion, RandStack, RightStack, Twin,
+    atom, cell, ops, sun, twin, AtomError, DefaultConfig, Fusion, FusionSeed, FusionState,
+    LeftStack, ModelConfig, Progenitor, QuzoFusion, RandStack, RightStack, Twin,
 };
 
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkOut, SequenceOutput, Transmission,
+    InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkModelConfig, QuarkOut, SequenceOutput,
+    Transmission,
 };
 
 // Convenience re-exports — void types

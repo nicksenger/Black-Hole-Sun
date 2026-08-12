@@ -11,8 +11,8 @@ use black_hole_sun::cell::effect::{QuarkPerturbDown, QuarkPerturbUp, WaitForProp
 use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::{
     Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest, ObjectId,
-    Progenitor, QuarkClient, SequenceOutput, TestQuarkServer, TestVoidServer, Tokenizer,
-    Transmission, VoidClient,
+    Progenitor, QuarkClient, QuarkModelConfig, SequenceOutput, TestQuarkServer, TestVoidServer,
+    Tokenizer, Transmission, VoidClient,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -96,8 +96,12 @@ impl VoidInferOps for SpaceJungle {
         }
     }
 
-    async fn start_model(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.start(model_id).await
+    async fn start_model(
+        &self,
+        model_id: Uuid,
+        model_config: Option<QuarkModelConfig>,
+    ) -> Result<(), String> {
+        self.quark_client.start(model_id, model_config).await
     }
 
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {

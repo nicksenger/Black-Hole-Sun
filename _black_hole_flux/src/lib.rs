@@ -63,13 +63,15 @@ pub mod animal;
 pub mod atom;
 pub mod cell;
 pub mod fusion;
+pub mod model_config;
 pub mod ops;
 pub mod sun;
 pub mod twin;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkOut, SequenceOutput, Transmission,
+    InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkModelConfig, QuarkOut, SequenceOutput,
+    Transmission,
 };
 
 pub use animal::Progenitor;
@@ -85,6 +87,7 @@ pub use cell::effect::{
 };
 pub use fusion::action::{FusionSeed, FusionState};
 pub use fusion::{Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch};
+pub use model_config::{DefaultConfig, ModelConfig};
 pub use ops::VoidInferOps;
 
 pub use atom::Atom;

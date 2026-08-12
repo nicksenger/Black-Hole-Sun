@@ -18,19 +18,20 @@ use jungle_zoo::predicate::Always;
 use jungle_zoo::Noop;
 use uuid::Uuid;
 
+use crate::model_config::{DefaultConfig, ModelConfig};
 use crate::Atom;
 
 /// A Cell wraps a atom flow in an infinite QuZO training loop driven by
 /// [`Transmission`](black_hole_spec::Transmission) messages from void.
 #[derive(Flow)]
-pub struct CellWithState<N, S>(
+pub struct CellWithState<N, S, H: ModelConfig>(
     Step<InitRecvId_<S>>,
     Step<GenerateModelId_<S>>,
-    Step<StartModel_<S>>,
+    Step<StartModel_<S, H>>,
     While<Always<CellState<S>, ()>, CytoplasmWithState<N, S>>,
 );
 
-pub type Cell<N, S = ()> = CellWithState<N, S>;
+pub type Cell<N, S = (), H = DefaultConfig> = CellWithState<N, S, H>;
 
 /// The body of one iteration of a [`Cell`] loop.
 #[derive(Flow)]
@@ -52,17 +53,31 @@ pub struct CytoplasmWithState<N, S>(
 pub type Cytoplasm<N, S = ()> = CytoplasmWithState<N, S>;
 
 /// A eukaryotic cell: a [`Cell`] with an arbitrarily complex atom.
-pub type Eukaryote<In, Out, M, S = ()> = Cell<Atom<In, Out, M, S>, S>;
+pub type Eukaryote<In, Out, M, S = (), H = DefaultConfig> = Cell<Atom<In, Out, M, S, H>, S, H>;
 
 /// A prokaryotic cell: a [`Cell`] whose atom has no input/output processing.
-pub type Prokaryote<M, S = ()> = Cell<
-    Atom<Step<Noop<CellState<S>, (Uuid, EmissionId)>>, Step<Noop<CellState<S>, EmissionId>>, M, S>,
+pub type Prokaryote<M, S = (), H = DefaultConfig> = Cell<
+    Atom<
+        Step<Noop<CellState<S>, (Uuid, EmissionId)>>,
+        Step<Noop<CellState<S>, EmissionId>>,
+        M,
+        S,
+        H,
+    >,
     S,
+    H,
 >;
 
 /// A primordial cell: the simplest possible [`Cell`] with no input/output
 /// processing and no metadata.
-pub type Primordium<S = ()> = Cell<
-    Atom<Step<Noop<CellState<S>, (Uuid, EmissionId)>>, Step<Noop<CellState<S>, EmissionId>>, (), S>,
+pub type Primordium<S = (), H = DefaultConfig> = Cell<
+    Atom<
+        Step<Noop<CellState<S>, (Uuid, EmissionId)>>,
+        Step<Noop<CellState<S>, EmissionId>>,
+        (),
+        S,
+        H,
+    >,
     S,
+    H,
 >;

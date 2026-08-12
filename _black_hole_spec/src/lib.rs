@@ -20,7 +20,13 @@ pub type ObjectId = Uuid;
 #[derive(Debug, Serialize, Deserialize)]
 pub enum QuarkIn {
     /// Start a new model instance with the provided stable ID.
-    Start { model_id: Uuid },
+    ///
+    /// When `model_config` is `None`, quark uses server defaults. When present,
+    /// the provided values override defaults for this specific model instance.
+    Start {
+        model_id: Uuid,
+        model_config: Option<QuarkModelConfig>,
+    },
     /// Perturb model weights in the positive direction.
     PerturbUp { model_id: Uuid, seed: u64 },
     /// Run inference on the input object stored in void.
@@ -47,6 +53,21 @@ pub enum QuarkOut {
     Inferred { output_id: ObjectId },
     /// Error from any operation.
     Error { message: String },
+}
+
+/// Per-model-instance quark configuration overrides.
+///
+/// Each field is optional; omitted values fall back to server defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QuarkModelConfig {
+    pub top_k: Option<usize>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub repeat_penalty: Option<f32>,
+    pub presence_penalty: Option<f32>,
+    pub inference_limit: Option<u32>,
+    pub training_lr: Option<f64>,
+    pub training_epsilon: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------

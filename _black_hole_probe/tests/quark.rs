@@ -1,8 +1,8 @@
 mod common;
 
 use black_hole_sun::{
-    DarkToken, InferenceInput, InferenceRequest, LogitEntry, QuarkClient, TestQuarkServer,
-    TestVoidServer, Tokenizer, VoidClient,
+    DarkToken, InferenceInput, InferenceRequest, LogitEntry, QuarkClient, QuarkModelConfig,
+    TestQuarkServer, TestVoidServer, Tokenizer, VoidClient,
 };
 use postcard::{from_bytes, to_allocvec};
 use uuid::Uuid;
@@ -25,7 +25,7 @@ async fn rejects_requests_for_unknown_model_instance() {
 
     for _ in 0..2 {
         let error = quark_client
-            .start(model_id)
+            .start(model_id, None)
             .await
             .expect_err("invalid model path should fail to start");
         assert!(
@@ -77,7 +77,7 @@ async fn inference() {
     let quark_endpoint = make_client_endpoint().await;
     let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_client.start(model_id).await.unwrap();
+    quark_client.start(model_id, None).await.unwrap();
 
     let tokenizer = Tokenizer::init();
 
@@ -151,7 +151,7 @@ async fn dark_inference() {
     let quark_endpoint = make_client_endpoint().await;
     let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_client.start(model_id).await.unwrap();
+    quark_client.start(model_id, None).await.unwrap();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -215,6 +215,72 @@ async fn dark_inference() {
 }
 
 #[tokio::test]
+async fn start_model_applies_instance_default_inference_limit_override() {
+    init_tracing();
+
+    let model_path =
+        match require_model_path("start_model_applies_instance_default_inference_limit_override") {
+            Some(path) => path,
+            None => return,
+        };
+
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let quark_server = TestQuarkServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start quark server");
+    let void_local = void_server.local_addr();
+    let quark_local = quark_server.local_addr();
+
+    let void_endpoint = make_client_endpoint().await;
+    let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
+    let quark_endpoint = make_client_endpoint().await;
+    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
+
+    let model_id = Uuid::new_v4();
+    quark_client
+        .start(
+            model_id,
+            Some(QuarkModelConfig {
+                inference_limit: Some(0),
+                ..QuarkModelConfig::default()
+            }),
+        )
+        .await
+        .expect("model should start with override config");
+
+    let request = InferenceRequest::Sequences {
+        sequences: vec![vec![InferenceInput::Text(
+            "This request omits limit and should use the per-instance default.".into(),
+        )]],
+        limit: None,
+    };
+    let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
+    let input_id = void_client.upload(request_bytes).await.unwrap();
+
+    let output_id = quark_client.infer(model_id, input_id).await.unwrap();
+    let output_bytes = void_client.download(output_id).await.unwrap();
+    let output: black_hole_sun::InferenceOutput =
+        from_bytes(&output_bytes).expect("failed to decode inference output");
+
+    assert_eq!(output.results.len(), 1, "expected one batch result");
+    assert!(
+        output.results[0].0.is_empty(),
+        "instance default inference limit override should produce zero decoded tokens"
+    );
+
+    quark_client.shutdown(model_id).await.unwrap();
+    drop(void_endpoint);
+    drop(quark_endpoint);
+    void_server.abort();
+    quark_server.abort();
+}
+
+#[tokio::test]
 async fn optimization() {
     init_tracing();
 
@@ -240,7 +306,7 @@ async fn optimization() {
     let quark_endpoint = make_client_endpoint().await;
     let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_client.start(model_id).await.unwrap();
+    quark_client.start(model_id, None).await.unwrap();
 
     let tokenizer = Tokenizer::init();
 
@@ -396,7 +462,7 @@ async fn dark_optimization() {
     let quark_endpoint = make_client_endpoint().await;
     let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_client.start(model_id).await.unwrap();
+    quark_client.start(model_id, None).await.unwrap();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";

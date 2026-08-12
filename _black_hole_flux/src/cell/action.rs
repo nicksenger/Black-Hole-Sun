@@ -7,6 +7,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::model_config::{DefaultConfig, ModelConfig};
+
 // ---------------------------------------------------------------------------
 // CellState — holds the next transmission ID threaded across Cell iterations
 // ---------------------------------------------------------------------------
@@ -94,11 +96,14 @@ impl<S> Action for GenerateModelId<S> {
 }
 
 /// Starts the generated quark model instance and stores its ID in cell state.
-pub struct StartModel<S = ()>(PhantomData<fn() -> S>);
+pub struct StartModel<S = (), H = DefaultConfig>(PhantomData<fn() -> (S, H)>);
 
 #[jungle::action(carry = Uuid)]
-impl<S> Action for StartModel<S> {
-    type Effect = QuarkStart;
+impl<S, H> Action for StartModel<S, H>
+where
+    H: ModelConfig,
+{
+    type Effect = QuarkStart<H>;
     type Input = Uuid;
     type Output = ();
 
@@ -190,14 +195,15 @@ pub struct Propagation {
 // ---------------------------------------------------------------------------
 
 /// Action that performs quark inference for one model instance.
-pub struct QuarkInferStep<M, S = ()>(PhantomData<fn() -> (M, S)>);
+pub struct QuarkInferStep<M, S = (), H = DefaultConfig>(PhantomData<fn() -> (M, S, H)>);
 
 #[jungle::action]
-impl<M, S> Action for QuarkInferStep<M, S>
+impl<M, S, H> Action for QuarkInferStep<M, S, H>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
+    H: ModelConfig,
 {
-    type Effect = super::super::atom::effect::QuarkInfer<M>;
+    type Effect = super::super::atom::effect::QuarkInfer<M, H>;
     type Input = (Uuid, EmissionId);
     type Output = EmissionId;
 

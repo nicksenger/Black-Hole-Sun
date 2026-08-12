@@ -1,6 +1,7 @@
 //! Cell effects for perturbation, optimization, transmission, and waiting.
 
 use std::future::Future;
+use std::marker::PhantomData;
 
 use jungle_sdk::prelude::*;
 use tracing::debug;
@@ -9,6 +10,7 @@ use uuid::Uuid;
 use black_hole_spec::{ObjectId, Transmission};
 
 use super::action::{Potentiation, Propagation};
+use crate::model_config::{DefaultConfig, ModelConfig};
 use crate::ops::VoidInferOps;
 use crate::AtomError;
 
@@ -34,17 +36,21 @@ impl<J> Effect<J> for GenerateModelIdEffect {
     }
 }
 
-pub struct QuarkStart;
+pub struct QuarkStart<H = DefaultConfig>(PhantomData<fn() -> H>);
 
-impl<J> EffectSchema<J> for QuarkStart {
+impl<H, J> EffectSchema<J> for QuarkStart<H>
+where
+    H: ModelConfig,
+{
     type Id = u64;
     type In = Uuid;
     type Out = ();
     type Err = AtomError;
 }
 
-impl<J> Effect<J> for QuarkStart
+impl<H, J> Effect<J> for QuarkStart<H>
 where
+    H: ModelConfig,
     J: VoidInferOps,
 {
     fn effect(
@@ -54,7 +60,7 @@ where
         async move {
             debug!(%model_id, "starting quark model instance");
             jungle
-                .start_model(model_id)
+                .start_model(model_id, H::quark_model_config())
                 .await
                 .map_err(AtomError::ModelStart)
         }
