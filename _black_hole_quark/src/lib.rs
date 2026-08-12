@@ -242,6 +242,7 @@ impl QuarkSession {
 struct QuarkInstance {
     engine: ModelEngine,
     inference_limit: u32,
+    frozen: bool,
     session: tokio::sync::Mutex<QuarkSession>,
 }
 
@@ -672,6 +673,7 @@ async fn handle_start(
     let model_path = ctx.model_path.clone();
     let defaults = ctx.defaults.with_overrides(model_config.as_ref());
     let inference_limit = defaults.inference_limit;
+    let frozen = resolve_model_frozen(ctx.frozen, model_config.as_ref());
     let engine_result = match tokio::task::spawn_blocking(move || {
         let mut builder = paramecia_engine::ModelEngineBuilder::new(model_path)
             .top_k(defaults.top_k)
@@ -709,6 +711,7 @@ async fn handle_start(
     let instance = Arc::new(QuarkInstance {
         engine,
         inference_limit,
+        frozen,
         session: tokio::sync::Mutex::new(QuarkSession::new()),
     });
     ctx.instances
@@ -769,6 +772,12 @@ fn ensure_running(session: &QuarkSession, model_id: Uuid) -> Result<()> {
     }
 }
 
+fn resolve_model_frozen(server_frozen: bool, model_config: Option<&QuarkModelConfig>) -> bool {
+    model_config
+        .and_then(|model_config| model_config.frozen)
+        .unwrap_or(server_frozen)
+}
+
 async fn reset_model(engine: &ModelEngine) -> Result<()> {
     engine
         .reset_state()
@@ -794,8 +803,8 @@ async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Res
     }
 
     reset_model(&instance.engine).await?;
-    if ctx.frozen {
-        info!(%model_id, "skipping perturb up because server is frozen");
+    if instance.frozen {
+        info!(%model_id, "skipping perturb up because model instance is frozen");
     } else {
         instance
             .engine
@@ -974,8 +983,8 @@ async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<Quark
     }
 
     reset_model(&instance.engine).await?;
-    if ctx.frozen {
-        info!(%model_id, "skipping perturb down because server is frozen");
+    if instance.frozen {
+        info!(%model_id, "skipping perturb down because model instance is frozen");
     } else {
         instance
             .engine
@@ -1007,8 +1016,8 @@ async fn handle_optimize(
     }
 
     reset_model(&instance.engine).await?;
-    if ctx.frozen {
-        info!(%model_id, "skipping optimization because server is frozen");
+    if instance.frozen {
+        info!(%model_id, "skipping optimization because model instance is frozen");
     } else {
         instance
             .engine
@@ -1206,7 +1215,7 @@ pub enum ServerError {
 
 #[cfg(test)]
 mod tests {
-    use super::{QuarkServerDefaults, DEFAULT_INFERENCE_LIMIT};
+    use super::{resolve_model_frozen, QuarkServerDefaults, DEFAULT_INFERENCE_LIMIT};
     use black_hole_spec::QuarkModelConfig;
 
     #[test]
@@ -1239,6 +1248,7 @@ mod tests {
             inference_limit: Some(12),
             training_lr: Some(0.0002),
             training_epsilon: Some(0.001),
+            frozen: None,
         }));
 
         assert_eq!(resolved.top_k, 64);
@@ -1250,6 +1260,30 @@ mod tests {
         assert_eq!(resolved.training_config.lr, 0.0002);
         assert_eq!(resolved.training_config.epsilon, 0.001);
         assert_ne!(resolved.inference_limit, DEFAULT_INFERENCE_LIMIT);
+    }
+
+    #[test]
+    fn model_config_frozen_override_falls_back_to_server_default() {
+        assert!(resolve_model_frozen(true, None));
+        assert!(!resolve_model_frozen(false, None));
+    }
+
+    #[test]
+    fn model_config_frozen_override_can_freeze_or_unfreeze_instance() {
+        assert!(resolve_model_frozen(
+            false,
+            Some(&QuarkModelConfig {
+                frozen: Some(true),
+                ..QuarkModelConfig::default()
+            })
+        ));
+        assert!(!resolve_model_frozen(
+            true,
+            Some(&QuarkModelConfig {
+                frozen: Some(false),
+                ..QuarkModelConfig::default()
+            })
+        ));
     }
 }
 

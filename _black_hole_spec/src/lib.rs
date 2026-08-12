@@ -68,6 +68,7 @@ pub struct QuarkModelConfig {
     pub inference_limit: Option<u32>,
     pub training_lr: Option<f64>,
     pub training_epsilon: Option<f64>,
+    pub frozen: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

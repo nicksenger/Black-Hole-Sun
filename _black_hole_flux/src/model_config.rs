@@ -15,6 +15,7 @@ pub trait ModelConfig {
     const INFERENCE_LIMIT: Option<u32> = None;
     const TRAINING_LR: Option<f64> = None;
     const TRAINING_EPSILON: Option<f64> = None;
+    const FROZEN: Option<bool> = None;
 
     fn quark_model_config() -> Option<QuarkModelConfig> {
         let config = QuarkModelConfig {
@@ -26,6 +27,7 @@ pub trait ModelConfig {
             inference_limit: Self::INFERENCE_LIMIT,
             training_lr: Self::TRAINING_LR,
             training_epsilon: Self::TRAINING_EPSILON,
+            frozen: Self::FROZEN,
         };
 
         let has_any_override = config.top_k.is_some()
@@ -35,7 +37,8 @@ pub trait ModelConfig {
             || config.presence_penalty.is_some()
             || config.inference_limit.is_some()
             || config.training_lr.is_some()
-            || config.training_epsilon.is_some();
+            || config.training_epsilon.is_some()
+            || config.frozen.is_some();
         if has_any_override {
             Some(config)
         } else {
@@ -48,3 +51,24 @@ pub trait ModelConfig {
 pub struct DefaultConfig;
 
 impl ModelConfig for DefaultConfig {}
+
+#[cfg(test)]
+mod tests {
+    use super::ModelConfig;
+
+    struct FrozenConfig;
+    impl ModelConfig for FrozenConfig {
+        const FROZEN: Option<bool> = Some(true);
+    }
+
+    #[test]
+    fn default_config_emits_no_overrides() {
+        assert!(super::DefaultConfig::quark_model_config().is_none());
+    }
+
+    #[test]
+    fn frozen_override_emits_model_config() {
+        let config = FrozenConfig::quark_model_config().expect("expected override config");
+        assert_eq!(config.frozen, Some(true));
+    }
+}
