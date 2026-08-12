@@ -6,6 +6,8 @@ use uuid::Uuid;
 pub const IM_START: u32 = 248045;
 pub const IM_END: u32 = 248046;
 pub const PAD: u32 = 248044;
+pub const THINK_OPEN: u32 = 248068;
+pub const THINK_CLOSE: u32 = 248069;
 
 /// Opaque identifier for objects stored in void.
 pub type ObjectId = Uuid;
