@@ -95,6 +95,12 @@ pub trait VoidInferOps: Send + Sync {
         request: InferenceRequest,
     ) -> Result<ObjectId, String>;
 
+    /// Reset the model runtime state (for example KV cache) after an inference step.
+    async fn reset_model(&self, model_id: uuid::Uuid) -> Result<(), String>;
+
+    /// Upload current model weights to void and return the checkpoint object ID.
+    async fn checkpoint_model(&self, model_id: uuid::Uuid) -> Result<ObjectId, String>;
+
     /// Convert text into dark-tokenized inputs for dark inference flows.
     fn darken(&self, prompt: &str) -> Result<Vec<DarkToken>, String>;
 
@@ -384,6 +390,14 @@ mod tests {
             _model_id: uuid::Uuid,
             _request: InferenceRequest,
         ) -> Result<ObjectId, String> {
+            Err("unsupported in tests".to_string())
+        }
+
+        async fn reset_model(&self, _model_id: uuid::Uuid) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn checkpoint_model(&self, _model_id: uuid::Uuid) -> Result<ObjectId, String> {
             Err("unsupported in tests".to_string())
         }
 

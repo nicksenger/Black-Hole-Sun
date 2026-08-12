@@ -392,6 +392,18 @@ impl VoidInferOps for SpaceJungle {
         result
     }
 
+    async fn reset_model(&self, model_id: Uuid) -> Result<(), String> {
+        let result = self.quark_client.reset(model_id).await;
+        self.record_model_error("reset model", &result);
+        result
+    }
+
+    async fn checkpoint_model(&self, model_id: Uuid) -> Result<ObjectId, String> {
+        let result = self.quark_client.checkpoint(model_id).await;
+        self.record_model_error("checkpoint model", &result);
+        result
+    }
+
     fn darken(&self, prompt: &str) -> Result<Vec<black_hole_sun::DarkToken>, String> {
         let tokenizer_result = self.tokenizer.get_or_init(Tokenizer::try_init);
         let tokenizer = tokenizer_result

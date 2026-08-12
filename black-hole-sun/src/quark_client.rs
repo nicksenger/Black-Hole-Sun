@@ -53,6 +53,15 @@ impl QuarkClient {
         }
     }
 
+    pub async fn reset(&self, model_id: ObjectId) -> Result<(), String> {
+        let resp = self.request(&QuarkIn::Reset { model_id }).await?;
+        match resp {
+            QuarkOut::Ack => Ok(()),
+            QuarkOut::Error { message } => Err(message),
+            _ => Err("unexpected quark response for reset".to_string()),
+        }
+    }
+
     pub async fn perturb_up(&self, model_id: ObjectId, seed: u64) -> Result<(), String> {
         let resp = self.request(&QuarkIn::PerturbUp { model_id, seed }).await?;
         match resp {
@@ -68,6 +77,15 @@ impl QuarkClient {
             QuarkOut::Ack => Ok(()),
             QuarkOut::Error { message } => Err(message),
             _ => Err("unexpected quark response for perturb_down".to_string()),
+        }
+    }
+
+    pub async fn checkpoint(&self, model_id: ObjectId) -> Result<ObjectId, String> {
+        let resp = self.request(&QuarkIn::Checkpoint { model_id }).await?;
+        match resp {
+            QuarkOut::Checkpointed { checkpoint_id } => Ok(checkpoint_id),
+            QuarkOut::Error { message } => Err(message),
+            _ => Err("unexpected quark response for checkpoint".to_string()),
         }
     }
 

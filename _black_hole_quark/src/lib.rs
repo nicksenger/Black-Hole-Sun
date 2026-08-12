@@ -638,7 +638,9 @@ async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
         } => handle_start(model_id, model_config, ctx).await,
         QuarkIn::PerturbUp { model_id, seed } => handle_perturb_up(model_id, seed, ctx).await,
         QuarkIn::Infer { model_id, input_id } => handle_infer(model_id, input_id, ctx).await,
+        QuarkIn::Reset { model_id } => handle_reset(model_id, ctx).await,
         QuarkIn::PerturbDown { model_id } => handle_perturb_down(model_id, ctx).await,
+        QuarkIn::Checkpoint { model_id } => handle_checkpoint(model_id, ctx).await,
         QuarkIn::Optimize {
             model_id,
             loss_up,
@@ -785,6 +787,27 @@ async fn reset_model(engine: &ModelEngine) -> Result<()> {
         .map_err(|error| ServerError::ModelError(error.to_string()))
 }
 
+async fn checkpoint_model(engine: &ModelEngine) -> Result<Vec<u8>> {
+    let checkpoint_path = engine
+        .save_checkpoint()
+        .await
+        .map_err(|error| ServerError::ModelError(error.to_string()))?;
+    let checkpoint_bytes = fs::read(&checkpoint_path).map_err(|error| {
+        ServerError::ModelError(format!(
+            "failed to read checkpoint {}: {error}",
+            checkpoint_path.display()
+        ))
+    })?;
+    if let Err(error) = fs::remove_file(&checkpoint_path) {
+        warn!(
+            path = %checkpoint_path.display(),
+            error = %error,
+            "failed to remove temporary checkpoint file"
+        );
+    }
+    Ok(checkpoint_bytes)
+}
+
 // ---------------------------------------------------------------------------
 // QuZO step handlers
 // ---------------------------------------------------------------------------
@@ -802,7 +825,6 @@ async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Res
         )));
     }
 
-    reset_model(&instance.engine).await?;
     if instance.frozen {
         info!(%model_id, "skipping perturb up because model instance is frozen");
     } else {
@@ -814,6 +836,15 @@ async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Res
     }
 
     session.state = QuarkState::PostPerturbUp;
+    Ok(QuarkOut::Ack)
+}
+
+async fn handle_reset(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    info!(%model_id, "received reset request");
+    let instance = get_instance(model_id, ctx).await?;
+    let session = instance.session.lock().await;
+    ensure_running(&session, model_id)?;
+    reset_model(&instance.engine).await?;
     Ok(QuarkOut::Ack)
 }
 
@@ -982,7 +1013,6 @@ async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<Quark
         )));
     }
 
-    reset_model(&instance.engine).await?;
     if instance.frozen {
         info!(%model_id, "skipping perturb down because model instance is frozen");
     } else {
@@ -995,6 +1025,22 @@ async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<Quark
 
     session.state = QuarkState::PostPerturbDown;
     Ok(QuarkOut::Ack)
+}
+
+async fn handle_checkpoint(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    info!(%model_id, "received checkpoint request");
+    let instance = get_instance(model_id, ctx).await?;
+    let session = instance.session.lock().await;
+    ensure_running(&session, model_id)?;
+
+    let void = ctx
+        .void_client
+        .as_ref()
+        .ok_or_else(|| ServerError::VoidNotConfigured)?;
+    let checkpoint_bytes = checkpoint_model(&instance.engine).await?;
+    let checkpoint_id = void.upload(checkpoint_bytes).await?;
+
+    Ok(QuarkOut::Checkpointed { checkpoint_id })
 }
 
 async fn handle_optimize(

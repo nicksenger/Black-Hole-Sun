@@ -124,6 +124,9 @@ pub enum AtomError {
     #[error("quark inference failed: {0}")]
     Inference(String),
 
+    #[error("quark model reset failed: {0}")]
+    ModelReset(String),
+
     #[error("void upload failed: {0}")]
     Upload(String),
 

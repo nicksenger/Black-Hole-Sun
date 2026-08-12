@@ -110,6 +110,14 @@ impl VoidInferOps for SpaceJungle {
         self.quark_client.infer(model_id, request_id).await
     }
 
+    async fn reset_model(&self, model_id: Uuid) -> Result<(), String> {
+        self.quark_client.reset(model_id).await
+    }
+
+    async fn checkpoint_model(&self, model_id: Uuid) -> Result<ObjectId, String> {
+        self.quark_client.checkpoint(model_id).await
+    }
+
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
         self.quark_client.perturb_up(model_id, seed).await
     }

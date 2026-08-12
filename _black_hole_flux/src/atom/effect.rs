@@ -61,6 +61,12 @@ where
                 .map_err(AtomError::Inference)?;
             debug!(%model_id, output_id = %output_id, "quark inference complete");
 
+            jungle
+                .reset_model(model_id)
+                .await
+                .map_err(AtomError::ModelReset)?;
+            debug!(%model_id, "quark model reset complete");
+
             let output_emission = Emission {
                 metadata: emission.metadata,
                 output_id: InferenceOutputId(output_id),

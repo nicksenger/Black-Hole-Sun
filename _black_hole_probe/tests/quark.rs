@@ -36,8 +36,10 @@ async fn rejects_requests_for_unknown_model_instance() {
 
     for result in [
         quark_client.infer(model_id, Uuid::nil()).await.map(|_| ()),
+        quark_client.reset(model_id).await,
         quark_client.perturb_up(model_id, 42).await,
         quark_client.perturb_down(model_id).await,
+        quark_client.checkpoint(model_id).await.map(|_| ()),
         quark_client.optimize(model_id, 0.0, 0.0).await,
         quark_client.shutdown(model_id).await,
     ] {
@@ -117,6 +119,13 @@ async fn inference() {
             "output {label} has no decoded text"
         );
     }
+
+    let checkpoint_id = quark_client.checkpoint(model_id).await.unwrap();
+    let checkpoint_bytes = void_client.download(checkpoint_id).await.unwrap();
+    assert!(
+        !checkpoint_bytes.is_empty(),
+        "checkpoint output should upload non-empty model bytes"
+    );
 
     quark_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
@@ -335,6 +344,7 @@ async fn optimization() {
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
     let output_id_up = quark_client.infer(model_id, input_id).await.unwrap();
+    quark_client.reset(model_id).await.unwrap();
     let output_bytes_up = void_client.download(output_id_up).await.unwrap();
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
@@ -361,6 +371,7 @@ async fn optimization() {
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
     let output_id_down = quark_client.infer(model_id, input_id).await.unwrap();
+    quark_client.reset(model_id).await.unwrap();
     let output_bytes_down = void_client.download(output_id_down).await.unwrap();
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
@@ -395,6 +406,7 @@ async fn optimization() {
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
     let output_id_final = quark_client.infer(model_id, input_id).await.unwrap();
+    quark_client.reset(model_id).await.unwrap();
     let output_bytes_final = void_client.download(output_id_final).await.unwrap();
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
@@ -510,6 +522,7 @@ async fn dark_optimization() {
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
     let output_id_up = quark_client.infer(model_id, input_id).await.unwrap();
+    quark_client.reset(model_id).await.unwrap();
     let output_bytes_up = void_client.download(output_id_up).await.unwrap();
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
@@ -536,6 +549,7 @@ async fn dark_optimization() {
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
     let output_id_down = quark_client.infer(model_id, input_id).await.unwrap();
+    quark_client.reset(model_id).await.unwrap();
     let output_bytes_down = void_client.download(output_id_down).await.unwrap();
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
@@ -570,6 +584,7 @@ async fn dark_optimization() {
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
     let output_id_final = quark_client.infer(model_id, input_id).await.unwrap();
+    quark_client.reset(model_id).await.unwrap();
     let output_bytes_final = void_client.download(output_id_final).await.unwrap();
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");

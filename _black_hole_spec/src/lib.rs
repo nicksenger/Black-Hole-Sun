@@ -32,8 +32,12 @@ pub enum QuarkIn {
     /// Run inference on the input object stored in void.
     /// Returns QuarkOut::Inferred(output_id).
     Infer { model_id: Uuid, input_id: ObjectId },
+    /// Reset model runtime state (for example KV cache) for the instance.
+    Reset { model_id: Uuid },
     /// Perturb model weights in the negative direction.
     PerturbDown { model_id: Uuid },
+    /// Upload current model weights to void and return their object ID.
+    Checkpoint { model_id: Uuid },
     /// Apply the QuZO optimization update with both loss values.
     Optimize {
         model_id: Uuid,
@@ -51,6 +55,8 @@ pub enum QuarkOut {
     Ack,
     /// Inference complete; contains the void object ID of the output.
     Inferred { output_id: ObjectId },
+    /// Checkpoint upload complete; contains the void object ID of model weights.
+    Checkpointed { checkpoint_id: ObjectId },
     /// Error from any operation.
     Error { message: String },
 }
