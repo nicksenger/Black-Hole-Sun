@@ -144,17 +144,47 @@ pub struct InferenceOutput {
 }
 
 impl InferenceOutput {
-    /// Trims padding from sequences, then re-pads from the start to
-    /// match the length of the longest sequence.
-    pub fn pad_for_input(&mut self) {
-        let mut max = 0;
-        for seq in &mut self.results {
-            seq.trim_padding();
-            max = seq.0.len().max(max);
-        }
+    fn pad_start(&mut self) {
+        let max = self
+            .results
+            .iter()
+            .map(|seq| seq.0.len())
+            .max()
+            .unwrap_or_default();
         for seq in &mut self.results {
             seq.pad_start_to(max);
         }
+    }
+
+    fn trim_padding(&mut self) {
+        for seq in &mut self.results {
+            seq.trim_padding();
+        }
+    }
+
+    /// Trims padding from sequences, then frames them with the provided tokens
+    /// and pads from start to the max length
+    pub fn frame(&mut self, before: Vec<DarkToken>, after: Vec<DarkToken>) {
+        self.trim_padding();
+        for seq in &mut self.results {
+            let mut new = before.clone();
+            new.append(&mut seq.0);
+            new.append(&mut after.clone());
+            seq.0 = new;
+        }
+        self.pad_start();
+    }
+
+    /// Frames each sequence with the corresponding before/after sequence from the provided iterator
+    pub fn frame_with<T: Iterator<Item = (Vec<DarkToken>, Vec<DarkToken>)>>(&mut self, frames: T) {
+        self.trim_padding();
+        for (seq, (before, mut after)) in &mut self.results.iter_mut().zip(frames) {
+            let mut new = before;
+            new.append(&mut seq.0);
+            new.append(&mut after);
+            seq.0 = new;
+        }
+        self.pad_start();
     }
 }
 
@@ -309,7 +339,7 @@ mod test {
     }
 
     #[test]
-    fn test_pad() {
+    fn test_frame() {
         let mut out = InferenceOutput {
             results: vec![
                 SequenceOutput(
@@ -327,7 +357,22 @@ mod test {
                 SequenceOutput([1, 248044, 248044].into_iter().map(tok).collect()),
             ],
         };
-        out.pad_for_input();
+        out.frame(
+            vec![DarkToken {
+                predicted: 248045,
+                dark_knowledge: vec![LogitEntry {
+                    token_id: 248045,
+                    log_prob: 0.0,
+                }],
+            }],
+            vec![DarkToken {
+                predicted: 248046,
+                dark_knowledge: vec![LogitEntry {
+                    token_id: 248046,
+                    log_prob: 0.0,
+                }],
+            }],
+        );
 
         assert_eq!(
             out.results[0]
@@ -335,7 +380,7 @@ mod test {
                 .iter()
                 .map(|dt| dt.predicted)
                 .collect::<Vec<_>>(),
-            vec![1, 2, 3, 4, 5]
+            vec![248045, 1, 2, 3, 4, 5, 248046]
         );
         assert_eq!(
             out.results[1]
@@ -343,7 +388,7 @@ mod test {
                 .iter()
                 .map(|dt| dt.predicted)
                 .collect::<Vec<_>>(),
-            vec![248044, 248044, 1, 2, 3]
+            vec![248044, 248044, 248045, 1, 2, 3, 248046]
         );
         assert_eq!(
             out.results[2]
@@ -351,7 +396,7 @@ mod test {
                 .iter()
                 .map(|dt| dt.predicted)
                 .collect::<Vec<_>>(),
-            vec![248044, 248044, 248044, 248044, 1]
+            vec![248044, 248044, 248044, 248044, 248045, 1, 248046]
         );
     }
 }
