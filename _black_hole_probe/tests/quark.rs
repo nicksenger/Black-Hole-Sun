@@ -5,6 +5,7 @@ use black_hole_sun::{
     TestQuarkServer, TestVoidServer, Tokenizer, VoidClient,
 };
 use postcard::{from_bytes, to_allocvec};
+use std::time::Duration;
 use uuid::Uuid;
 
 use common::*;
@@ -114,6 +115,122 @@ async fn tunnel_root_forwards_start_to_registered_worker() {
 
     worker_server.abort();
     root_server.abort();
+}
+
+#[tokio::test]
+async fn tunnel_recursive_tree_aggregates_descendant_capacity() {
+    init_tracing();
+
+    let model_path =
+        match require_model_path("tunnel_recursive_tree_aggregates_descendant_capacity") {
+            Some(path) => path,
+            None => return,
+        };
+
+    async fn infer_space_probe_once(
+        quark_client: &QuarkClient,
+        void_client: &VoidClient,
+        tokenizer: &Tokenizer,
+        model_id: Uuid,
+        input_id: Uuid,
+    ) -> Result<(), String> {
+        let output_id = quark_client.infer(model_id, input_id).await?;
+        let output_bytes = void_client.download(output_id).await.unwrap();
+        let output: black_hole_sun::InferenceOutput =
+            from_bytes(&output_bytes).expect("failed to decode inference output");
+        assert_eq!(output.results.len(), 1, "expected one batch result");
+        let output_text = tokenizer.decode(&output.results[0].0);
+        assert!(
+            !output_text.is_empty(),
+            "space-probe inference should produce non-empty output"
+        );
+        Ok(())
+    }
+
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let root_server = TestQuarkServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .max_instances(0)
+        .serve()
+        .await
+        .expect("failed to start root quark server");
+    let worker_b_server = TestQuarkServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .tunnel(root_server.local_addr())
+        .max_instances(1)
+        .serve()
+        .await
+        .expect("failed to start worker B quark server");
+    let worker_c_server = TestQuarkServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .tunnel(worker_b_server.local_addr())
+        .max_instances(1)
+        .serve()
+        .await
+        .expect("failed to start worker C quark server");
+
+    let void_endpoint = make_client_endpoint().await;
+    let void_client = VoidClient::new(&void_endpoint, void_server.local_addr(), "localhost");
+    let quark_endpoint = make_client_endpoint().await;
+    let root_client = QuarkClient::new(&quark_endpoint, root_server.local_addr(), "localhost");
+    let tokenizer = Tokenizer::init();
+
+    let model_a = Uuid::new_v4();
+    let model_b = Uuid::new_v4();
+    let model_config = Some(QuarkModelConfig {
+        inference_limit: Some(1),
+        ..QuarkModelConfig::default()
+    });
+    root_client
+        .start(model_a, model_config.clone())
+        .await
+        .expect("first model should start");
+    root_client
+        .start(model_b, model_config)
+        .await
+        .expect("second model should start via descendant capacity");
+
+    let input_text =
+        "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
+    let request = InferenceRequest::Sequences {
+        sequences: vec![vec![InferenceInput::Text(input_text.into())]],
+        limit: Some(1),
+    };
+    let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
+    let input_id = void_client.upload(request_bytes).await.unwrap();
+
+    infer_space_probe_once(&root_client, &void_client, &tokenizer, model_a, input_id)
+        .await
+        .expect("model A should infer before descendant shutdown");
+    infer_space_probe_once(&root_client, &void_client, &tokenizer, model_b, input_id)
+        .await
+        .expect("model B should infer before descendant shutdown");
+
+    worker_c_server.abort();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut successes = 0usize;
+    let mut failures = 0usize;
+    for model_id in [model_a, model_b] {
+        match infer_space_probe_once(&root_client, &void_client, &tokenizer, model_id, input_id)
+            .await
+        {
+            Ok(()) => successes += 1,
+            Err(_) => failures += 1,
+        }
+    }
+    assert_eq!(successes, 1, "exactly one model should remain available");
+    assert_eq!(
+        failures, 1,
+        "exactly one model should fail after C is killed"
+    );
+
+    worker_b_server.abort();
+    root_server.abort();
+    void_server.abort();
 }
 
 #[tokio::test]

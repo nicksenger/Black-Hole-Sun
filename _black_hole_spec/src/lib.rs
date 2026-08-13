@@ -52,7 +52,14 @@ pub enum QuarkIn {
     RegisterTunnel {
         /// Address where the worker quark accepts forwarded tunnel requests.
         worker_addr: SocketAddr,
-        /// Optional model instance capacity limit for this worker (defaults to 1).
+        /// Optional total model capacity advertised by this worker subtree (defaults to 1).
+        max_instances: Option<usize>,
+    },
+    /// Update the advertised tunnel capacity for an already-registered worker token.
+    UpdateTunnelCapacity {
+        /// Root/parent-issued token for the registered worker.
+        token: Uuid,
+        /// Optional total model capacity for this worker subtree (defaults to 1).
         max_instances: Option<usize>,
     },
     /// Forward a model operation through a registered tunnel worker.
