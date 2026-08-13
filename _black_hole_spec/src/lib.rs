@@ -294,6 +294,11 @@ pub struct InferenceOutput {
 }
 
 impl InferenceOutput {
+    /// Returns the total number of DarkTokens across all contained sequences.
+    pub fn n_tokens(&self) -> usize {
+        self.results.iter().map(|seq| seq.0.len()).sum()
+    }
+
     pub fn pad_start(&mut self) {
         let max = self
             .results
@@ -548,5 +553,18 @@ mod test {
                 .collect::<Vec<_>>(),
             vec![248044, 248044, 248044, 248044, 248045, 1, 248046]
         );
+    }
+
+    #[test]
+    fn test_n_tokens() {
+        let out = InferenceOutput {
+            results: vec![
+                SequenceOutput([1, 2, 3].into_iter().map(tok).collect()),
+                SequenceOutput([4].into_iter().map(tok).collect()),
+                SequenceOutput([5, 6].into_iter().map(tok).collect()),
+            ],
+        };
+
+        assert_eq!(out.n_tokens(), 6);
     }
 }
