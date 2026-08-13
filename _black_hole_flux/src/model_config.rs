@@ -16,6 +16,8 @@ pub trait ModelConfig {
     const TRAINING_LR: Option<f64> = None;
     const TRAINING_EPSILON: Option<f64> = None;
     const FROZEN: Option<bool> = None;
+    const OSCILLATION_STEPS: Option<usize> = None;
+    const OSCILLATION_OFFSET: Option<usize> = None;
     const CHECKPOINT: Option<u128> = None;
 
     fn quark_model_config() -> Option<QuarkModelConfig> {
@@ -29,6 +31,8 @@ pub trait ModelConfig {
             training_lr: Self::TRAINING_LR,
             training_epsilon: Self::TRAINING_EPSILON,
             frozen: Self::FROZEN,
+            oscillation_steps: Self::OSCILLATION_STEPS,
+            oscillation_offset: Self::OSCILLATION_OFFSET,
             checkpoint_id: Self::CHECKPOINT.map(ObjectId::from_u128),
         };
 
@@ -41,6 +45,8 @@ pub trait ModelConfig {
             || config.training_lr.is_some()
             || config.training_epsilon.is_some()
             || config.frozen.is_some()
+            || config.oscillation_steps.is_some()
+            || config.oscillation_offset.is_some()
             || config.checkpoint_id.is_some();
         if has_any_override {
             Some(config)
@@ -69,6 +75,12 @@ mod tests {
         const CHECKPOINT: Option<u128> = Some(42);
     }
 
+    struct OscillationConfig;
+    impl ModelConfig for OscillationConfig {
+        const OSCILLATION_STEPS: Option<usize> = Some(10);
+        const OSCILLATION_OFFSET: Option<usize> = Some(20);
+    }
+
     #[test]
     fn default_config_emits_no_overrides() {
         assert!(super::DefaultConfig::quark_model_config().is_none());
@@ -87,5 +99,12 @@ mod tests {
             config.checkpoint_id,
             Some(black_hole_spec::ObjectId::from_u128(42))
         );
+    }
+
+    #[test]
+    fn oscillation_overrides_emit_model_config() {
+        let config = OscillationConfig::quark_model_config().expect("expected override config");
+        assert_eq!(config.oscillation_steps, Some(10));
+        assert_eq!(config.oscillation_offset, Some(20));
     }
 }

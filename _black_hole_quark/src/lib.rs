@@ -272,15 +272,25 @@ enum QuarkState {
 struct QuarkSession {
     state: QuarkState,
     running: bool,
+    frozen: bool,
+    optimize_steps: usize,
 }
 
 impl QuarkSession {
-    fn new() -> Self {
+    fn new(frozen: bool) -> Self {
         Self {
             state: QuarkState::Idle,
             running: true,
+            frozen,
+            optimize_steps: 0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrozenOscillation {
+    steps: usize,
+    offset: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +300,7 @@ impl QuarkSession {
 struct QuarkInstance {
     engine: ModelEngine,
     inference_limit: u32,
-    frozen: bool,
+    oscillation: Option<FrozenOscillation>,
     checkpoint_path: Option<PathBuf>,
     session: tokio::sync::Mutex<QuarkSession>,
 }
@@ -1268,6 +1278,16 @@ async fn handle_start(
     let defaults = ctx.defaults.with_overrides(model_config.as_ref());
     let inference_limit = defaults.inference_limit;
     let frozen = resolve_model_frozen(ctx.frozen, model_config.as_ref());
+    let oscillation = match resolve_model_oscillation(model_config.as_ref()) {
+        Ok(oscillation) => oscillation,
+        Err(error) => {
+            ctx.instances.write().await.remove(&model_id);
+            if let Some(path) = checkpoint_path.as_ref() {
+                cleanup_checkpoint_file(path);
+            }
+            return Err(error);
+        }
+    };
     let engine_result = match tokio::task::spawn_blocking(move || {
         let mut builder = paramecia_engine::ModelEngineBuilder::new(model_path)
             .top_k(defaults.top_k)
@@ -1314,9 +1334,9 @@ async fn handle_start(
     let instance = Arc::new(QuarkInstance {
         engine,
         inference_limit,
-        frozen,
+        oscillation,
         checkpoint_path,
-        session: tokio::sync::Mutex::new(QuarkSession::new()),
+        session: tokio::sync::Mutex::new(QuarkSession::new(frozen)),
     });
     ctx.instances
         .write()
@@ -1383,6 +1403,48 @@ fn resolve_model_frozen(server_frozen: bool, model_config: Option<&QuarkModelCon
     model_config
         .and_then(|model_config| model_config.frozen)
         .unwrap_or(server_frozen)
+}
+
+fn resolve_model_oscillation(
+    model_config: Option<&QuarkModelConfig>,
+) -> Result<Option<FrozenOscillation>> {
+    let Some(config) = model_config else {
+        return Ok(None);
+    };
+    let Some(steps) = config.oscillation_steps else {
+        return Ok(None);
+    };
+    if steps == 0 {
+        return Err(ServerError::InvalidOscillationSteps(steps));
+    }
+    Ok(Some(FrozenOscillation {
+        steps,
+        offset: config.oscillation_offset.unwrap_or_default(),
+    }))
+}
+
+fn apply_frozen_oscillation(
+    model_id: Uuid,
+    session: &mut QuarkSession,
+    oscillation: Option<FrozenOscillation>,
+) {
+    let Some(oscillation) = oscillation else {
+        return;
+    };
+    session.optimize_steps = session.optimize_steps.saturating_add(1);
+    if session.optimize_steps > oscillation.offset
+        && (session.optimize_steps - oscillation.offset) % oscillation.steps == 0
+    {
+        session.frozen = !session.frozen;
+        info!(
+            %model_id,
+            frozen = session.frozen,
+            optimize_steps = session.optimize_steps,
+            oscillation_steps = oscillation.steps,
+            oscillation_offset = oscillation.offset,
+            "flipped model frozen state by oscillation config"
+        );
+    }
 }
 
 fn resolve_checkpoint_tokenizer_path() -> Result<PathBuf> {
@@ -1504,7 +1566,7 @@ async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Res
         )));
     }
 
-    if instance.frozen {
+    if session.frozen {
         info!(%model_id, "skipping perturb up because model instance is frozen");
     } else {
         instance
@@ -1692,7 +1754,7 @@ async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<Quark
         )));
     }
 
-    if instance.frozen {
+    if session.frozen {
         info!(%model_id, "skipping perturb down because model instance is frozen");
     } else {
         instance
@@ -1741,7 +1803,7 @@ async fn handle_optimize(
     }
 
     reset_model(&instance.engine).await?;
-    if instance.frozen {
+    if session.frozen {
         info!(%model_id, "skipping optimization because model instance is frozen");
     } else {
         instance
@@ -1755,6 +1817,7 @@ async fn handle_optimize(
     }
 
     session.state = QuarkState::Idle;
+    apply_frozen_oscillation(model_id, &mut session, instance.oscillation);
     info!(%model_id, "finished optimization update");
     Ok(QuarkOut::Ack)
 }
@@ -1910,6 +1973,8 @@ pub enum ServerError {
     ModelInstanceNotRunning(Uuid),
     #[error("invalid Quark state machine transition: {0}")]
     InvalidQuarkState(String),
+    #[error("oscillation_steps must be greater than zero, got {0}")]
+    InvalidOscillationSteps(usize),
     #[error("void service not configured")]
     VoidNotConfigured,
     #[error("failed to resolve home directory for checkpoint tokenizer")]
@@ -1988,9 +2053,10 @@ pub enum ServerError {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        handle_register_tunnel, resolve_max_instances, resolve_model_frozen, QuarkContext,
-        QuarkMode, QuarkServerDefaults, ServerBuilder, DEFAULT_INFERENCE_LIMIT,
-        DEFAULT_MAX_INSTANCES,
+        apply_frozen_oscillation, handle_register_tunnel, resolve_max_instances,
+        resolve_model_frozen, resolve_model_oscillation, FrozenOscillation, QuarkContext,
+        QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState, ServerBuilder,
+        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::QuarkModelConfig;
     use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
@@ -2027,6 +2093,8 @@ mod tests {
             training_lr: Some(0.0002),
             training_epsilon: Some(0.001),
             frozen: None,
+            oscillation_steps: None,
+            oscillation_offset: None,
             checkpoint_id: None,
         }));
 
@@ -2063,6 +2131,75 @@ mod tests {
                 ..QuarkModelConfig::default()
             })
         ));
+    }
+
+    #[test]
+    fn model_config_oscillation_defaults_to_none() {
+        assert_eq!(resolve_model_oscillation(None).unwrap(), None);
+        assert_eq!(
+            resolve_model_oscillation(Some(&QuarkModelConfig {
+                oscillation_offset: Some(7),
+                ..QuarkModelConfig::default()
+            }))
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn model_config_oscillation_resolves_steps_and_offset() {
+        let resolved = resolve_model_oscillation(Some(&QuarkModelConfig {
+            oscillation_steps: Some(10),
+            oscillation_offset: Some(20),
+            ..QuarkModelConfig::default()
+        }))
+        .expect("oscillation config should resolve")
+        .expect("oscillation config should be present");
+        assert_eq!(
+            resolved,
+            FrozenOscillation {
+                steps: 10,
+                offset: 20
+            }
+        );
+    }
+
+    #[test]
+    fn model_config_oscillation_rejects_zero_steps() {
+        let err = resolve_model_oscillation(Some(&QuarkModelConfig {
+            oscillation_steps: Some(0),
+            ..QuarkModelConfig::default()
+        }))
+        .expect_err("zero oscillation steps should be rejected");
+        assert!(matches!(
+            err,
+            super::ServerError::InvalidOscillationSteps(0)
+        ));
+    }
+
+    #[test]
+    fn oscillation_flips_frozen_after_offset_and_every_cadence() {
+        let mut session = QuarkSession {
+            state: QuarkState::AwaitingOptimize,
+            running: true,
+            frozen: true,
+            optimize_steps: 0,
+        };
+        let oscillation = Some(FrozenOscillation {
+            steps: 10,
+            offset: 20,
+        });
+        let model_id = uuid::Uuid::new_v4();
+        let mut flips = Vec::new();
+        for step in 1..=50 {
+            let before = session.frozen;
+            apply_frozen_oscillation(model_id, &mut session, oscillation);
+            if session.frozen != before {
+                flips.push(step);
+            }
+        }
+        assert_eq!(flips, vec![30, 40, 50]);
+        assert!(!session.frozen);
     }
 
     #[test]

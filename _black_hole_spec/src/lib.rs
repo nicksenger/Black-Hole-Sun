@@ -134,6 +134,15 @@ pub struct QuarkModelConfig {
     pub training_lr: Option<f64>,
     pub training_epsilon: Option<f64>,
     pub frozen: Option<bool>,
+    /// Optional optimize-step cadence for frozen-state oscillation.
+    ///
+    /// When set, quark flips `frozen` <-> `unfrozen` every `oscillation_steps`
+    /// completed optimize calls after any configured offset.
+    pub oscillation_steps: Option<usize>,
+    /// Optional number of optimize steps to wait before oscillation begins.
+    ///
+    /// Ignored when `oscillation_steps` is `None`.
+    pub oscillation_offset: Option<usize>,
     /// Optional checkpoint object to load model weights from for this instance.
     ///
     /// When `None`, quark loads weights from its configured server model path.
