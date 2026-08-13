@@ -577,8 +577,8 @@ impl NodeStateVisual for SunNodeState {
     fn palette_with_frozen(self, frozen: Option<bool>) -> (Color, Color) {
         if self == SunNodeState::Optimization && frozen == Some(true) {
             (
-                Color::from_rgb8(138, 72, 186),
-                Color::from_rgb8(186, 126, 224),
+                Color::from_rgb8(62, 74, 178),
+                Color::from_rgb8(113, 130, 224),
             )
         } else {
             self.palette()
@@ -1305,8 +1305,8 @@ mod tests {
         assert_eq!(
             SunNodeState::Optimization.palette_with_frozen(Some(true)),
             (
-                Color::from_rgb8(138, 72, 186),
-                Color::from_rgb8(186, 126, 224)
+                Color::from_rgb8(62, 74, 178),
+                Color::from_rgb8(113, 130, 224)
             )
         );
         assert_ne!(SunNodeState::Idle.color(0), SunNodeState::Idle.color(1));
