@@ -83,7 +83,28 @@ fn register_vertex<S>(
 
 fn short_type_name<T: ?Sized>() -> String {
     let full = core::any::type_name::<T>();
-    full.rsplit("::").next().unwrap_or(full).to_string()
+    let cleaned = strip_type_generics(full);
+    cleaned
+        .rsplit("::")
+        .next()
+        .unwrap_or(cleaned.as_str())
+        .to_string()
+}
+
+fn strip_type_generics(name: &str) -> String {
+    let mut depth = 0usize;
+    let mut cleaned = String::with_capacity(name.len());
+
+    for ch in name.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => cleaned.push(ch),
+            _ => {}
+        }
+    }
+
+    cleaned.trim().to_string()
 }
 
 /// Spawns and registers a [`Unary`](super::Unary) descriptor.
@@ -828,6 +849,8 @@ mod tests {
     use jungle_sdk::Id;
     use typenum::{U0, U1, U2};
 
+    struct GenericType<T>(std::marker::PhantomData<T>);
+
     struct TestSunAnimal;
 
     impl Animal for TestSunAnimal {
@@ -942,6 +965,16 @@ mod tests {
             <SpawnBinaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, seed);
         assert_eq!(effect_seed.p1_recv_id, seed.p1_recv_id);
         assert_eq!(effect_seed.p2_recv_id, seed.p2_recv_id);
+    }
+
+    #[test]
+    fn short_type_name_omits_generic_arguments() {
+        type Nested = GenericType<Result<String, Vec<u8>>>;
+        assert_eq!(short_type_name::<Nested>(), "GenericType");
+        assert_eq!(
+            strip_type_generics("crate::Animal<module::Inner<leaf::Type>>"),
+            "crate::Animal"
+        );
     }
 
     #[test]
