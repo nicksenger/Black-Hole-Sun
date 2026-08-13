@@ -1,4 +1,3 @@
-
 use crate::{DarkToken, LogitEntry};
 
 const DEFAULT_REPO: &str = "Qwen/Qwen3.5-0.8B";

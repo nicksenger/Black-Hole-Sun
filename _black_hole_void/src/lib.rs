@@ -111,9 +111,7 @@ impl ServerBuilder {
         })?;
 
         let (cert_chain, key) = match (self.key.as_ref(), self.cert.as_ref()) {
-            (Some(key_path), Some(cert_path)) => {
-                load_user_cert_chain_and_key(key_path, cert_path)?
-            }
+            (Some(key_path), Some(cert_path)) => load_user_cert_chain_and_key(key_path, cert_path)?,
             _ => load_or_generate_self_signed_cert()?,
         };
 

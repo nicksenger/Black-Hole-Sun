@@ -16,8 +16,10 @@ pub trait ModelConfig {
     const TRAINING_LR: Option<f64> = None;
     const TRAINING_EPSILON: Option<f64> = None;
     const FROZEN: Option<bool> = None;
-    const OSCILLATION_STEPS: Option<u32> = None;
-    const OSCILLATION_OFFSET: Option<u32> = None;
+    const OSCILLATION_PERIOD_STEPS: Option<u32> = None;
+    const OSCILLATION_TRAIN_STEPS: Option<u32> = None;
+    const OSCILLATION_PHASE_STEPS: Option<u32> = None;
+    const OSCILLATION_WARMUP_STEPS: Option<u32> = None;
     const CHECKPOINT: Option<u128> = None;
 
     fn quark_model_config() -> Option<QuarkModelConfig> {
@@ -31,8 +33,10 @@ pub trait ModelConfig {
             training_lr: Self::TRAINING_LR,
             training_epsilon: Self::TRAINING_EPSILON,
             frozen: Self::FROZEN,
-            oscillation_steps: Self::OSCILLATION_STEPS,
-            oscillation_offset: Self::OSCILLATION_OFFSET,
+            oscillation_period_steps: Self::OSCILLATION_PERIOD_STEPS,
+            oscillation_train_steps: Self::OSCILLATION_TRAIN_STEPS,
+            oscillation_phase_steps: Self::OSCILLATION_PHASE_STEPS,
+            oscillation_warmup_steps: Self::OSCILLATION_WARMUP_STEPS,
             checkpoint_id: Self::CHECKPOINT.map(ObjectId::from_u128),
         };
 
@@ -45,8 +49,10 @@ pub trait ModelConfig {
             || config.training_lr.is_some()
             || config.training_epsilon.is_some()
             || config.frozen.is_some()
-            || config.oscillation_steps.is_some()
-            || config.oscillation_offset.is_some()
+            || config.oscillation_period_steps.is_some()
+            || config.oscillation_train_steps.is_some()
+            || config.oscillation_phase_steps.is_some()
+            || config.oscillation_warmup_steps.is_some()
             || config.checkpoint_id.is_some();
         if has_any_override {
             Some(config)
@@ -77,8 +83,10 @@ mod tests {
 
     struct OscillationConfig;
     impl ModelConfig for OscillationConfig {
-        const OSCILLATION_STEPS: Option<u32> = Some(10);
-        const OSCILLATION_OFFSET: Option<u32> = Some(20);
+        const OSCILLATION_PERIOD_STEPS: Option<u32> = Some(10);
+        const OSCILLATION_TRAIN_STEPS: Option<u32> = Some(3);
+        const OSCILLATION_PHASE_STEPS: Option<u32> = Some(2);
+        const OSCILLATION_WARMUP_STEPS: Option<u32> = Some(20);
     }
 
     #[test]
@@ -104,7 +112,9 @@ mod tests {
     #[test]
     fn oscillation_overrides_emit_model_config() {
         let config = OscillationConfig::quark_model_config().expect("expected override config");
-        assert_eq!(config.oscillation_steps, Some(10));
-        assert_eq!(config.oscillation_offset, Some(20));
+        assert_eq!(config.oscillation_period_steps, Some(10));
+        assert_eq!(config.oscillation_train_steps, Some(3));
+        assert_eq!(config.oscillation_phase_steps, Some(2));
+        assert_eq!(config.oscillation_warmup_steps, Some(20));
     }
 }

@@ -289,8 +289,10 @@ impl QuarkSession {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FrozenOscillation {
-    steps: u32,
-    offset: u32,
+    period_steps: u32,
+    train_steps: u32,
+    phase_steps: u32,
+    warmup_steps: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -584,9 +586,7 @@ impl ServerBuilder {
         };
 
         let (cert_chain, key) = match (self.key.as_ref(), self.cert.as_ref()) {
-            (Some(key_path), Some(cert_path)) => {
-                load_user_cert_chain_and_key(key_path, cert_path)?
-            }
+            (Some(key_path), Some(cert_path)) => load_user_cert_chain_and_key(key_path, cert_path)?,
             _ => load_or_generate_self_signed_cert()?,
         };
 
@@ -1411,15 +1411,26 @@ fn resolve_model_oscillation(
     let Some(config) = model_config else {
         return Ok(None);
     };
-    let Some(steps) = config.oscillation_steps else {
+    let Some(period_steps) = config.oscillation_period_steps else {
         return Ok(None);
     };
-    if steps == 0 {
-        return Err(ServerError::InvalidOscillationSteps(steps));
+    if period_steps == 0 {
+        return Err(ServerError::InvalidOscillationPeriodSteps(period_steps));
+    }
+    let Some(train_steps) = config.oscillation_train_steps else {
+        return Err(ServerError::MissingOscillationTrainSteps);
+    };
+    if train_steps > period_steps {
+        return Err(ServerError::InvalidOscillationTrainSteps {
+            train_steps,
+            period_steps,
+        });
     }
     Ok(Some(FrozenOscillation {
-        steps,
-        offset: config.oscillation_offset.unwrap_or_default(),
+        period_steps,
+        train_steps,
+        phase_steps: config.oscillation_phase_steps.unwrap_or_default(),
+        warmup_steps: config.oscillation_warmup_steps.unwrap_or_default(),
     }))
 }
 
@@ -1432,19 +1443,25 @@ fn apply_frozen_oscillation(
         return;
     };
     session.optimize_steps = session.optimize_steps.saturating_add(1);
-    if session.optimize_steps > oscillation.offset
-        && (session.optimize_steps - oscillation.offset) % oscillation.steps == 0
-    {
-        session.frozen = !session.frozen;
-        info!(
-            %model_id,
-            frozen = session.frozen,
-            optimize_steps = session.optimize_steps,
-            oscillation_steps = oscillation.steps,
-            oscillation_offset = oscillation.offset,
-            "flipped model frozen state by oscillation config"
-        );
+    if session.optimize_steps <= oscillation.warmup_steps {
+        return;
     }
+
+    let relative_step = session.optimize_steps - oscillation.warmup_steps - 1;
+    let cycle_position = (relative_step + oscillation.phase_steps % oscillation.period_steps)
+        % oscillation.period_steps;
+    let should_train = cycle_position < oscillation.train_steps;
+    session.frozen = !should_train;
+    info!(
+        %model_id,
+        frozen = session.frozen,
+        optimize_steps = session.optimize_steps,
+        oscillation_period_steps = oscillation.period_steps,
+        oscillation_train_steps = oscillation.train_steps,
+        oscillation_phase_steps = oscillation.phase_steps,
+        oscillation_warmup_steps = oscillation.warmup_steps,
+        "applied model frozen state from oscillation schedule"
+    );
 }
 
 fn resolve_checkpoint_tokenizer_path() -> Result<PathBuf> {
@@ -1973,8 +1990,14 @@ pub enum ServerError {
     ModelInstanceNotRunning(Uuid),
     #[error("invalid Quark state machine transition: {0}")]
     InvalidQuarkState(String),
-    #[error("oscillation_steps must be greater than zero, got {0}")]
-    InvalidOscillationSteps(u32),
+    #[error("oscillation_period_steps must be greater than zero, got {0}")]
+    InvalidOscillationPeriodSteps(u32),
+    #[error("oscillation_train_steps must be provided when oscillation_period_steps is set")]
+    MissingOscillationTrainSteps,
+    #[error(
+        "oscillation_train_steps must be <= oscillation_period_steps, got {train_steps} > {period_steps}"
+    )]
+    InvalidOscillationTrainSteps { train_steps: u32, period_steps: u32 },
     #[error("void service not configured")]
     VoidNotConfigured,
     #[error("failed to resolve home directory for checkpoint tokenizer")]
@@ -2093,8 +2116,10 @@ mod tests {
             training_lr: Some(0.0002),
             training_epsilon: Some(0.001),
             frozen: None,
-            oscillation_steps: None,
-            oscillation_offset: None,
+            oscillation_period_steps: None,
+            oscillation_train_steps: None,
+            oscillation_phase_steps: None,
+            oscillation_warmup_steps: None,
             checkpoint_id: None,
         }));
 
@@ -2138,7 +2163,7 @@ mod tests {
         assert_eq!(resolve_model_oscillation(None).unwrap(), None);
         assert_eq!(
             resolve_model_oscillation(Some(&QuarkModelConfig {
-                oscillation_offset: Some(7),
+                oscillation_warmup_steps: Some(7),
                 ..QuarkModelConfig::default()
             }))
             .unwrap(),
@@ -2147,10 +2172,12 @@ mod tests {
     }
 
     #[test]
-    fn model_config_oscillation_resolves_steps_and_offset() {
+    fn model_config_oscillation_resolves_period_train_phase_and_warmup() {
         let resolved = resolve_model_oscillation(Some(&QuarkModelConfig {
-            oscillation_steps: Some(10),
-            oscillation_offset: Some(20),
+            oscillation_period_steps: Some(10),
+            oscillation_train_steps: Some(3),
+            oscillation_phase_steps: Some(4),
+            oscillation_warmup_steps: Some(20),
             ..QuarkModelConfig::default()
         }))
         .expect("oscillation config should resolve")
@@ -2158,27 +2185,60 @@ mod tests {
         assert_eq!(
             resolved,
             FrozenOscillation {
-                steps: 10,
-                offset: 20
+                period_steps: 10,
+                train_steps: 3,
+                phase_steps: 4,
+                warmup_steps: 20
             }
         );
     }
 
     #[test]
-    fn model_config_oscillation_rejects_zero_steps() {
+    fn model_config_oscillation_rejects_zero_period() {
         let err = resolve_model_oscillation(Some(&QuarkModelConfig {
-            oscillation_steps: Some(0),
+            oscillation_period_steps: Some(0),
+            oscillation_train_steps: Some(1),
             ..QuarkModelConfig::default()
         }))
-        .expect_err("zero oscillation steps should be rejected");
+        .expect_err("zero oscillation period should be rejected");
         assert!(matches!(
             err,
-            super::ServerError::InvalidOscillationSteps(0)
+            super::ServerError::InvalidOscillationPeriodSteps(0)
         ));
     }
 
     #[test]
-    fn oscillation_flips_frozen_after_offset_and_every_cadence() {
+    fn model_config_oscillation_requires_train_steps_when_period_is_set() {
+        let err = resolve_model_oscillation(Some(&QuarkModelConfig {
+            oscillation_period_steps: Some(8),
+            ..QuarkModelConfig::default()
+        }))
+        .expect_err("missing train steps should be rejected");
+        assert!(matches!(
+            err,
+            super::ServerError::MissingOscillationTrainSteps
+        ));
+    }
+
+    #[test]
+    fn model_config_oscillation_rejects_train_steps_greater_than_period() {
+        let err = resolve_model_oscillation(Some(&QuarkModelConfig {
+            oscillation_period_steps: Some(8),
+            oscillation_train_steps: Some(9),
+            ..QuarkModelConfig::default()
+        }))
+        .expect_err("train steps above period should be rejected");
+        assert!(matches!(
+            err,
+            super::ServerError::InvalidOscillationTrainSteps {
+                train_steps: 9,
+                period_steps: 8
+            }
+        ));
+    }
+
+    #[test]
+    fn oscillation_applies_windowed_schedule_after_warmup() {
         let mut session = QuarkSession {
             state: QuarkState::AwaitingOptimize,
             running: true,
@@ -2186,20 +2246,21 @@ mod tests {
             optimize_steps: 0,
         };
         let oscillation = Some(FrozenOscillation {
-            steps: 10,
-            offset: 20,
+            period_steps: 5,
+            train_steps: 2,
+            phase_steps: 3,
+            warmup_steps: 2,
         });
         let model_id = uuid::Uuid::new_v4();
-        let mut flips = Vec::new();
-        for step in 1..=50 {
-            let before = session.frozen;
+        let mut trainable_steps = Vec::new();
+        for step in 1..=12 {
             apply_frozen_oscillation(model_id, &mut session, oscillation);
-            if session.frozen != before {
-                flips.push(step);
+            if !session.frozen {
+                trainable_steps.push(step);
             }
         }
-        assert_eq!(flips, vec![30, 40, 50]);
-        assert!(!session.frozen);
+        assert_eq!(trainable_steps, vec![5, 6, 10, 11]);
+        assert!(session.frozen);
     }
 
     #[test]

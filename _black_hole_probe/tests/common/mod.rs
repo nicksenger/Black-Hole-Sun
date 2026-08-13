@@ -4,7 +4,6 @@ mod sun;
 #[allow(unused_imports)]
 pub use sun::{Generator, Policy};
 
-
 use std::sync::Once;
 use tracing::warn;
 

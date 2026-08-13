@@ -134,15 +134,21 @@ pub struct QuarkModelConfig {
     pub training_lr: Option<f64>,
     pub training_epsilon: Option<f64>,
     pub frozen: Option<bool>,
-    /// Optional optimize-step cadence for frozen-state oscillation.
+    /// Optional optimize-step period for train/freeze oscillation scheduling.
     ///
-    /// When set, quark flips `frozen` <-> `unfrozen` every `oscillation_steps`
-    /// completed optimize calls after any configured offset.
-    pub oscillation_steps: Option<u32>,
-    /// Optional number of optimize steps to wait before oscillation begins.
+    /// When set (with `oscillation_train_steps`), quark applies a deterministic
+    /// train window each cycle after warmup instead of flipping prior state.
+    pub oscillation_period_steps: Option<u32>,
+    /// Optional count of trainable optimize steps in each oscillation cycle.
     ///
-    /// Ignored when `oscillation_steps` is `None`.
-    pub oscillation_offset: Option<u32>,
+    /// Must be less than or equal to `oscillation_period_steps`.
+    pub oscillation_train_steps: Option<u32>,
+    /// Optional per-instance phase shift (in optimize steps), modulo period.
+    pub oscillation_phase_steps: Option<u32>,
+    /// Optional number of optimize steps to wait before schedule activation.
+    ///
+    /// Ignored when `oscillation_period_steps` is `None`.
+    pub oscillation_warmup_steps: Option<u32>,
     /// Optional checkpoint object to load model weights from for this instance.
     ///
     /// When `None`, quark loads weights from its configured server model path.
