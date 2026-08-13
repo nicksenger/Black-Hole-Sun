@@ -317,6 +317,9 @@ struct ModelRuntimeConfig {
     presence_penalty: f32,
     training_lr: f64,
     training_epsilon: f64,
+    training_z_loss: f64,
+    training_lb_loss: f64,
+    training_clip_threshold: f64,
 }
 
 struct ResolvedModelSource {
@@ -421,6 +424,15 @@ impl QuarkServerDefaults {
             }
             if let Some(training_epsilon) = model_config.training_epsilon {
                 resolved.training_config.epsilon = training_epsilon;
+            }
+            if let Some(training_z_loss) = model_config.training_z_loss {
+                resolved.training_config.z_loss = training_z_loss;
+            }
+            if let Some(training_lb_loss) = model_config.training_lb_loss {
+                resolved.training_config.lb_loss = training_lb_loss;
+            }
+            if let Some(training_clip_threshold) = model_config.training_clip_threshold {
+                resolved.training_config.clip_threshold = training_clip_threshold;
             }
         }
         resolved
@@ -1321,6 +1333,9 @@ async fn handle_start(
         presence_penalty: defaults.presence_penalty,
         training_lr: defaults.training_config.lr,
         training_epsilon: defaults.training_config.epsilon,
+        training_z_loss: defaults.training_config.z_loss,
+        training_lb_loss: defaults.training_config.lb_loss,
+        training_clip_threshold: defaults.training_config.clip_threshold,
     };
     let frozen = resolve_model_frozen(ctx.frozen, model_config.as_ref());
     let oscillation = match resolve_model_oscillation(model_config.as_ref()) {
@@ -1460,6 +1475,9 @@ fn build_model_params(
         presence_penalty: runtime_config.presence_penalty,
         training_lr: runtime_config.training_lr,
         training_epsilon: runtime_config.training_epsilon,
+        training_z_loss: runtime_config.training_z_loss,
+        training_lb_loss: runtime_config.training_lb_loss,
+        training_clip_threshold: runtime_config.training_clip_threshold,
         is_frozen: session.frozen,
         optimize_steps: session.optimize_steps,
         oscillation_period_steps: oscillation.map(|osc| osc.period_steps),
@@ -2228,6 +2246,9 @@ mod tests {
             inference_limit: Some(12),
             training_lr: Some(0.0002),
             training_epsilon: Some(0.001),
+            training_z_loss: Some(0.12),
+            training_lb_loss: Some(0.24),
+            training_clip_threshold: Some(0.5),
             frozen: None,
             oscillation_period_steps: None,
             oscillation_train_steps: None,
@@ -2244,6 +2265,9 @@ mod tests {
         assert_eq!(resolved.inference_limit, 12);
         assert_eq!(resolved.training_config.lr, 0.0002);
         assert_eq!(resolved.training_config.epsilon, 0.001);
+        assert_eq!(resolved.training_config.z_loss, 0.12);
+        assert_eq!(resolved.training_config.lb_loss, 0.24);
+        assert_eq!(resolved.training_config.clip_threshold, 0.5);
         assert_ne!(resolved.inference_limit, DEFAULT_INFERENCE_LIMIT);
     }
 
@@ -2387,6 +2411,9 @@ mod tests {
             presence_penalty: 0.2,
             training_lr: 0.0007,
             training_epsilon: 0.00001,
+            training_z_loss: 0.005,
+            training_lb_loss: 0.015,
+            training_clip_threshold: 1.25,
         };
         let oscillation = Some(FrozenOscillation {
             period_steps: 4,
@@ -2410,6 +2437,9 @@ mod tests {
         assert_eq!(first.oscillation_train_steps, Some(2));
         assert_eq!(first.training_lr, 0.0007);
         assert_eq!(first.training_epsilon, 0.00001);
+        assert_eq!(first.training_z_loss, 0.005);
+        assert_eq!(first.training_lb_loss, 0.015);
+        assert_eq!(first.training_clip_threshold, 1.25);
         assert_eq!(first.top_k, 123);
         assert_eq!(first.inference_limit, 32);
 

@@ -34,6 +34,9 @@ pub trait ModelConfig {
     const INFERENCE_LIMIT: Option<u32> = None;
     const TRAINING_LR: Option<f64> = None;
     const TRAINING_EPSILON: Option<f64> = None;
+    const TRAINING_Z_LOSS: Option<f64> = None;
+    const TRAINING_LB_LOSS: Option<f64> = None;
+    const TRAINING_CLIP_THRESHOLD: Option<f64> = None;
     const FROZEN: Option<bool> = None;
     const CHECKPOINT: Option<u128> = None;
 
@@ -47,6 +50,9 @@ pub trait ModelConfig {
             inference_limit: Self::INFERENCE_LIMIT,
             training_lr: Self::TRAINING_LR,
             training_epsilon: Self::TRAINING_EPSILON,
+            training_z_loss: Self::TRAINING_Z_LOSS,
+            training_lb_loss: Self::TRAINING_LB_LOSS,
+            training_clip_threshold: Self::TRAINING_CLIP_THRESHOLD,
             frozen: Self::FROZEN,
             oscillation_period_steps: <Self::Oscillation as OscillationSchedule>::PERIOD_STEPS,
             oscillation_train_steps: <Self::Oscillation as OscillationSchedule>::TRAIN_STEPS,
@@ -63,6 +69,9 @@ pub trait ModelConfig {
             || config.inference_limit.is_some()
             || config.training_lr.is_some()
             || config.training_epsilon.is_some()
+            || config.training_z_loss.is_some()
+            || config.training_lb_loss.is_some()
+            || config.training_clip_threshold.is_some()
             || config.frozen.is_some()
             || config.oscillation_period_steps.is_some()
             || config.oscillation_train_steps.is_some()
@@ -100,6 +109,14 @@ mod tests {
         const CHECKPOINT: Option<u128> = Some(42);
     }
 
+    struct TrainingOverridesConfig;
+    impl ModelConfig for TrainingOverridesConfig {
+        type Oscillation = super::NoOscillation;
+        const TRAINING_Z_LOSS: Option<f64> = Some(0.02);
+        const TRAINING_LB_LOSS: Option<f64> = Some(0.03);
+        const TRAINING_CLIP_THRESHOLD: Option<f64> = Some(1.5);
+    }
+
     struct WindowedOscillation;
     impl OscillationSchedule for WindowedOscillation {
         const PERIOD_STEPS: Option<u32> = Some(10);
@@ -131,6 +148,15 @@ mod tests {
             config.checkpoint_id,
             Some(black_hole_spec::ObjectId::from_u128(42))
         );
+    }
+
+    #[test]
+    fn training_overrides_emit_model_config() {
+        let config =
+            TrainingOverridesConfig::quark_model_config().expect("expected override config");
+        assert_eq!(config.training_z_loss, Some(0.02));
+        assert_eq!(config.training_lb_loss, Some(0.03));
+        assert_eq!(config.training_clip_threshold, Some(1.5));
     }
 
     #[test]

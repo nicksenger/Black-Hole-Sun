@@ -101,6 +101,9 @@ pub struct QuarkModelParams {
     pub presence_penalty: f32,
     pub training_lr: f64,
     pub training_epsilon: f64,
+    pub training_z_loss: f64,
+    pub training_lb_loss: f64,
+    pub training_clip_threshold: f64,
     pub is_frozen: bool,
     pub optimize_steps: u32,
     pub oscillation_period_steps: Option<u32>,
@@ -159,6 +162,9 @@ pub struct QuarkModelConfig {
     pub inference_limit: Option<u32>,
     pub training_lr: Option<f64>,
     pub training_epsilon: Option<f64>,
+    pub training_z_loss: Option<f64>,
+    pub training_lb_loss: Option<f64>,
+    pub training_clip_threshold: Option<f64>,
     pub frozen: Option<bool>,
     /// Optional optimize-step period for train/freeze oscillation scheduling.
     ///
