@@ -31,6 +31,8 @@ const DEFAULT_MAX_INSTANCES: usize = 1;
 const DEFAULT_CHECKPOINT_TOKENIZER_FILE: &str = "tokenizer.json";
 const DEFAULT_CHECKPOINT_TOKENIZER_DIR: &str = ".black-hole-sun/tokenizers";
 const CHECKPOINT_CACHE_DIR: &str = "black-hole-quark/checkpoints";
+const RESIDUAL_UPDATE_UNSUPPORTED_FRAGMENT: &str =
+    "restore_and_update_with_residual not supported for ";
 
 // ---------------------------------------------------------------------------
 // Void client — connects to black-hole-void over QUIC, sends/receives frames
@@ -1722,8 +1724,43 @@ async fn reset_model(engine: &ModelEngine) -> Result<()> {
         .map_err(|error| ServerError::ModelError(error.to_string()))
 }
 
-fn optimization_model_error(error: impl std::fmt::Display) -> ServerError {
-    ServerError::ModelError(format!("optimization failed: {error}"))
+fn unsupported_residual_update_dtype(error_message: &str) -> Option<String> {
+    let (_, suffix) = error_message.split_once(RESIDUAL_UPDATE_UNSUPPORTED_FRAGMENT)?;
+    let token = suffix.split_whitespace().next()?;
+    let dtype = token.trim_end_matches(['.', ',', ';', ':']);
+    if dtype.is_empty() {
+        None
+    } else {
+        Some(dtype.to_string())
+    }
+}
+
+fn error_feedback_mode_name(config: QuarkErrorFeedbackConfig) -> Option<&'static str> {
+    match config {
+        QuarkErrorFeedbackConfig::Off => None,
+        QuarkErrorFeedbackConfig::Persistent { .. } => Some("persistent"),
+        QuarkErrorFeedbackConfig::Replay { .. } => Some("replay"),
+    }
+}
+
+fn error_feedback_support_hint(
+    training_error_feedback: QuarkErrorFeedbackConfig,
+    unsupported_dtype: Option<&str>,
+) -> Option<String> {
+    let mode = error_feedback_mode_name(training_error_feedback)?;
+    let dtype = unsupported_dtype.unwrap_or("this");
+    Some(format!(
+        "paramecia does not support {mode} error-feedback updates for {dtype} weights. Set training_error_feedback=Off or use a quantized checkpoint."
+    ))
+}
+
+fn optimization_model_error(error_message: &str, hint: Option<&str>) -> ServerError {
+    let mut message = format!("optimization failed: {error_message}");
+    if let Some(hint) = hint {
+        message.push_str(". ");
+        message.push_str(hint);
+    }
+    ServerError::ModelError(message)
 }
 
 async fn checkpoint_model(engine: &ModelEngine) -> Result<Vec<u8>> {
@@ -2010,6 +2047,12 @@ async fn handle_optimize(
             .update(loss_up, loss_down)
             .await
             .map_err(|error| {
+                let error_message = error.to_string();
+                let unsupported_dtype = unsupported_residual_update_dtype(&error_message);
+                let error_feedback_hint = error_feedback_support_hint(
+                    runtime_config.training_error_feedback,
+                    unsupported_dtype.as_deref(),
+                );
                 warn!(
                     %model_id,
                     loss_up,
@@ -2020,10 +2063,12 @@ async fn handle_optimize(
                     training_lb_loss = runtime_config.training_lb_loss,
                     training_clip_threshold = runtime_config.training_clip_threshold,
                     training_error_feedback = ?runtime_config.training_error_feedback,
-                    error = %error,
+                    unsupported_error_feedback_dtype = ?unsupported_dtype,
+                    error_feedback_hint = ?error_feedback_hint,
+                    error = %error_message,
                     "optimization failed"
                 );
-                optimization_model_error(error)
+                optimization_model_error(&error_message, error_feedback_hint.as_deref())
             })?;
     }
 
@@ -2648,7 +2693,8 @@ mod tests {
 
     #[test]
     fn optimization_error_includes_engine_message() {
-        let err = super::optimization_model_error("engine says clip threshold is invalid");
+        let err =
+            super::optimization_model_error("engine says clip threshold is invalid", None);
         let super::ServerError::ModelError(message) = err else {
             panic!("expected model error");
         };
@@ -2656,6 +2702,32 @@ mod tests {
             message,
             "optimization failed: engine says clip threshold is invalid"
         );
+    }
+
+    #[test]
+    fn optimization_error_adds_actionable_error_feedback_hint() {
+        let engine_error =
+            "Train error: update failed: restore_and_update_with_residual not supported for F32";
+        let unsupported_dtype = super::unsupported_residual_update_dtype(engine_error);
+        assert_eq!(unsupported_dtype.as_deref(), Some("F32"));
+
+        let hint = super::error_feedback_support_hint(
+            QuarkErrorFeedbackConfig::Persistent {
+                decay: 0.9,
+                gain: 1.0,
+            },
+            unsupported_dtype.as_deref(),
+        )
+        .expect("persistent mode should emit support hint");
+        assert!(hint.contains("persistent"));
+        assert!(hint.contains("F32"));
+
+        let err = super::optimization_model_error(engine_error, Some(&hint));
+        let super::ServerError::ModelError(message) = err else {
+            panic!("expected model error");
+        };
+        assert!(message.contains(engine_error));
+        assert!(message.contains("training_error_feedback=Off"));
     }
 
     #[test]
