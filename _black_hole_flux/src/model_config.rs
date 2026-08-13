@@ -2,11 +2,29 @@
 
 use black_hole_spec::{ObjectId, QuarkModelConfig};
 
+/// Compile-time oscillation schedule for train/freeze windows.
+///
+/// Implementors expose optional schedule constants. Leaving all values as
+/// `None` disables oscillation and keeps the model's frozen state static.
+pub trait OscillationSchedule {
+    const PERIOD_STEPS: Option<u32> = None;
+    const TRAIN_STEPS: Option<u32> = None;
+    const PHASE_STEPS: Option<u32> = None;
+    const WARMUP_STEPS: Option<u32> = None;
+}
+
+/// Default oscillation schedule that applies no oscillation overrides.
+pub struct NoOscillation;
+
+impl OscillationSchedule for NoOscillation {}
+
 /// Compile-time model configuration for a cell-owned quark instance.
 ///
 /// Implementors expose optional overrides as associated constants. Any constant
 /// left as `None` falls back to the quark server default for that field.
 pub trait ModelConfig {
+    type Oscillation: OscillationSchedule;
+
     const TOP_K: Option<usize> = None;
     const TEMPERATURE: Option<f64> = None;
     const TOP_P: Option<f64> = None;
@@ -16,10 +34,6 @@ pub trait ModelConfig {
     const TRAINING_LR: Option<f64> = None;
     const TRAINING_EPSILON: Option<f64> = None;
     const FROZEN: Option<bool> = None;
-    const OSCILLATION_PERIOD_STEPS: Option<u32> = None;
-    const OSCILLATION_TRAIN_STEPS: Option<u32> = None;
-    const OSCILLATION_PHASE_STEPS: Option<u32> = None;
-    const OSCILLATION_WARMUP_STEPS: Option<u32> = None;
     const CHECKPOINT: Option<u128> = None;
 
     fn quark_model_config() -> Option<QuarkModelConfig> {
@@ -33,10 +47,10 @@ pub trait ModelConfig {
             training_lr: Self::TRAINING_LR,
             training_epsilon: Self::TRAINING_EPSILON,
             frozen: Self::FROZEN,
-            oscillation_period_steps: Self::OSCILLATION_PERIOD_STEPS,
-            oscillation_train_steps: Self::OSCILLATION_TRAIN_STEPS,
-            oscillation_phase_steps: Self::OSCILLATION_PHASE_STEPS,
-            oscillation_warmup_steps: Self::OSCILLATION_WARMUP_STEPS,
+            oscillation_period_steps: <Self::Oscillation as OscillationSchedule>::PERIOD_STEPS,
+            oscillation_train_steps: <Self::Oscillation as OscillationSchedule>::TRAIN_STEPS,
+            oscillation_phase_steps: <Self::Oscillation as OscillationSchedule>::PHASE_STEPS,
+            oscillation_warmup_steps: <Self::Oscillation as OscillationSchedule>::WARMUP_STEPS,
             checkpoint_id: Self::CHECKPOINT.map(ObjectId::from_u128),
         };
 
@@ -65,28 +79,37 @@ pub trait ModelConfig {
 /// Default model configuration that passes through all quark server defaults.
 pub struct DefaultConfig;
 
-impl ModelConfig for DefaultConfig {}
+impl ModelConfig for DefaultConfig {
+    type Oscillation = NoOscillation;
+}
 
 #[cfg(test)]
 mod tests {
-    use super::ModelConfig;
+    use super::{ModelConfig, OscillationSchedule};
 
     struct FrozenConfig;
     impl ModelConfig for FrozenConfig {
+        type Oscillation = super::NoOscillation;
         const FROZEN: Option<bool> = Some(true);
     }
 
     struct CheckpointConfig;
     impl ModelConfig for CheckpointConfig {
+        type Oscillation = super::NoOscillation;
         const CHECKPOINT: Option<u128> = Some(42);
+    }
+
+    struct WindowedOscillation;
+    impl OscillationSchedule for WindowedOscillation {
+        const PERIOD_STEPS: Option<u32> = Some(10);
+        const TRAIN_STEPS: Option<u32> = Some(3);
+        const PHASE_STEPS: Option<u32> = Some(2);
+        const WARMUP_STEPS: Option<u32> = Some(20);
     }
 
     struct OscillationConfig;
     impl ModelConfig for OscillationConfig {
-        const OSCILLATION_PERIOD_STEPS: Option<u32> = Some(10);
-        const OSCILLATION_TRAIN_STEPS: Option<u32> = Some(3);
-        const OSCILLATION_PHASE_STEPS: Option<u32> = Some(2);
-        const OSCILLATION_WARMUP_STEPS: Option<u32> = Some(20);
+        type Oscillation = WindowedOscillation;
     }
 
     #[test]

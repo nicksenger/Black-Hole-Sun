@@ -88,7 +88,7 @@ pub use cell::effect::{
 };
 pub use fusion::action::{FusionSeed, FusionState};
 pub use fusion::{Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch};
-pub use model_config::{DefaultConfig, ModelConfig};
+pub use model_config::{DefaultConfig, ModelConfig, NoOscillation, OscillationSchedule};
 pub use ops::VoidInferOps;
 
 pub use atom::Atom;
