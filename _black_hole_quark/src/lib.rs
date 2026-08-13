@@ -273,7 +273,7 @@ struct QuarkSession {
     state: QuarkState,
     running: bool,
     frozen: bool,
-    optimize_steps: usize,
+    optimize_steps: u32,
 }
 
 impl QuarkSession {
@@ -289,8 +289,8 @@ impl QuarkSession {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FrozenOscillation {
-    steps: usize,
-    offset: usize,
+    steps: u32,
+    offset: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -1974,7 +1974,7 @@ pub enum ServerError {
     #[error("invalid Quark state machine transition: {0}")]
     InvalidQuarkState(String),
     #[error("oscillation_steps must be greater than zero, got {0}")]
-    InvalidOscillationSteps(usize),
+    InvalidOscillationSteps(u32),
     #[error("void service not configured")]
     VoidNotConfigured,
     #[error("failed to resolve home directory for checkpoint tokenizer")]

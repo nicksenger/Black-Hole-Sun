@@ -16,8 +16,8 @@ pub trait ModelConfig {
     const TRAINING_LR: Option<f64> = None;
     const TRAINING_EPSILON: Option<f64> = None;
     const FROZEN: Option<bool> = None;
-    const OSCILLATION_STEPS: Option<usize> = None;
-    const OSCILLATION_OFFSET: Option<usize> = None;
+    const OSCILLATION_STEPS: Option<u32> = None;
+    const OSCILLATION_OFFSET: Option<u32> = None;
     const CHECKPOINT: Option<u128> = None;
 
     fn quark_model_config() -> Option<QuarkModelConfig> {
@@ -77,8 +77,8 @@ mod tests {
 
     struct OscillationConfig;
     impl ModelConfig for OscillationConfig {
-        const OSCILLATION_STEPS: Option<usize> = Some(10);
-        const OSCILLATION_OFFSET: Option<usize> = Some(20);
+        const OSCILLATION_STEPS: Option<u32> = Some(10);
+        const OSCILLATION_OFFSET: Option<u32> = Some(20);
     }
 
     #[test]
