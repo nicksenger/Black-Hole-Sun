@@ -33,7 +33,6 @@ const DEFAULT_CHECKPOINT_TOKENIZER_DIR: &str = ".black-hole-sun/tokenizers";
 const CHECKPOINT_CACHE_DIR: &str = "black-hole-quark/checkpoints";
 const RESIDUAL_UPDATE_UNSUPPORTED_FRAGMENT: &str =
     "restore_and_update_with_residual not supported for ";
-const RESIDUAL_UPDATE_SUPPORTED_DTYPES: &str = "Q2K, Q3K, Q4_0, Q4K, Q5K, Q6K, Q8_0, Q8K";
 
 // ---------------------------------------------------------------------------
 // Void client — connects to black-hole-void over QUIC, sends/receives frames
@@ -1749,14 +1748,10 @@ fn error_feedback_support_hint(
     unsupported_dtype: Option<&str>,
 ) -> Option<String> {
     let mode = error_feedback_mode_name(training_error_feedback)?;
-    match unsupported_dtype {
-        Some(dtype) => Some(format!(
-            "paramecia {mode} error-feedback updates currently support only {RESIDUAL_UPDATE_SUPPORTED_DTYPES}. This run hit {dtype}. Quantized GGUF checkpoints can still include trainable F32/BF16 tensors, so set training_error_feedback=Off for now."
-        )),
-        None => Some(format!(
-            "paramecia {mode} error-feedback updates currently support only {RESIDUAL_UPDATE_SUPPORTED_DTYPES}. Set training_error_feedback=Off for now."
-        )),
-    }
+    let dtype = unsupported_dtype.unwrap_or("this");
+    Some(format!(
+        "paramecia does not support {mode} error-feedback updates for {dtype} weights. Set training_error_feedback=Off or use a quantized checkpoint."
+    ))
 }
 
 fn optimization_model_error(error_message: &str, hint: Option<&str>) -> ServerError {
@@ -2069,7 +2064,6 @@ async fn handle_optimize(
                     training_clip_threshold = runtime_config.training_clip_threshold,
                     training_error_feedback = ?runtime_config.training_error_feedback,
                     unsupported_error_feedback_dtype = ?unsupported_dtype,
-                    supported_error_feedback_dtypes = RESIDUAL_UPDATE_SUPPORTED_DTYPES,
                     error_feedback_hint = ?error_feedback_hint,
                     error = %error_message,
                     "optimization failed"
@@ -2727,8 +2721,6 @@ mod tests {
         .expect("persistent mode should emit support hint");
         assert!(hint.contains("persistent"));
         assert!(hint.contains("F32"));
-        assert!(hint.contains("Q2K, Q3K, Q4_0, Q4K, Q5K, Q6K, Q8_0, Q8K"));
-        assert!(hint.contains("Quantized GGUF checkpoints can still include trainable F32/BF16 tensors"));
 
         let err = super::optimization_model_error(engine_error, Some(&hint));
         let super::ServerError::ModelError(message) = err else {
