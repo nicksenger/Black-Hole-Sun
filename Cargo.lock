@@ -3372,7 +3372,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -5233,7 +5233,7 @@ dependencies = [
 [[package]]
 name = "paramecia-arrow"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#eb2f9f754642f302bab8496e9f3a8ab3beab4ae6"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c025cf88b0d3b934892c1d68bca005743ea51cd7"
 dependencies = [
  "glowstick",
  "inception",
@@ -5245,7 +5245,7 @@ dependencies = [
 [[package]]
 name = "paramecia-core"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#eb2f9f754642f302bab8496e9f3a8ab3beab4ae6"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c025cf88b0d3b934892c1d68bca005743ea51cd7"
 dependencies = [
  "byteorder",
  "cudarc",
@@ -5272,7 +5272,7 @@ dependencies = [
 [[package]]
 name = "paramecia-cuda"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#eb2f9f754642f302bab8496e9f3a8ab3beab4ae6"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c025cf88b0d3b934892c1d68bca005743ea51cd7"
 dependencies = [
  "bindgen_cuda",
 ]
@@ -5280,7 +5280,7 @@ dependencies = [
 [[package]]
 name = "paramecia-engine"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#eb2f9f754642f302bab8496e9f3a8ab3beab4ae6"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c025cf88b0d3b934892c1d68bca005743ea51cd7"
 dependencies = [
  "anyhow",
  "clap",
@@ -5302,7 +5302,7 @@ dependencies = [
 [[package]]
 name = "paramecia-metal"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#eb2f9f754642f302bab8496e9f3a8ab3beab4ae6"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c025cf88b0d3b934892c1d68bca005743ea51cd7"
 dependencies = [
  "half",
  "objc2 0.6.4",
@@ -5314,7 +5314,7 @@ dependencies = [
 [[package]]
 name = "paramecia-model"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#eb2f9f754642f302bab8496e9f3a8ab3beab4ae6"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c025cf88b0d3b934892c1d68bca005743ea51cd7"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -5340,7 +5340,7 @@ dependencies = [
 [[package]]
 name = "paramecia-nn"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#eb2f9f754642f302bab8496e9f3a8ab3beab4ae6"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c025cf88b0d3b934892c1d68bca005743ea51cd7"
 dependencies = [
  "half",
  "num-traits",
@@ -5353,7 +5353,7 @@ dependencies = [
 [[package]]
 name = "paramecia-opt"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#eb2f9f754642f302bab8496e9f3a8ab3beab4ae6"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c025cf88b0d3b934892c1d68bca005743ea51cd7"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5374,7 +5374,7 @@ dependencies = [
 [[package]]
 name = "paramecia-tensor"
 version = "0.1.0"
-source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#eb2f9f754642f302bab8496e9f3a8ab3beab4ae6"
+source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c025cf88b0d3b934892c1d68bca005743ea51cd7"
 dependencies = [
  "glowstick",
  "inception",
@@ -5729,7 +5729,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.3",
  "rustls 0.23.43",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -5767,7 +5767,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -8454,7 +8454,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
