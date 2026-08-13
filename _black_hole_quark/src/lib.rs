@@ -23,6 +23,7 @@ const DEFAULT_ENGINE_TEMPERATURE: f64 = 0.7;
 const DEFAULT_ENGINE_REPEAT_PENALTY: f32 = 1.0;
 const DEFAULT_ENGINE_PRESENCE_PENALTY: f32 = 0.0;
 const DEFAULT_INFERENCE_LIMIT: u32 = 256;
+const DEFAULT_MAX_INSTANCES: usize = 1;
 
 // ---------------------------------------------------------------------------
 // Void client — connects to black-hole-void over QUIC, sends/receives frames
@@ -387,6 +388,10 @@ impl QuarkServerDefaults {
     }
 }
 
+fn resolve_max_instances(limit: Option<usize>) -> Option<usize> {
+    Some(limit.unwrap_or(DEFAULT_MAX_INSTANCES))
+}
+
 // ---------------------------------------------------------------------------
 // Server builder
 // ---------------------------------------------------------------------------
@@ -419,7 +424,7 @@ impl ServerBuilder {
             model_path: model_path.into(),
             void_addr: None,
             tunnel: None,
-            max_instances: None,
+            max_instances: Some(DEFAULT_MAX_INSTANCES),
             defaults: QuarkServerDefaults::default(),
         }
     }
@@ -589,7 +594,12 @@ impl ServerBuilder {
         let mode = if let Some(parent_addr) = self.tunnel {
             info!(%parent_addr, %local_addr, "registering tunnel worker");
             let tunnel_token =
-                register_tunnel_worker(parent_addr, local_addr, self.max_instances).await?;
+                register_tunnel_worker(
+                    parent_addr,
+                    local_addr,
+                    resolve_max_instances(self.max_instances),
+                )
+                .await?;
             info!(%parent_addr, %local_addr, token = %tunnel_token, "tunnel worker registered");
             QuarkMode::Worker { tunnel_token }
         } else {
@@ -601,7 +611,7 @@ impl ServerBuilder {
             void_client,
             defaults: self.defaults,
             frozen: self.frozen,
-            max_instances: self.max_instances,
+            max_instances: resolve_max_instances(self.max_instances),
             mode,
             routes: tokio::sync::RwLock::new(HashMap::new()),
             workers: tokio::sync::RwLock::new(HashMap::new()),
@@ -790,6 +800,7 @@ async fn handle_register_tunnel(
     ctx: &QuarkContext,
 ) -> Result<QuarkOut> {
     ensure_root_mode(ctx)?;
+    let max_instances = resolve_max_instances(max_instances);
 
     let token = Uuid::new_v4();
     let replaced_tokens = {
@@ -1721,8 +1732,14 @@ pub enum ServerError {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_model_frozen, QuarkServerDefaults, DEFAULT_INFERENCE_LIMIT};
+    use super::{
+        handle_register_tunnel, resolve_max_instances, resolve_model_frozen, QuarkContext,
+        QuarkMode, QuarkServerDefaults, ServerBuilder, DEFAULT_INFERENCE_LIMIT,
+        DEFAULT_MAX_INSTANCES,
+    };
     use black_hole_spec::QuarkModelConfig;
+    use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
+    use tokio::sync::RwLock;
 
     #[test]
     fn model_config_none_passes_through_server_defaults() {
@@ -1790,6 +1807,87 @@ mod tests {
                 ..QuarkModelConfig::default()
             })
         ));
+    }
+
+    #[test]
+    fn max_instances_defaults_to_one_when_omitted() {
+        assert_eq!(resolve_max_instances(None), Some(DEFAULT_MAX_INSTANCES));
+        assert_eq!(resolve_max_instances(Some(7)), Some(7));
+    }
+
+    #[test]
+    fn server_builder_defaults_max_instances_to_one() {
+        let builder = ServerBuilder::new("model-is-not-loaded-for-this-test");
+        assert_eq!(builder.max_instances, Some(DEFAULT_MAX_INSTANCES));
+    }
+
+    #[tokio::test]
+    async fn tunnel_registration_defaults_capacity_to_one_when_omitted() {
+        let ctx = QuarkContext {
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            void_client: None,
+            defaults: QuarkServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(DEFAULT_MAX_INSTANCES),
+            mode: QuarkMode::Root,
+            routes: RwLock::new(HashMap::new()),
+            workers: RwLock::new(HashMap::new()),
+            instances: RwLock::new(HashMap::new()),
+        };
+        let worker_addr: SocketAddr = "127.0.0.1:54321"
+            .parse()
+            .expect("valid socket address");
+
+        let out = handle_register_tunnel(worker_addr, None, &ctx)
+            .await
+            .expect("registration should succeed");
+        let token = match out {
+            black_hole_spec::QuarkOut::TunnelRegistered { token } => token,
+            other => panic!("unexpected registration response: {other:?}"),
+        };
+        let worker = ctx
+            .workers
+            .read()
+            .await
+            .get(&token)
+            .copied()
+            .expect("worker should be tracked");
+        assert_eq!(worker.max_instances, Some(DEFAULT_MAX_INSTANCES));
+    }
+
+    #[tokio::test]
+    async fn tunnel_registration_preserves_explicit_capacity() {
+        let ctx = QuarkContext {
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            void_client: None,
+            defaults: QuarkServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(DEFAULT_MAX_INSTANCES),
+            mode: QuarkMode::Root,
+            routes: RwLock::new(HashMap::new()),
+            workers: RwLock::new(HashMap::new()),
+            instances: RwLock::new(HashMap::new()),
+        };
+        let worker_addr: SocketAddr = "127.0.0.1:54322"
+            .parse()
+            .expect("valid socket address");
+        let requested = Some(3usize);
+
+        let out = handle_register_tunnel(worker_addr, requested, &ctx)
+            .await
+            .expect("registration should succeed");
+        let token = match out {
+            black_hole_spec::QuarkOut::TunnelRegistered { token } => token,
+            other => panic!("unexpected registration response: {other:?}"),
+        };
+        let worker = ctx
+            .workers
+            .read()
+            .await
+            .get(&token)
+            .copied()
+            .expect("worker should be tracked");
+        assert_eq!(worker.max_instances, requested);
     }
 }
 

@@ -56,7 +56,7 @@ struct Opt {
     /// Optional root quark endpoint to register with as a tunnel worker
     #[clap(long = "tunnel")]
     tunnel: Option<SocketAddr>,
-    /// Optional max concurrent model instances handled by this quark
+    /// Optional max concurrent model instances handled by this quark (defaults to 1)
     #[clap(long = "max-instances")]
     max_instances: Option<usize>,
 }
