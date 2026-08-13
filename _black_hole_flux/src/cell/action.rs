@@ -119,7 +119,8 @@ where
         output: EffectCompletion<Self::Effect>,
         model_id: Uuid,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("start model failed: {error}")))?;
+        state.is_frozen =
+            output.map_err(|error| Failure::Message(format!("start model failed: {error}")))?;
         state.model_id = model_id;
         Ok(())
     }
@@ -389,3 +390,4 @@ impl<S> Action for Transmit<S> {
         output.map_err(|e| Failure::Message(format!("transmit failed: {e}")))
     }
 }
+

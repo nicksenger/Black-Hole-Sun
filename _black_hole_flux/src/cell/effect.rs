@@ -44,7 +44,7 @@ where
 {
     type Id = u64;
     type In = Uuid;
-    type Out = ();
+    type Out = bool;
     type Err = AtomError;
 }
 
@@ -62,7 +62,12 @@ where
             jungle
                 .start_model(model_id, H::quark_model_config())
                 .await
-                .map_err(AtomError::ModelStart)
+                .map_err(AtomError::ModelStart)?;
+            let params = jungle
+                .query_model_params(model_id)
+                .await
+                .map_err(AtomError::ModelStart)?;
+            Ok(params.is_frozen)
         }
     }
 }

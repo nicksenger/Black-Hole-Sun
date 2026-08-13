@@ -99,7 +99,9 @@ impl Action for FusionStartModel {
         _state: &mut FusionState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("start fusion model failed: {error}")))
+        output
+            .map(|_| ())
+            .map_err(|error| Failure::Message(format!("start fusion model failed: {error}")))
     }
 }
 
