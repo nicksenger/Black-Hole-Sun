@@ -69,7 +69,12 @@ impl VoidStore for PgStore {
             r#"
             INSERT INTO void_objects (id, bucket, key, size_bytes)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (id) DO UPDATE SET size_bytes = EXCLUDED.size_bytes
+            ON CONFLICT (id) DO UPDATE
+            SET
+                bucket = EXCLUDED.bucket,
+                key = EXCLUDED.key,
+                size_bytes = EXCLUDED.size_bytes,
+                updated_at = NOW()
             "#,
         )
         .bind(id)

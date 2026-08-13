@@ -26,7 +26,8 @@ const MAX_DOWNLOAD_WAIT_TIMEOUT_MS: u64 = 30_000;
 pub enum VoidIn {
     /// Upload data to object storage. Server responds with VoidOut::Uploaded(id).
     Upload { data: Vec<u8> },
-    /// Upload data with a caller-supplied ID. Server responds with VoidOut::Uploaded(id).
+    /// Upload data with a caller-supplied ID, overwriting any existing object for that ID.
+    /// Server responds with VoidOut::Uploaded(id).
     UploadWith { id: uuid::Uuid, data: Vec<u8> },
     /// Download an object by its opaque ID. Server responds with VoidOut::Downloaded(data).
     Download { id: uuid::Uuid },
