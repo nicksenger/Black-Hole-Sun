@@ -1376,12 +1376,14 @@ async fn handle_start(
         }
     };
 
+    let mut session = QuarkSession::new(frozen);
+    apply_initial_frozen_oscillation(model_id, &mut session, oscillation);
     let instance = Arc::new(QuarkInstance {
         engine,
         runtime_config,
         oscillation,
         checkpoint_path,
-        session: tokio::sync::Mutex::new(QuarkSession::new(frozen)),
+        session: tokio::sync::Mutex::new(session),
     });
     ctx.instances
         .write()
@@ -1511,6 +1513,44 @@ fn resolve_model_oscillation(
     }))
 }
 
+fn frozen_state_for_optimize_step(
+    optimize_steps: u32,
+    oscillation: FrozenOscillation,
+) -> Option<bool> {
+    if optimize_steps <= oscillation.warmup_steps {
+        return None;
+    }
+    let relative_step = optimize_steps - oscillation.warmup_steps - 1;
+    let cycle_position = (relative_step + oscillation.phase_steps % oscillation.period_steps)
+        % oscillation.period_steps;
+    let should_train = cycle_position < oscillation.train_steps;
+    Some(!should_train)
+}
+
+fn apply_initial_frozen_oscillation(
+    model_id: Uuid,
+    session: &mut QuarkSession,
+    oscillation: Option<FrozenOscillation>,
+) {
+    let Some(oscillation) = oscillation else {
+        return;
+    };
+    let Some(frozen) = frozen_state_for_optimize_step(1, oscillation) else {
+        return;
+    };
+    session.frozen = frozen;
+    info!(
+        %model_id,
+        frozen = session.frozen,
+        optimize_steps = session.optimize_steps,
+        oscillation_period_steps = oscillation.period_steps,
+        oscillation_train_steps = oscillation.train_steps,
+        oscillation_phase_steps = oscillation.phase_steps,
+        oscillation_warmup_steps = oscillation.warmup_steps,
+        "initialized model frozen state from oscillation schedule"
+    );
+}
+
 fn apply_frozen_oscillation(
     model_id: Uuid,
     session: &mut QuarkSession,
@@ -1520,15 +1560,10 @@ fn apply_frozen_oscillation(
         return;
     };
     session.optimize_steps = session.optimize_steps.saturating_add(1);
-    if session.optimize_steps <= oscillation.warmup_steps {
+    let Some(frozen) = frozen_state_for_optimize_step(session.optimize_steps, oscillation) else {
         return;
-    }
-
-    let relative_step = session.optimize_steps - oscillation.warmup_steps - 1;
-    let cycle_position = (relative_step + oscillation.phase_steps % oscillation.period_steps)
-        % oscillation.period_steps;
-    let should_train = cycle_position < oscillation.train_steps;
-    session.frozen = !should_train;
+    };
+    session.frozen = frozen;
     info!(
         %model_id,
         frozen = session.frozen,
@@ -2153,7 +2188,8 @@ pub enum ServerError {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        apply_frozen_oscillation, build_model_params, handle_register_tunnel,
+        apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
+        handle_register_tunnel,
         resolve_max_instances, resolve_model_frozen, resolve_model_oscillation, FrozenOscillation,
         ModelRuntimeConfig, QuarkContext, QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState,
         ServerBuilder, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
@@ -2382,6 +2418,87 @@ mod tests {
         let third = build_model_params(runtime_config, oscillation, &session);
         assert_eq!(third.optimize_steps, 3);
         assert_eq!(third.is_frozen, true);
+    }
+
+    #[test]
+    fn oscillation_phase_can_initialize_frozen_state_before_first_optimize() {
+        let mut up = QuarkSession {
+            state: QuarkState::Idle,
+            running: true,
+            frozen: false,
+            optimize_steps: 0,
+        };
+        let mut down = QuarkSession {
+            state: QuarkState::Idle,
+            running: true,
+            frozen: false,
+            optimize_steps: 0,
+        };
+        let up_oscillation = Some(FrozenOscillation {
+            period_steps: 2,
+            train_steps: 1,
+            phase_steps: 0,
+            warmup_steps: 0,
+        });
+        let down_oscillation = Some(FrozenOscillation {
+            period_steps: 2,
+            train_steps: 1,
+            phase_steps: 1,
+            warmup_steps: 0,
+        });
+        let model_id = uuid::Uuid::new_v4();
+
+        apply_initial_frozen_oscillation(model_id, &mut up, up_oscillation);
+        apply_initial_frozen_oscillation(model_id, &mut down, down_oscillation);
+
+        assert!(!up.frozen);
+        assert!(down.frozen);
+        assert_eq!(up.optimize_steps, 0);
+        assert_eq!(down.optimize_steps, 0);
+    }
+
+    #[test]
+    fn half_up_and_half_down_oscillations_report_opposite_runtime_frozen_states() {
+        let mut half_up = QuarkSession {
+            state: QuarkState::AwaitingOptimize,
+            running: true,
+            frozen: false,
+            optimize_steps: 0,
+        };
+        let mut half_down = QuarkSession {
+            state: QuarkState::AwaitingOptimize,
+            running: true,
+            frozen: false,
+            optimize_steps: 0,
+        };
+        let half_up_oscillation = Some(FrozenOscillation {
+            period_steps: 2,
+            train_steps: 1,
+            phase_steps: 0,
+            warmup_steps: 0,
+        });
+        let half_down_oscillation = Some(FrozenOscillation {
+            period_steps: 2,
+            train_steps: 1,
+            phase_steps: 1,
+            warmup_steps: 0,
+        });
+        let model_id = uuid::Uuid::new_v4();
+
+        apply_initial_frozen_oscillation(model_id, &mut half_up, half_up_oscillation);
+        apply_initial_frozen_oscillation(model_id, &mut half_down, half_down_oscillation);
+
+        let mut half_up_states = vec![half_up.frozen];
+        let mut half_down_states = vec![half_down.frozen];
+        for _ in 0..4 {
+            apply_frozen_oscillation(model_id, &mut half_up, half_up_oscillation);
+            apply_frozen_oscillation(model_id, &mut half_down, half_down_oscillation);
+            half_up_states.push(half_up.frozen);
+            half_down_states.push(half_down.frozen);
+        }
+
+        assert_eq!(half_up_states, vec![false, false, true, false, true]);
+        assert_eq!(half_down_states, vec![true, true, false, true, false]);
     }
 
     #[test]
