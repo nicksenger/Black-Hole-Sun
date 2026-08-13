@@ -74,7 +74,7 @@ fn stack_dark_tokens(
     for (base_sequence, stacked_sequence) in base_output
         .results
         .iter_mut()
-        .zip(stacked_output.results.into_iter())
+        .zip(stacked_output.results)
     {
         base_sequence.0.extend(stacked_sequence.0);
     }

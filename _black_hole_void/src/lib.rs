@@ -109,10 +109,11 @@ impl ServerBuilder {
             )))
         })?;
 
-        let (cert_chain, key) = if self.key.is_some() && self.cert.is_some() {
-            load_user_cert_chain_and_key(&self.key.unwrap(), &self.cert.unwrap())?
-        } else {
-            load_or_generate_self_signed_cert()?
+        let (cert_chain, key) = match (self.key.as_ref(), self.cert.as_ref()) {
+            (Some(key_path), Some(cert_path)) => {
+                load_user_cert_chain_and_key(key_path, cert_path)?
+            }
+            _ => load_or_generate_self_signed_cert()?,
         };
 
         let mut server_config = rustls::ServerConfig::builder()
@@ -309,7 +310,7 @@ async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<
         };
     }
 
-    let id = id.unwrap_or_else(|| uuid::Uuid::new_v4());
+    let id = id.unwrap_or_else(uuid::Uuid::new_v4);
     let key = id.to_string();
     let size_bytes = i64::try_from(data.len()).unwrap_or(i64::MAX);
 

@@ -83,6 +83,12 @@ pub struct InMemoryObjectStore {
     map: RwLock<HashMap<String, Vec<u8>>>,
 }
 
+impl Default for InMemoryObjectStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryObjectStore {
     pub fn new() -> Self {
         Self {

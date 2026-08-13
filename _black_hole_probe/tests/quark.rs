@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, clippy::manual_async_fn)]
+
 mod common;
 
 use black_hole_sun::{

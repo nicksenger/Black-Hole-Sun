@@ -116,7 +116,7 @@ impl VoidClient {
         // Bind to any local address/port.
         let local_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
         let mut endpoint =
-            quinn::Endpoint::client(local_addr).map_err(|e| ServerError::BindVoidClient(e))?;
+            quinn::Endpoint::client(local_addr).map_err(ServerError::BindVoidClient)?;
         endpoint.set_default_client_config(client_config);
 
         Ok(Self {
@@ -330,6 +330,7 @@ struct TunnelWorker {
 }
 
 struct QuarkContext {
+    #[allow(dead_code)]
     local_addr: SocketAddr,
     model_path: PathBuf,
     void_client: Option<Arc<VoidClient>>,
@@ -572,10 +573,11 @@ impl ServerBuilder {
             None
         };
 
-        let (cert_chain, key) = if self.key.is_some() && self.cert.is_some() {
-            load_user_cert_chain_and_key(&self.key.unwrap(), &self.cert.unwrap())?
-        } else {
-            load_or_generate_self_signed_cert()?
+        let (cert_chain, key) = match (self.key.as_ref(), self.cert.as_ref()) {
+            (Some(key_path), Some(cert_path)) => {
+                load_user_cert_chain_and_key(key_path, cert_path)?
+            }
+            _ => load_or_generate_self_signed_cert()?,
         };
 
         let mut server_config = rustls::ServerConfig::builder()
@@ -1983,6 +1985,7 @@ pub enum ServerError {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
         handle_register_tunnel, resolve_max_instances, resolve_model_frozen, QuarkContext,

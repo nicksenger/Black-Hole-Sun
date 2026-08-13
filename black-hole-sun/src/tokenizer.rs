@@ -1,4 +1,3 @@
-use black_hole_spec::InferenceOutput;
 
 use crate::{DarkToken, LogitEntry};
 
@@ -43,7 +42,7 @@ impl Tokenizer {
             .encode(text, false)
             .map_err(|error| format!("failed to tokenize input: {error}"))?;
 
-        Ok(encoded.get_ids().iter().map(|&id| id as u32).collect())
+        Ok(encoded.get_ids().to_vec())
     }
 
     /// Encode text into `DarkToken`s suitable for dark inference requests.

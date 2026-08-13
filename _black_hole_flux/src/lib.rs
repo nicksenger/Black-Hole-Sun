@@ -55,6 +55,7 @@
 //! The Jungle instance supplied at runtime must implement [`VoidInferOps`],
 //! which guarantees access to void (upload / download), quark inference, and
 //! quark perturbation / optimization.
+#![allow(clippy::manual_async_fn)]
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

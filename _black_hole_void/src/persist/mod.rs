@@ -82,6 +82,12 @@ pub struct InMemoryStore {
     map: Arc<RwLock<HashMap<Uuid, ObjectRecord>>>,
 }
 
+impl Default for InMemoryStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryStore {
     pub fn new() -> Self {
         Self {

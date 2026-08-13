@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, clippy::manual_async_fn)]
+
 #[path = "../common/mod.rs"]
 mod common;
 
