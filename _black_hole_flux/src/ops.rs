@@ -129,9 +129,7 @@ pub trait VoidInferOps: Send + Sync {
     ) -> Result<(), String>;
 
     /// Query the current runtime parameters for a running quark model instance.
-    async fn query_model_params(&self, _model_id: uuid::Uuid) -> Result<QuarkModelParams, String> {
-        Err("query_model_params is not implemented".to_string())
-    }
+    async fn query_model_params(&self, model_id: uuid::Uuid) -> Result<QuarkModelParams, String>;
 
     /// Shut down a quark model instance.
     async fn shutdown_model(&self, model_id: uuid::Uuid) -> Result<(), String>;
@@ -433,6 +431,13 @@ mod tests {
             _loss_down: f32,
         ) -> Result<(), String> {
             Ok(())
+        }
+
+        async fn query_model_params(
+            &self,
+            _model_id: uuid::Uuid,
+        ) -> Result<QuarkModelParams, String> {
+            Err("unsupported in tests".to_string())
         }
 
         async fn shutdown_model(&self, _model_id: uuid::Uuid) -> Result<(), String> {

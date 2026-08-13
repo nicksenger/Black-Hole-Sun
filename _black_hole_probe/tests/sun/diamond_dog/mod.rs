@@ -15,7 +15,7 @@ use black_hole_sun::cell::action::{
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, TestVoidServer, Tokenizer,
+    EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, QuarkModelParams, TestVoidServer, Tokenizer,
     Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState};
@@ -338,6 +338,10 @@ impl VoidInferOps for ProbeSpaceJungle {
         _loss_down: f32,
     ) -> Result<(), String> {
         Err("optimization is not used by TestCell".to_string())
+    }
+
+    async fn query_model_params(&self, _model_id: Uuid) -> Result<QuarkModelParams, String> {
+        Err("query model params is not used by TestCell".to_string())
     }
 
     async fn shutdown_model(&self, _model_id: Uuid) -> Result<(), String> {
