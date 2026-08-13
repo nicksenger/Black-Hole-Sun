@@ -14,6 +14,7 @@ pub trait OscillationSchedule {
 }
 
 /// Default oscillation schedule that applies no oscillation overrides.
+#[derive(Clone)]
 pub struct NoOscillation;
 
 impl OscillationSchedule for NoOscillation {}
