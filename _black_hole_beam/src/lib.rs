@@ -260,7 +260,6 @@ impl<Port, A, Edges, Tail, S> private::DescribeSun
 where
     Port: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId> + 'static,
-    A::Flow: black_hole_flux::sun::SunFlowFrozenConfig,
     Edges: NodeIdsFromList,
     Tail: private::DescribeSun,
 {
@@ -281,7 +280,7 @@ where
     PortB: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
         + 'static,
-    A::Flow: FusionFlow + black_hole_flux::sun::SunFlowFrozenConfig,
+    A::Flow: FusionFlow,
     Edges: NodeIdsFromList,
     Tail: private::DescribeSun,
 {
@@ -319,7 +318,6 @@ struct CellDefinition {
     animal_name: String,
     state: SunNodeState,
     state_sequence: u64,
-    is_frozen: Option<bool>,
 }
 
 impl CellDefinition {
@@ -334,7 +332,6 @@ impl CellDefinition {
             animal_name: short_type_name::<A>(),
             state: SunNodeState::Idle,
             state_sequence: 0,
-            is_frozen: None,
         }
     }
 }
@@ -432,7 +429,6 @@ impl BeamModel {
                 animal_name: node.label,
                 state: node.state,
                 state_sequence: node.state_sequence,
-                is_frozen: node.frozen,
             })
             .collect::<Vec<_>>();
         cells.sort_by_key(|cell| cell.id);
@@ -527,8 +523,8 @@ enum Message {
 
 trait NodeStateVisual {
     fn label(self) -> &'static str;
-    fn palette(self, is_frozen: bool) -> (Color, Color);
-    fn color(self, cell_id: u32, is_frozen: bool) -> Color;
+    fn palette(self) -> (Color, Color);
+    fn color(self, cell_id: u32) -> Color;
 }
 
 impl NodeStateVisual for SunNodeState {
@@ -541,7 +537,7 @@ impl NodeStateVisual for SunNodeState {
         }
     }
 
-    fn palette(self, is_frozen: bool) -> (Color, Color) {
+    fn palette(self) -> (Color, Color) {
         match self {
             SunNodeState::Idle => (
                 Color::from_rgb8(220, 76, 24),
@@ -554,18 +550,15 @@ impl NodeStateVisual for SunNodeState {
             SunNodeState::Propagation2 => {
                 (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57))
             }
-            SunNodeState::Optimization => {
-                if is_frozen {
-                    (Color::from_rgb8(114, 72, 186), Color::from_rgb8(168, 114, 232))
-                } else {
-                    (Color::from_rgb8(208, 107, 26), Color::from_rgb8(242, 156, 56))
-                }
-            }
+            SunNodeState::Optimization => (
+                Color::from_rgb8(208, 107, 26),
+                Color::from_rgb8(242, 156, 56),
+            ),
         }
     }
 
-    fn color(self, cell_id: u32, is_frozen: bool) -> Color {
-        let (low, high) = self.palette(is_frozen);
+    fn color(self, cell_id: u32) -> Color {
+        let (low, high) = self.palette();
         lerp_color(low, high, cell_palette_position(cell_id))
     }
 }
@@ -678,7 +671,7 @@ impl CellVisualState {
         self.begin_next_transition(now)
     }
 
-    fn color(&self, cell_id: u32, now: Instant, is_frozen: bool) -> Color {
+    fn color(&self, cell_id: u32, now: Instant) -> Color {
         let progress = self
             .transition_started_at
             .map(|started_at| {
@@ -687,8 +680,8 @@ impl CellVisualState {
             })
             .unwrap_or(1.0);
         lerp_color(
-            self.previous.color(cell_id, is_frozen),
-            self.current.color(cell_id, is_frozen),
+            self.previous.color(cell_id),
+            self.current.color(cell_id),
             progress,
         )
     }
@@ -935,7 +928,7 @@ impl BeamApp {
                 let color = colors_for_nodes
                     .get(&node_id)
                     .copied()
-                    .unwrap_or_else(|| SunNodeState::Idle.color(node_id, false));
+                    .unwrap_or_else(|| SunNodeState::Idle.color(node_id));
                 container(
                     column![
                         text(animal_name).size(16).color(contrasting_text(color)),
@@ -1000,11 +993,11 @@ impl BeamApp {
                 let start = colors_for_edges
                     .get(&ctx.edge.0)
                     .copied()
-                    .unwrap_or_else(|| SunNodeState::Idle.color(ctx.edge.0, false));
+                    .unwrap_or_else(|| SunNodeState::Idle.color(ctx.edge.0));
                 let end = colors_for_edges
                     .get(&ctx.edge.1)
                     .copied()
-                    .unwrap_or_else(|| SunNodeState::Idle.color(ctx.edge.1, false));
+                    .unwrap_or_else(|| SunNodeState::Idle.color(ctx.edge.1));
                 (lighten(start, 0.18), end)
             })
             .edge_endpoint(move |_, edge, kind, endpoint| {
@@ -1015,7 +1008,7 @@ impl BeamApp {
                 let color = colors_for_endpoints
                     .get(&node_id)
                     .copied()
-                    .unwrap_or_else(|| SunNodeState::Idle.color(node_id, false));
+                    .unwrap_or_else(|| SunNodeState::Idle.color(node_id));
                 let glyph = EdgeEndpointGlyph {
                     kind: EdgeEndpointGlyphKind::NormalArrow,
                     color,
@@ -1052,12 +1045,11 @@ impl BeamApp {
             .cells
             .iter()
             .map(|cell| {
-                let is_frozen = cell.is_frozen.unwrap_or(false);
                 let color = self
                     .visuals
                     .get(&cell.id)
-                    .map(|visual| visual.color(cell.id, self.color_now, is_frozen))
-                    .unwrap_or_else(|| cell.state.color(cell.id, is_frozen));
+                    .map(|visual| visual.color(cell.id, self.color_now))
+                    .unwrap_or_else(|| cell.state.color(cell.id));
                 (cell.id, color)
             })
             .collect()
@@ -1192,43 +1184,32 @@ mod tests {
             BeamLayout::Dot
         ));
         assert_eq!(
-            SunNodeState::Idle.palette(false),
+            SunNodeState::Idle.palette(),
             (
                 Color::from_rgb8(220, 76, 24),
                 Color::from_rgb8(246, 164, 46)
             )
         );
         assert_eq!(
-            SunNodeState::Propagation1.palette(false),
+            SunNodeState::Propagation1.palette(),
             (
                 Color::from_rgb8(246, 223, 132),
                 Color::from_rgb8(255, 247, 198)
             )
         );
         assert_eq!(
-            SunNodeState::Propagation2.palette(false),
+            SunNodeState::Propagation2.palette(),
             (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57))
         );
         assert_eq!(
-            SunNodeState::Optimization.palette(false),
+            SunNodeState::Optimization.palette(),
             (
                 Color::from_rgb8(208, 107, 26),
                 Color::from_rgb8(242, 156, 56)
             )
         );
-        assert_eq!(
-            SunNodeState::Optimization.palette(true),
-            (
-                Color::from_rgb8(114, 72, 186),
-                Color::from_rgb8(168, 114, 232)
-            )
-        );
-        assert_ne!(
-            SunNodeState::Optimization.color(0, true),
-            SunNodeState::Optimization.color(0, false)
-        );
-        assert_ne!(SunNodeState::Idle.color(0, false), SunNodeState::Idle.color(1, false));
-        assert!(SunNodeState::Idle.color(1, false).g > SunNodeState::Idle.color(0, false).g);
+        assert_ne!(SunNodeState::Idle.color(0), SunNodeState::Idle.color(1));
+        assert!(SunNodeState::Idle.color(1).g > SunNodeState::Idle.color(0).g);
     }
 
     #[test]
@@ -1240,22 +1221,22 @@ mod tests {
         assert_eq!(MIN_COLOR_STATE_DURATION, Duration::from_secs(1));
         assert!(visual.observe(SunNodeState::Propagation1, 1, start));
         assert_eq!(
-            visual.color(0, start, false),
-            SunNodeState::Idle.color(0, false),
+            visual.color(0, start),
+            SunNodeState::Idle.color(0),
             "the fade starts from the previous activity color"
         );
         assert_eq!(
-            visual.color(0, start + COLOR_FADE_DURATION / 2, false),
+            visual.color(0, start + COLOR_FADE_DURATION / 2),
             lerp_color(
-                SunNodeState::Idle.color(0, false),
-                SunNodeState::Propagation1.color(0, false),
+                SunNodeState::Idle.color(0),
+                SunNodeState::Propagation1.color(0),
                 0.5
             ),
             "the color is blended halfway through the fade"
         );
         assert_eq!(
-            visual.color(0, start + COLOR_FADE_DURATION, false),
-            SunNodeState::Propagation1.color(0, false),
+            visual.color(0, start + COLOR_FADE_DURATION),
+            SunNodeState::Propagation1.color(0),
             "the fade reaches the new color after 400ms"
         );
 
@@ -1367,7 +1348,6 @@ mod tests {
                     input_ports: vec![2, 3],
                     state: SunNodeState::Optimization,
                     state_sequence: 3,
-                    frozen: Some(true),
                 },
                 SunNodeAppearance {
                     id: 0,
@@ -1375,7 +1355,6 @@ mod tests {
                     input_ports: vec![0],
                     state: SunNodeState::Propagation1,
                     state_sequence: 1,
-                    frozen: Some(false),
                 },
             ],
             edges: vec![
@@ -1404,10 +1383,8 @@ mod tests {
         assert_eq!(model.cells[0].animal_name, "Root");
         assert_eq!(model.cells[0].state, SunNodeState::Propagation1);
         assert_eq!(model.cells[0].state_sequence, 1);
-        assert_eq!(model.cells[0].is_frozen, Some(false));
         assert_eq!(model.cells[1].state, SunNodeState::Optimization);
         assert_eq!(model.cells[1].state_sequence, 3);
-        assert_eq!(model.cells[1].is_frozen, Some(true));
     }
 
     #[test]
@@ -1421,7 +1398,6 @@ mod tests {
                     input_ports: vec![0],
                     state: SunNodeState::Idle,
                     state_sequence: 0,
-                    frozen: None,
                 },
                 SunNodeAppearance {
                     id: 1,
@@ -1429,7 +1405,6 @@ mod tests {
                     input_ports: vec![1],
                     state: SunNodeState::Idle,
                     state_sequence: 0,
-                    frozen: None,
                 },
             ],
             edges: vec![SunEdgeAppearance {
