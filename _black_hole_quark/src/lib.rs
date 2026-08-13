@@ -1422,11 +1422,19 @@ async fn handle_start(
         })
         .await
     {
+        warn!(
+            %model_id,
+            training_error_feedback = ?runtime_config.training_error_feedback,
+            error = %error,
+            "failed to set initial hyper parameters"
+        );
         ctx.instances.write().await.remove(&model_id);
         if let Some(path) = checkpoint_path.as_ref() {
             cleanup_checkpoint_file(path);
         }
-        return Err(ServerError::ModelError(error.to_string()));
+        return Err(ServerError::ModelError(format!(
+            "failed to set initial hyper parameters: {error}"
+        )));
     }
 
     let mut session = QuarkSession::new(frozen);
@@ -1714,6 +1722,10 @@ async fn reset_model(engine: &ModelEngine) -> Result<()> {
         .map_err(|error| ServerError::ModelError(error.to_string()))
 }
 
+fn optimization_model_error(error: impl std::fmt::Display) -> ServerError {
+    ServerError::ModelError(format!("optimization failed: {error}"))
+}
+
 async fn checkpoint_model(engine: &ModelEngine) -> Result<Vec<u8>> {
     let checkpoint_path = engine
         .save_checkpoint()
@@ -1992,13 +2004,26 @@ async fn handle_optimize(
     if session.frozen {
         info!(%model_id, "skipping optimization because model instance is frozen");
     } else {
+        let runtime_config = instance.runtime_config;
         instance
             .engine
             .update(loss_up, loss_down)
             .await
-            .map_err(|e| {
-                warn!("optimization failed");
-                ServerError::ModelError(e.to_string())
+            .map_err(|error| {
+                warn!(
+                    %model_id,
+                    loss_up,
+                    loss_down,
+                    training_lr = runtime_config.training_lr,
+                    training_epsilon = runtime_config.training_epsilon,
+                    training_z_loss = runtime_config.training_z_loss,
+                    training_lb_loss = runtime_config.training_lb_loss,
+                    training_clip_threshold = runtime_config.training_clip_threshold,
+                    training_error_feedback = ?runtime_config.training_error_feedback,
+                    error = %error,
+                    "optimization failed"
+                );
+                optimization_model_error(error)
             })?;
     }
 
@@ -2619,6 +2644,18 @@ mod tests {
 
         assert_eq!(half_up_states, vec![false, false, true, false, true]);
         assert_eq!(half_down_states, vec![true, true, false, true, false]);
+    }
+
+    #[test]
+    fn optimization_error_includes_engine_message() {
+        let err = super::optimization_model_error("engine says clip threshold is invalid");
+        let super::ServerError::ModelError(message) = err else {
+            panic!("expected model error");
+        };
+        assert_eq!(
+            message,
+            "optimization failed: engine says clip threshold is invalid"
+        );
     }
 
     #[test]
