@@ -36,7 +36,7 @@ const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
 const CELL_GRAPH_ID: &str = "black-hole-beam-cells";
 const DOT_VERTEX_SPACING: f64 = 128.0;
-const APPEARANCE_INTERVAL: Duration = Duration::from_millis(100);
+const APPEARANCE_INTERVAL: Duration = Duration::from_secs(5);
 const COLOR_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
@@ -1318,6 +1318,7 @@ mod tests {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
 
+        assert_eq!(APPEARANCE_INTERVAL, Duration::from_secs(5));
         assert_eq!(COLOR_FADE_DURATION, Duration::from_millis(400));
         assert_eq!(MIN_COLOR_STATE_DURATION, Duration::from_secs(1));
         assert!(visual.observe(SunNodeState::Propagation1, 1, start));
