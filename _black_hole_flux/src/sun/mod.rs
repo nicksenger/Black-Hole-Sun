@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::fusion::action::{FusionSeed, FusionState};
 use crate::fusion::FusionFlow;
+use crate::model_config::ModelConfig;
 
 pub use action::{
     InitializePropagation, NodeIdsFromList, ProcessNextNode, PropagationState, SendRootPropagation,
@@ -81,6 +82,69 @@ pub enum SunNodeState {
     Optimization,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SunNodeFrozenConfig {
+    initial_frozen: Option<bool>,
+    oscillation_steps: Option<usize>,
+    oscillation_offset: usize,
+}
+
+impl SunNodeFrozenConfig {
+    fn current_frozen(self, optimize_steps: usize) -> Option<bool> {
+        let mut frozen = self.initial_frozen?;
+        let Some(steps) = self.oscillation_steps else {
+            return Some(frozen);
+        };
+        if steps == 0 || optimize_steps <= self.oscillation_offset {
+            return Some(frozen);
+        }
+        let flips = (optimize_steps - self.oscillation_offset) / steps;
+        if flips % 2 == 1 {
+            frozen = !frozen;
+        }
+        Some(frozen)
+    }
+}
+
+pub trait SunFlowFrozenConfig {
+    fn frozen_config() -> SunNodeFrozenConfig;
+}
+
+impl<N, S, H> SunFlowFrozenConfig for crate::cell::CellWithState<N, S, H>
+where
+    H: ModelConfig,
+{
+    fn frozen_config() -> SunNodeFrozenConfig {
+        SunNodeFrozenConfig {
+            initial_frozen: H::FROZEN,
+            oscillation_steps: H::OSCILLATION_STEPS,
+            oscillation_offset: H::OSCILLATION_OFFSET.unwrap_or_default(),
+        }
+    }
+}
+
+impl<Transform> SunFlowFrozenConfig for crate::fusion::Fusion<Transform> {
+    fn frozen_config() -> SunNodeFrozenConfig {
+        SunNodeFrozenConfig::default()
+    }
+}
+
+impl<Transform, M> SunFlowFrozenConfig for crate::fusion::QuzoFusion<Transform, M>
+where
+    M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+{
+    fn frozen_config() -> SunNodeFrozenConfig {
+        SunNodeFrozenConfig::default()
+    }
+}
+
+pub(crate) fn node_frozen_config_for_flow<F>() -> SunNodeFrozenConfig
+where
+    F: SunFlowFrozenConfig,
+{
+    F::frozen_config()
+}
+
 /// One node in the observable Sun topology.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SunNodeAppearance {
@@ -90,6 +154,9 @@ pub struct SunNodeAppearance {
     pub state: SunNodeState,
     /// Monotonic logical phase position, including phases crossed between snapshots.
     pub state_sequence: u64,
+    /// Whether the node's model instance is currently frozen.
+    #[serde(default)]
+    pub frozen: Option<bool>,
 }
 
 /// One port-aware directed edge in the observable Sun topology.
@@ -193,6 +260,15 @@ impl<S> SunStateWithInner<S> {
                     .get(&id)
                     .copied()
                     .unwrap_or_default(),
+                frozen: inner.node_frozen_configs.get(&id).and_then(|config| {
+                    config.current_frozen(
+                        inner
+                            .node_optimize_steps
+                            .get(&id)
+                            .copied()
+                            .unwrap_or_default(),
+                    )
+                }),
             })
             .collect::<Vec<_>>();
         nodes.sort_by_key(|node| node.id);
@@ -232,6 +308,10 @@ pub struct SunInner {
     pub node_states: HashMap<u32, SunNodeState>,
     /// Logical phase position for each vertex, used to recover skipped observations.
     pub node_state_sequences: HashMap<u32, u64>,
+    /// Model frozen-status settings resolved from node flow config.
+    pub node_frozen_configs: HashMap<u32, SunNodeFrozenConfig>,
+    /// Number of optimize calls sent to each vertex model instance.
+    pub node_optimize_steps: HashMap<u32, usize>,
     /// Nodes whose first-pass output has been received in the current epoch.
     pub p1_completed: HashSet<u32>,
     /// Nodes whose second pass has been sent in the current epoch.
@@ -320,6 +400,8 @@ impl SunInner {
 
     pub(crate) fn record_optimization_sent(&mut self, node_ids: impl IntoIterator<Item = u32>) {
         for node_id in node_ids {
+            let optimize_steps = self.node_optimize_steps.entry(node_id).or_default();
+            *optimize_steps = optimize_steps.saturating_add(1);
             self.record_state_sent(node_id, SunNodeState::Optimization);
             self.p1_completed.remove(&node_id);
             self.p2_sent.remove(&node_id);
@@ -339,7 +421,7 @@ pub struct PortTarget {
 #[derive(Flow)]
 pub struct UnarySunStepWithState<
     P: Unsigned,
-    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
+    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId, Flow: SunFlowFrozenConfig>,
     E: NodeIdsFromList,
     S,
 >(Step<GenUuid<S>>, Step<action::SpawnUnary<P, AnimalT, E, S>>);
@@ -356,7 +438,7 @@ pub struct BinarySunStepWithState<
         Generation: Unsigned,
         Seed = FusionSeed,
         State = FusionState,
-        Flow: FusionFlow,
+        Flow: FusionFlow + SunFlowFrozenConfig,
     >,
     E: NodeIdsFromList,
     S,
@@ -386,6 +468,7 @@ impl<P, A, E, U> BlackHole for List<(Unary<P, A, E>, U)>
 where
     P: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
+    A::Flow: SunFlowFrozenConfig,
     E: NodeIdsFromList,
     U: BlackHole,
 {
@@ -397,7 +480,7 @@ where
     P1: Unsigned,
     P2: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
-    A::Flow: FusionFlow,
+    A::Flow: FusionFlow + SunFlowFrozenConfig,
     E: NodeIdsFromList,
     U: BlackHole,
 {

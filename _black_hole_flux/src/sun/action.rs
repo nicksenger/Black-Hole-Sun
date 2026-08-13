@@ -54,6 +54,7 @@ fn register_vertex<S>(
     node_label: String,
     ports: &[(u32, ObjectId)],
     declared_outputs: Vec<u32>,
+    frozen_config: super::SunNodeFrozenConfig,
     journey_id: Uuid,
 ) {
     let mut inner = state.a.shared.lock().unwrap();
@@ -62,6 +63,10 @@ fn register_vertex<S>(
     inner.node_labels.entry(vertex_id).or_insert(node_label);
     inner.node_states.entry(vertex_id).or_default();
     inner.node_state_sequences.entry(vertex_id).or_default();
+    inner
+        .node_frozen_configs
+        .entry(vertex_id)
+        .or_insert(frozen_config);
     inner
         .vertex_ports
         .entry(vertex_id)
@@ -94,6 +99,7 @@ impl<P, A, E, S> Action for SpawnUnary<P, A, E, S>
 where
     P: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
+    A::Flow: super::SunFlowFrozenConfig,
     E: NodeIdsFromList,
 {
     type Effect = super::effect::SpawnAnimal<A>;
@@ -119,6 +125,7 @@ where
             short_type_name::<A>(),
             &[(port_id, initial_recv_id)],
             E::node_ids(),
+            super::node_frozen_config_for_flow::<A::Flow>(),
             journey_id,
         );
 
@@ -138,7 +145,7 @@ where
     P1: Unsigned,
     P2: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
-    A::Flow: crate::fusion::FusionFlow,
+    A::Flow: crate::fusion::FusionFlow + super::SunFlowFrozenConfig,
     E: NodeIdsFromList,
 {
     type Effect = super::effect::SpawnAnimal<A>;
@@ -165,6 +172,7 @@ where
             short_type_name::<A>(),
             &[(p1, seed.p1_recv_id), (p2, seed.p2_recv_id)],
             E::node_ids(),
+            super::node_frozen_config_for_flow::<A::Flow>(),
             journey_id,
         );
 
@@ -825,6 +833,7 @@ impl PropagationState for super::PropB {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_config::ModelConfig;
     use jungle_sdk::Id;
     use typenum::{U0, U1, U2};
 
@@ -868,6 +877,13 @@ mod tests {
         type Flow = crate::Fusion<crate::Primordium>;
     }
 
+    struct FrozenOscillatingConfig;
+    impl ModelConfig for FrozenOscillatingConfig {
+        const FROZEN: Option<bool> = Some(true);
+        const OSCILLATION_STEPS: Option<usize> = Some(2);
+        const OSCILLATION_OFFSET: Option<usize> = Some(0);
+    }
+
     fn add_vertex(
         state: &mut super::super::SunState,
         vertex_id: u32,
@@ -884,6 +900,7 @@ mod tests {
             format!("Node{vertex_id}"),
             &ports,
             outputs.to_vec(),
+            super::super::SunNodeFrozenConfig::default(),
             Uuid::new_v4(),
         );
     }
@@ -1060,6 +1077,34 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn appearance_reports_model_frozen_state_with_oscillation() {
+        let mut state = super::super::SunState::<()>::default();
+        register_vertex(
+            &mut state,
+            0,
+            "FrozenNode".to_string(),
+            &[(0, Uuid::new_v4())],
+            Vec::new(),
+            super::super::node_frozen_config_for_flow::<
+                crate::Primordium<(), FrozenOscillatingConfig>,
+            >(),
+            Uuid::new_v4(),
+        );
+
+        assert_eq!(state.appearance().nodes[0].frozen, Some(true));
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_optimization_sent([0]);
+        }
+        assert_eq!(state.appearance().nodes[0].frozen, Some(true));
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_optimization_sent([0]);
+        }
+        assert_eq!(state.appearance().nodes[0].frozen, Some(false));
     }
 
     #[test]
