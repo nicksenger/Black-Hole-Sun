@@ -15,8 +15,8 @@ use black_hole_sun::cell::action::{
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, QuarkModelParams, TestVoidServer, Tokenizer,
-    Transmission, VoidClient,
+    EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, QuarkModelParams, Ray, TestVoidServer,
+    Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState};
 use jungle_sdk::core::JungleWorker;
@@ -106,11 +106,19 @@ pub(super) struct MarkRight;
 
 pub(super) struct RootAnimal;
 
-#[jungle::animal(id = 0, generation = 0)]
+#[jungle::animal(observe, id = 0, generation = 0)]
 impl Animal for RootAnimal {
     type State = CellState;
     type Seed = ObjectId;
     type Flow = TestCellFlow<Step<PassEmission>>;
+}
+
+impl Observe for RootAnimal {
+    type Appearance = Ray;
+
+    fn observe(_state: &Self::State) -> Self::Appearance {
+        Ray { frozen: true }
+    }
 }
 
 pub(super) struct LeftAnimal;
@@ -571,4 +579,120 @@ async fn diamond_dog() {
             );
         }
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn diamond_dog_root_observe_exposes_ray_after_start() {
+    init_tracing();
+
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let void_addr = void_server.local_addr();
+    let endpoint = make_client_endpoint().await;
+    let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
+    let mut jungle = ProbeSpaceJungle::new(void_client);
+
+    let client = FusedClient::builder()
+        .build()
+        .await
+        .expect("fused client should build");
+    jungle.set_client(client.clone());
+
+    let parent_journey_id = client
+        .spawn::<BlackHoleAnimal>(&())
+        .await
+        .expect("BlackHoleAnimal should spawn")
+        .journey_id;
+    let mut subscription = client
+        .subscribe_step_updates(parent_journey_id, None)
+        .await
+        .expect("subscribe_step_updates should succeed");
+
+    let worker_handles: Vec<_> = (0..6)
+        .map(|_| {
+            let worker = JungleWorker::new(jungle.clone(), client.clone());
+            tokio::spawn(async move {
+                let _ = worker.spawn().await;
+            })
+        })
+        .collect();
+
+    let first_update = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match subscription.next().await {
+                Some(Ok(update)) => match update.event {
+                    RunnerUpdateOut::EffectFailureOutput { node_id, .. } => {
+                        return Err(format!("parent effect {node_id} failed"));
+                    }
+                    RunnerUpdateOut::NodeLifecycle(node)
+                        if node.phase == jungle_sdk::types::NodeLifecyclePhase::Failed =>
+                    {
+                        return Err(format!("parent node {} failed", node.node_id));
+                    }
+                    _ => return Ok(()),
+                },
+                Some(Err(error)) => {
+                    return Err(format!("step update stream failed: {error}"));
+                }
+                None => {
+                    return Err("step update stream ended unexpectedly".to_string());
+                }
+            }
+        }
+    })
+    .await
+    .expect("expected a first parent step update within timeout");
+    if let Err(error) = first_update {
+        panic!("{error}");
+    }
+
+    let root_journey_id = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(bytes) = client
+                .animal_appearance(parent_journey_id)
+                .await
+                .expect("animal_appearance should succeed")
+            {
+                let appearance = postcard::from_bytes::<SunAppearance>(&bytes)
+                    .expect("Sun appearance should deserialize");
+                if let Some(root) = appearance
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == 0 && node.journey_id != Uuid::nil())
+                {
+                    break root.journey_id;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("root node journey id should become available");
+
+    let root_ray = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(bytes) = client
+                .animal_appearance(root_journey_id)
+                .await
+                .expect("root animal_appearance should succeed")
+            {
+                break postcard::from_bytes::<Ray>(&bytes).expect("root Ray should deserialize");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("root Ray appearance should become available");
+
+    assert_eq!(root_ray, Ray { frozen: true });
+
+    for worker_handle in worker_handles {
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+    drop(client);
+    void_server.abort();
 }
