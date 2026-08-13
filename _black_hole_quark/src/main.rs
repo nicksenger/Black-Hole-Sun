@@ -53,6 +53,12 @@ struct Opt {
     /// Default QuZO epsilon for model instances
     #[clap(long = "training-epsilon")]
     training_epsilon: Option<f64>,
+    /// Optional root quark endpoint to register with as a tunnel worker
+    #[clap(long = "tunnel")]
+    tunnel: Option<SocketAddr>,
+    /// Optional max concurrent model instances handled by this quark
+    #[clap(long = "max-instances")]
+    max_instances: Option<usize>,
 }
 
 impl From<Opt> for black_hole_quark::ServerBuilder {
@@ -97,6 +103,12 @@ impl From<Opt> for black_hole_quark::ServerBuilder {
         }
         if let Some(epsilon) = opt.training_epsilon {
             builder = builder.training_epsilon(epsilon);
+        }
+        if let Some(tunnel) = opt.tunnel {
+            builder = builder.tunnel(tunnel);
+        }
+        if let Some(max_instances) = opt.max_instances {
+            builder = builder.max_instances(max_instances);
         }
 
         builder

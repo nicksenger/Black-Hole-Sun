@@ -54,6 +54,69 @@ async fn rejects_requests_for_unknown_model_instance() {
 }
 
 #[tokio::test]
+async fn tunnel_worker_rejects_direct_model_requests() {
+    init_tracing();
+
+    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .serve()
+        .await
+        .expect("failed to start root quark server");
+    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .tunnel(root_server.local_addr())
+        .max_instances(1)
+        .serve()
+        .await
+        .expect("failed to start worker quark server");
+
+    let client = make_client_endpoint().await;
+    let worker_client = QuarkClient::new(&client, worker_server.local_addr(), "localhost");
+    let model_id = Uuid::new_v4();
+    let error = worker_client
+        .start(model_id, None)
+        .await
+        .expect_err("direct requests to tunnel worker should fail");
+    assert!(
+        error.contains("tunnel worker rejects direct model requests"),
+        "unexpected worker error: {error}"
+    );
+
+    worker_server.abort();
+    root_server.abort();
+}
+
+#[tokio::test]
+async fn tunnel_root_forwards_start_to_registered_worker() {
+    init_tracing();
+
+    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .max_instances(0)
+        .serve()
+        .await
+        .expect("failed to start root quark server");
+    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .tunnel(root_server.local_addr())
+        .max_instances(1)
+        .serve()
+        .await
+        .expect("failed to start worker quark server");
+
+    let client = make_client_endpoint().await;
+    let root_client = QuarkClient::new(&client, root_server.local_addr(), "localhost");
+    let model_id = Uuid::new_v4();
+    let error = root_client
+        .start(model_id, None)
+        .await
+        .expect_err("start should be forwarded to worker and fail on invalid model path");
+    assert!(
+        error.contains("Model path does not exist"),
+        "unexpected forwarded start error: {error}"
+    );
+
+    worker_server.abort();
+    root_server.abort();
+}
+
+#[tokio::test]
 async fn inference() {
     init_tracing();
 

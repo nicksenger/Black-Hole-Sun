@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use black_hole_spec::{
     DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId, QuarkIn,
-    QuarkModelConfig, QuarkOut, SequenceOutput,
+    QuarkModelConfig, QuarkOut, SequenceOutput, TunnelRequest,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -46,9 +46,9 @@ enum VoidOut {
 
 /// No-op certificate verifier for connecting to void (self-signed certs in local dev).
 #[derive(Debug)]
-struct VoidCertVerifier;
+struct PermissiveCertVerifier;
 
-impl rustls::client::danger::ServerCertVerifier for VoidCertVerifier {
+impl rustls::client::danger::ServerCertVerifier for PermissiveCertVerifier {
     fn verify_server_cert(
         &self,
         _end_entity: &rustls::pki_types::CertificateDer<'_>,
@@ -101,7 +101,7 @@ impl VoidClient {
         // Void uses self-signed certs by default in local dev — skip verification.
         let crypto = rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(VoidCertVerifier))
+            .with_custom_certificate_verifier(Arc::new(PermissiveCertVerifier))
             .with_no_client_auth();
 
         let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(crypto))
@@ -163,6 +163,50 @@ impl VoidClient {
                 "unexpected void response for upload".into(),
             )),
         }
+    }
+}
+
+/// A QUIC client connection to another quark server.
+struct QuarkRpcClient {
+    endpoint: quinn::Endpoint,
+    remote_addr: SocketAddr,
+}
+
+impl QuarkRpcClient {
+    async fn connect(addr: SocketAddr) -> Result<Self> {
+        let crypto = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(PermissiveCertVerifier))
+            .with_no_client_auth();
+        let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(crypto))
+            .map_err(|e| ServerError::TunnelCrypto(e.to_string()))?;
+        let client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+
+        let local_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let mut endpoint =
+            quinn::Endpoint::client(local_addr).map_err(ServerError::BindTunnelClient)?;
+        endpoint.set_default_client_config(client_config);
+
+        Ok(Self {
+            endpoint,
+            remote_addr: addr,
+        })
+    }
+
+    async fn request(&self, req: QuarkIn) -> Result<QuarkOut> {
+        let server_name = self.remote_addr.ip().to_string();
+        let conn = self
+            .endpoint
+            .connect(self.remote_addr, &server_name)
+            .map_err(|e| ServerError::TunnelConnect(e.to_string()))?
+            .await
+            .map_err(|e| ServerError::TunnelConnect(e.to_string()))?;
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| ServerError::TunnelStream(e.to_string()))?;
+        write_frame(&mut send, &req).await?;
+        read_frame(&mut recv).await
     }
 }
 
@@ -252,11 +296,34 @@ enum ModelSlot {
     ShuttingDown,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum QuarkMode {
+    Root,
+    Worker { tunnel_token: Uuid },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum RouteTarget {
+    Local,
+    Worker(Uuid),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TunnelWorker {
+    token: Uuid,
+    addr: SocketAddr,
+    max_instances: Option<usize>,
+}
+
 struct QuarkContext {
     model_path: PathBuf,
     void_client: Option<Arc<VoidClient>>,
     defaults: QuarkServerDefaults,
     frozen: bool,
+    max_instances: Option<usize>,
+    mode: QuarkMode,
+    routes: tokio::sync::RwLock<HashMap<Uuid, RouteTarget>>,
+    workers: tokio::sync::RwLock<HashMap<Uuid, TunnelWorker>>,
     instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
 }
 
@@ -333,6 +400,8 @@ pub struct ServerBuilder {
     listen: SocketAddr,
     model_path: PathBuf,
     void_addr: Option<SocketAddr>,
+    tunnel: Option<SocketAddr>,
+    max_instances: Option<usize>,
     defaults: QuarkServerDefaults,
 }
 
@@ -349,6 +418,8 @@ impl ServerBuilder {
                 .expect("default listen address must be valid"),
             model_path: model_path.into(),
             void_addr: None,
+            tunnel: None,
+            max_instances: None,
             defaults: QuarkServerDefaults::default(),
         }
     }
@@ -386,6 +457,18 @@ impl ServerBuilder {
 
     pub fn void_addr(mut self, addr: SocketAddr) -> Self {
         self.void_addr = Some(addr);
+        self
+    }
+
+    /// Register this quark as a one-hop worker of the root at `addr`.
+    pub fn tunnel(mut self, addr: SocketAddr) -> Self {
+        self.tunnel = Some(addr);
+        self
+    }
+
+    /// Limit concurrent model instances handled by this quark.
+    pub fn max_instances(mut self, limit: usize) -> Self {
+        self.max_instances = Some(limit);
         self
     }
 
@@ -503,11 +586,25 @@ impl ServerBuilder {
         let local_addr = endpoint.local_addr().map_err(ServerError::LocalAddr)?;
         info!(%local_addr, "listening");
 
+        let mode = if let Some(parent_addr) = self.tunnel {
+            info!(%parent_addr, %local_addr, "registering tunnel worker");
+            let tunnel_token =
+                register_tunnel_worker(parent_addr, local_addr, self.max_instances).await?;
+            info!(%parent_addr, %local_addr, token = %tunnel_token, "tunnel worker registered");
+            QuarkMode::Worker { tunnel_token }
+        } else {
+            QuarkMode::Root
+        };
+
         let context = Arc::new(QuarkContext {
             model_path: self.model_path,
             void_client,
             defaults: self.defaults,
             frozen: self.frozen,
+            max_instances: self.max_instances,
+            mode,
+            routes: tokio::sync::RwLock::new(HashMap::new()),
+            workers: tokio::sync::RwLock::new(HashMap::new()),
             instances: tokio::sync::RwLock::new(HashMap::new()),
         });
 
@@ -632,22 +729,354 @@ async fn handle_stream(
 
 async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
     match req {
+        QuarkIn::RegisterTunnel {
+            worker_addr,
+            max_instances,
+        } => handle_register_tunnel(worker_addr, max_instances, ctx).await,
+        QuarkIn::TunnelForward { token, request } => {
+            handle_tunnel_forward(token, request, ctx).await
+        }
         QuarkIn::Start {
             model_id,
             model_config,
-        } => handle_start(model_id, model_config, ctx).await,
-        QuarkIn::PerturbUp { model_id, seed } => handle_perturb_up(model_id, seed, ctx).await,
-        QuarkIn::Infer { model_id, input_id } => handle_infer(model_id, input_id, ctx).await,
-        QuarkIn::Reset { model_id } => handle_reset(model_id, ctx).await,
-        QuarkIn::PerturbDown { model_id } => handle_perturb_down(model_id, ctx).await,
-        QuarkIn::Checkpoint { model_id } => handle_checkpoint(model_id, ctx).await,
+        } => handle_start_routed(model_id, model_config, ctx).await,
+        QuarkIn::PerturbUp { model_id, seed } => {
+            handle_perturb_up_routed(model_id, seed, ctx).await
+        }
+        QuarkIn::Infer { model_id, input_id } => handle_infer_routed(model_id, input_id, ctx).await,
+        QuarkIn::Reset { model_id } => handle_reset_routed(model_id, ctx).await,
+        QuarkIn::PerturbDown { model_id } => handle_perturb_down_routed(model_id, ctx).await,
+        QuarkIn::Checkpoint { model_id } => handle_checkpoint_routed(model_id, ctx).await,
         QuarkIn::Optimize {
             model_id,
             loss_up,
             loss_down,
-        } => handle_optimize(model_id, loss_up, loss_down, ctx).await,
-        QuarkIn::Shutdown { model_id } => handle_shutdown(model_id, ctx).await,
+        } => handle_optimize_routed(model_id, loss_up, loss_down, ctx).await,
+        QuarkIn::Shutdown { model_id } => handle_shutdown_routed(model_id, ctx).await,
     }
+}
+
+fn ensure_root_mode(ctx: &QuarkContext) -> Result<()> {
+    match ctx.mode {
+        QuarkMode::Root => Ok(()),
+        QuarkMode::Worker { .. } => Err(ServerError::TunnelWorkerRejectsModelRequests),
+    }
+}
+
+async fn register_tunnel_worker(
+    parent_addr: SocketAddr,
+    worker_addr: SocketAddr,
+    max_instances: Option<usize>,
+) -> Result<Uuid> {
+    let client = QuarkRpcClient::connect(parent_addr).await?;
+    let out = client
+        .request(QuarkIn::RegisterTunnel {
+            worker_addr,
+            max_instances,
+        })
+        .await?;
+    match out {
+        QuarkOut::TunnelRegistered { token } => Ok(token),
+        QuarkOut::Error { message } => Err(ServerError::TunnelRegistrationRejected(message)),
+        _ => Err(ServerError::UnexpectedTunnelResponse(
+            "register tunnel response",
+        )),
+    }
+}
+
+async fn handle_register_tunnel(
+    worker_addr: SocketAddr,
+    max_instances: Option<usize>,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+
+    let token = Uuid::new_v4();
+    let replaced_tokens = {
+        let mut workers = ctx.workers.write().await;
+        let replaced: Vec<Uuid> = workers
+            .iter()
+            .filter_map(|(worker_token, worker)| {
+                (worker.addr == worker_addr).then_some(*worker_token)
+            })
+            .collect();
+        for replaced_token in &replaced {
+            workers.remove(replaced_token);
+        }
+        workers.insert(
+            token,
+            TunnelWorker {
+                token,
+                addr: worker_addr,
+                max_instances,
+            },
+        );
+        replaced
+    };
+
+    if !replaced_tokens.is_empty() {
+        let mut routes = ctx.routes.write().await;
+        routes.retain(|_, target| {
+            !matches!(
+                target,
+                RouteTarget::Worker(worker_token) if replaced_tokens.contains(worker_token)
+            )
+        });
+    }
+
+    info!(%worker_addr, ?max_instances, token = %token, "registered tunnel worker");
+    Ok(QuarkOut::TunnelRegistered { token })
+}
+
+async fn handle_tunnel_forward(
+    token: Uuid,
+    request: TunnelRequest,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    match ctx.mode {
+        QuarkMode::Worker { tunnel_token } if tunnel_token == token => {
+            handle_tunnel_request_local(request, ctx).await
+        }
+        QuarkMode::Worker { .. } => Err(ServerError::TunnelUnauthorizedForward),
+        QuarkMode::Root => Err(ServerError::TunnelForwardUnsupportedOnRoot),
+    }
+}
+
+async fn handle_tunnel_request_local(
+    request: TunnelRequest,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    match request {
+        TunnelRequest::Start {
+            model_id,
+            model_config,
+        } => handle_start(model_id, model_config, ctx).await,
+        TunnelRequest::PerturbUp { model_id, seed } => handle_perturb_up(model_id, seed, ctx).await,
+        TunnelRequest::Infer { model_id, input_id } => handle_infer(model_id, input_id, ctx).await,
+        TunnelRequest::Reset { model_id } => handle_reset(model_id, ctx).await,
+        TunnelRequest::PerturbDown { model_id } => handle_perturb_down(model_id, ctx).await,
+        TunnelRequest::Checkpoint { model_id } => handle_checkpoint(model_id, ctx).await,
+        TunnelRequest::Optimize {
+            model_id,
+            loss_up,
+            loss_down,
+        } => handle_optimize(model_id, loss_up, loss_down, ctx).await,
+        TunnelRequest::Shutdown { model_id } => handle_shutdown(model_id, ctx).await,
+    }
+}
+
+async fn route_for_model(model_id: Uuid, ctx: &QuarkContext) -> Result<RouteTarget> {
+    ctx.routes
+        .read()
+        .await
+        .get(&model_id)
+        .copied()
+        .ok_or(ServerError::ModelInstanceNotRunning(model_id))
+}
+
+fn has_capacity(limit: Option<usize>, current: usize) -> bool {
+    limit.is_none_or(|max| current < max)
+}
+
+async fn select_start_target(ctx: &QuarkContext) -> Result<RouteTarget> {
+    let routes = ctx.routes.read().await;
+    let mut local_count = 0usize;
+    let mut worker_counts: HashMap<Uuid, usize> = HashMap::new();
+    for target in routes.values() {
+        match target {
+            RouteTarget::Local => local_count += 1,
+            RouteTarget::Worker(token) => {
+                *worker_counts.entry(*token).or_insert(0) += 1;
+            }
+        }
+    }
+    drop(routes);
+
+    let mut best: Option<(RouteTarget, usize)> = None;
+    if has_capacity(ctx.max_instances, local_count) {
+        best = Some((RouteTarget::Local, local_count));
+    }
+
+    let mut workers: Vec<TunnelWorker> = ctx.workers.read().await.values().copied().collect();
+    workers.sort_by_key(|worker| worker.token);
+    for worker in workers {
+        let current = worker_counts
+            .get(&worker.token)
+            .copied()
+            .unwrap_or_default();
+        if !has_capacity(worker.max_instances, current) {
+            continue;
+        }
+        match best {
+            Some((_, best_count)) if best_count <= current => {}
+            _ => best = Some((RouteTarget::Worker(worker.token), current)),
+        }
+    }
+
+    best.map(|(target, _)| target)
+        .ok_or(ServerError::NoTunnelCapacity)
+}
+
+async fn get_worker(token: Uuid, ctx: &QuarkContext) -> Result<TunnelWorker> {
+    ctx.workers
+        .read()
+        .await
+        .get(&token)
+        .copied()
+        .ok_or(ServerError::TunnelWorkerUnavailable(token))
+}
+
+async fn forward_tunnel_request(worker: TunnelWorker, request: TunnelRequest) -> Result<QuarkOut> {
+    let client = QuarkRpcClient::connect(worker.addr).await?;
+    let out = client
+        .request(QuarkIn::TunnelForward {
+            token: worker.token,
+            request,
+        })
+        .await?;
+    match out {
+        QuarkOut::Error { message } => Err(ServerError::TunnelWorkerError(message)),
+        _ => Ok(out),
+    }
+}
+
+async fn handle_start_routed(
+    model_id: Uuid,
+    model_config: Option<QuarkModelConfig>,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+    if ctx.routes.read().await.contains_key(&model_id)
+        || ctx.instances.read().await.contains_key(&model_id)
+    {
+        return Err(ServerError::ModelInstanceAlreadyRunning(model_id));
+    }
+
+    let target = select_start_target(ctx).await?;
+    let out = match target {
+        RouteTarget::Local => handle_start(model_id, model_config, ctx).await?,
+        RouteTarget::Worker(token) => {
+            let worker = get_worker(token, ctx).await?;
+            forward_tunnel_request(
+                worker,
+                TunnelRequest::Start {
+                    model_id,
+                    model_config,
+                },
+            )
+            .await?
+        }
+    };
+
+    if !matches!(out, QuarkOut::Ack) {
+        return Err(ServerError::UnexpectedTunnelResponse("start response"));
+    }
+
+    ctx.routes.write().await.insert(model_id, target);
+    Ok(QuarkOut::Ack)
+}
+
+async fn handle_perturb_up_routed(
+    model_id: Uuid,
+    seed: u64,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+    match route_for_model(model_id, ctx).await? {
+        RouteTarget::Local => handle_perturb_up(model_id, seed, ctx).await,
+        RouteTarget::Worker(token) => {
+            let worker = get_worker(token, ctx).await?;
+            forward_tunnel_request(worker, TunnelRequest::PerturbUp { model_id, seed }).await
+        }
+    }
+}
+
+async fn handle_infer_routed(
+    model_id: Uuid,
+    input_id: ObjectId,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+    match route_for_model(model_id, ctx).await? {
+        RouteTarget::Local => handle_infer(model_id, input_id, ctx).await,
+        RouteTarget::Worker(token) => {
+            let worker = get_worker(token, ctx).await?;
+            forward_tunnel_request(worker, TunnelRequest::Infer { model_id, input_id }).await
+        }
+    }
+}
+
+async fn handle_reset_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+    match route_for_model(model_id, ctx).await? {
+        RouteTarget::Local => handle_reset(model_id, ctx).await,
+        RouteTarget::Worker(token) => {
+            let worker = get_worker(token, ctx).await?;
+            forward_tunnel_request(worker, TunnelRequest::Reset { model_id }).await
+        }
+    }
+}
+
+async fn handle_perturb_down_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+    match route_for_model(model_id, ctx).await? {
+        RouteTarget::Local => handle_perturb_down(model_id, ctx).await,
+        RouteTarget::Worker(token) => {
+            let worker = get_worker(token, ctx).await?;
+            forward_tunnel_request(worker, TunnelRequest::PerturbDown { model_id }).await
+        }
+    }
+}
+
+async fn handle_checkpoint_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+    match route_for_model(model_id, ctx).await? {
+        RouteTarget::Local => handle_checkpoint(model_id, ctx).await,
+        RouteTarget::Worker(token) => {
+            let worker = get_worker(token, ctx).await?;
+            forward_tunnel_request(worker, TunnelRequest::Checkpoint { model_id }).await
+        }
+    }
+}
+
+async fn handle_optimize_routed(
+    model_id: Uuid,
+    loss_up: f32,
+    loss_down: f32,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+    match route_for_model(model_id, ctx).await? {
+        RouteTarget::Local => handle_optimize(model_id, loss_up, loss_down, ctx).await,
+        RouteTarget::Worker(token) => {
+            let worker = get_worker(token, ctx).await?;
+            forward_tunnel_request(
+                worker,
+                TunnelRequest::Optimize {
+                    model_id,
+                    loss_up,
+                    loss_down,
+                },
+            )
+            .await
+        }
+    }
+}
+
+async fn handle_shutdown_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+    let target = route_for_model(model_id, ctx).await?;
+    let out = match target {
+        RouteTarget::Local => handle_shutdown(model_id, ctx).await?,
+        RouteTarget::Worker(token) => {
+            let worker = get_worker(token, ctx).await?;
+            forward_tunnel_request(worker, TunnelRequest::Shutdown { model_id }).await?
+        }
+    };
+    if matches!(out, QuarkOut::Ack) {
+        ctx.routes.write().await.remove(&model_id);
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +1090,11 @@ async fn handle_start(
 ) -> Result<QuarkOut> {
     {
         let mut instances = ctx.instances.write().await;
+        if let Some(limit) = ctx.max_instances {
+            if instances.len() >= limit {
+                return Err(ServerError::NoLocalCapacity(limit));
+            }
+        }
         match instances.entry(model_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(ModelSlot::Starting);
@@ -1243,6 +1677,32 @@ pub enum ServerError {
     VoidCrypto(String),
     #[error("void error: {0}")]
     VoidError(String),
+    #[error("failed to bind tunnel client endpoint: {0}")]
+    BindTunnelClient(#[source] io::Error),
+    #[error("failed to connect to tunnel peer: {0}")]
+    TunnelConnect(String),
+    #[error("failed to open tunnel stream: {0}")]
+    TunnelStream(String),
+    #[error("tunnel crypto config error: {0}")]
+    TunnelCrypto(String),
+    #[error("tunnel registration rejected: {0}")]
+    TunnelRegistrationRejected(String),
+    #[error("tunnel worker rejects direct model requests")]
+    TunnelWorkerRejectsModelRequests,
+    #[error("unauthorized tunnel forward request")]
+    TunnelUnauthorizedForward,
+    #[error("tunnel forward request is only valid on worker quarks")]
+    TunnelForwardUnsupportedOnRoot,
+    #[error("no quark capacity available across local and registered workers")]
+    NoTunnelCapacity,
+    #[error("local quark reached max_instances capacity ({0})")]
+    NoLocalCapacity(usize),
+    #[error("tunnel worker {0} is unavailable")]
+    TunnelWorkerUnavailable(Uuid),
+    #[error("tunnel worker returned error: {0}")]
+    TunnelWorkerError(String),
+    #[error("unexpected tunnel protocol response: {0}")]
+    UnexpectedTunnelResponse(&'static str),
     #[error("unexpected EOF while reading frame length")]
     UnexpectedEof,
     #[error("failed to read frame length: {0}")]

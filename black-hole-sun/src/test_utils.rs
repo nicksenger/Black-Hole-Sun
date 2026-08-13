@@ -180,6 +180,8 @@ pub struct TestQuarkServer {
     model_path: PathBuf,
     listen_addr: SocketAddr,
     void_addr: Option<SocketAddr>,
+    tunnel: Option<SocketAddr>,
+    max_instances: Option<usize>,
     top_k: Option<usize>,
     temperature: Option<f64>,
     top_p: Option<f64>,
@@ -198,6 +200,8 @@ impl TestQuarkServer {
             model_path: model_path.into(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             void_addr: None,
+            tunnel: None,
+            max_instances: None,
             top_k: None,
             temperature: None,
             top_p: None,
@@ -218,6 +222,16 @@ impl TestQuarkServer {
 
     pub fn void_addr(mut self, addr: SocketAddr) -> Self {
         self.void_addr = Some(addr);
+        self
+    }
+
+    pub fn tunnel(mut self, addr: SocketAddr) -> Self {
+        self.tunnel = Some(addr);
+        self
+    }
+
+    pub fn max_instances(mut self, limit: usize) -> Self {
+        self.max_instances = Some(limit);
         self
     }
 
@@ -285,6 +299,12 @@ impl TestQuarkServer {
         }
         if let Some(void_addr) = self.void_addr {
             builder = builder.void_addr(void_addr);
+        }
+        if let Some(tunnel) = self.tunnel {
+            builder = builder.tunnel(tunnel);
+        }
+        if let Some(max_instances) = self.max_instances {
+            builder = builder.max_instances(max_instances);
         }
         if let Some(top_k) = self.top_k {
             builder = builder.top_k(top_k);

@@ -1,5 +1,7 @@
 //! Shared types for the black-hole workspace.
 
+use std::net::SocketAddr;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -46,6 +48,20 @@ pub enum QuarkIn {
     },
     /// Shut down the model instance with the provided ID.
     Shutdown { model_id: Uuid },
+    /// Register a one-hop tunnel worker with a root quark.
+    RegisterTunnel {
+        /// Address where the worker quark accepts forwarded tunnel requests.
+        worker_addr: SocketAddr,
+        /// Optional model instance capacity limit for this worker.
+        max_instances: Option<usize>,
+    },
+    /// Forward a model operation through a registered tunnel worker.
+    TunnelForward {
+        /// Root-issued token proving this request was authorized for the worker.
+        token: Uuid,
+        /// Forwarded model operation.
+        request: TunnelRequest,
+    },
 }
 
 /// Response sent by the quark server to the client.
@@ -57,8 +73,44 @@ pub enum QuarkOut {
     Inferred { output_id: ObjectId },
     /// Checkpoint upload complete; contains the void object ID of model weights.
     Checkpointed { checkpoint_id: ObjectId },
+    /// Tunnel worker registration complete; contains root-issued auth token.
+    TunnelRegistered { token: Uuid },
     /// Error from any operation.
     Error { message: String },
+}
+
+/// Forwardable model operation used for root->worker tunnel requests.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum TunnelRequest {
+    Start {
+        model_id: Uuid,
+        model_config: Option<QuarkModelConfig>,
+    },
+    PerturbUp {
+        model_id: Uuid,
+        seed: u64,
+    },
+    Infer {
+        model_id: Uuid,
+        input_id: ObjectId,
+    },
+    Reset {
+        model_id: Uuid,
+    },
+    PerturbDown {
+        model_id: Uuid,
+    },
+    Checkpoint {
+        model_id: Uuid,
+    },
+    Optimize {
+        model_id: Uuid,
+        loss_up: f32,
+        loss_down: f32,
+    },
+    Shutdown {
+        model_id: Uuid,
+    },
 }
 
 /// Per-model-instance quark configuration overrides.
