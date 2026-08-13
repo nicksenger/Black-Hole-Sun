@@ -66,6 +66,7 @@ pub mod cell;
 pub mod fusion;
 pub mod model_config;
 pub mod ops;
+pub mod ray;
 pub mod sun;
 pub mod twin;
 
@@ -90,6 +91,7 @@ pub use fusion::action::{FusionSeed, FusionState};
 pub use fusion::{Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch};
 pub use model_config::{DefaultConfig, ModelConfig, NoOscillation, OscillationSchedule};
 pub use ops::VoidInferOps;
+pub use ray::Ray;
 
 pub use atom::Atom;
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};

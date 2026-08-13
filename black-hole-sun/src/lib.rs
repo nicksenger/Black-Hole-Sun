@@ -24,7 +24,7 @@ pub use void_client::VoidClient;
 pub use black_hole_flux::{
     atom, cell, ops, sun, twin, AtomError, DefaultConfig, Fusion, FusionSeed, FusionState,
     LeftStack, ModelConfig, NoOscillation, OscillationSchedule, Progenitor, QuzoFusion, RandStack,
-    RightStack, Twin,
+    Ray, RightStack, Twin,
 };
 
 // Convenience re-exports — spec types

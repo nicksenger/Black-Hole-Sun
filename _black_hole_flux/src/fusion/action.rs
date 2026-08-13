@@ -339,6 +339,8 @@ impl Action for FusionOptimize {
         _state: &mut FusionState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("fusion optimize failed: {error}")))
+        output
+            .map(|_| ())
+            .map_err(|error| Failure::Message(format!("fusion optimize failed: {error}")))
     }
 }

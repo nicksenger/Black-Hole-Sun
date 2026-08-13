@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::{
     Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest, ObjectId,
-    Progenitor, QuarkClient, QuarkModelConfig, SequenceOutput, TestQuarkServer, TestVoidServer,
-    Tokenizer, Transmission, VoidClient,
+    Progenitor, QuarkClient, QuarkModelConfig, QuarkModelParams, SequenceOutput, TestQuarkServer,
+    TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -127,6 +127,10 @@ impl VoidInferOps for SpaceJungle {
         self.quark_client
             .optimize(model_id, loss_up, loss_down)
             .await
+    }
+
+    async fn query_model_params(&self, model_id: Uuid) -> Result<QuarkModelParams, String> {
+        self.quark_client.query_model_params(model_id).await
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {

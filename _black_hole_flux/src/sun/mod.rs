@@ -85,6 +85,8 @@ pub enum SunNodeState {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SunNodeAppearance {
     pub id: u32,
+    /// Journey ID of the spawned child workflow represented by this node.
+    pub journey_id: Uuid,
     pub label: String,
     pub input_ports: Vec<u32>,
     pub state: SunNodeState,
@@ -181,6 +183,11 @@ impl<S> SunStateWithInner<S> {
             .copied()
             .map(|id| SunNodeAppearance {
                 id,
+                journey_id: inner
+                    .journey_ids
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_else(Uuid::nil),
                 label: inner
                     .node_labels
                     .get(&id)

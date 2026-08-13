@@ -1045,6 +1045,13 @@ mod tests {
                 (2, "Node2", vec![2, 3], super::super::SunNodeState::Idle),
             ]
         );
+        assert!(
+            appearance
+                .nodes
+                .iter()
+                .all(|node| node.journey_id != Uuid::nil()),
+            "each node should expose its spawned child workflow journey id"
+        );
         assert_eq!(
             appearance.edges,
             vec![

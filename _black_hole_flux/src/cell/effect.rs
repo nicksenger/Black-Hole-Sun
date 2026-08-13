@@ -167,7 +167,7 @@ pub struct QuarkOptimize;
 impl<J> EffectSchema<J> for QuarkOptimize {
     type Id = u64;
     type In = (Uuid, Potentiation);
-    type Out = ();
+    type Out = bool;
     type Err = AtomError;
 }
 
@@ -190,7 +190,11 @@ where
                 .optimize(model_id, potentiation.loss_up, potentiation.loss_down)
                 .await
                 .map_err(AtomError::Optimize)?;
-            Ok(())
+            let params = jungle
+                .query_model_params(model_id)
+                .await
+                .map_err(AtomError::Optimize)?;
+            Ok(params.is_frozen)
         }
     }
 }

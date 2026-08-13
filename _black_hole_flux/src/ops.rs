@@ -11,7 +11,7 @@ const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    ObjectId, QuarkModelConfig, Transmission,
+    ObjectId, QuarkModelConfig, QuarkModelParams, Transmission,
 };
 
 use crate::AtomError;
@@ -127,6 +127,11 @@ pub trait VoidInferOps: Send + Sync {
         loss_up: f32,
         loss_down: f32,
     ) -> Result<(), String>;
+
+    /// Query the current runtime parameters for a running quark model instance.
+    async fn query_model_params(&self, _model_id: uuid::Uuid) -> Result<QuarkModelParams, String> {
+        Err("query_model_params is not implemented".to_string())
+    }
 
     /// Shut down a quark model instance.
     async fn shutdown_model(&self, model_id: uuid::Uuid) -> Result<(), String>;

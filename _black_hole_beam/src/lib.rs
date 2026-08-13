@@ -15,7 +15,7 @@ use black_hole_flux::sun::{
     BinarySunStep, NodeIdsFromList, Sun, SunAppearance, SunNode, SunNodeState, SunState,
     UnarySunStep,
 };
-use black_hole_flux::{FusionFlow, FusionSeed, FusionState, ObjectId};
+use black_hole_flux::{FusionFlow, FusionSeed, FusionState, ObjectId, Ray};
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
@@ -313,11 +313,13 @@ struct LiveConfig {
 #[derive(Clone)]
 struct CellDefinition {
     id: u32,
+    journey_id: Uuid,
     ports: Vec<u32>,
     outgoing_ports: Vec<u32>,
     animal_name: String,
     state: SunNodeState,
     state_sequence: u64,
+    frozen: Option<bool>,
 }
 
 impl CellDefinition {
@@ -327,11 +329,13 @@ impl CellDefinition {
     {
         Self {
             id,
+            journey_id: Uuid::nil(),
             ports,
             outgoing_ports,
             animal_name: short_type_name::<A>(),
             state: SunNodeState::Idle,
             state_sequence: 0,
+            frozen: None,
         }
     }
 }
@@ -413,7 +417,10 @@ impl BeamModel {
         }
     }
 
-    fn from_appearance(appearance: SunAppearance) -> Result<Self, String> {
+    fn from_appearance(
+        appearance: SunAppearance,
+        child_rays: &HashMap<Uuid, Ray>,
+    ) -> Result<Self, String> {
         if !appearance.finalized {
             return Err("the Black Hole Sun topology is not finalized".to_string());
         }
@@ -424,11 +431,13 @@ impl BeamModel {
             .into_iter()
             .map(|node| CellDefinition {
                 id: node.id,
+                journey_id: node.journey_id,
                 ports: node.input_ports,
                 outgoing_ports: Vec::new(),
                 animal_name: node.label,
                 state: node.state,
                 state_sequence: node.state_sequence,
+                frozen: child_rays.get(&node.journey_id).map(|ray| ray.frozen),
             })
             .collect::<Vec<_>>();
         cells.sort_by_key(|cell| cell.id);
@@ -517,14 +526,22 @@ fn run_beam(config: BeamConfig, model: BeamModel, live: Option<LiveConfig>) -> i
 #[derive(Debug, Clone)]
 enum Message {
     AppearanceTick,
-    AppearanceLoaded(Result<Option<SunAppearance>, String>),
+    AppearanceLoaded(Result<Option<LiveAppearanceSnapshot>, String>),
     ColorTick(Instant),
+}
+
+#[derive(Debug, Clone)]
+struct LiveAppearanceSnapshot {
+    appearance: SunAppearance,
+    child_rays: HashMap<Uuid, Ray>,
 }
 
 trait NodeStateVisual {
     fn label(self) -> &'static str;
     fn palette(self) -> (Color, Color);
+    fn palette_with_frozen(self, frozen: Option<bool>) -> (Color, Color);
     fn color(self, cell_id: u32) -> Color;
+    fn color_with_frozen(self, cell_id: u32, frozen: Option<bool>) -> Color;
 }
 
 impl NodeStateVisual for SunNodeState {
@@ -557,8 +574,24 @@ impl NodeStateVisual for SunNodeState {
         }
     }
 
+    fn palette_with_frozen(self, frozen: Option<bool>) -> (Color, Color) {
+        if self == SunNodeState::Optimization && frozen == Some(true) {
+            (
+                Color::from_rgb8(138, 72, 186),
+                Color::from_rgb8(186, 126, 224),
+            )
+        } else {
+            self.palette()
+        }
+    }
+
     fn color(self, cell_id: u32) -> Color {
         let (low, high) = self.palette();
+        lerp_color(low, high, cell_palette_position(cell_id))
+    }
+
+    fn color_with_frozen(self, cell_id: u32, frozen: Option<bool>) -> Color {
+        let (low, high) = self.palette_with_frozen(frozen);
         lerp_color(low, high, cell_palette_position(cell_id))
     }
 }
@@ -671,7 +704,7 @@ impl CellVisualState {
         self.begin_next_transition(now)
     }
 
-    fn color(&self, cell_id: u32, now: Instant) -> Color {
+    fn color(&self, cell_id: u32, frozen: Option<bool>, now: Instant) -> Color {
         let progress = self
             .transition_started_at
             .map(|started_at| {
@@ -680,8 +713,8 @@ impl CellVisualState {
             })
             .unwrap_or(1.0);
         lerp_color(
-            self.previous.color(cell_id),
-            self.current.color(cell_id),
+            self.previous.color_with_frozen(cell_id, frozen),
+            self.current.color_with_frozen(cell_id, frozen),
             progress,
         )
     }
@@ -728,7 +761,12 @@ fn model_display_changed(current: &BeamModel, next: &BeamModel) -> bool {
             .cells
             .iter()
             .zip(next.cells.iter())
-            .any(|(current, next)| current.id != next.id || current.animal_name != next.animal_name)
+            .any(|(current, next)| {
+                current.id != next.id
+                    || current.journey_id != next.journey_id
+                    || current.animal_name != next.animal_name
+                    || current.frozen != next.frozen
+            })
 }
 
 struct BeamApp {
@@ -792,8 +830,9 @@ impl BeamApp {
             Message::AppearanceLoaded(result) => {
                 self.appearance_loading = false;
                 match result {
-                    Ok(Some(appearance)) if appearance.finalized => {
-                        match BeamModel::from_appearance(appearance) {
+                    Ok(Some(snapshot)) if snapshot.appearance.finalized => {
+                        match BeamModel::from_appearance(snapshot.appearance, &snapshot.child_rays)
+                        {
                             Ok(model) => {
                                 let now = Instant::now();
                                 let mut transitioned = false;
@@ -1048,8 +1087,8 @@ impl BeamApp {
                 let color = self
                     .visuals
                     .get(&cell.id)
-                    .map(|visual| visual.color(cell.id, self.color_now))
-                    .unwrap_or_else(|| cell.state.color(cell.id));
+                    .map(|visual| visual.color(cell.id, cell.frozen, self.color_now))
+                    .unwrap_or_else(|| cell.state.color_with_frozen(cell.id, cell.frozen));
                 (cell.id, color)
             })
             .collect()
@@ -1060,18 +1099,42 @@ fn appearance_task(live: LiveConfig) -> Task<Message> {
     Task::perform(fetch_appearance(live), Message::AppearanceLoaded)
 }
 
-async fn fetch_appearance(live: LiveConfig) -> Result<Option<SunAppearance>, String> {
+async fn fetch_appearance(live: LiveConfig) -> Result<Option<LiveAppearanceSnapshot>, String> {
     let bytes = live
         .client
         .animal_appearance(live.journey_id)
         .await
         .map_err(|error| error.to_string())?;
-    bytes
-        .map(|bytes| {
-            postcard::from_bytes::<SunAppearance>(&bytes)
-                .map_err(|error| format!("could not decode Sun appearance: {error}"))
-        })
-        .transpose()
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    let appearance = postcard::from_bytes::<SunAppearance>(&bytes)
+        .map_err(|error| format!("could not decode Sun appearance: {error}"))?;
+    let child_rays = fetch_child_rays(&live, &appearance).await;
+    Ok(Some(LiveAppearanceSnapshot {
+        appearance,
+        child_rays,
+    }))
+}
+
+async fn fetch_child_rays(live: &LiveConfig, appearance: &SunAppearance) -> HashMap<Uuid, Ray> {
+    let mut rays = HashMap::new();
+    for node in &appearance.nodes {
+        let maybe_bytes = live
+            .client
+            .animal_appearance(node.journey_id)
+            .await
+            .ok()
+            .flatten();
+        let Some(bytes) = maybe_bytes else {
+            continue;
+        };
+        let Ok(ray) = postcard::from_bytes::<Ray>(&bytes) else {
+            continue;
+        };
+        rays.insert(node.journey_id, ray);
+    }
+    rays
 }
 
 fn black_hole_text() -> Color {
@@ -1208,6 +1271,13 @@ mod tests {
                 Color::from_rgb8(242, 156, 56)
             )
         );
+        assert_eq!(
+            SunNodeState::Optimization.palette_with_frozen(Some(true)),
+            (
+                Color::from_rgb8(138, 72, 186),
+                Color::from_rgb8(186, 126, 224)
+            )
+        );
         assert_ne!(SunNodeState::Idle.color(0), SunNodeState::Idle.color(1));
         assert!(SunNodeState::Idle.color(1).g > SunNodeState::Idle.color(0).g);
     }
@@ -1221,12 +1291,12 @@ mod tests {
         assert_eq!(MIN_COLOR_STATE_DURATION, Duration::from_secs(1));
         assert!(visual.observe(SunNodeState::Propagation1, 1, start));
         assert_eq!(
-            visual.color(0, start),
+            visual.color(0, None, start),
             SunNodeState::Idle.color(0),
             "the fade starts from the previous activity color"
         );
         assert_eq!(
-            visual.color(0, start + COLOR_FADE_DURATION / 2),
+            visual.color(0, None, start + COLOR_FADE_DURATION / 2),
             lerp_color(
                 SunNodeState::Idle.color(0),
                 SunNodeState::Propagation1.color(0),
@@ -1235,7 +1305,7 @@ mod tests {
             "the color is blended halfway through the fade"
         );
         assert_eq!(
-            visual.color(0, start + COLOR_FADE_DURATION),
+            visual.color(0, None, start + COLOR_FADE_DURATION),
             SunNodeState::Propagation1.color(0),
             "the fade reaches the new color after 400ms"
         );
@@ -1344,6 +1414,7 @@ mod tests {
             nodes: vec![
                 SunNodeAppearance {
                     id: 2,
+                    journey_id: Uuid::new_v4(),
                     label: "Fusion".to_string(),
                     input_ports: vec![2, 3],
                     state: SunNodeState::Optimization,
@@ -1351,6 +1422,7 @@ mod tests {
                 },
                 SunNodeAppearance {
                     id: 0,
+                    journey_id: Uuid::new_v4(),
                     label: "Root".to_string(),
                     input_ports: vec![0],
                     state: SunNodeState::Propagation1,
@@ -1372,7 +1444,7 @@ mod tests {
         };
         let bytes = postcard::to_allocvec(&appearance).unwrap();
         let decoded = postcard::from_bytes::<SunAppearance>(&bytes).unwrap();
-        let model = BeamModel::from_appearance(decoded).unwrap();
+        let model = BeamModel::from_appearance(decoded, &HashMap::new()).unwrap();
 
         assert_eq!(model.graph.nodes, vec![0, 2]);
         assert_eq!(
@@ -1388,12 +1460,33 @@ mod tests {
     }
 
     #[test]
+    fn maps_child_ray_frozen_state_into_live_cells() {
+        let frozen_journey = Uuid::new_v4();
+        let appearance = SunAppearance {
+            finalized: true,
+            nodes: vec![SunNodeAppearance {
+                id: 0,
+                journey_id: frozen_journey,
+                label: "Root".to_string(),
+                input_ports: vec![0],
+                state: SunNodeState::Optimization,
+                state_sequence: 4,
+            }],
+            edges: vec![],
+        };
+        let rays = HashMap::from([(frozen_journey, Ray { frozen: true })]);
+        let model = BeamModel::from_appearance(appearance, &rays).unwrap();
+        assert_eq!(model.cells[0].frozen, Some(true));
+    }
+
+    #[test]
     fn rejects_appearance_edges_with_the_wrong_destination_port() {
         let appearance = SunAppearance {
             finalized: true,
             nodes: vec![
                 SunNodeAppearance {
                     id: 0,
+                    journey_id: Uuid::new_v4(),
                     label: "Root".to_string(),
                     input_ports: vec![0],
                     state: SunNodeState::Idle,
@@ -1401,6 +1494,7 @@ mod tests {
                 },
                 SunNodeAppearance {
                     id: 1,
+                    journey_id: Uuid::new_v4(),
                     label: "Sink".to_string(),
                     input_ports: vec![1],
                     state: SunNodeState::Idle,
@@ -1414,7 +1508,7 @@ mod tests {
             }],
         };
 
-        let error = BeamModel::from_appearance(appearance)
+        let error = BeamModel::from_appearance(appearance, &HashMap::new())
             .err()
             .expect("appearance should be rejected");
         assert!(error.contains("unowned input port 9"));

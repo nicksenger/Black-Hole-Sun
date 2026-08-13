@@ -29,6 +29,9 @@ pub struct CellState<S = ()> {
     pub send_id: black_hole_spec::ObjectId,
     /// Random seed passed to the perturb-up step each iteration.
     pub perturbation_seed: u64,
+    /// Last known frozen status for this model instance.
+    #[serde(default)]
+    pub is_frozen: bool,
     /// User-provided state threaded through all cell actions.
     #[serde(default)]
     pub inner: S,
@@ -284,10 +287,11 @@ impl<S> Action for Optimize<S> {
     }
 
     fn absorb(
-        _state: &mut CellState<S>,
+        state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|e| Failure::Message(format!("optimize failed: {e}")))
+        state.is_frozen = output.map_err(|e| Failure::Message(format!("optimize failed: {e}")))?;
+        Ok(())
     }
 }
 
