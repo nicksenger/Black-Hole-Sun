@@ -6,6 +6,7 @@ mod common;
 mod black_dwarf;
 mod dark_star;
 mod diamond_dog;
+mod red_dwarf;
 mod sun_dog;
 
 #[cfg(not(test))]
