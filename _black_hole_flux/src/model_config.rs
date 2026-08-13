@@ -1,6 +1,6 @@
 //! Model configuration traits for per-instance quark start settings.
 
-use black_hole_spec::QuarkModelConfig;
+use black_hole_spec::{ObjectId, QuarkModelConfig};
 
 /// Compile-time model configuration for a cell-owned quark instance.
 ///
@@ -16,6 +16,7 @@ pub trait ModelConfig {
     const TRAINING_LR: Option<f64> = None;
     const TRAINING_EPSILON: Option<f64> = None;
     const FROZEN: Option<bool> = None;
+    const CHECKPOINT: Option<u128> = None;
 
     fn quark_model_config() -> Option<QuarkModelConfig> {
         let config = QuarkModelConfig {
@@ -28,6 +29,7 @@ pub trait ModelConfig {
             training_lr: Self::TRAINING_LR,
             training_epsilon: Self::TRAINING_EPSILON,
             frozen: Self::FROZEN,
+            checkpoint_id: Self::CHECKPOINT.map(ObjectId::from_u128),
         };
 
         let has_any_override = config.top_k.is_some()
@@ -38,7 +40,8 @@ pub trait ModelConfig {
             || config.inference_limit.is_some()
             || config.training_lr.is_some()
             || config.training_epsilon.is_some()
-            || config.frozen.is_some();
+            || config.frozen.is_some()
+            || config.checkpoint_id.is_some();
         if has_any_override {
             Some(config)
         } else {
@@ -61,6 +64,11 @@ mod tests {
         const FROZEN: Option<bool> = Some(true);
     }
 
+    struct CheckpointConfig;
+    impl ModelConfig for CheckpointConfig {
+        const CHECKPOINT: Option<u128> = Some(42);
+    }
+
     #[test]
     fn default_config_emits_no_overrides() {
         assert!(super::DefaultConfig::quark_model_config().is_none());
@@ -70,5 +78,14 @@ mod tests {
     fn frozen_override_emits_model_config() {
         let config = FrozenConfig::quark_model_config().expect("expected override config");
         assert_eq!(config.frozen, Some(true));
+    }
+
+    #[test]
+    fn checkpoint_override_emits_model_config() {
+        let config = CheckpointConfig::quark_model_config().expect("expected override config");
+        assert_eq!(
+            config.checkpoint_id,
+            Some(black_hole_spec::ObjectId::from_u128(42))
+        );
     }
 }

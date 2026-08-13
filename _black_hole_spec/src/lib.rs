@@ -127,6 +127,10 @@ pub struct QuarkModelConfig {
     pub training_lr: Option<f64>,
     pub training_epsilon: Option<f64>,
     pub frozen: Option<bool>,
+    /// Optional checkpoint object to load model weights from for this instance.
+    ///
+    /// When `None`, quark loads weights from its configured server model path.
+    pub checkpoint_id: Option<ObjectId>,
 }
 
 // ---------------------------------------------------------------------------

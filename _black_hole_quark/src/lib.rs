@@ -24,6 +24,9 @@ const DEFAULT_ENGINE_REPEAT_PENALTY: f32 = 1.0;
 const DEFAULT_ENGINE_PRESENCE_PENALTY: f32 = 0.0;
 const DEFAULT_INFERENCE_LIMIT: u32 = 256;
 const DEFAULT_MAX_INSTANCES: usize = 1;
+const DEFAULT_CHECKPOINT_TOKENIZER_FILE: &str = "tokenizer.json";
+const DEFAULT_CHECKPOINT_TOKENIZER_DIR: &str = ".black-hole-sun/tokenizers";
+const CHECKPOINT_CACHE_DIR: &str = "black-hole-quark/checkpoints";
 
 // ---------------------------------------------------------------------------
 // Void client — connects to black-hole-void over QUIC, sends/receives frames
@@ -288,7 +291,14 @@ struct QuarkInstance {
     engine: ModelEngine,
     inference_limit: u32,
     frozen: bool,
+    checkpoint_path: Option<PathBuf>,
     session: tokio::sync::Mutex<QuarkSession>,
+}
+
+struct ResolvedModelSource {
+    model_path: PathBuf,
+    tokenizer_path: Option<PathBuf>,
+    checkpoint_path: Option<PathBuf>,
 }
 
 enum ModelSlot {
@@ -593,13 +603,12 @@ impl ServerBuilder {
 
         let mode = if let Some(parent_addr) = self.tunnel {
             info!(%parent_addr, %local_addr, "registering tunnel worker");
-            let tunnel_token =
-                register_tunnel_worker(
-                    parent_addr,
-                    local_addr,
-                    resolve_max_instances(self.max_instances),
-                )
-                .await?;
+            let tunnel_token = register_tunnel_worker(
+                parent_addr,
+                local_addr,
+                resolve_max_instances(self.max_instances),
+            )
+            .await?;
             info!(%parent_addr, %local_addr, token = %tunnel_token, "tunnel worker registered");
             QuarkMode::Worker { tunnel_token }
         } else {
@@ -1117,7 +1126,16 @@ async fn handle_start(
     }
 
     info!(%model_id, "starting model instance");
-    let model_path = ctx.model_path.clone();
+    let resolved_source = match resolve_model_source(model_id, model_config.as_ref(), ctx).await {
+        Ok(source) => source,
+        Err(error) => {
+            ctx.instances.write().await.remove(&model_id);
+            return Err(error);
+        }
+    };
+    let model_path = resolved_source.model_path.clone();
+    let tokenizer_path = resolved_source.tokenizer_path.clone();
+    let checkpoint_path = resolved_source.checkpoint_path.clone();
     let defaults = ctx.defaults.with_overrides(model_config.as_ref());
     let inference_limit = defaults.inference_limit;
     let frozen = resolve_model_frozen(ctx.frozen, model_config.as_ref());
@@ -1132,6 +1150,9 @@ async fn handle_start(
         if let Some(top_p) = defaults.top_p {
             builder = builder.top_p(top_p);
         }
+        if let Some(tokenizer_path) = tokenizer_path {
+            builder = builder.tokenizer_path(tokenizer_path);
+        }
         builder
             .build()
             .map_err(|error| ServerError::ModelError(error.to_string()))
@@ -1141,6 +1162,9 @@ async fn handle_start(
         Ok(result) => result,
         Err(error) => {
             ctx.instances.write().await.remove(&model_id);
+            if let Some(path) = checkpoint_path.as_ref() {
+                cleanup_checkpoint_file(path);
+            }
             return Err(ServerError::ModelError(format!(
                 "model load task failed: {error}"
             )));
@@ -1151,6 +1175,9 @@ async fn handle_start(
         Ok(engine) => engine,
         Err(error) => {
             ctx.instances.write().await.remove(&model_id);
+            if let Some(path) = checkpoint_path.as_ref() {
+                cleanup_checkpoint_file(path);
+            }
             return Err(error);
         }
     };
@@ -1159,6 +1186,7 @@ async fn handle_start(
         engine,
         inference_limit,
         frozen,
+        checkpoint_path,
         session: tokio::sync::Mutex::new(QuarkSession::new()),
     });
     ctx.instances
@@ -1195,6 +1223,9 @@ async fn handle_shutdown(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut>
         .unload_model()
         .await
         .map_err(|error| ServerError::ModelError(error.to_string()));
+    if let Some(path) = instance.checkpoint_path.as_ref() {
+        cleanup_checkpoint_file(path);
+    }
     ctx.instances.write().await.remove(&model_id);
     unload_result?;
 
@@ -1223,6 +1254,80 @@ fn resolve_model_frozen(server_frozen: bool, model_config: Option<&QuarkModelCon
     model_config
         .and_then(|model_config| model_config.frozen)
         .unwrap_or(server_frozen)
+}
+
+fn resolve_checkpoint_tokenizer_path() -> Result<PathBuf> {
+    let base_dirs =
+        directories_next::BaseDirs::new().ok_or(ServerError::HomeDirectoryUnavailable)?;
+    let home_dir = base_dirs.home_dir();
+    let tokenizer_path = home_dir
+        .join(DEFAULT_CHECKPOINT_TOKENIZER_DIR)
+        .join(DEFAULT_CHECKPOINT_TOKENIZER_FILE);
+    if tokenizer_path.exists() {
+        Ok(tokenizer_path)
+    } else {
+        Err(ServerError::CheckpointTokenizerMissing(tokenizer_path))
+    }
+}
+
+fn write_checkpoint_file(
+    model_id: Uuid,
+    checkpoint_id: ObjectId,
+    checkpoint_bytes: &[u8],
+) -> Result<PathBuf> {
+    let checkpoint_dir = std::env::temp_dir().join(CHECKPOINT_CACHE_DIR);
+    fs::create_dir_all(&checkpoint_dir).map_err(|source| ServerError::CreateCheckpointDir {
+        path: checkpoint_dir.clone(),
+        source,
+    })?;
+    let checkpoint_path = checkpoint_dir.join(format!("{model_id}-{checkpoint_id}.gguf"));
+    fs::write(&checkpoint_path, checkpoint_bytes).map_err(|source| {
+        ServerError::WriteCheckpoint {
+            path: checkpoint_path.clone(),
+            source,
+        }
+    })?;
+    Ok(checkpoint_path)
+}
+
+fn cleanup_checkpoint_file(path: &PathBuf) {
+    if let Err(error) = fs::remove_file(path) {
+        warn!(
+            path = %path.display(),
+            error = %error,
+            "failed to remove temporary checkpoint file"
+        );
+    }
+}
+
+async fn resolve_model_source(
+    model_id: Uuid,
+    model_config: Option<&QuarkModelConfig>,
+    ctx: &QuarkContext,
+) -> Result<ResolvedModelSource> {
+    let Some(checkpoint_id) = model_config.and_then(|config| config.checkpoint_id) else {
+        return Ok(ResolvedModelSource {
+            model_path: ctx.model_path.clone(),
+            tokenizer_path: None,
+            checkpoint_path: None,
+        });
+    };
+
+    let tokenizer_path = resolve_checkpoint_tokenizer_path()?;
+    let void = ctx
+        .void_client
+        .as_ref()
+        .ok_or_else(|| ServerError::VoidNotConfigured)?;
+    let checkpoint_bytes = void.download(checkpoint_id).await?;
+    if checkpoint_bytes.is_empty() {
+        return Err(ServerError::CheckpointEmpty(checkpoint_id));
+    }
+    let checkpoint_path = write_checkpoint_file(model_id, checkpoint_id, &checkpoint_bytes)?;
+    Ok(ResolvedModelSource {
+        model_path: checkpoint_path.clone(),
+        tokenizer_path: Some(tokenizer_path),
+        checkpoint_path: Some(checkpoint_path),
+    })
 }
 
 async fn reset_model(engine: &ModelEngine) -> Result<()> {
@@ -1678,6 +1783,24 @@ pub enum ServerError {
     InvalidQuarkState(String),
     #[error("void service not configured")]
     VoidNotConfigured,
+    #[error("failed to resolve home directory for checkpoint tokenizer")]
+    HomeDirectoryUnavailable,
+    #[error("checkpoint start requires tokenizer file at {0}")]
+    CheckpointTokenizerMissing(PathBuf),
+    #[error("checkpoint {0} downloaded from void is empty")]
+    CheckpointEmpty(ObjectId),
+    #[error("failed to create checkpoint cache directory {path}: {source}")]
+    CreateCheckpointDir {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to write checkpoint cache file {path}: {source}")]
+    WriteCheckpoint {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("failed to bind void client endpoint: {0}")]
     BindVoidClient(#[source] io::Error),
     #[error("failed to connect to void: {0}")]
@@ -1772,6 +1895,7 @@ mod tests {
             training_lr: Some(0.0002),
             training_epsilon: Some(0.001),
             frozen: None,
+            checkpoint_id: None,
         }));
 
         assert_eq!(resolved.top_k, 64);
@@ -1834,9 +1958,7 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
         };
-        let worker_addr: SocketAddr = "127.0.0.1:54321"
-            .parse()
-            .expect("valid socket address");
+        let worker_addr: SocketAddr = "127.0.0.1:54321".parse().expect("valid socket address");
 
         let out = handle_register_tunnel(worker_addr, None, &ctx)
             .await
@@ -1868,9 +1990,7 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
         };
-        let worker_addr: SocketAddr = "127.0.0.1:54322"
-            .parse()
-            .expect("valid socket address");
+        let worker_addr: SocketAddr = "127.0.0.1:54322".parse().expect("valid socket address");
         let requested = Some(3usize);
 
         let out = handle_register_tunnel(worker_addr, requested, &ctx)
