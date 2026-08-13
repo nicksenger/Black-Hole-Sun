@@ -71,8 +71,8 @@ pub mod twin;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkModelConfig, QuarkOut, SequenceOutput,
-    Transmission,
+    InferenceRequest, LogitEntry, ObjectId, QuarkIn, QuarkModelConfig, QuarkModelParams, QuarkOut,
+    SequenceOutput, Transmission,
 };
 
 pub use animal::Progenitor;

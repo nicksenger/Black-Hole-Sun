@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use black_hole_spec::{ObjectId, QuarkIn, QuarkModelConfig, QuarkOut};
+use black_hole_spec::{ObjectId, QuarkIn, QuarkModelConfig, QuarkModelParams, QuarkOut};
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
@@ -115,6 +115,17 @@ impl QuarkClient {
             QuarkOut::Ack => Ok(()),
             QuarkOut::Error { message } => Err(message),
             _ => Err("unexpected quark response for shutdown".to_string()),
+        }
+    }
+
+    pub async fn query_model_params(&self, model_id: ObjectId) -> Result<QuarkModelParams, String> {
+        let resp = self
+            .request(&QuarkIn::QueryModelParams { model_id })
+            .await?;
+        match resp {
+            QuarkOut::ModelParams { params } => Ok(params),
+            QuarkOut::Error { message } => Err(message),
+            _ => Err("unexpected quark response for query_model_params".to_string()),
         }
     }
 

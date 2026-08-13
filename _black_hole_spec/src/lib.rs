@@ -48,6 +48,8 @@ pub enum QuarkIn {
     },
     /// Shut down the model instance with the provided ID.
     Shutdown { model_id: Uuid },
+    /// Query the current runtime parameters for a model instance.
+    QueryModelParams { model_id: Uuid },
     /// Register a one-hop tunnel worker with a root quark.
     RegisterTunnel {
         /// Address where the worker quark accepts forwarded tunnel requests.
@@ -80,10 +82,31 @@ pub enum QuarkOut {
     Inferred { output_id: ObjectId },
     /// Checkpoint upload complete; contains the void object ID of model weights.
     Checkpointed { checkpoint_id: ObjectId },
+    /// Runtime model parameters for a running instance.
+    ModelParams { params: QuarkModelParams },
     /// Tunnel worker registration complete; contains root-issued auth token.
     TunnelRegistered { token: Uuid },
     /// Error from any operation.
     Error { message: String },
+}
+
+/// Runtime model parameters resolved for a running quark model instance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuarkModelParams {
+    pub inference_limit: u32,
+    pub top_k: usize,
+    pub temperature: f64,
+    pub top_p: Option<f64>,
+    pub repeat_penalty: f32,
+    pub presence_penalty: f32,
+    pub training_lr: f64,
+    pub training_epsilon: f64,
+    pub is_frozen: bool,
+    pub optimize_steps: u32,
+    pub oscillation_period_steps: Option<u32>,
+    pub oscillation_train_steps: Option<u32>,
+    pub oscillation_phase_steps: Option<u32>,
+    pub oscillation_warmup_steps: Option<u32>,
 }
 
 /// Forwardable model operation used for root->worker tunnel requests.
@@ -116,6 +139,9 @@ pub enum TunnelRequest {
         loss_down: f32,
     },
     Shutdown {
+        model_id: Uuid,
+    },
+    QueryModelParams {
         model_id: Uuid,
     },
 }

@@ -45,6 +45,7 @@ async fn rejects_requests_for_unknown_model_instance() {
         quark_client.checkpoint(model_id).await.map(|_| ()),
         quark_client.optimize(model_id, 0.0, 0.0).await,
         quark_client.shutdown(model_id).await,
+        quark_client.query_model_params(model_id).await.map(|_| ()),
     ] {
         let error = result.expect_err("unknown model request should fail");
         assert!(

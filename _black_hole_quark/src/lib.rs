@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use black_hole_spec::{
     DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId, QuarkIn,
-    QuarkModelConfig, QuarkOut, SequenceOutput, TunnelRequest,
+    QuarkModelConfig, QuarkModelParams, QuarkOut, SequenceOutput, TunnelRequest,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -301,10 +301,22 @@ struct FrozenOscillation {
 
 struct QuarkInstance {
     engine: ModelEngine,
-    inference_limit: u32,
+    runtime_config: ModelRuntimeConfig,
     oscillation: Option<FrozenOscillation>,
     checkpoint_path: Option<PathBuf>,
     session: tokio::sync::Mutex<QuarkSession>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModelRuntimeConfig {
+    inference_limit: u32,
+    top_k: usize,
+    temperature: f64,
+    top_p: Option<f64>,
+    repeat_penalty: f32,
+    presence_penalty: f32,
+    training_lr: f64,
+    training_epsilon: f64,
 }
 
 struct ResolvedModelSource {
@@ -796,6 +808,9 @@ async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
             loss_down,
         } => handle_optimize_routed(model_id, loss_up, loss_down, ctx).await,
         QuarkIn::Shutdown { model_id } => handle_shutdown_routed(model_id, ctx).await,
+        QuarkIn::QueryModelParams { model_id } => {
+            handle_query_model_params_routed(model_id, ctx).await
+        }
     }
 }
 
@@ -972,6 +987,9 @@ async fn handle_tunnel_request_local(
             loss_down,
         } => handle_optimize_distributed(model_id, loss_up, loss_down, ctx).await,
         TunnelRequest::Shutdown { model_id } => handle_shutdown_distributed(model_id, ctx).await,
+        TunnelRequest::QueryModelParams { model_id } => {
+            handle_query_model_params_distributed(model_id, ctx).await
+        }
     }
 }
 
@@ -1238,6 +1256,24 @@ async fn handle_shutdown_distributed(model_id: Uuid, ctx: &QuarkContext) -> Resu
     Ok(out)
 }
 
+async fn handle_query_model_params_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    ensure_root_mode(ctx)?;
+    handle_query_model_params_distributed(model_id, ctx).await
+}
+
+async fn handle_query_model_params_distributed(
+    model_id: Uuid,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    match route_for_model(model_id, ctx).await? {
+        RouteTarget::Local => handle_query_model_params(model_id, ctx).await,
+        RouteTarget::Worker(token) => {
+            let worker = get_worker(token, ctx).await?;
+            forward_tunnel_request(worker, TunnelRequest::QueryModelParams { model_id }).await
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Model instance lifecycle
 // ---------------------------------------------------------------------------
@@ -1276,7 +1312,16 @@ async fn handle_start(
     let tokenizer_path = resolved_source.tokenizer_path.clone();
     let checkpoint_path = resolved_source.checkpoint_path.clone();
     let defaults = ctx.defaults.with_overrides(model_config.as_ref());
-    let inference_limit = defaults.inference_limit;
+    let runtime_config = ModelRuntimeConfig {
+        inference_limit: defaults.inference_limit,
+        top_k: defaults.top_k,
+        temperature: defaults.temperature,
+        top_p: defaults.top_p,
+        repeat_penalty: defaults.repeat_penalty,
+        presence_penalty: defaults.presence_penalty,
+        training_lr: defaults.training_config.lr,
+        training_epsilon: defaults.training_config.epsilon,
+    };
     let frozen = resolve_model_frozen(ctx.frozen, model_config.as_ref());
     let oscillation = match resolve_model_oscillation(model_config.as_ref()) {
         Ok(oscillation) => oscillation,
@@ -1333,7 +1378,7 @@ async fn handle_start(
 
     let instance = Arc::new(QuarkInstance {
         engine,
-        inference_limit,
+        runtime_config,
         oscillation,
         checkpoint_path,
         session: tokio::sync::Mutex::new(QuarkSession::new(frozen)),
@@ -1397,6 +1442,38 @@ fn ensure_running(session: &QuarkSession, model_id: Uuid) -> Result<()> {
     } else {
         Err(ServerError::ModelInstanceNotRunning(model_id))
     }
+}
+
+fn build_model_params(
+    runtime_config: ModelRuntimeConfig,
+    oscillation: Option<FrozenOscillation>,
+    session: &QuarkSession,
+) -> QuarkModelParams {
+    QuarkModelParams {
+        inference_limit: runtime_config.inference_limit,
+        top_k: runtime_config.top_k,
+        temperature: runtime_config.temperature,
+        top_p: runtime_config.top_p,
+        repeat_penalty: runtime_config.repeat_penalty,
+        presence_penalty: runtime_config.presence_penalty,
+        training_lr: runtime_config.training_lr,
+        training_epsilon: runtime_config.training_epsilon,
+        is_frozen: session.frozen,
+        optimize_steps: session.optimize_steps,
+        oscillation_period_steps: oscillation.map(|osc| osc.period_steps),
+        oscillation_train_steps: oscillation.map(|osc| osc.train_steps),
+        oscillation_phase_steps: oscillation.map(|osc| osc.phase_steps),
+        oscillation_warmup_steps: oscillation.map(|osc| osc.warmup_steps),
+    }
+}
+
+async fn handle_query_model_params(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+    let instance = get_instance(model_id, ctx).await?;
+    let session = instance.session.lock().await;
+    ensure_running(&session, model_id)?;
+    Ok(QuarkOut::ModelParams {
+        params: build_model_params(instance.runtime_config, instance.oscillation, &session),
+    })
 }
 
 fn resolve_model_frozen(server_frozen: bool, model_config: Option<&QuarkModelConfig>) -> bool {
@@ -1710,7 +1787,7 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &QuarkContext) ->
             (seqs, limit)
         }
     };
-    let limit = limit.unwrap_or(instance.inference_limit);
+    let limit = limit.unwrap_or(instance.runtime_config.inference_limit);
 
     // Run batched inference.
     let seq_results = run_batched_inference(&instance.engine, &sequences, limit).await?;
@@ -2076,10 +2153,10 @@ pub enum ServerError {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        apply_frozen_oscillation, handle_register_tunnel, resolve_max_instances,
-        resolve_model_frozen, resolve_model_oscillation, FrozenOscillation, QuarkContext,
-        QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState, ServerBuilder,
-        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        apply_frozen_oscillation, build_model_params, handle_register_tunnel,
+        resolve_max_instances, resolve_model_frozen, resolve_model_oscillation, FrozenOscillation,
+        ModelRuntimeConfig, QuarkContext, QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState,
+        ServerBuilder, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::QuarkModelConfig;
     use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
@@ -2261,6 +2338,50 @@ mod tests {
         }
         assert_eq!(trainable_steps, vec![5, 6, 10, 11]);
         assert!(session.frozen);
+    }
+
+    #[test]
+    fn model_params_report_effective_frozen_state_after_oscillation() {
+        let runtime_config = ModelRuntimeConfig {
+            inference_limit: 32,
+            top_k: 123,
+            temperature: 0.4,
+            top_p: Some(0.95),
+            repeat_penalty: 1.1,
+            presence_penalty: 0.2,
+            training_lr: 0.0007,
+            training_epsilon: 0.00001,
+        };
+        let oscillation = Some(FrozenOscillation {
+            period_steps: 4,
+            train_steps: 2,
+            phase_steps: 0,
+            warmup_steps: 0,
+        });
+        let mut session = QuarkSession {
+            state: QuarkState::AwaitingOptimize,
+            running: true,
+            frozen: true,
+            optimize_steps: 0,
+        };
+        let model_id = uuid::Uuid::new_v4();
+
+        apply_frozen_oscillation(model_id, &mut session, oscillation);
+        let first = build_model_params(runtime_config, oscillation, &session);
+        assert_eq!(first.optimize_steps, 1);
+        assert_eq!(first.is_frozen, false);
+        assert_eq!(first.oscillation_period_steps, Some(4));
+        assert_eq!(first.oscillation_train_steps, Some(2));
+        assert_eq!(first.training_lr, 0.0007);
+        assert_eq!(first.training_epsilon, 0.00001);
+        assert_eq!(first.top_k, 123);
+        assert_eq!(first.inference_limit, 32);
+
+        apply_frozen_oscillation(model_id, &mut session, oscillation);
+        apply_frozen_oscillation(model_id, &mut session, oscillation);
+        let third = build_model_params(runtime_config, oscillation, &session);
+        assert_eq!(third.optimize_steps, 3);
+        assert_eq!(third.is_frozen, true);
     }
 
     #[test]
