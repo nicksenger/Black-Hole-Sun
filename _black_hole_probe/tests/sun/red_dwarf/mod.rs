@@ -10,7 +10,7 @@ use black_hole_sun::{
     EmissionId, InferenceRequest, ObjectId, QuarkClient, QuarkModelConfig, QuarkModelParams, Ray,
     TestQuarkServer, TestVoidServer, Transmission, VoidClient,
 };
-use black_hole_sun::{ModelConfig, OscillationSchedule};
+use black_hole_sun::{ModelConfig, NoErrorFeedback, OscillationSchedule};
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
@@ -34,6 +34,7 @@ struct AlternatingModelConfig;
 
 impl ModelConfig for AlternatingModelConfig {
     type Oscillation = AlternatingEveryStep;
+    type ErrorFeedback = NoErrorFeedback;
     const FROZEN: Option<bool> = Some(false);
     const INFERENCE_LIMIT: Option<u32> = Some(0);
 }
@@ -205,7 +206,10 @@ impl SunOps for RedDwarfJungle {
         A::Seed: Send + Sync + Send,
     {
         let client = self.client.clone().expect("client not set");
-        let handle = client.spawn::<A>(seed).await.map_err(|error| error.to_string())?;
+        let handle = client
+            .spawn::<A>(seed)
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(handle.journey_id)
     }
 }

@@ -104,12 +104,29 @@ pub struct QuarkModelParams {
     pub training_z_loss: f64,
     pub training_lb_loss: f64,
     pub training_clip_threshold: f64,
+    pub training_error_feedback: QuarkErrorFeedbackConfig,
     pub is_frozen: bool,
     pub optimize_steps: u32,
     pub oscillation_period_steps: Option<u32>,
     pub oscillation_train_steps: Option<u32>,
     pub oscillation_phase_steps: Option<u32>,
     pub oscillation_warmup_steps: Option<u32>,
+}
+
+/// Error-feedback mode selector for QuZO optimization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QuarkErrorFeedbackMode {
+    Off,
+    Persistent,
+    Replay,
+}
+
+/// Per-model QuZO error-feedback configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum QuarkErrorFeedbackConfig {
+    Off,
+    Persistent { decay: f64, gain: f64 },
+    Replay { steps: u32, decay: f64, gain: f64 },
 }
 
 /// Forwardable model operation used for root->worker tunnel requests.
@@ -165,6 +182,7 @@ pub struct QuarkModelConfig {
     pub training_z_loss: Option<f64>,
     pub training_lb_loss: Option<f64>,
     pub training_clip_threshold: Option<f64>,
+    pub training_error_feedback: Option<QuarkErrorFeedbackConfig>,
     pub frozen: Option<bool>,
     /// Optional optimize-step period for train/freeze oscillation scheduling.
     ///

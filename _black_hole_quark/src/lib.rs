@@ -1,6 +1,9 @@
 use std::{collections::HashMap, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
-use paramecia_engine::{ModelEngine, TrainingConfig};
+use paramecia_engine::{
+    ErrorFeedbackMode, ErrorFeedbackParams, HyperParameterUpdate, ModelEngine, ReplayParams,
+    TrainingConfig,
+};
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -11,8 +14,9 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use black_hole_spec::{
-    DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId, QuarkIn,
-    QuarkModelConfig, QuarkModelParams, QuarkOut, SequenceOutput, TunnelRequest,
+    DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId,
+    QuarkErrorFeedbackConfig, QuarkIn, QuarkModelConfig, QuarkModelParams, QuarkOut,
+    SequenceOutput, TunnelRequest,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -320,6 +324,7 @@ struct ModelRuntimeConfig {
     training_z_loss: f64,
     training_lb_loss: f64,
     training_clip_threshold: f64,
+    training_error_feedback: QuarkErrorFeedbackConfig,
 }
 
 struct ResolvedModelSource {
@@ -380,6 +385,7 @@ struct QuarkServerDefaults {
     presence_penalty: f32,
     inference_limit: u32,
     training_config: TrainingConfig,
+    training_error_feedback: QuarkErrorFeedbackConfig,
 }
 
 impl Default for QuarkServerDefaults {
@@ -393,6 +399,7 @@ impl Default for QuarkServerDefaults {
             presence_penalty: DEFAULT_ENGINE_PRESENCE_PENALTY,
             inference_limit: DEFAULT_INFERENCE_LIMIT,
             training_config: TrainingConfig::default(),
+            training_error_feedback: QuarkErrorFeedbackConfig::Off,
         }
     }
 }
@@ -434,8 +441,23 @@ impl QuarkServerDefaults {
             if let Some(training_clip_threshold) = model_config.training_clip_threshold {
                 resolved.training_config.clip_threshold = training_clip_threshold;
             }
+            if let Some(training_error_feedback) = model_config.training_error_feedback {
+                resolved.training_error_feedback = training_error_feedback;
+            }
         }
         resolved
+    }
+}
+
+fn to_engine_error_feedback(config: QuarkErrorFeedbackConfig) -> ErrorFeedbackMode {
+    match config {
+        QuarkErrorFeedbackConfig::Off => ErrorFeedbackMode::None,
+        QuarkErrorFeedbackConfig::Persistent { decay, gain } => {
+            ErrorFeedbackMode::Persistent(ErrorFeedbackParams { decay, gain })
+        }
+        QuarkErrorFeedbackConfig::Replay { steps, decay, gain } => {
+            ErrorFeedbackMode::Replay(ReplayParams { steps, decay, gain })
+        }
     }
 }
 
@@ -1336,7 +1358,9 @@ async fn handle_start(
         training_z_loss: defaults.training_config.z_loss,
         training_lb_loss: defaults.training_config.lb_loss,
         training_clip_threshold: defaults.training_config.clip_threshold,
+        training_error_feedback: defaults.training_error_feedback,
     };
+    let error_feedback = defaults.training_error_feedback;
     let frozen = resolve_model_frozen(ctx.frozen, model_config.as_ref());
     let oscillation = match resolve_model_oscillation(model_config.as_ref()) {
         Ok(oscillation) => oscillation,
@@ -1390,6 +1414,20 @@ async fn handle_start(
             return Err(error);
         }
     };
+
+    if let Err(error) = engine
+        .set_hyper_parameters(HyperParameterUpdate {
+            error_feedback: Some(to_engine_error_feedback(error_feedback)),
+            ..HyperParameterUpdate::default()
+        })
+        .await
+    {
+        ctx.instances.write().await.remove(&model_id);
+        if let Some(path) = checkpoint_path.as_ref() {
+            cleanup_checkpoint_file(path);
+        }
+        return Err(ServerError::ModelError(error.to_string()));
+    }
 
     let mut session = QuarkSession::new(frozen);
     apply_initial_frozen_oscillation(model_id, &mut session, oscillation);
@@ -1478,6 +1516,7 @@ fn build_model_params(
         training_z_loss: runtime_config.training_z_loss,
         training_lb_loss: runtime_config.training_lb_loss,
         training_clip_threshold: runtime_config.training_clip_threshold,
+        training_error_feedback: runtime_config.training_error_feedback,
         is_frozen: session.frozen,
         optimize_steps: session.optimize_steps,
         oscillation_period_steps: oscillation.map(|osc| osc.period_steps),
@@ -2207,12 +2246,12 @@ pub enum ServerError {
 mod tests {
     use super::{
         apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
-        handle_register_tunnel,
-        resolve_max_instances, resolve_model_frozen, resolve_model_oscillation, FrozenOscillation,
-        ModelRuntimeConfig, QuarkContext, QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState,
-        ServerBuilder, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        handle_register_tunnel, resolve_max_instances, resolve_model_frozen,
+        resolve_model_oscillation, to_engine_error_feedback, FrozenOscillation, ModelRuntimeConfig,
+        QuarkContext, QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState, ServerBuilder,
+        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
-    use black_hole_spec::QuarkModelConfig;
+    use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelConfig};
     use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
     use tokio::sync::RwLock;
 
@@ -2232,6 +2271,10 @@ mod tests {
             resolved.training_config.epsilon,
             defaults.training_config.epsilon
         );
+        assert_eq!(
+            resolved.training_error_feedback,
+            defaults.training_error_feedback
+        );
     }
 
     #[test]
@@ -2249,6 +2292,10 @@ mod tests {
             training_z_loss: Some(0.12),
             training_lb_loss: Some(0.24),
             training_clip_threshold: Some(0.5),
+            training_error_feedback: Some(QuarkErrorFeedbackConfig::Persistent {
+                decay: 0.8,
+                gain: 0.6,
+            }),
             frozen: None,
             oscillation_period_steps: None,
             oscillation_train_steps: None,
@@ -2268,6 +2315,13 @@ mod tests {
         assert_eq!(resolved.training_config.z_loss, 0.12);
         assert_eq!(resolved.training_config.lb_loss, 0.24);
         assert_eq!(resolved.training_config.clip_threshold, 0.5);
+        assert_eq!(
+            resolved.training_error_feedback,
+            QuarkErrorFeedbackConfig::Persistent {
+                decay: 0.8,
+                gain: 0.6,
+            }
+        );
         assert_ne!(resolved.inference_limit, DEFAULT_INFERENCE_LIMIT);
     }
 
@@ -2414,6 +2468,11 @@ mod tests {
             training_z_loss: 0.005,
             training_lb_loss: 0.015,
             training_clip_threshold: 1.25,
+            training_error_feedback: QuarkErrorFeedbackConfig::Replay {
+                steps: 64,
+                decay: 0.88,
+                gain: 0.42,
+            },
         };
         let oscillation = Some(FrozenOscillation {
             period_steps: 4,
@@ -2440,6 +2499,14 @@ mod tests {
         assert_eq!(first.training_z_loss, 0.005);
         assert_eq!(first.training_lb_loss, 0.015);
         assert_eq!(first.training_clip_threshold, 1.25);
+        assert_eq!(
+            first.training_error_feedback,
+            QuarkErrorFeedbackConfig::Replay {
+                steps: 64,
+                decay: 0.88,
+                gain: 0.42,
+            }
+        );
         assert_eq!(first.top_k, 123);
         assert_eq!(first.inference_limit, 32);
 
@@ -2448,6 +2515,29 @@ mod tests {
         let third = build_model_params(runtime_config, oscillation, &session);
         assert_eq!(third.optimize_steps, 3);
         assert_eq!(third.is_frozen, true);
+    }
+
+    #[test]
+    fn quark_error_feedback_maps_to_engine_modes() {
+        assert!(matches!(
+            to_engine_error_feedback(QuarkErrorFeedbackConfig::Off),
+            paramecia_engine::ErrorFeedbackMode::None
+        ));
+        assert!(matches!(
+            to_engine_error_feedback(QuarkErrorFeedbackConfig::Persistent {
+                decay: 0.9,
+                gain: 1.0
+            }),
+            paramecia_engine::ErrorFeedbackMode::Persistent(_)
+        ));
+        assert!(matches!(
+            to_engine_error_feedback(QuarkErrorFeedbackConfig::Replay {
+                steps: 8,
+                decay: 0.7,
+                gain: 0.5
+            }),
+            paramecia_engine::ErrorFeedbackMode::Replay(_)
+        ));
     }
 
     #[test]
