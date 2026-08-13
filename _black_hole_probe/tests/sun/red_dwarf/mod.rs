@@ -283,8 +283,8 @@ async fn red_dwarf_child_ray_frozen_state_oscillates() {
     .await
     .expect("child journey id should become available");
 
-    let mut seen_propagation1_sequence = None;
-    let mut skipped_first_propagation1 = false;
+    let mut seen_propagation2_sequence = None;
+    let mut skipped_first_propagation2 = false;
     let mut frozen_samples = Vec::new();
     let sample_result = tokio::time::timeout(Duration::from_secs(180), async {
         loop {
@@ -329,16 +329,16 @@ async fn red_dwarf_child_ray_frozen_state_oscillates() {
             let Some(node) = appearance.nodes.iter().find(|node| node.id == 0) else {
                 continue;
             };
-            if node.state != SunNodeState::Propagation1 {
+            if node.state != SunNodeState::Propagation2 {
                 continue;
             }
-            if seen_propagation1_sequence == Some(node.state_sequence) {
+            if seen_propagation2_sequence == Some(node.state_sequence) {
                 continue;
             }
-            seen_propagation1_sequence = Some(node.state_sequence);
+            seen_propagation2_sequence = Some(node.state_sequence);
 
-            if !skipped_first_propagation1 {
-                skipped_first_propagation1 = true;
+            if !skipped_first_propagation2 {
+                skipped_first_propagation2 = true;
                 continue;
             }
 
