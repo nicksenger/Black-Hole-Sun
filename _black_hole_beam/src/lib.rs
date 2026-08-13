@@ -434,7 +434,7 @@ impl BeamModel {
                 journey_id: node.journey_id,
                 ports: node.input_ports,
                 outgoing_ports: Vec::new(),
-                animal_name: node.label,
+                animal_name: strip_type_generics(&node.label),
                 state: node.state,
                 state_sequence: node.state_sequence,
                 frozen: child_rays.get(&node.journey_id).map(|ray| ray.frozen),
@@ -1197,7 +1197,28 @@ fn lighten(color: Color, amount: f32) -> Color {
 
 fn short_type_name<T: ?Sized>() -> String {
     let full = core::any::type_name::<T>();
-    full.rsplit("::").next().unwrap_or(full).to_string()
+    let cleaned = strip_type_generics(full);
+    cleaned
+        .rsplit("::")
+        .next()
+        .unwrap_or(cleaned.as_str())
+        .to_string()
+}
+
+fn strip_type_generics(name: &str) -> String {
+    let mut depth = 0usize;
+    let mut cleaned = String::with_capacity(name.len());
+
+    for ch in name.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => cleaned.push(ch),
+            _ => {}
+        }
+    }
+
+    cleaned.trim().to_string()
 }
 
 #[cfg(test)]
@@ -1227,6 +1248,16 @@ mod tests {
         type State = FusionState;
         type Seed = FusionSeed;
         type Flow = Fusion<Primordium>;
+    }
+
+    struct GenericCell<T>(std::marker::PhantomData<T>);
+
+    impl<T> Animal for GenericCell<T> {
+        type Id = Id<U1>;
+        type Generation = U0;
+        type State = CellState;
+        type Seed = ObjectId;
+        type Flow = Primordium;
     }
 
     type PortOne = List<(U1, Empty)>;
@@ -1512,5 +1543,33 @@ mod tests {
             .err()
             .expect("appearance should be rejected");
         assert!(error.contains("unowned input port 9"));
+    }
+
+    #[test]
+    fn strips_generics_from_type_labels() {
+        assert_eq!(short_type_name::<GenericCell<String>>(), "GenericCell");
+        assert_eq!(
+            strip_type_generics("RootAnimal<Result<String, Vec<u8>>>"),
+            "RootAnimal"
+        );
+    }
+
+    #[test]
+    fn strips_generics_from_live_appearance_labels() {
+        let appearance = SunAppearance {
+            finalized: true,
+            nodes: vec![SunNodeAppearance {
+                id: 0,
+                journey_id: Uuid::new_v4(),
+                label: "RootAnimal<Result<String, Vec<u8>>>".to_string(),
+                input_ports: vec![0],
+                state: SunNodeState::Idle,
+                state_sequence: 0,
+            }],
+            edges: vec![],
+        };
+
+        let model = BeamModel::from_appearance(appearance, &HashMap::new()).unwrap();
+        assert_eq!(model.cells[0].animal_name, "RootAnimal");
     }
 }
