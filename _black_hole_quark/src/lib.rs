@@ -1441,6 +1441,26 @@ async fn handle_start(
             return Err(error);
         }
     };
+    info!(
+        %model_id,
+        inference_limit = runtime_config.inference_limit,
+        top_k = runtime_config.top_k,
+        temperature = runtime_config.temperature,
+        top_p = ?runtime_config.top_p,
+        repeat_penalty = runtime_config.repeat_penalty,
+        presence_penalty = runtime_config.presence_penalty,
+        training_lr = runtime_config.training_lr,
+        training_epsilon = runtime_config.training_epsilon,
+        training_z_loss = runtime_config.training_z_loss,
+        training_lb_loss = runtime_config.training_lb_loss,
+        training_clip_threshold = runtime_config.training_clip_threshold,
+        training_error_feedback = ?runtime_config.training_error_feedback,
+        frozen,
+        has_tokenizer_override = tokenizer_path.is_some(),
+        has_checkpoint = checkpoint_path.is_some(),
+        oscillation_enabled = oscillation.is_some(),
+        "initializing model instance"
+    );
     let engine_result = match tokio::task::spawn_blocking(move || {
         let mut builder = paramecia_engine::ModelEngineBuilder::new(model_path)
             .top_k(defaults.top_k)
@@ -1711,7 +1731,7 @@ fn apply_frozen_oscillation(
         return;
     };
     session.frozen = frozen;
-    info!(
+    debug!(
         %model_id,
         frozen = session.frozen,
         optimize_steps = session.optimize_steps,
@@ -1869,7 +1889,7 @@ async fn checkpoint_model(engine: &ModelEngine) -> Result<Vec<u8>> {
 // ---------------------------------------------------------------------------
 
 async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
-    info!(%model_id, "received perturb up request");
+    debug!(%model_id, "received perturb up request");
     let instance = get_instance(model_id, ctx).await?;
     let mut session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
@@ -1882,7 +1902,7 @@ async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Res
     }
 
     if session.frozen {
-        info!(%model_id, "skipping perturb up because model instance is frozen");
+        debug!(%model_id, "skipping perturb up because model instance is frozen");
     } else {
         instance
             .engine
@@ -1896,7 +1916,7 @@ async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Res
 }
 
 async fn handle_reset(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
-    info!(%model_id, "received reset request");
+    debug!(%model_id, "received reset request");
     let instance = get_instance(model_id, ctx).await?;
     let session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
@@ -1905,7 +1925,7 @@ async fn handle_reset(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
 }
 
 async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut> {
-    info!(%model_id, "received inference request");
+    debug!(%model_id, "received inference request");
     let instance = get_instance(model_id, ctx).await?;
     let mut session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
@@ -2052,12 +2072,12 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &QuarkContext) ->
         }
     };
 
-    info!(%model_id, "finished processing inference request");
+    debug!(%model_id, "finished processing inference request");
     Ok(QuarkOut::Inferred { output_id })
 }
 
 async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
-    info!(%model_id, "received perturb down request");
+    debug!(%model_id, "received perturb down request");
     let instance = get_instance(model_id, ctx).await?;
     let mut session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
@@ -2070,7 +2090,7 @@ async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<Quark
     }
 
     if session.frozen {
-        info!(%model_id, "skipping perturb down because model instance is frozen");
+        debug!(%model_id, "skipping perturb down because model instance is frozen");
     } else {
         instance
             .engine
@@ -2084,7 +2104,7 @@ async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<Quark
 }
 
 async fn handle_checkpoint(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
-    info!(%model_id, "received checkpoint request");
+    debug!(%model_id, "received checkpoint request");
     let instance = get_instance(model_id, ctx).await?;
     let session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
@@ -2105,7 +2125,7 @@ async fn handle_optimize(
     loss_down: f32,
     ctx: &QuarkContext,
 ) -> Result<QuarkOut> {
-    info!(%model_id, "received optimization request");
+    debug!(%model_id, "received optimization request");
     let instance = get_instance(model_id, ctx).await?;
     let mut session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
@@ -2119,7 +2139,7 @@ async fn handle_optimize(
 
     reset_model(&instance.engine).await?;
     if session.frozen {
-        info!(%model_id, "skipping optimization because model instance is frozen");
+        debug!(%model_id, "skipping optimization because model instance is frozen");
     } else {
         let runtime_config = instance.runtime_config;
         instance
@@ -2154,7 +2174,7 @@ async fn handle_optimize(
 
     session.state = QuarkState::Idle;
     apply_frozen_oscillation(model_id, &mut session, instance.oscillation);
-    info!(%model_id, "finished optimization update");
+    debug!(%model_id, "finished optimization update");
     Ok(QuarkOut::Ack)
 }
 
