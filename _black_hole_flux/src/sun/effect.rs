@@ -129,8 +129,17 @@ pub struct SendRootPropagationInput {
     pub transmission: Transmission,
 }
 
+/// One root-propagation send operation with an explicit transmission payload.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RootPropagationSend {
+    pub target: PropagationTarget,
+    pub transmission: Transmission,
+}
+
 /// Sends one propagation pass to all root ports before output processing begins.
 pub struct SendRootPropagationEffect;
+/// Sends many root propagations where each target can use a different payload.
+pub struct SendRootTaskPropagationsEffect;
 
 /// Input for [`WaitForNodeTransmission`]: ready rx endpoints plus
 /// downstream forwarding targets keyed by source node id.
@@ -206,6 +215,38 @@ where
                     port_id = target.port_id,
                     input_id = %target.input_id,
                     "sent propagation to root vertex port"
+                );
+            }
+            Ok(sent_node_ids.into_iter().collect())
+        }
+    }
+}
+
+impl<J> EffectSchema<J> for SendRootTaskPropagationsEffect {
+    type Id = u64;
+    type In = Vec<RootPropagationSend>;
+    type Out = Vec<u32>;
+    type Err = AtomError;
+}
+
+impl<J> Effect<J> for SendRootTaskPropagationsEffect
+where
+    J: VoidInferOps,
+{
+    fn effect(
+        jungle: &J,
+        sends: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let mut sent_node_ids = BTreeSet::new();
+            for send in &sends {
+                send_propagation(jungle, &send.target, &send.transmission).await?;
+                sent_node_ids.insert(send.target.node_id);
+                debug!(
+                    node_id = send.target.node_id,
+                    port_id = send.target.port_id,
+                    input_id = %send.target.input_id,
+                    "sent root task propagation"
                 );
             }
             Ok(sent_node_ids.into_iter().collect())

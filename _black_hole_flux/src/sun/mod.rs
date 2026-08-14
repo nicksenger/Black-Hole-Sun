@@ -157,10 +157,34 @@ pub struct SunStateWithInner<S> {
     pub inner: S,
     /// Generated second-pass root transmissions waiting for phase B.
     pub propagation_down_inputs: VecDeque<Transmission>,
+    /// Generated first-pass root transmissions, one per accumulation step.
+    pub propagation_up_inputs: Vec<Transmission>,
     /// First-pass sink outputs captured during phase A accumulation.
     pub propagation_up_outputs: Vec<Transmission>,
     /// Propagation outputs collected across accumulation microsteps.
     pub propagation_pairs: Vec<(Transmission, Transmission)>,
+    /// Step-indexed first-pass input mailboxes per input port.
+    pub p1_step_tx: Vec<HashMap<u32, ObjectId>>,
+    /// Step-indexed second-pass input mailboxes per input port.
+    pub p2_step_tx: Vec<HashMap<u32, ObjectId>>,
+    /// Step-indexed first-pass output mailboxes per node.
+    pub p1_step_rx: Vec<HashMap<u32, ObjectId>>,
+    /// Step-indexed second-pass output mailboxes per node.
+    pub p2_step_rx: Vec<HashMap<u32, ObjectId>>,
+    /// Completed first-pass microsteps per node.
+    pub node_p1_completed: HashMap<u32, usize>,
+    /// Completed second-pass microsteps per node.
+    pub node_p2_completed: HashMap<u32, usize>,
+    /// First-pass root microsteps already seeded per root node.
+    pub root_p1_sent: HashMap<u32, usize>,
+    /// Second-pass root microsteps already seeded per root node.
+    pub root_p2_sent: HashMap<u32, usize>,
+    /// Number of node phase-microsteps completed in the current epoch.
+    pub pipeline_completions: usize,
+    /// Total node phase-microsteps expected in the current epoch.
+    pub pipeline_target_completions: usize,
+    /// Cached sink node id for the currently finalized graph.
+    pub sink_id: Option<u32>,
 }
 
 /// State available to Sun actions and flows.
@@ -186,8 +210,20 @@ where
             },
             inner: S::default(),
             propagation_down_inputs: VecDeque::new(),
+            propagation_up_inputs: Vec::new(),
             propagation_up_outputs: Vec::new(),
             propagation_pairs: Vec::new(),
+            p1_step_tx: Vec::new(),
+            p2_step_tx: Vec::new(),
+            p1_step_rx: Vec::new(),
+            p2_step_rx: Vec::new(),
+            node_p1_completed: HashMap::new(),
+            node_p2_completed: HashMap::new(),
+            root_p1_sent: HashMap::new(),
+            root_p2_sent: HashMap::new(),
+            pipeline_completions: 0,
+            pipeline_target_completions: 0,
+            sink_id: None,
         }
     }
 }
@@ -441,9 +477,10 @@ pub struct SunNode<S, U>(S, U);
 /// Maps a type-level graph to its orchestration flow.
 ///
 /// `Generator` is a Jungle flow from `()` to `(Transmission, Transmission)`.
-/// The Sun runs that generator `GRADIENT_ACCUMULATION_STEPS` times, runs all
-/// first-pass propagation microsteps, then runs all second-pass microsteps, and
-/// finally feeds `Policy` an array with shape
+/// The Sun runs that generator `GRADIENT_ACCUMULATION_STEPS` times, then drives
+/// a dependency-aware per-node scheduler that allows nodes to advance to later
+/// microsteps as soon as their required inputs are available. It finally feeds
+/// `Policy` an array with shape
 /// `[(Transmission, Transmission); GRADIENT_ACCUMULATION_STEPS]`.
 /// `Policy` returns `(f32, f32)` losses. Keeping both as flow parameters lets
 /// callers compose arbitrary generation and policy pipelines around the fixed
@@ -533,39 +570,36 @@ pub type PropagationFlows = Join<PropAFlow, PropBFlow>;
 /// Alias for one iteration of the propagation loop (branch A).
 pub type PropagationLoop = PropALoop;
 
-/// Predicate that keeps running first-pass accumulation until `N` is reached.
-pub struct PendingUpAccumulation<const N: usize, S>(PhantomData<fn() -> S>);
+/// Predicate that keeps collecting generator outputs until `N` pairs exist.
+pub struct PendingGeneratedPropagationInputs<const N: usize, S>(PhantomData<fn() -> S>);
 
-impl<const N: usize, S> Predicate<(&SunState<S>, &())> for PendingUpAccumulation<N, S> {
+impl<const N: usize, S> Predicate<(&SunState<S>, &())> for PendingGeneratedPropagationInputs<N, S> {
     fn eval((state, _): &(&SunState<S>, &())) -> bool {
-        state.propagation_up_outputs.len() < N
+        state.propagation_up_inputs.len() < N
     }
 }
 
-/// Predicate that keeps running second-pass accumulation until `N` is reached.
-pub struct PendingDownAccumulation<const N: usize, S>(PhantomData<fn() -> S>);
+/// Predicate that keeps advancing the per-node propagation scheduler.
+pub struct PendingPipelineWork<S>(PhantomData<fn() -> S>);
 
-impl<const N: usize, S> Predicate<(&SunState<S>, &())> for PendingDownAccumulation<N, S> {
+impl<S> Predicate<(&SunState<S>, &())> for PendingPipelineWork<S> {
     fn eval((state, _): &(&SunState<S>, &())) -> bool {
-        state.propagation_pairs.len() < N
+        state.pipeline_completions < state.pipeline_target_completions
     }
 }
 
-/// One first-pass microstep: generate, capture down input, and propagate up.
+/// One generator emission pair capture step.
 #[derive(Flow)]
-pub struct UpAccumulationStep<Generator, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
+pub struct CollectPropagationInputsStep<Generator, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
     Generator,
-    Step<action::StoreDownPropagationInput<S, GRADIENT_ACCUMULATION_STEPS>>,
-    PropAFlow,
-    Step<action::RecordUpPropagationOutput<S, GRADIENT_ACCUMULATION_STEPS>>,
+    Step<action::StorePropagationInputPair<S, GRADIENT_ACCUMULATION_STEPS>>,
 );
 
-/// One second-pass microstep: consume queued down input and record the pair.
+/// One scheduler tick: seed ready roots, then process one ready node output.
 #[derive(Flow)]
-pub struct DownAccumulationStep<S, const GRADIENT_ACCUMULATION_STEPS: usize>(
-    Step<action::NextDownPropagationInput<S, GRADIENT_ACCUMULATION_STEPS>>,
-    PropBFlow,
-    Step<action::RecordDownPropagationOutput<S, GRADIENT_ACCUMULATION_STEPS>>,
+pub struct PipelineProgressStep<S, const GRADIENT_ACCUMULATION_STEPS: usize>(
+    Step<action::SendReadyRootTasks<S, GRADIENT_ACCUMULATION_STEPS>>,
+    Step<action::ProcessReadyPipelineNode<S, GRADIENT_ACCUMULATION_STEPS>>,
 );
 
 // ---------------------------------------------------------------------------
@@ -577,13 +611,13 @@ pub struct DownAccumulationStep<S, const GRADIENT_ACCUMULATION_STEPS: usize>(
 pub struct EpochWithState<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
     Step<action::BeginGradientAccumulation<S, GRADIENT_ACCUMULATION_STEPS>>,
     While<
-        PendingUpAccumulation<GRADIENT_ACCUMULATION_STEPS, S>,
-        UpAccumulationStep<Generator, S, GRADIENT_ACCUMULATION_STEPS>,
+        PendingGeneratedPropagationInputs<GRADIENT_ACCUMULATION_STEPS, S>,
+        CollectPropagationInputsStep<Generator, S, GRADIENT_ACCUMULATION_STEPS>,
     >,
-    Step<action::BeginDownPropagationPhase<S, GRADIENT_ACCUMULATION_STEPS>>,
+    Step<action::PreparePropagationPipeline<S, GRADIENT_ACCUMULATION_STEPS>>,
     While<
-        PendingDownAccumulation<GRADIENT_ACCUMULATION_STEPS, S>,
-        DownAccumulationStep<S, GRADIENT_ACCUMULATION_STEPS>,
+        PendingPipelineWork<S>,
+        PipelineProgressStep<S, GRADIENT_ACCUMULATION_STEPS>,
     >,
     Step<action::CollectedPropagationPairs<S, GRADIENT_ACCUMULATION_STEPS>>,
     Policy,

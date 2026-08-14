@@ -7,8 +7,9 @@ use crate::sun::effect::{GenFusionSeedEffect, GenUuidEffect};
 use crate::{FusionSeed, FusionState};
 
 use super::effect::{
-    BroadcastPotentiationEffect, PropagationTarget, SendRootPropagationEffect,
-    SendRootPropagationInput, WaitForNodeTransmission, WaitForNodeTransmissionInput,
+    BroadcastPotentiationEffect, PropagationTarget, RootPropagationSend,
+    SendRootPropagationEffect, SendRootPropagationInput, SendRootTaskPropagationsEffect,
+    WaitForNodeTransmission, WaitForNodeTransmissionInput,
 };
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
@@ -328,6 +329,181 @@ fn vertex_ids(inner: &super::SunInner) -> Vec<u32> {
     inner.journey_ids.keys().copied().collect()
 }
 
+fn root_vertex_ids(inner: &super::SunInner) -> Vec<u32> {
+    let mut roots: Vec<_> = inner
+        .incoming
+        .iter()
+        .filter_map(|(&node_id, sources)| sources.is_empty().then_some(node_id))
+        .collect();
+    roots.sort_unstable();
+    roots
+}
+
+fn task_for_node<S>(
+    state: &super::SunState<S>,
+    node_id: u32,
+    grad_steps: usize,
+) -> Option<(super::SunNodeState, usize)> {
+    let p1_completed = state.node_p1_completed.get(&node_id).copied().unwrap_or_default();
+    if p1_completed < grad_steps {
+        return Some((super::SunNodeState::Propagation1, p1_completed + 1));
+    }
+
+    let p2_completed = state.node_p2_completed.get(&node_id).copied().unwrap_or_default();
+    if p2_completed < grad_steps {
+        return Some((super::SunNodeState::Propagation2, p2_completed + 1));
+    }
+
+    None
+}
+
+fn task_deps_satisfied<S>(
+    state: &super::SunState<S>,
+    inner: &super::SunInner,
+    node_id: u32,
+    phase: super::SunNodeState,
+    step: usize,
+) -> bool {
+    let is_root = inner
+        .incoming
+        .get(&node_id)
+        .is_none_or(|sources| sources.is_empty());
+    if is_root {
+        return match phase {
+            super::SunNodeState::Propagation1 => {
+                state.root_p1_sent.get(&node_id).copied().unwrap_or_default() >= step
+            }
+            super::SunNodeState::Propagation2 => {
+                state.root_p2_sent.get(&node_id).copied().unwrap_or_default() >= step
+            }
+            _ => false,
+        };
+    }
+
+    let predecessors = inner.incoming.get(&node_id).cloned().unwrap_or_default();
+    predecessors.into_iter().all(|pred_id| match phase {
+        super::SunNodeState::Propagation1 => {
+            state
+                .node_p1_completed
+                .get(&pred_id)
+                .copied()
+                .unwrap_or_default()
+                >= step
+        }
+        super::SunNodeState::Propagation2 => {
+            state
+                .node_p2_completed
+                .get(&pred_id)
+                .copied()
+                .unwrap_or_default()
+                >= step
+        }
+        _ => false,
+    })
+}
+
+fn ready_nodes<S>(state: &super::SunState<S>, inner: &super::SunInner) -> Vec<u32> {
+    let grad_steps = inner.grad_steps.max(1);
+    let mut ready = Vec::new();
+    for node_id in vertex_ids(inner) {
+        let Some((phase, step)) = task_for_node(state, node_id, grad_steps) else {
+            continue;
+        };
+        if task_deps_satisfied(state, inner, node_id, phase, step) {
+            ready.push(node_id);
+        }
+    }
+    ready.sort_unstable();
+    ready
+}
+
+fn step_target<S>(
+    state: &super::SunState<S>,
+    inner: &super::SunInner,
+    phase: super::SunNodeState,
+    step: usize,
+    port_id: u32,
+) -> PropagationTarget {
+    let node_id = *inner
+        .port_vertices
+        .get(&port_id)
+        .unwrap_or_else(|| panic!("missing node for port {port_id}"));
+    let idx = step
+        .checked_sub(1)
+        .expect("step index must be at least 1");
+    let grad_steps = inner.grad_steps.max(1);
+    let input_id = match phase {
+        super::SunNodeState::Propagation1 => state
+            .p1_step_tx
+            .get(idx)
+            .and_then(|map| map.get(&port_id).copied()),
+        super::SunNodeState::Propagation2 => state
+            .p2_step_tx
+            .get(idx)
+            .and_then(|map| map.get(&port_id).copied()),
+        _ => None,
+    }
+    .unwrap_or_else(|| {
+        panic!("missing input mailbox for port {port_id} at {phase:?} step {step}")
+    });
+
+    let next_input_id = match phase {
+        super::SunNodeState::Propagation1 if step < grad_steps => state
+            .p1_step_tx
+            .get(idx + 1)
+            .and_then(|map| map.get(&port_id).copied()),
+        super::SunNodeState::Propagation1 => {
+            state.p2_step_tx.first().and_then(|map| map.get(&port_id).copied())
+        }
+        super::SunNodeState::Propagation2 if step < grad_steps => state
+            .p2_step_tx
+            .get(idx + 1)
+            .and_then(|map| map.get(&port_id).copied()),
+        super::SunNodeState::Propagation2 => inner.po_tx.get(&port_id).copied(),
+        _ => None,
+    }
+    .unwrap_or_else(|| {
+        panic!("missing next input mailbox for port {port_id} at {phase:?} step {step}")
+    });
+
+    let output_id = match phase {
+        super::SunNodeState::Propagation1 => state
+            .p1_step_rx
+            .get(idx)
+            .and_then(|map| map.get(&node_id).copied()),
+        super::SunNodeState::Propagation2 => state
+            .p2_step_rx
+            .get(idx)
+            .and_then(|map| map.get(&node_id).copied()),
+        _ => None,
+    }
+    .unwrap_or_else(|| {
+        panic!("missing output mailbox for node {node_id} at {phase:?} step {step}")
+    });
+
+    PropagationTarget {
+        node_id,
+        port_id,
+        input_id,
+        next_input_id,
+        output_id,
+    }
+}
+
+fn task_output_id<S>(
+    state: &super::SunState<S>,
+    node_id: u32,
+    phase: super::SunNodeState,
+    step: usize,
+) -> Option<ObjectId> {
+    let idx = step.checked_sub(1)?;
+    match phase {
+        super::SunNodeState::Propagation1 => state.p1_step_rx.get(idx)?.get(&node_id).copied(),
+        super::SunNodeState::Propagation2 => state.p2_step_rx.get(idx)?.get(&node_id).copied(),
+        _ => None,
+    }
+}
+
 fn reset_epoch_mailboxes(inner: &mut super::SunInner) {
     let port_ids = port_ids(inner);
     let vertex_ids = vertex_ids(inner);
@@ -416,8 +592,20 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         let mut inner = state.a.shared.lock().unwrap();
         inner.finalized = false;
         state.propagation_down_inputs.clear();
+        state.propagation_up_inputs.clear();
         state.propagation_up_outputs.clear();
         state.propagation_pairs.clear();
+        state.p1_step_tx.clear();
+        state.p2_step_tx.clear();
+        state.p1_step_rx.clear();
+        state.p2_step_rx.clear();
+        state.node_p1_completed.clear();
+        state.node_p2_completed.clear();
+        state.root_p1_sent.clear();
+        state.root_p2_sent.clear();
+        state.pipeline_completions = 0;
+        state.pipeline_target_completions = 0;
+        state.sink_id = None;
 
         if GRADIENT_ACCUMULATION_STEPS == 0 {
             return Err(Failure::Message(
@@ -548,6 +736,7 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
                 "sun graph must contain exactly one sink; found {sinks:?}"
             )));
         }
+        state.sink_id = sinks.first().copied();
 
         inner.incoming = incoming;
         inner.outgoing = outgoing;
@@ -818,10 +1007,373 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_| Failure::Message("begin sun accumulation failed".to_string()))?;
         state.propagation_down_inputs.clear();
+        state.propagation_up_inputs.clear();
         state.propagation_up_outputs.clear();
         state.propagation_pairs.clear();
+        state.p1_step_tx.clear();
+        state.p2_step_tx.clear();
+        state.p1_step_rx.clear();
+        state.p2_step_rx.clear();
+        state.node_p1_completed.clear();
+        state.node_p2_completed.clear();
+        state.root_p1_sent.clear();
+        state.root_p2_sent.clear();
+        state.pipeline_completions = 0;
+        state.pipeline_target_completions = 0;
+        state.sink_id = None;
         let mut inner = state.a.shared.lock().unwrap();
         inner.active_micro_step = 0;
+        Ok(())
+    }
+}
+
+/// Stores one generated `(up, down)` root-propagation pair.
+pub struct StorePropagationInputPair<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action(carry = (Transmission, Transmission))]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for StorePropagationInputPair<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = NoEffect;
+    type Input = (Transmission, Transmission);
+    type Output = ();
+
+    fn emit(_state: &super::SunState<S>, input: Self::Input) -> ((), (Transmission, Transmission)) {
+        ((), input)
+    }
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+        carry: (Transmission, Transmission),
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("store propagation input pair failed".to_string()))?;
+        let (up, down) = carry;
+        state.propagation_up_inputs.push(up);
+        state.propagation_down_inputs.push_back(down);
+        Ok(())
+    }
+}
+
+/// Allocates per-step Sun mailboxes and resets per-node progress tracking.
+pub struct PreparePropagationPipeline<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for PreparePropagationPipeline<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("prepare propagation pipeline failed".to_string()))?;
+        let expected_steps = GRADIENT_ACCUMULATION_STEPS.max(1);
+        if state.propagation_up_inputs.len() != expected_steps {
+            return Err(Failure::Message(format!(
+                "expected {expected_steps} generated up propagations, got {}",
+                state.propagation_up_inputs.len()
+            )));
+        }
+        if state.propagation_down_inputs.len() != expected_steps {
+            return Err(Failure::Message(format!(
+                "expected {expected_steps} generated down propagations, got {}",
+                state.propagation_down_inputs.len()
+            )));
+        }
+        state.propagation_up_outputs.clear();
+        state.propagation_pairs.clear();
+
+        let (grad_steps, ports, nodes, roots, sink_id, initial_p1_tx) = {
+            let inner = state.a.shared.lock().unwrap();
+            let grad_steps = inner.grad_steps.max(1);
+            let mut ports = port_ids(&inner);
+            ports.sort_unstable();
+            let mut nodes = vertex_ids(&inner);
+            nodes.sort_unstable();
+            let roots = root_vertex_ids(&inner);
+            let mut sinks: Vec<_> = nodes
+                .iter()
+                .copied()
+                .filter(|node_id| inner.outgoing.get(node_id).is_none_or(Vec::is_empty))
+                .collect();
+            sinks.sort_unstable();
+            let sink_id = sinks.first().copied().ok_or_else(|| {
+                Failure::Message("sun graph has no sink after finalization".to_string())
+            })?;
+            Ok::<_, Failure>((
+                grad_steps,
+                ports,
+                nodes,
+                roots,
+                sink_id,
+                inner.p1_tx.clone(),
+            ))
+        }?;
+
+        if grad_steps != expected_steps {
+            return Err(Failure::Message(format!(
+                "Sun configured for {grad_steps} grad steps but flow expects {expected_steps}"
+            )));
+        }
+
+        state.p1_step_tx = vec![HashMap::new(); grad_steps];
+        state.p2_step_tx = vec![HashMap::new(); grad_steps];
+        state.p1_step_rx = vec![HashMap::new(); grad_steps];
+        state.p2_step_rx = vec![HashMap::new(); grad_steps];
+
+        for port_id in ports {
+            let initial = initial_p1_tx.get(&port_id).copied().ok_or_else(|| {
+                Failure::Message(format!("missing initial p1 mailbox for port {port_id}"))
+            })?;
+            state.p1_step_tx[0].insert(port_id, initial);
+            for step in 1..grad_steps {
+                state.p1_step_tx[step].insert(port_id, Uuid::new_v4());
+            }
+            for step in 0..grad_steps {
+                state.p2_step_tx[step].insert(port_id, Uuid::new_v4());
+            }
+        }
+        for node_id in &nodes {
+            for step in 0..grad_steps {
+                state.p1_step_rx[step].insert(*node_id, Uuid::new_v4());
+                state.p2_step_rx[step].insert(*node_id, Uuid::new_v4());
+            }
+        }
+
+        state.node_p1_completed = nodes.iter().copied().map(|node_id| (node_id, 0)).collect();
+        state.node_p2_completed = nodes.iter().copied().map(|node_id| (node_id, 0)).collect();
+        state.root_p1_sent = roots.iter().copied().map(|node_id| (node_id, 0)).collect();
+        state.root_p2_sent = roots.iter().copied().map(|node_id| (node_id, 0)).collect();
+        state.pipeline_completions = 0;
+        state.pipeline_target_completions = nodes.len() * grad_steps * 2;
+        state.sink_id = Some(sink_id);
+
+        let mut inner = state.a.shared.lock().unwrap();
+        inner.active_micro_step = 0;
+        Ok(())
+    }
+}
+
+/// Seeds any ready root tasks that have not been sent yet.
+pub struct SendReadyRootTasks<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for SendReadyRootTasks<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = SendRootTaskPropagationsEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(state: &super::SunState<S>, _input: Self::Input) -> Vec<RootPropagationSend> {
+        let inner = state.a.shared.lock().unwrap();
+        let grad_steps = inner.grad_steps.max(1);
+        let roots = root_vertex_ids(&inner);
+        let mut sends = Vec::new();
+
+        for root_id in roots {
+            let Some((phase, step)) = task_for_node(state, root_id, grad_steps) else {
+                continue;
+            };
+            let already_sent = match phase {
+                super::SunNodeState::Propagation1 => {
+                    state.root_p1_sent.get(&root_id).copied().unwrap_or_default()
+                }
+                super::SunNodeState::Propagation2 => {
+                    state.root_p2_sent.get(&root_id).copied().unwrap_or_default()
+                }
+                _ => 0,
+            };
+            if already_sent >= step {
+                continue;
+            }
+
+            let transmission = match phase {
+                super::SunNodeState::Propagation1 => state
+                    .propagation_up_inputs
+                    .get(step - 1)
+                    .cloned()
+                    .expect("missing generated up propagation for root step"),
+                super::SunNodeState::Propagation2 => state
+                    .propagation_down_inputs
+                    .get(step - 1)
+                    .cloned()
+                    .expect("missing generated down propagation for root step"),
+                _ => continue,
+            };
+
+            let ports = inner.vertex_ports.get(&root_id).cloned().unwrap_or_default();
+            for port_id in ports {
+                sends.push(RootPropagationSend {
+                    target: step_target(state, &inner, phase, step, port_id),
+                    transmission: transmission.clone(),
+                });
+            }
+        }
+
+        sends
+    }
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let sent_node_ids = output
+            .map_err(|e| Failure::Message(format!("send ready roots failed: {e}")))?;
+        if sent_node_ids.is_empty() {
+            return Ok(());
+        }
+
+        let grad_steps = {
+            let inner = state.a.shared.lock().unwrap();
+            inner.grad_steps.max(1)
+        };
+
+        let mut updates = Vec::new();
+        for node_id in sent_node_ids {
+            let Some((phase, step)) = task_for_node(state, node_id, grad_steps) else {
+                continue;
+            };
+            match phase {
+                super::SunNodeState::Propagation1 => {
+                    state.root_p1_sent.insert(node_id, step);
+                }
+                super::SunNodeState::Propagation2 => {
+                    state.root_p2_sent.insert(node_id, step);
+                }
+                _ => {}
+            }
+            updates.push((node_id, phase, step));
+        }
+
+        let mut inner = state.a.shared.lock().unwrap();
+        for (node_id, phase, step) in updates {
+            inner.active_micro_step = step.saturating_sub(1);
+            inner.record_propagation_sent([node_id], phase);
+        }
+        Ok(())
+    }
+}
+
+/// Waits for the next ready node task completion and advances pipeline progress.
+pub struct ProcessReadyPipelineNode<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for ProcessReadyPipelineNode<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = WaitForNodeTransmission;
+    type Input = ();
+    type Output = ();
+
+    fn emit(state: &super::SunState<S>, _input: Self::Input) -> WaitForNodeTransmissionInput {
+        let inner = state.a.shared.lock().unwrap();
+        let grad_steps = inner.grad_steps.max(1);
+        let ready = ready_nodes(state, &inner);
+        let mut rx_endpoints = Vec::new();
+        let mut downstream = HashMap::<u32, Vec<PropagationTarget>>::new();
+
+        for node_id in ready {
+            let Some((phase, step)) = task_for_node(state, node_id, grad_steps) else {
+                continue;
+            };
+            if let Some(output_id) = task_output_id(state, node_id, phase, step) {
+                rx_endpoints.push((node_id, output_id));
+            }
+            let targets = inner.outgoing.get(&node_id).cloned().unwrap_or_default();
+            if targets.is_empty() {
+                continue;
+            }
+            let mapped: Vec<_> = targets
+                .into_iter()
+                .map(|target| step_target(state, &inner, phase, step, target.port_id))
+                .collect();
+            downstream.insert(node_id, mapped);
+        }
+
+        WaitForNodeTransmissionInput {
+            rx_endpoints,
+            downstream,
+        }
+    }
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let node_tx = output
+            .map_err(|e| Failure::Message(format!("wait for ready pipeline node failed: {e}")))?;
+        let node_id = node_tx.node_id;
+
+        let (phase, step) = {
+            let inner = state.a.shared.lock().unwrap();
+            let grad_steps = inner.grad_steps.max(1);
+            task_for_node(state, node_id, grad_steps).ok_or_else(|| {
+                Failure::Message(format!("completed node {node_id} has no active pipeline task"))
+            })?
+        };
+
+        match phase {
+            super::SunNodeState::Propagation1 => {
+                let completed = state
+                    .node_p1_completed
+                    .get_mut(&node_id)
+                    .ok_or_else(|| Failure::Message(format!("missing p1 counter for node {node_id}")))?;
+                *completed = completed.saturating_add(1);
+            }
+            super::SunNodeState::Propagation2 => {
+                let completed = state
+                    .node_p2_completed
+                    .get_mut(&node_id)
+                    .ok_or_else(|| Failure::Message(format!("missing p2 counter for node {node_id}")))?;
+                *completed = completed.saturating_add(1);
+            }
+            _ => {
+                return Err(Failure::Message(format!(
+                    "invalid phase for completed node {node_id}: {phase:?}"
+                )));
+            }
+        }
+        state.pipeline_completions = state.pipeline_completions.saturating_add(1);
+
+        if Some(node_id) == state.sink_id {
+            match phase {
+                super::SunNodeState::Propagation1 => {
+                    state.propagation_up_outputs.push(node_tx.transmission.clone());
+                }
+                super::SunNodeState::Propagation2 => {
+                    let up = state.propagation_up_outputs.get(step - 1).cloned().ok_or_else(|| {
+                        Failure::Message(format!(
+                            "missing first-pass sink output for step {step} before second-pass output"
+                        ))
+                    })?;
+                    state.propagation_pairs.push((up, node_tx.transmission.clone()));
+                }
+                _ => {}
+            }
+        }
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.active_micro_step = step.saturating_sub(1);
+            inner.record_propagation_completed(node_id, phase);
+            inner.record_propagation_sent(node_tx.sent_node_ids, phase);
+        }
+
         Ok(())
     }
 }
@@ -1094,8 +1646,20 @@ impl<S> Action for BroadcastPotentiation<S> {
         inner.record_optimization_sent(optimized_node_ids);
         drop(inner);
         state.propagation_down_inputs.clear();
+        state.propagation_up_inputs.clear();
         state.propagation_up_outputs.clear();
         state.propagation_pairs.clear();
+        state.p1_step_tx.clear();
+        state.p2_step_tx.clear();
+        state.p1_step_rx.clear();
+        state.p2_step_rx.clear();
+        state.node_p1_completed.clear();
+        state.node_p2_completed.clear();
+        state.root_p1_sent.clear();
+        state.root_p2_sent.clear();
+        state.pipeline_completions = 0;
+        state.pipeline_target_completions = 0;
+        state.sink_id = None;
 
         Ok(())
     }
@@ -1285,6 +1849,27 @@ mod tests {
         <Bound<STEPS> as BoundAction<TestSunAnimal>>::absorb(state, Ok(()))
     }
 
+    fn propagation(seed: u128) -> Transmission {
+        Transmission::Propagation {
+            emission_id: black_hole_spec::EmissionId(Uuid::from_u128(seed)),
+            recv: Uuid::new_v4(),
+            send: Uuid::new_v4(),
+        }
+    }
+
+    fn prepare_pipeline_with_steps<const STEPS: usize>(
+        state: &mut super::super::SunState,
+    ) -> Result<(), Failure> {
+        state.propagation_up_inputs = (0..STEPS)
+            .map(|step| propagation(100 + step as u128))
+            .collect();
+        state.propagation_down_inputs = (0..STEPS)
+            .map(|step| propagation(200 + step as u128))
+            .collect();
+        type Bound<const N: usize> = <PreparePropagationPipeline<(), N> as Action>::Bind<TestSunAnimal>;
+        <Bound<STEPS> as BoundAction<TestSunAnimal>>::absorb(state, Ok(()))
+    }
+
     #[test]
     fn sun_state_supports_custom_inner_payload() {
         let mut state = super::super::SunState::<(String, String)>::default();
@@ -1422,6 +2007,35 @@ mod tests {
         // all of the old topological layer to complete.
         advance_frontier(&mut pending, &mut ready, 1, &inner.outgoing[&1]).unwrap();
         assert_eq!(sorted_node_ids(&ready), vec![2, 3]);
+    }
+
+    #[test]
+    fn pipeline_scheduler_allows_branch_progress_without_global_step_barrier() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[2]);
+        add_vertex(&mut state, 1, &[1], &[3]);
+        add_vertex(&mut state, 2, &[2], &[4]);
+        add_vertex(&mut state, 3, &[3], &[5]);
+        add_vertex(&mut state, 4, &[4, 5], &[]);
+        finalize_with_steps::<2>(&mut state).unwrap();
+        prepare_pipeline_with_steps::<2>(&mut state).unwrap();
+
+        // Root 0 and its child 2 complete step 1, then root 0 completes step 2
+        // while the sibling branch rooted at 1 has not finished step 1 yet.
+        state.root_p1_sent.insert(0, 2);
+        state.root_p1_sent.insert(1, 1);
+        state.node_p1_completed.insert(0, 2);
+        state.node_p1_completed.insert(1, 0);
+        state.node_p1_completed.insert(2, 1);
+        state.node_p1_completed.insert(3, 0);
+        state.node_p1_completed.insert(4, 0);
+
+        let inner = state.a.shared.lock().unwrap();
+        let ready = ready_nodes(&state, &inner);
+        assert!(
+            ready.contains(&2),
+            "node 2 should be ready for p1 step 2 without waiting for branch rooted at node 1"
+        );
     }
 
     #[test]
