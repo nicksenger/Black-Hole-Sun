@@ -81,3 +81,9 @@ impl AccumulatedTransmissions {
         Ok(((left_output, left_metadata), (right_output, right_metadata)))
     }
 }
+
+impl<const N: usize> From<[(Transmission, Transmission); N]> for AccumulatedTransmissions {
+    fn from(pairs: [(Transmission, Transmission); N]) -> Self {
+        Self::from_array(pairs)
+    }
+}
