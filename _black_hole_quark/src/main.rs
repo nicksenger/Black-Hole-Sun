@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Once, time::Duration};
 
 use clap::Parser;
 
@@ -121,7 +121,18 @@ impl From<Opt> for black_hole_quark::ServerBuilder {
     }
 }
 
+fn install_rustls_crypto_provider() {
+    static RUSTLS_PROVIDER: Once = Once::new();
+    RUSTLS_PROVIDER.call_once(|| {
+        // rustls may be built with multiple crypto backends enabled via transitive
+        // features; explicitly selecting ring avoids runtime provider ambiguity.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 fn main() {
+    install_rustls_crypto_provider();
+
     if black_hole_quark::init_tracing().is_err() {
         eprintln!("ERROR: failed to initialize tracing subscriber");
         std::process::exit(1);
