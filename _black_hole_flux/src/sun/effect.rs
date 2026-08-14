@@ -44,6 +44,7 @@ impl<J> Effect<J> for GenFusionSeedEffect {
             Ok(FusionSeed {
                 p1_recv_id: Uuid::new_v4(),
                 p2_recv_id: Uuid::new_v4(),
+                grad_steps: 1,
             })
         }
     }

@@ -44,7 +44,7 @@ struct OscillatingCellAnimal;
 #[jungle::animal(observe, id = 42, generation = 0)]
 impl Animal for OscillatingCellAnimal {
     type State = CellState;
-    type Seed = ObjectId;
+    type Seed = black_hole_sun::CellInit;
     type Flow = Primordium<(), AlternatingModelConfig>;
 }
 
@@ -67,7 +67,7 @@ struct RedDwarfBlackHoleAnimal;
 impl Animal for RedDwarfBlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <RedDwarfSun as BlackHole>::Sun<Generator, Policy, ()>;
+    type Flow = <RedDwarfSun as BlackHole>::Sun<Generator, Policy, (), 1>;
 }
 
 impl Observe for RedDwarfBlackHoleAnimal {

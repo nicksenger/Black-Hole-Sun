@@ -79,8 +79,9 @@ pub use black_hole_spec::{
 pub use animal::Progenitor;
 pub use atom::effect::QuarkInfer;
 pub use cell::action::{
-    CellState, GenerateModelId, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput,
-    Propagation, QuarkInferStep, ShutdownModel, StartModel, Transmit, WaitForPotentiationAction,
+    AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
+    InitRecvId, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput, Propagation,
+    QuarkInferStep, ShutdownModel, StartModel, Transmit, WaitForPotentiationAction,
     WaitForPropagationAction,
 };
 pub use cell::effect::{

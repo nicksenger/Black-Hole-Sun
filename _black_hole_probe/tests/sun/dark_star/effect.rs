@@ -73,7 +73,7 @@ where
 #[jungle::effect]
 impl<J> Effect<J> for DarkStarLossPolicyEffect {
     type Id = u64;
-    type In = (Transmission, Transmission);
+    type In = [(Transmission, Transmission); 1];
     type Out = (f32, f32);
     type Err = AtomError;
 
@@ -87,7 +87,7 @@ impl<J> Effect<J> for DarkStarLossPolicyEffect {
 
 impl<J> EffectSchema<J> for BlackDwarfLossPolicyEffect {
     type Id = u64;
-    type In = (Transmission, Transmission);
+    type In = [(Transmission, Transmission); 1];
     type Out = (f32, f32);
     type Err = AtomError;
 }
@@ -101,8 +101,9 @@ where
         input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let output_up = InferenceOutput::from_transmission(jungle, &input.0).await?;
-            let output_down = InferenceOutput::from_transmission(jungle, &input.1).await?;
+            let (up_tx, down_tx) = &input[0];
+            let output_up = InferenceOutput::from_transmission(jungle, up_tx).await?;
+            let output_down = InferenceOutput::from_transmission(jungle, down_tx).await?;
             let up_batch_size = output_up.results.len();
             let down_batch_size = output_down.results.len();
 

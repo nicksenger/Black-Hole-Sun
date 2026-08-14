@@ -6,10 +6,11 @@ pub mod effect;
 pub use action::CellState;
 
 use action::{
-    GenerateModelId as GenerateModelId_, InitRecvId as InitRecvId_, Optimize as Optimize_,
-    PerturbDown as PerturbDown_, PerturbUp as PerturbUp_, PrepareAtomInput as PrepareAtomInput_,
-    StartModel as StartModel_, Transmit as Transmit_,
-    WaitForPotentiationAction as WaitForPotentiationAction_,
+    AdvanceGradientStep as AdvanceGradientStep_,
+    BeginGradientAccumulation as BeginGradientAccumulation_, GenerateModelId as GenerateModelId_,
+    InitRecvId as InitRecvId_, Optimize as Optimize_, PerturbDown as PerturbDown_,
+    PerturbUp as PerturbUp_, PrepareAtomInput as PrepareAtomInput_, StartModel as StartModel_,
+    Transmit as Transmit_, WaitForPotentiationAction as WaitForPotentiationAction_,
     WaitForPropagationAction as WaitForPropagationAction_,
 };
 use black_hole_spec::EmissionId;
@@ -20,6 +21,15 @@ use uuid::Uuid;
 
 use crate::model_config::{DefaultConfig, ModelConfig};
 use crate::Atom;
+
+/// Predicate that keeps running cell microsteps until `grad_steps` is reached.
+pub struct HasPendingGradientStep<S>(std::marker::PhantomData<fn() -> S>);
+
+impl<S> Predicate<(&CellState<S>, &())> for HasPendingGradientStep<S> {
+    fn eval((state, _): &(&CellState<S>, &())) -> bool {
+        state.grad_step < state.grad_steps.max(1)
+    }
+}
 
 /// A Cell wraps a atom flow in an infinite QuZO training loop driven by
 /// [`Transmission`](black_hole_spec::Transmission) messages from void.
@@ -36,6 +46,15 @@ pub type Cell<N, S = (), H = DefaultConfig> = CellWithState<N, S, H>;
 /// The body of one iteration of a [`Cell`] loop.
 #[derive(Flow)]
 pub struct CytoplasmWithState<N, S>(
+    Step<BeginGradientAccumulation_<S>>,
+    While<HasPendingGradientStep<S>, CytoplasmMicrostepWithState<N, S>>,
+    Step<WaitForPotentiationAction_<S>>,
+    Step<Optimize_<S>>,
+);
+
+/// One perturb-up/propagate/perturb-down/propagate microstep.
+#[derive(Flow)]
+pub struct CytoplasmMicrostepWithState<N, S>(
     Step<PerturbUp_<S>>,
     Step<WaitForPropagationAction_<S>>,
     Step<PrepareAtomInput_<S>>,
@@ -46,8 +65,7 @@ pub struct CytoplasmWithState<N, S>(
     Step<PrepareAtomInput_<S>>,
     N,
     Step<Transmit_<S>>,
-    Step<WaitForPotentiationAction_<S>>,
-    Step<Optimize_<S>>,
+    Step<AdvanceGradientStep_<S>>,
 );
 
 pub type Cytoplasm<N, S = ()> = CytoplasmWithState<N, S>;

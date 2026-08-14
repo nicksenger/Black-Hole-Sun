@@ -99,7 +99,7 @@ pub struct ComputeLoss;
 #[jungle::action]
 impl Action for ComputeLoss {
     type Effect = ComputeLossEffect;
-    type Input = (Transmission, Transmission);
+    type Input = [(Transmission, Transmission); 1];
     type Output = (f32, f32);
     type Carry = ();
 
@@ -121,7 +121,7 @@ pub struct ComputeLossEffect;
 #[jungle::effect]
 impl<J> Effect<J> for ComputeLossEffect {
     type Id = u64;
-    type In = (Transmission, Transmission);
+    type In = [(Transmission, Transmission); 1];
     type Out = (f32, f32);
     type Err = AtomError;
 

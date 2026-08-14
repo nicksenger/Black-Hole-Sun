@@ -2693,8 +2693,7 @@ mod tests {
 
     #[test]
     fn optimization_error_includes_engine_message() {
-        let err =
-            super::optimization_model_error("engine says clip threshold is invalid", None);
+        let err = super::optimization_model_error("engine says clip threshold is invalid", None);
         let super::ServerError::ModelError(message) = err else {
             panic!("expected model error");
         };

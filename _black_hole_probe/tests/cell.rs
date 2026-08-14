@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::{
-    Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest, ObjectId,
+    CellInit, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest, ObjectId,
     Progenitor, QuarkClient, QuarkModelConfig, QuarkModelParams, SequenceOutput, TestQuarkServer,
     TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
@@ -381,7 +381,11 @@ async fn cell() {
     let propagation_void_id = void_client.upload(propagation_bytes).await.unwrap();
 
     // 5. Spawn the Progenitor with state pointing to the first propagation.
-    let spawn_result = client.spawn::<Progenitor>(&propagation_void_id).await;
+    let progenitor_seed = CellInit {
+        recv_id: propagation_void_id,
+        grad_steps: 1,
+    };
+    let spawn_result = client.spawn::<Progenitor>(&progenitor_seed).await;
     assert!(
         spawn_result.is_ok(),
         "spawn should succeed: {:?}",

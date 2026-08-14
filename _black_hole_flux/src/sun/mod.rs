@@ -145,6 +145,8 @@ pub struct SunStateWithInner<S> {
     pub b: PropB,
     /// User-provided state threaded through Sun actions and flows.
     pub inner: S,
+    /// Propagation outputs collected across accumulation microsteps.
+    pub propagation_pairs: Vec<(Transmission, Transmission)>,
 }
 
 /// State available to Sun actions and flows.
@@ -169,6 +171,7 @@ where
                 ..PropB::default()
             },
             inner: S::default(),
+            propagation_pairs: Vec::new(),
         }
     }
 }
@@ -255,8 +258,14 @@ pub struct SunInner {
     pub incoming: HashMap<u32, Vec<u32>>,
     /// Resolved outgoing destination ports for each vertex.
     pub outgoing: HashMap<u32, Vec<PortTarget>>,
+    /// Number of propagation microsteps per optimization epoch.
+    pub grad_steps: usize,
+    /// Current microstep index (0-based) inside the accumulation epoch.
+    pub active_micro_step: usize,
     /// First-pass input endpoints keyed by port id.
     pub p1_tx: HashMap<u32, ObjectId>,
+    /// Next first-pass endpoints used between microsteps when accumulation > 1.
+    pub next_p1_tx: HashMap<u32, ObjectId>,
     /// First-pass output endpoints keyed by vertex id.
     pub p1_rx: HashMap<u32, ObjectId>,
     /// Second-pass input endpoints keyed by port id.
@@ -346,12 +355,17 @@ pub struct PortTarget {
 #[derive(Flow)]
 pub struct UnarySunStepWithState<
     P: Unsigned,
-    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
+    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>,
     E: NodeIdsFromList,
     S,
->(Step<GenUuid<S>>, Step<action::SpawnUnary<P, AnimalT, E, S>>);
+    const GRADIENT_ACCUMULATION_STEPS: usize,
+>(
+    Step<GenUuid<S, GRADIENT_ACCUMULATION_STEPS>>,
+    Step<action::SpawnUnary<P, AnimalT, E, S>>,
+);
 
-pub type UnarySunStep<P, AnimalT, E, S = ()> = UnarySunStepWithState<P, AnimalT, E, S>;
+pub type UnarySunStep<P, AnimalT, E, S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
+    UnarySunStepWithState<P, AnimalT, E, S, GRADIENT_ACCUMULATION_STEPS>;
 
 /// Generate a two-port seed, then spawn and register one binary animal.
 #[derive(Flow)]
@@ -367,12 +381,14 @@ pub struct BinarySunStepWithState<
     >,
     E: NodeIdsFromList,
     S,
+    const GRADIENT_ACCUMULATION_STEPS: usize,
 >(
-    Step<action::GenFusionSeed<S>>,
+    Step<action::GenFusionSeed<S, GRADIENT_ACCUMULATION_STEPS>>,
     Step<action::SpawnBinary<P1, P2, AnimalT, E, S>>,
 );
 
-pub type BinarySunStep<P1, P2, AnimalT, E, S = ()> = BinarySunStepWithState<P1, P2, AnimalT, E, S>;
+pub type BinarySunStep<P1, P2, AnimalT, E, S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
+    BinarySunStepWithState<P1, P2, AnimalT, E, S, GRADIENT_ACCUMULATION_STEPS>;
 
 /// One descriptor-specific spawn flow followed by the remaining descriptors.
 #[derive(Flow)]
@@ -380,24 +396,28 @@ pub struct SunNode<S, U>(S, U);
 
 /// Maps a type-level graph to its orchestration flow.
 ///
-/// `Generator` is a Jungle flow from `()` to `(Transmission, Transmission)`;
-/// `Policy` is a Jungle flow from `(Transmission, Transmission)` to
-/// `(f32, f32)`. Keeping both as flow parameters lets callers compose arbitrary
-/// generation and policy pipelines around the fixed graph propagation
-/// machinery. Set `S` when your generator/policy needs access to
-/// `SunState<S>::inner`.
+/// `Generator` is a Jungle flow from `()` to `(Transmission, Transmission)`.
+/// The Sun runs that generator and the propagation graph
+/// `GRADIENT_ACCUMULATION_STEPS` times, then feeds `Policy` an array of
+/// outputs with shape `[(Transmission, Transmission); GRADIENT_ACCUMULATION_STEPS]`.
+/// `Policy` returns `(f32, f32)` losses. Keeping both as flow parameters lets
+/// callers compose arbitrary generation and policy pipelines around the fixed
+/// graph propagation machinery. Set `S` when your generator/policy needs access
+/// to `SunState<S>::inner`.
 pub trait BlackHole {
-    type Sun<Generator, Policy, S>;
+    type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>;
 }
 impl<P, A, E, U> BlackHole for List<(Unary<P, A, E>, U)>
 where
     P: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>,
     E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun<Generator, Policy, S> =
-        SunNode<UnarySunStep<P, A, E, S>, <U as BlackHole>::Sun<Generator, Policy, S>>;
+    type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> = SunNode<
+        UnarySunStep<P, A, E, S, GRADIENT_ACCUMULATION_STEPS>,
+        <U as BlackHole>::Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>,
+    >;
 }
 impl<P1, P2, A, E, U> BlackHole for List<(Binary<P1, P2, A, E>, U)>
 where
@@ -408,11 +428,14 @@ where
     E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun<Generator, Policy, S> =
-        SunNode<BinarySunStep<P1, P2, A, E, S>, <U as BlackHole>::Sun<Generator, Policy, S>>;
+    type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> = SunNode<
+        BinarySunStep<P1, P2, A, E, S, GRADIENT_ACCUMULATION_STEPS>,
+        <U as BlackHole>::Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>,
+    >;
 }
 impl BlackHole for Empty {
-    type Sun<Generator, Policy, S> = Sun<Generator, Policy, S>;
+    type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> =
+        Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>;
 }
 
 // ---------------------------------------------------------------------------
@@ -465,27 +488,53 @@ pub type PropagationFlows = Join<PropAFlow, PropBFlow>;
 /// Alias for one iteration of the propagation loop (branch A).
 pub type PropagationLoop = PropALoop;
 
+/// Predicate that keeps accumulating microsteps until `N` is reached.
+pub struct PendingAccumulation<const N: usize, S>(PhantomData<fn() -> S>);
+
+impl<const N: usize, S> Predicate<(&SunState<S>, &())> for PendingAccumulation<N, S> {
+    fn eval((state, _): &(&SunState<S>, &())) -> bool {
+        state.propagation_pairs.len() < N
+    }
+}
+
+/// One accumulation microstep: generate, propagate, and record outputs.
+#[derive(Flow)]
+pub struct AccumulationStep<Generator, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
+    Generator,
+    PropagationFlows,
+    Step<action::RecordPropagationPair<S, GRADIENT_ACCUMULATION_STEPS>>,
+);
+
 // ---------------------------------------------------------------------------
 // BlackHole — the top-level orchestration flow
 // ---------------------------------------------------------------------------
 
 /// One complete training epoch: generate → propagate → apply policy → broadcast potentiation.
 #[derive(Flow)]
-pub struct EpochWithState<Generator, Policy, S>(
-    Generator,
-    PropagationFlows,
+pub struct EpochWithState<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
+    Step<action::BeginGradientAccumulation<S, GRADIENT_ACCUMULATION_STEPS>>,
+    While<
+        PendingAccumulation<GRADIENT_ACCUMULATION_STEPS, S>,
+        AccumulationStep<Generator, S, GRADIENT_ACCUMULATION_STEPS>,
+    >,
+    Step<action::CollectedPropagationPairs<S, GRADIENT_ACCUMULATION_STEPS>>,
     Policy,
     Step<action::BroadcastPotentiation<S>>,
 );
 
-pub type Epoch<Generator, Policy, S = ()> = EpochWithState<Generator, Policy, S>;
+pub type Epoch<Generator, Policy, S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
+    EpochWithState<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>;
 
 /// Top-level orchestration flow that drives all underlying Cell flows
 /// associated with the BlackHoleSun graph.
 #[derive(Flow)]
-pub struct SunFlow<Generator, Policy, S>(
-    Step<action::BuildAddrs<S>>,
-    While<Always<SunState<S>, ()>, EpochWithState<Generator, Policy, S>>,
+pub struct SunFlow<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
+    Step<action::BuildAddrs<S, GRADIENT_ACCUMULATION_STEPS>>,
+    While<
+        Always<SunState<S>, ()>,
+        EpochWithState<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>,
+    >,
 );
 
-pub type Sun<Generator, Policy, S = ()> = SunFlow<Generator, Policy, S>;
+pub type Sun<Generator, Policy, S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
+    SunFlow<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>;

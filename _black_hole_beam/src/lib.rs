@@ -15,7 +15,7 @@ use black_hole_flux::sun::{
     BinarySunStep, NodeIdsFromList, Sun, SunAppearance, SunNode, SunNodeState, SunState,
     UnarySunStep,
 };
-use black_hole_flux::{FusionFlow, FusionSeed, FusionState, ObjectId, Ray};
+use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
@@ -242,7 +242,7 @@ mod private {
 }
 
 /// Marker for the structural flow produced by
-/// `<Graph as BlackHole>::Sun<Generator, Policy, S>`.
+/// `<Graph as BlackHole>::Sun<Generator, Policy, S, N>`.
 ///
 /// The trait is sealed and is only implemented for the `SunNode<…>` chain
 /// emitted by [`BlackHole`](black_hole_flux::sun::BlackHole).
@@ -251,15 +251,17 @@ pub trait BlackHoleSunFlow: private::DescribeSun {}
 
 impl<T> BlackHoleSunFlow for T where T: private::DescribeSun {}
 
-impl<Generator, Policy, S> private::DescribeSun for Sun<Generator, Policy, S> {
+impl<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::DescribeSun
+    for Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>
+{
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
 
-impl<Port, A, Edges, Tail, S> private::DescribeSun
-    for SunNode<UnarySunStep<Port, A, Edges, S>, Tail>
+impl<Port, A, Edges, Tail, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::DescribeSun
+    for SunNode<UnarySunStep<Port, A, Edges, S, GRADIENT_ACCUMULATION_STEPS>, Tail>
 where
     Port: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId> + 'static,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = black_hole_flux::CellInit> + 'static,
     Edges: NodeIdsFromList,
     Tail: private::DescribeSun,
 {
@@ -273,8 +275,8 @@ where
     }
 }
 
-impl<PortA, PortB, A, Edges, Tail, S> private::DescribeSun
-    for SunNode<BinarySunStep<PortA, PortB, A, Edges, S>, Tail>
+impl<PortA, PortB, A, Edges, Tail, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::DescribeSun
+    for SunNode<BinarySunStep<PortA, PortB, A, Edges, S, GRADIENT_ACCUMULATION_STEPS>, Tail>
 where
     PortA: Unsigned,
     PortB: Unsigned,
@@ -1236,7 +1238,7 @@ mod tests {
         type Id = Id<U1>;
         type Generation = U0;
         type State = CellState;
-        type Seed = ObjectId;
+        type Seed = black_hole_flux::CellInit;
         type Flow = Primordium;
     }
 
@@ -1256,18 +1258,18 @@ mod tests {
         type Id = Id<U1>;
         type Generation = U0;
         type State = CellState;
-        type Seed = ObjectId;
+        type Seed = black_hole_flux::CellInit;
         type Flow = Primordium;
     }
 
     type PortOne = List<(U1, Empty)>;
     type Tail = List<(Unary<U1, TestCell, Empty>, Empty)>;
     type TestGraph = List<(Unary<U0, TestCell, PortOne>, Tail)>;
-    type TestSun = <TestGraph as BlackHole>::Sun<Primordium, Primordium, ()>;
+    type TestSun = <TestGraph as BlackHole>::Sun<Primordium, Primordium, (), 1>;
     type TestSunWithCustomState =
-        <TestGraph as BlackHole>::Sun<Primordium, Primordium, (String, String)>;
+        <TestGraph as BlackHole>::Sun<Primordium, Primordium, (String, String), 1>;
     type TestBinaryGraph = List<(Binary<U0, U1, TestFusion, Empty>, Empty)>;
-    type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium, ()>;
+    type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium, (), 1>;
 
     #[test]
     fn uses_black_hole_sun_title_and_activity_palette() {

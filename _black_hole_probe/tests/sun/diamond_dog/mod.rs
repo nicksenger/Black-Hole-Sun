@@ -15,8 +15,8 @@ use black_hole_sun::cell::action::{
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, QuarkModelParams, Ray, TestVoidServer,
-    Tokenizer, Transmission, VoidClient,
+    EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, QuarkModelParams, Ray,
+    TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState};
 use jungle_sdk::core::JungleWorker;
@@ -109,7 +109,7 @@ pub(super) struct RootAnimal;
 #[jungle::animal(observe, id = 0, generation = 0)]
 impl Animal for RootAnimal {
     type State = CellState;
-    type Seed = ObjectId;
+    type Seed = black_hole_sun::CellInit;
     type Flow = TestCellFlow<Step<PassEmission>>;
 }
 
@@ -126,7 +126,7 @@ pub(super) struct LeftAnimal;
 #[jungle::animal(id = 2, generation = 0)]
 impl Animal for LeftAnimal {
     type State = CellState;
-    type Seed = ObjectId;
+    type Seed = black_hole_sun::CellInit;
     type Flow = TestCellFlow<Step<MarkLeft>>;
 }
 
@@ -135,7 +135,7 @@ pub(super) struct RightAnimal;
 #[jungle::animal(id = 3, generation = 0)]
 impl Animal for RightAnimal {
     type State = CellState;
-    type Seed = ObjectId;
+    type Seed = black_hole_sun::CellInit;
     type Flow = TestCellFlow<Step<MarkRight>>;
 }
 
@@ -144,7 +144,7 @@ pub(super) struct SinkAnimal;
 #[jungle::animal(id = 5, generation = 0)]
 impl Animal for SinkAnimal {
     type State = CellState;
-    type Seed = ObjectId;
+    type Seed = black_hole_sun::CellInit;
     type Flow = TestCellFlow<Step<PassEmission>>;
 }
 
@@ -178,7 +178,7 @@ pub(super) struct BlackHoleAnimal;
 impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <DiamondSun as BlackHole>::Sun<Generator, Policy, ()>;
+    type Flow = <DiamondSun as BlackHole>::Sun<Generator, Policy, (), 1>;
 }
 
 impl Observe for BlackHoleAnimal {
@@ -196,7 +196,7 @@ pub(super) struct ExpandedBlackHoleAnimal;
 impl Animal for ExpandedBlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <ExpandedDiamondSun as BlackHole>::Sun<Generator, Policy, ()>;
+    type Flow = <ExpandedDiamondSun as BlackHole>::Sun<Generator, Policy, (), 1>;
 }
 
 impl Observe for ExpandedBlackHoleAnimal {

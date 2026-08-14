@@ -22,6 +22,8 @@ use crate::cell::effect::{
 pub struct FusionSeed {
     pub p1_recv_id: ObjectId,
     pub p2_recv_id: ObjectId,
+    #[serde(default = "default_gradient_accumulation_steps")]
+    pub grad_steps: usize,
 }
 
 /// Runtime identity and mailbox state for a [`Fusion`](super::Fusion) journey.
@@ -34,6 +36,16 @@ pub struct FusionState {
     send_id: ObjectId,
     /// Random seed passed to perturb-up before each propagation pass.
     pub perturbation_seed: u64,
+    /// Number of propagation microsteps to run per optimize cycle.
+    #[serde(default = "default_gradient_accumulation_steps")]
+    pub grad_steps: usize,
+    /// Number of completed microsteps in the current optimize epoch.
+    #[serde(default)]
+    pub grad_step: usize,
+}
+
+fn default_gradient_accumulation_steps() -> usize {
+    1
 }
 
 /// Initializes both independent input-port mailbox chains from [`FusionSeed`].
@@ -57,6 +69,53 @@ impl Action for InitFusion {
         output.map_err(|_| Failure::Message("initialize fusion failed".to_string()))?;
         state.p1_recv_id = seed.p1_recv_id;
         state.p2_recv_id = seed.p2_recv_id;
+        state.grad_steps = seed.grad_steps.max(1);
+        state.grad_step = 0;
+        Ok(())
+    }
+}
+
+/// Resets the fusion microstep cursor before one accumulation loop.
+pub struct BeginFusionGradientAccumulation;
+
+#[jungle::action]
+impl Action for BeginFusionGradientAccumulation {
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &FusionState, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut FusionState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("begin fusion accumulation failed".to_string()))?;
+        state.grad_step = 0;
+        if state.grad_steps == 0 {
+            state.grad_steps = 1;
+        }
+        Ok(())
+    }
+}
+
+/// Advances the fusion microstep cursor after one full perturb/infer pair.
+pub struct AdvanceFusionGradientStep;
+
+#[jungle::action]
+impl Action for AdvanceFusionGradientStep {
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &FusionState, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut FusionState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("advance fusion accumulation failed".to_string()))?;
+        state.grad_step = state.grad_step.saturating_add(1);
         Ok(())
     }
 }

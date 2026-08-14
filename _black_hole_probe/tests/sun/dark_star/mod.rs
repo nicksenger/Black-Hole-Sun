@@ -111,7 +111,7 @@ pub(super) struct DarkStarTestCell;
 #[jungle::animal(id = 7, generation = 0)]
 impl Animal for DarkStarTestCell {
     type State = CellState;
-    type Seed = ObjectId;
+    type Seed = black_hole_sun::CellInit;
     type Flow = DarkStarTestCellFlow<Step<PassDarkStarEmission>>;
 }
 
@@ -223,7 +223,7 @@ pub(super) struct ProgenitorBlackHole;
 impl Animal for ProgenitorBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<Generator, Policy, ()>;
+    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<Generator, Policy, (), 1>;
 }
 
 impl Observe for ProgenitorBlackHole {
@@ -240,7 +240,7 @@ pub(super) struct DarkStarBlackHole;
 impl Animal for DarkStarBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <DarkStarSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy, ()>;
+    type Flow = <DarkStarSun as BlackHole>::Sun<DarkStarGenerator, DarkStarPolicy, (), 1>;
 }
 
 impl Observe for DarkStarBlackHole {
@@ -257,7 +257,8 @@ pub(super) struct BlackDwarfBlackHole;
 impl Animal for BlackDwarfBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<BlackDwarfGenerator, BlackDwarfPolicy, ()>;
+    type Flow =
+        <ThreeProgenitorSun as BlackHole>::Sun<BlackDwarfGenerator, BlackDwarfPolicy, (), 1>;
 }
 
 impl Observe for BlackDwarfBlackHole {

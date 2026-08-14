@@ -15,25 +15,43 @@ use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 
 pub use action::{
-    FusionOptimize, FusionPerturbDown, FusionPerturbUp, FusionQuarkInferStep, FusionSeed,
-    FusionStartModel, FusionState, FusionTransmit, GenerateTransformId, InitFusion,
-    PrepareTransformInput, WaitForFusionPotentiationAction, WaitForFusionPotentiationForOptimize,
+    AdvanceFusionGradientStep, BeginFusionGradientAccumulation, FusionOptimize, FusionPerturbDown,
+    FusionPerturbUp, FusionQuarkInferStep, FusionSeed, FusionStartModel, FusionState,
+    FusionTransmit, GenerateTransformId, InitFusion, PrepareTransformInput,
+    WaitForFusionPotentiationAction, WaitForFusionPotentiationForOptimize,
     WaitForFusionPropagationAction,
 };
 
 pub use effect::{GenerateTransformIdEffect, WaitForFusionPotentiation, WaitForFusionPropagation};
 
-/// One complete two-pass fusion epoch.
+/// Predicate that keeps running fusion microsteps until `grad_steps` is reached.
+pub struct HasPendingFusionGradientStep;
+
+impl Predicate<(&FusionState, &())> for HasPendingFusionGradientStep {
+    fn eval((state, _): &(&FusionState, &())) -> bool {
+        state.grad_step < state.grad_steps.max(1)
+    }
+}
+
+/// One complete two-pass fusion microstep.
+#[derive(Flow)]
+pub struct FusionMicrostep<Transform>(
+    Step<WaitForFusionPropagationAction>,
+    Step<PrepareTransformInput>,
+    Transform,
+    Step<FusionTransmit>,
+    Step<WaitForFusionPropagationAction>,
+    Step<PrepareTransformInput>,
+    Transform,
+    Step<FusionTransmit>,
+    Step<AdvanceFusionGradientStep>,
+);
+
+/// One complete model-free accumulation epoch.
 #[derive(Flow)]
 pub struct FusionEpoch<Transform>(
-    Step<WaitForFusionPropagationAction>,
-    Step<PrepareTransformInput>,
-    Transform,
-    Step<FusionTransmit>,
-    Step<WaitForFusionPropagationAction>,
-    Step<PrepareTransformInput>,
-    Transform,
-    Step<FusionTransmit>,
+    Step<BeginFusionGradientAccumulation>,
+    While<HasPendingFusionGradientStep, FusionMicrostep<Transform>>,
     Step<WaitForFusionPotentiationAction>,
 );
 
@@ -45,9 +63,9 @@ pub struct Fusion<Transform>(
     While<Always<FusionState, ()>, FusionEpoch<Transform>>,
 );
 
-/// One complete model-aware two-pass fusion epoch.
+/// One complete model-aware two-pass fusion microstep.
 #[derive(Flow)]
-pub struct QuzoFusionEpoch<
+pub struct QuzoFusionMicrostep<
     Transform,
     M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
 >(
@@ -63,6 +81,17 @@ pub struct QuzoFusionEpoch<
     Transform,
     Step<FusionQuarkInferStep<M>>,
     Step<FusionTransmit>,
+    Step<AdvanceFusionGradientStep>,
+);
+
+/// One complete model-aware accumulation epoch.
+#[derive(Flow)]
+pub struct QuzoFusionEpoch<
+    Transform,
+    M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+>(
+    Step<BeginFusionGradientAccumulation>,
+    While<HasPendingFusionGradientStep, QuzoFusionMicrostep<Transform, M>>,
     Step<WaitForFusionPotentiationForOptimize>,
     Step<FusionOptimize>,
 );

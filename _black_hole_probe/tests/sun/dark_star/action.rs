@@ -35,7 +35,7 @@ impl Action for GenerateBlackDwarfPrompt {
 #[jungle::action]
 impl Action for DarkStarLossPolicy {
     type Effect = DarkStarLossPolicyEffect;
-    type Input = (Transmission, Transmission);
+    type Input = [(Transmission, Transmission); 1];
     type Output = (f32, f32);
     type Carry = ();
 
@@ -54,7 +54,7 @@ impl Action for DarkStarLossPolicy {
 #[jungle::action]
 impl Action for BlackDwarfLossPolicy {
     type Effect = BlackDwarfLossPolicyEffect;
-    type Input = (Transmission, Transmission);
+    type Input = [(Transmission, Transmission); 1];
     type Output = (f32, f32);
     type Carry = ();
 

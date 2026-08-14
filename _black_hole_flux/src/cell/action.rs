@@ -32,9 +32,19 @@ pub struct CellState<S = ()> {
     /// Last known frozen status for this model instance.
     #[serde(default)]
     pub is_frozen: bool,
+    /// Number of perturb-up/infer/perturb-down/infer microsteps per optimize step.
+    #[serde(default = "default_gradient_accumulation_steps")]
+    pub grad_steps: usize,
+    /// Number of completed microsteps in the current optimize epoch.
+    #[serde(default)]
+    pub grad_step: usize,
     /// User-provided state threaded through all cell actions.
     #[serde(default)]
     pub inner: S,
+}
+
+fn default_gradient_accumulation_steps() -> usize {
+    1
 }
 
 pub use black_hole_spec::EmissionId;
@@ -48,29 +58,96 @@ use super::effect::{
 // InitRecvId — set recv_id from the seed ObjectId (first step of Cell flow)
 // ---------------------------------------------------------------------------
 
+/// Initialization payload for one spawned [`Cell`](crate::Cell).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Init {
+    /// First propagation mailbox that this cell should await.
+    pub recv_id: black_hole_spec::ObjectId,
+    /// Number of propagation microsteps to run per optimize cycle.
+    #[serde(default = "default_gradient_accumulation_steps")]
+    pub grad_steps: usize,
+}
+
+impl Default for Init {
+    fn default() -> Self {
+        Self {
+            recv_id: black_hole_spec::ObjectId::nil(),
+            grad_steps: default_gradient_accumulation_steps(),
+        }
+    }
+}
+
 /// Action that initializes `recv_id` in [`CellState`] from the seed
-/// [`ObjectId`](black_hole_spec::ObjectId).
+/// [`Init`] payload.
 ///
 /// This is the very first step of a [`Cell`](crate::Cell) flow, converting the
-/// animal seed into the initial receive ID for the training loop.
+/// animal seed into the initial receive ID and accumulation settings for the
+/// training loop.
 pub struct InitRecvId<S = ()>(PhantomData<fn() -> S>);
 
-#[jungle::action(carry = black_hole_spec::ObjectId)]
+#[jungle::action(carry = Init)]
 impl<S> Action for InitRecvId<S> {
     type Effect = NoEffect;
-    type Input = black_hole_spec::ObjectId;
+    type Input = Init;
     type Output = ();
 
-    fn emit(_state: &CellState<S>, input: Self::Input) -> ((), black_hole_spec::ObjectId) {
+    fn emit(_state: &CellState<S>, input: Self::Input) -> ((), Init) {
         ((), input)
     }
 
     fn absorb(
         state: &mut CellState<S>,
         _output: EffectCompletion<Self::Effect>,
-        carry: black_hole_spec::ObjectId,
+        carry: Init,
     ) -> Result<Self::Output, Failure> {
-        state.recv_id = carry;
+        state.recv_id = carry.recv_id;
+        state.grad_steps = carry.grad_steps.max(1);
+        state.grad_step = 0;
+        Ok(())
+    }
+}
+
+/// Resets the microstep cursor before an accumulation loop begins.
+pub struct BeginGradientAccumulation<S = ()>(PhantomData<fn() -> S>);
+
+#[jungle::action]
+impl<S> Action for BeginGradientAccumulation<S> {
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &CellState<S>, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("begin accumulation failed".to_string()))?;
+        state.grad_step = 0;
+        if state.grad_steps == 0 {
+            state.grad_steps = 1;
+        }
+        Ok(())
+    }
+}
+
+/// Advances the microstep cursor after one full perturb/infer pair.
+pub struct AdvanceGradientStep<S = ()>(PhantomData<fn() -> S>);
+
+#[jungle::action]
+impl<S> Action for AdvanceGradientStep<S> {
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &CellState<S>, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("advance accumulation failed".to_string()))?;
+        state.grad_step = state.grad_step.saturating_add(1);
         Ok(())
     }
 }
@@ -390,4 +467,3 @@ impl<S> Action for Transmit<S> {
         output.map_err(|e| Failure::Message(format!("transmit failed: {e}")))
     }
 }
-

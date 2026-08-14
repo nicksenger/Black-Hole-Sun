@@ -114,15 +114,18 @@ pub struct SpawnUnary<P, A, E, S = ()>(PhantomData<fn() -> (P, A, E, S)>);
 impl<P, A, E, S> Action for SpawnUnary<P, A, E, S>
 where
     P: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ObjectId>,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>,
     E: NodeIdsFromList,
 {
     type Effect = super::effect::SpawnAnimal<A>;
-    type Input = ObjectId;
+    type Input = crate::cell::action::Init;
     type Output = ();
-    type Carry = ObjectId;
+    type Carry = crate::cell::action::Init;
 
-    fn emit(_state: &super::SunState<S>, input: Self::Input) -> (ObjectId, ObjectId) {
+    fn emit(
+        _state: &super::SunState<S>,
+        input: Self::Input,
+    ) -> (crate::cell::action::Init, crate::cell::action::Init) {
         (input, input)
     }
 
@@ -138,7 +141,7 @@ where
             state,
             port_id,
             short_type_name::<A>(),
-            &[(port_id, initial_recv_id)],
+            &[(port_id, initial_recv_id.recv_id)],
             E::node_ids(),
             journey_id,
         );
@@ -313,10 +316,71 @@ where
 // FinalizeGraph — resolve ports, validate the DAG, and allocate phase mailboxes
 // ---------------------------------------------------------------------------
 
-pub struct FinalizeGraph<S = ()>(PhantomData<fn() -> S>);
+fn port_ids(inner: &super::SunInner) -> Vec<u32> {
+    inner.port_vertices.keys().copied().collect()
+}
+
+fn vertex_ids(inner: &super::SunInner) -> Vec<u32> {
+    inner.journey_ids.keys().copied().collect()
+}
+
+fn reset_epoch_mailboxes(inner: &mut super::SunInner) {
+    let port_ids = port_ids(inner);
+    let vertex_ids = vertex_ids(inner);
+
+    inner.p2_tx.clear();
+    inner.p1_rx.clear();
+    inner.p2_rx.clear();
+    inner.next_p1_tx.clear();
+
+    for port_id in &port_ids {
+        inner.p2_tx.insert(*port_id, Uuid::new_v4());
+    }
+    for vertex_id in &vertex_ids {
+        inner.p1_rx.insert(*vertex_id, Uuid::new_v4());
+        inner.p2_rx.insert(*vertex_id, Uuid::new_v4());
+    }
+    if inner.grad_steps > 1 {
+        for port_id in port_ids {
+            inner.next_p1_tx.insert(port_id, Uuid::new_v4());
+        }
+    }
+}
+
+fn prepare_next_microstep(inner: &mut super::SunInner, completed_steps: usize) {
+    inner.p1_tx = inner.next_p1_tx.clone();
+    inner.active_micro_step = completed_steps;
+
+    let port_ids = port_ids(inner);
+    let vertex_ids = vertex_ids(inner);
+
+    inner.p2_tx.clear();
+    inner.p1_rx.clear();
+    inner.p2_rx.clear();
+    inner.next_p1_tx.clear();
+
+    for port_id in &port_ids {
+        inner.p2_tx.insert(*port_id, Uuid::new_v4());
+    }
+    for vertex_id in &vertex_ids {
+        inner.p1_rx.insert(*vertex_id, Uuid::new_v4());
+        inner.p2_rx.insert(*vertex_id, Uuid::new_v4());
+    }
+    if completed_steps + 1 < inner.grad_steps {
+        for port_id in port_ids {
+            inner.next_p1_tx.insert(port_id, Uuid::new_v4());
+        }
+    }
+}
+
+pub struct FinalizeGraph<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
 
 #[jungle::action]
-impl<S> Action for FinalizeGraph<S> {
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for FinalizeGraph<S, GRADIENT_ACCUMULATION_STEPS>
+{
     type Effect = NoEffect;
     type Input = ();
     type Output = ();
@@ -331,6 +395,13 @@ impl<S> Action for FinalizeGraph<S> {
 
         let mut inner = state.a.shared.lock().unwrap();
         inner.finalized = false;
+        state.propagation_pairs.clear();
+
+        if GRADIENT_ACCUMULATION_STEPS == 0 {
+            return Err(Failure::Message(
+                "gradient accumulation steps must be at least 1".to_string(),
+            ));
+        }
 
         if !inner.duplicate_ports.is_empty() {
             let mut ports: Vec<_> = inner.duplicate_ports.iter().copied().collect();
@@ -458,15 +529,13 @@ impl<S> Action for FinalizeGraph<S> {
 
         inner.incoming = incoming;
         inner.outgoing = outgoing;
-
-        for port_id in inner.port_vertices.keys().copied().collect::<Vec<_>>() {
-            inner.p2_tx.insert(port_id, Uuid::new_v4());
+        inner.grad_steps = GRADIENT_ACCUMULATION_STEPS;
+        inner.active_micro_step = 0;
+        inner.po_tx.clear();
+        for port_id in port_ids(&inner) {
             inner.po_tx.insert(port_id, Uuid::new_v4());
         }
-        for vertex_id in vertices {
-            inner.p1_rx.insert(vertex_id, Uuid::new_v4());
-            inner.p2_rx.insert(vertex_id, Uuid::new_v4());
-        }
+        reset_epoch_mailboxes(&mut inner);
         inner.finalized = true;
 
         Ok(())
@@ -474,7 +543,8 @@ impl<S> Action for FinalizeGraph<S> {
 }
 
 /// Compatibility alias for the former mailbox-only graph setup action.
-pub type BuildAddrs<S = ()> = FinalizeGraph<S>;
+pub type BuildAddrs<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
+    FinalizeGraph<S, GRADIENT_ACCUMULATION_STEPS>;
 
 // ---------------------------------------------------------------------------
 // SendRootPropagation — seed every root before waiting for ready output
@@ -650,28 +720,39 @@ where
 // ---------------------------------------------------------------------------
 
 /// Generates the initial inbox used to seed one spawned cell journey.
-pub struct GenUuid<S = ()>(PhantomData<fn() -> S>);
+pub struct GenUuid<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl<S> Action for GenUuid<S> {
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for GenUuid<S, GRADIENT_ACCUMULATION_STEPS>
+{
     type Effect = GenUuidEffect;
     type Input = ();
-    type Output = Uuid;
+    type Output = crate::cell::action::Init;
 
     fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
     fn absorb(
         _state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_e| Failure::Message("failed to generate a uuid...".to_string()))
+        let recv_id =
+            output.map_err(|_e| Failure::Message("failed to generate a uuid...".to_string()))?;
+        Ok(crate::cell::action::Init {
+            recv_id,
+            grad_steps: GRADIENT_ACCUMULATION_STEPS.max(1),
+        })
     }
 }
 
 /// Generates the two independent initial inboxes for a binary vertex.
-pub struct GenFusionSeed<S = ()>(PhantomData<fn() -> S>);
+pub struct GenFusionSeed<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
 
 #[jungle::action]
-impl<S> Action for GenFusionSeed<S> {
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for GenFusionSeed<S, GRADIENT_ACCUMULATION_STEPS>
+{
     type Effect = GenFusionSeedEffect;
     type Input = ();
     type Output = FusionSeed;
@@ -682,7 +763,102 @@ impl<S> Action for GenFusionSeed<S> {
         _state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_| Failure::Message("failed to generate fusion seed".to_string()))
+        let mut seed =
+            output.map_err(|_| Failure::Message("failed to generate fusion seed".to_string()))?;
+        seed.grad_steps = GRADIENT_ACCUMULATION_STEPS.max(1);
+        Ok(seed)
+    }
+}
+
+/// Clears collected propagation outputs and resets accumulation counters.
+pub struct BeginGradientAccumulation<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for BeginGradientAccumulation<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("begin sun accumulation failed".to_string()))?;
+        state.propagation_pairs.clear();
+        let mut inner = state.a.shared.lock().unwrap();
+        inner.active_micro_step = 0;
+        Ok(())
+    }
+}
+
+/// Records one propagation output pair and rotates mailboxes when needed.
+pub struct RecordPropagationPair<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action(carry = (Transmission, Transmission))]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for RecordPropagationPair<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = NoEffect;
+    type Input = (Transmission, Transmission);
+    type Output = ();
+
+    fn emit(_state: &super::SunState<S>, input: Self::Input) -> ((), (Transmission, Transmission)) {
+        ((), input)
+    }
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+        carry: (Transmission, Transmission),
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("record propagation pair failed".to_string()))?;
+        state.propagation_pairs.push(carry);
+        let completed_steps = state.propagation_pairs.len();
+        let mut inner = state.a.shared.lock().unwrap();
+        let grad_steps = inner.grad_steps.max(1);
+        if completed_steps < grad_steps {
+            prepare_next_microstep(&mut inner, completed_steps);
+        }
+        Ok(())
+    }
+}
+
+/// Converts collected propagation pairs into the policy input array.
+pub struct CollectedPropagationPairs<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for CollectedPropagationPairs<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = [(Transmission, Transmission); GRADIENT_ACCUMULATION_STEPS];
+
+    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("collect propagation pairs failed".to_string()))?;
+        state.propagation_pairs.clone().try_into().map_err(
+            |pairs: Vec<(Transmission, Transmission)>| {
+                Failure::Message(format!(
+                    "expected {GRADIENT_ACCUMULATION_STEPS} propagation pairs, got {}",
+                    pairs.len()
+                ))
+            },
+        )
     }
 }
 
@@ -733,17 +909,19 @@ impl<S> Action for BroadcastPotentiation<S> {
             .iter()
             .filter_map(|(port_id, _)| inner.port_vertices.get(port_id).copied())
             .collect::<HashSet<_>>();
+        inner.p1_tx.clear();
         for (port_id, next_p1_tx) in &result.next_p1_tx_map {
             inner.p1_tx.insert(*port_id, *next_p1_tx);
-            inner.p2_tx.insert(*port_id, Uuid::new_v4());
-            inner.po_tx.insert(*port_id, Uuid::new_v4());
         }
-        for vertex_id in inner.journey_ids.keys().copied().collect::<Vec<_>>() {
-            inner.p1_rx.insert(vertex_id, Uuid::new_v4());
-            inner.p2_rx.insert(vertex_id, Uuid::new_v4());
+        inner.po_tx.clear();
+        for port_id in port_ids(&inner) {
+            inner.po_tx.insert(port_id, Uuid::new_v4());
         }
+        inner.active_micro_step = 0;
+        reset_epoch_mailboxes(&mut inner);
         inner.record_optimization_sent(optimized_node_ids);
         drop(inner);
+        state.propagation_pairs.clear();
 
         Ok(())
     }
@@ -830,7 +1008,12 @@ impl PropagationState for super::PropB {
         &HashMap<u32, ObjectId>,
         &HashMap<u32, ObjectId>,
     ) {
-        (&inner.p2_tx, &inner.po_tx, &inner.p2_rx)
+        let next_map = if inner.active_micro_step + 1 < inner.grad_steps.max(1) {
+            &inner.next_p1_tx
+        } else {
+            &inner.po_tx
+        };
+        (&inner.p2_tx, next_map, &inner.p2_rx)
     }
     fn pending(&self) -> &HashMap<u32, usize> {
         &self.pending
@@ -877,7 +1060,7 @@ mod tests {
         type Id = Id<U1>;
         type Generation = U0;
         type State = crate::CellState;
-        type Seed = ObjectId;
+        type Seed = crate::cell::action::Init;
         type Flow = crate::Primordium;
     }
 
@@ -912,7 +1095,7 @@ mod tests {
     }
 
     fn finalize(state: &mut super::super::SunState) -> Result<(), Failure> {
-        type Bound = <FinalizeGraph as Action>::Bind<TestSunAnimal>;
+        type Bound = <FinalizeGraph<(), 1> as Action>::Bind<TestSunAnimal>;
         <Bound as BoundAction<TestSunAnimal>>::absorb(state, Ok(()))
     }
 
@@ -930,14 +1113,14 @@ mod tests {
 
         let state = super::super::SunState::<Payload>::default();
 
-        type GenUuidBound = <GenUuid<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
+        type GenUuidBound = <GenUuid<Payload, 1> as Action>::Bind<TestSunAnimalWithPayload>;
         <GenUuidBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
 
         type GenFusionSeedBound =
-            <GenFusionSeed<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
+            <GenFusionSeed<Payload, 1> as Action>::Bind<TestSunAnimalWithPayload>;
         <GenFusionSeedBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
 
-        type FinalizeBound = <FinalizeGraph<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
+        type FinalizeBound = <FinalizeGraph<Payload, 1> as Action>::Bind<TestSunAnimalWithPayload>;
         <FinalizeBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
 
         type BroadcastBound =
@@ -948,7 +1131,10 @@ mod tests {
             <SpawnUnary<U1, TestUnaryChildAnimal, Empty, Payload> as Action>::Bind<
                 TestSunAnimalWithPayload,
             >;
-        let seed = Uuid::new_v4();
+        let seed = crate::cell::action::Init {
+            recv_id: Uuid::new_v4(),
+            grad_steps: 1,
+        };
         let effect_seed =
             <SpawnUnaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, seed);
         assert_eq!(effect_seed, seed);
@@ -960,6 +1146,7 @@ mod tests {
         let seed = crate::FusionSeed {
             p1_recv_id: Uuid::new_v4(),
             p2_recv_id: Uuid::new_v4(),
+            grad_steps: 1,
         };
         let effect_seed =
             <SpawnBinaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, seed);
