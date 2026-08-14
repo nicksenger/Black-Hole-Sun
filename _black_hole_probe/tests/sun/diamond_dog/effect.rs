@@ -4,14 +4,12 @@ use black_hole_sun::AtomError;
 
 use super::*;
 
-impl<J> EffectSchema<J> for DelayedLeftEffect {
-    type Id = u64;
+#[jungle::effect(id = 34)]
+impl<J> Effect<J> for DelayedLeftEffect {
     type In = ();
     type Out = EmissionId;
     type Err = AtomError;
-}
 
-impl<J> Effect<J> for DelayedLeftEffect {
     fn effect(
         _jungle: &J,
         _input: Self::In,
@@ -23,17 +21,15 @@ impl<J> Effect<J> for DelayedLeftEffect {
     }
 }
 
-impl<J> EffectSchema<J> for RecordFusionInputsEffect {
-    type Id = u64;
-    type In = (Uuid, (EmissionId, EmissionId));
-    type Out = EmissionId;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 35)]
 impl<J> Effect<J> for RecordFusionInputsEffect
 where
     J: FusionProbeOps,
 {
+    type In = (Uuid, (EmissionId, EmissionId));
+    type Out = EmissionId;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (transform_id, (p1, p2)): Self::In,

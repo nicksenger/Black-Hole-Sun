@@ -217,9 +217,8 @@ impl Action for DiamondComputeLoss {
 
 pub struct DiamondComputeLossEffect;
 
-#[jungle::effect]
+#[jungle::effect(id = 36)]
 impl<J> Effect<J> for DiamondComputeLossEffect {
-    type Id = u64;
     type In = [(Transmission, Transmission); DIAMOND_GRADIENT_ACCUMULATION_STEPS];
     type Out = (f32, f32);
     type Err = AtomError;

@@ -88,21 +88,16 @@ fn total_dark_tokens(output: &InferenceOutput) -> usize {
 /// corresponding left-hand sequence.
 pub struct LeftStackEffect<M>(PhantomData<fn() -> M>);
 
-impl<M, J> EffectSchema<J> for LeftStackEffect<M>
-where
-    M: Serialize + DeserializeOwned + Send + 'static,
-{
-    type Id = u64;
-    type In = (EmissionId, EmissionId);
-    type Out = EmissionId;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 21)]
 impl<M, J> Effect<J> for LeftStackEffect<M>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
     J: VoidInferOps,
 {
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (left_id, right_id): Self::In,
@@ -138,21 +133,16 @@ where
 /// corresponding right-hand sequence.
 pub struct RightStackEffect<M>(PhantomData<fn() -> M>);
 
-impl<M, J> EffectSchema<J> for RightStackEffect<M>
-where
-    M: Serialize + DeserializeOwned + Send + 'static,
-{
-    type Id = u64;
-    type In = (EmissionId, EmissionId);
-    type Out = EmissionId;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 22)]
 impl<M, J> Effect<J> for RightStackEffect<M>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
     J: VoidInferOps,
 {
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (left_id, right_id): Self::In,
@@ -188,21 +178,16 @@ where
 /// per-sequence dark tokens.
 pub struct RandStackEffect<M>(PhantomData<fn() -> M>);
 
-impl<M, J> EffectSchema<J> for RandStackEffect<M>
-where
-    M: Serialize + DeserializeOwned + Send + 'static,
-{
-    type Id = u64;
-    type In = (EmissionId, EmissionId);
-    type Out = EmissionId;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 23)]
 impl<M, J> Effect<J> for RandStackEffect<M>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
     J: VoidInferOps,
 {
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (left_id, right_id): Self::In,

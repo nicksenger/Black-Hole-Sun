@@ -10,17 +10,15 @@ use super::*;
 
 const BLACK_DWARF_BATCH_SIZE: usize = 8;
 
-impl<J> EffectSchema<J> for GenerateDarkStarPromptEffect {
-    type Id = u64;
-    type In = ();
-    type Out = (Transmission, Transmission);
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 26)]
 impl<J> Effect<J> for GenerateDarkStarPromptEffect
 where
     J: VoidInferOps,
 {
+    type In = ();
+    type Out = (Transmission, Transmission);
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         _input: Self::In,
@@ -39,17 +37,15 @@ where
     }
 }
 
-impl<J> EffectSchema<J> for GenerateBlackDwarfPromptEffect {
-    type Id = u64;
-    type In = ();
-    type Out = (Transmission, Transmission);
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 27)]
 impl<J> Effect<J> for GenerateBlackDwarfPromptEffect
 where
     J: VoidInferOps,
 {
+    type In = ();
+    type Out = (Transmission, Transmission);
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         _input: Self::In,
@@ -70,9 +66,8 @@ where
     }
 }
 
-#[jungle::effect]
+#[jungle::effect(id = 28)]
 impl<J> Effect<J> for DarkStarLossPolicyEffect {
-    type Id = u64;
     type In = [(Transmission, Transmission); 1];
     type Out = (f32, f32);
     type Err = AtomError;
@@ -85,17 +80,15 @@ impl<J> Effect<J> for DarkStarLossPolicyEffect {
     }
 }
 
-impl<J> EffectSchema<J> for BlackDwarfLossPolicyEffect {
-    type Id = u64;
-    type In = [(Transmission, Transmission); 1];
-    type Out = (f32, f32);
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 29)]
 impl<J> Effect<J> for BlackDwarfLossPolicyEffect
 where
     J: VoidInferOps,
 {
+    type In = [(Transmission, Transmission); 1];
+    type Out = (f32, f32);
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         input: Self::In,
@@ -124,17 +117,15 @@ where
     }
 }
 
-impl<J> EffectSchema<J> for ConcatFusionOutputsEffect {
-    type Id = u64;
-    type In = (Uuid, (EmissionId, EmissionId));
-    type Out = EmissionId;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 30)]
 impl<J> Effect<J> for ConcatFusionOutputsEffect
 where
     J: VoidInferOps + FusionConcatOps,
 {
+    type In = (Uuid, (EmissionId, EmissionId));
+    type Out = EmissionId;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (_transform_id, (left_id, right_id)): Self::In,
@@ -165,17 +156,15 @@ where
     }
 }
 
-impl<J> EffectSchema<J> for LeftStackTwinOutputsEffect {
-    type Id = u64;
-    type In = (EmissionId, EmissionId);
-    type Out = EmissionId;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 31)]
 impl<J> Effect<J> for LeftStackTwinOutputsEffect
 where
     J: VoidInferOps + FusionConcatOps,
 {
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (left_id, right_id): Self::In,
@@ -188,17 +177,15 @@ where
     }
 }
 
-impl<J> EffectSchema<J> for RightStackTwinOutputsEffect {
-    type Id = u64;
-    type In = (EmissionId, EmissionId);
-    type Out = EmissionId;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 32)]
 impl<J> Effect<J> for RightStackTwinOutputsEffect
 where
     J: VoidInferOps + FusionConcatOps,
 {
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (left_id, right_id): Self::In,
@@ -211,17 +198,15 @@ where
     }
 }
 
-impl<J> EffectSchema<J> for RandStackTwinOutputsEffect {
-    type Id = u64;
-    type In = (EmissionId, EmissionId);
-    type Out = EmissionId;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 33)]
 impl<J> Effect<J> for RandStackTwinOutputsEffect
 where
     J: VoidInferOps + FusionConcatOps,
 {
+    type In = (EmissionId, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (left_id, right_id): Self::In,

@@ -14,14 +14,12 @@ use crate::AtomError;
 /// Generates the stable ID passed to one fusion journey's transform.
 pub struct GenerateTransformIdEffect;
 
-impl<J> EffectSchema<J> for GenerateTransformIdEffect {
-    type Id = u64;
+#[jungle::effect(id = 18)]
+impl<J> Effect<J> for GenerateTransformIdEffect {
     type In = ();
     type Out = Uuid;
     type Err = AtomError;
-}
 
-impl<J> Effect<J> for GenerateTransformIdEffect {
     fn effect(
         _jungle: &J,
         _input: Self::In,
@@ -57,17 +55,15 @@ where
 /// Waits for one propagation envelope on each fusion input port.
 pub struct WaitForFusionPropagation;
 
-impl<J> EffectSchema<J> for WaitForFusionPropagation {
-    type Id = u64;
-    type In = (ObjectId, ObjectId);
-    type Out = (Propagation, Propagation);
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 19)]
 impl<J> Effect<J> for WaitForFusionPropagation
 where
     J: VoidInferOps,
 {
+    type In = (ObjectId, ObjectId);
+    type Out = (Propagation, Propagation);
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (p1_recv_id, p2_recv_id): Self::In,
@@ -117,17 +113,15 @@ where
 /// Waits for one potentiation envelope on each fusion input port.
 pub struct WaitForFusionPotentiation;
 
-impl<J> EffectSchema<J> for WaitForFusionPotentiation {
-    type Id = u64;
-    type In = (ObjectId, ObjectId);
-    type Out = (Potentiation, Potentiation);
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 20)]
 impl<J> Effect<J> for WaitForFusionPotentiation
 where
     J: VoidInferOps,
 {
+    type In = (ObjectId, ObjectId);
+    type Out = (Potentiation, Potentiation);
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (p1_recv_id, p2_recv_id): Self::In,

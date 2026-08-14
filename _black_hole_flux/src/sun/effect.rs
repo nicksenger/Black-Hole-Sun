@@ -13,9 +13,8 @@ use crate::ops::{SunOps, VoidInferOps};
 use crate::{AtomError, FusionSeed};
 
 pub struct GenUuidEffect;
-#[jungle::effect]
+#[jungle::effect(id = 1)]
 impl<J> Effect<J> for GenUuidEffect {
-    type Id = u64;
     type In = ();
     type Out = Uuid;
     type Err = AtomError;
@@ -29,9 +28,8 @@ impl<J> Effect<J> for GenUuidEffect {
 }
 
 pub struct GenFusionSeedEffect;
-#[jungle::effect]
+#[jungle::effect(id = 2)]
 impl<J> Effect<J> for GenFusionSeedEffect {
-    type Id = u64;
     type In = ();
     type Out = FusionSeed;
     type Err = AtomError;
@@ -56,18 +54,7 @@ impl<J> Effect<J> for GenFusionSeedEffect {
 
 /// Effect that spawns an animal of type `A` into the jungle.
 pub struct SpawnAnimal<A>(PhantomData<fn() -> A>);
-impl<A, J> EffectSchema<J> for SpawnAnimal<A>
-where
-    A: Animal,
-    A::Id: AnimalIdValue,
-    A::Generation: typosaurus::num::Unsigned,
-    A::Seed: Sync + Send + 'static,
-{
-    type Id = u64;
-    type In = A::Seed;
-    type Out = Uuid;
-    type Err = AtomError;
-}
+#[jungle::effect(id = 3)]
 impl<A, J> Effect<J> for SpawnAnimal<A>
 where
     A: Animal,
@@ -76,6 +63,10 @@ where
     A::Seed: Sync + Send + 'static,
     J: SunOps,
 {
+    type In = A::Seed;
+    type Out = Uuid;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         seed: Self::In,
@@ -190,17 +181,15 @@ async fn send_propagation<J: VoidInferOps>(
         })
 }
 
-impl<J> EffectSchema<J> for SendRootPropagationEffect {
-    type Id = u64;
-    type In = SendRootPropagationInput;
-    type Out = Vec<u32>;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 4)]
 impl<J> Effect<J> for SendRootPropagationEffect
 where
     J: VoidInferOps,
 {
+    type In = SendRootPropagationInput;
+    type Out = Vec<u32>;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         input: Self::In,
@@ -222,17 +211,15 @@ where
     }
 }
 
-impl<J> EffectSchema<J> for SendRootTaskPropagationsEffect {
-    type Id = u64;
-    type In = Vec<RootPropagationSend>;
-    type Out = Vec<u32>;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 5)]
 impl<J> Effect<J> for SendRootTaskPropagationsEffect
 where
     J: VoidInferOps,
 {
+    type In = Vec<RootPropagationSend>;
+    type Out = Vec<u32>;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         sends: Self::In,
@@ -254,17 +241,15 @@ where
     }
 }
 
-impl<J> EffectSchema<J> for WaitForNodeTransmission {
-    type Id = u64;
-    type In = WaitForNodeTransmissionInput;
-    type Out = NodeTransmission;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 6)]
 impl<J> Effect<J> for WaitForNodeTransmission
 where
     J: VoidInferOps,
 {
+    type In = WaitForNodeTransmissionInput;
+    type Out = NodeTransmission;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         input: Self::In,
@@ -353,17 +338,15 @@ pub struct BroadcastPotentiationResult {
 /// for the next epoch.
 pub struct BroadcastPotentiationEffect;
 
-impl<J> EffectSchema<J> for BroadcastPotentiationEffect {
-    type Id = u64;
-    type In = super::action::BroadcastPotentiationInput;
-    type Out = BroadcastPotentiationResult;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 7)]
 impl<J> Effect<J> for BroadcastPotentiationEffect
 where
     J: VoidInferOps,
 {
+    type In = super::action::BroadcastPotentiationInput;
+    type Out = BroadcastPotentiationResult;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         input: Self::In,

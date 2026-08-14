@@ -22,21 +22,16 @@ use crate::AtomError;
 /// Effect that performs one quark-inference step.
 pub struct QuarkInfer<M, H = DefaultConfig>(PhantomData<fn() -> (M, H)>);
 
-impl<M, H, J> EffectSchema<J> for QuarkInfer<M, H>
-where
-    M: Serialize + DeserializeOwned + Send + 'static,
-{
-    type Id = u64;
-    type In = (Uuid, EmissionId);
-    type Out = EmissionId;
-    type Err = AtomError;
-}
-
+#[jungle::effect(id = 8)]
 impl<M, H, J> Effect<J> for QuarkInfer<M, H>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
     J: VoidInferOps,
 {
+    type In = (Uuid, EmissionId);
+    type Out = EmissionId;
+    type Err = AtomError;
+
     fn effect(
         jungle: &J,
         (model_id, input_id): Self::In,
