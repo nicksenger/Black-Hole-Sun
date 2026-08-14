@@ -56,10 +56,7 @@ where
 pub struct WaitForFusionPropagation;
 
 #[jungle::effect(id = 19)]
-impl<J> Effect<J> for WaitForFusionPropagation
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for WaitForFusionPropagation {
     type In = (ObjectId, ObjectId);
     type Out = (Propagation, Propagation);
     type Err = AtomError;
@@ -114,10 +111,7 @@ where
 pub struct WaitForFusionPotentiation;
 
 #[jungle::effect(id = 20)]
-impl<J> Effect<J> for WaitForFusionPotentiation
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for WaitForFusionPotentiation {
     type In = (ObjectId, ObjectId);
     type Out = (Potentiation, Potentiation);
     type Err = AtomError;

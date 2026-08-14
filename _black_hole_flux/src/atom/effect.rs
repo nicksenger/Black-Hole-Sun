@@ -23,10 +23,8 @@ use crate::AtomError;
 pub struct QuarkInfer<M, H = DefaultConfig>(PhantomData<fn() -> (M, H)>);
 
 #[jungle::effect(id = 8)]
-impl<M, H, J> Effect<J> for QuarkInfer<M, H>
-where
-    M: Serialize + DeserializeOwned + Send + 'static,
-    J: VoidInferOps,
+impl<M: Serialize + DeserializeOwned + Send + 'static, H, J: VoidInferOps> Effect<J>
+    for QuarkInfer<M, H>
 {
     type In = (Uuid, EmissionId);
     type Out = EmissionId;

@@ -43,10 +43,7 @@ impl Action for Initialize {
 pub struct InitializeEffect;
 
 #[jungle::effect(id = 24)]
-impl<J> Effect<J> for InitializeEffect
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for InitializeEffect {
     type In = ();
     type Out = (Transmission, Transmission);
     type Err = AtomError;

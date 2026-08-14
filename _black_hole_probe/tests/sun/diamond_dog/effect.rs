@@ -22,10 +22,7 @@ impl<J> Effect<J> for DelayedLeftEffect {
 }
 
 #[jungle::effect(id = 35)]
-impl<J> Effect<J> for RecordFusionInputsEffect
-where
-    J: FusionProbeOps,
-{
+impl<J: FusionProbeOps> Effect<J> for RecordFusionInputsEffect {
     type In = (Uuid, (EmissionId, EmissionId));
     type Out = EmissionId;
     type Err = AtomError;

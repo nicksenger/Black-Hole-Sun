@@ -11,10 +11,7 @@ use super::*;
 const BLACK_DWARF_BATCH_SIZE: usize = 8;
 
 #[jungle::effect(id = 26)]
-impl<J> Effect<J> for GenerateDarkStarPromptEffect
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for GenerateDarkStarPromptEffect {
     type In = ();
     type Out = (Transmission, Transmission);
     type Err = AtomError;
@@ -38,10 +35,7 @@ where
 }
 
 #[jungle::effect(id = 27)]
-impl<J> Effect<J> for GenerateBlackDwarfPromptEffect
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for GenerateBlackDwarfPromptEffect {
     type In = ();
     type Out = (Transmission, Transmission);
     type Err = AtomError;
@@ -81,10 +75,7 @@ impl<J> Effect<J> for DarkStarLossPolicyEffect {
 }
 
 #[jungle::effect(id = 29)]
-impl<J> Effect<J> for BlackDwarfLossPolicyEffect
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for BlackDwarfLossPolicyEffect {
     type In = [(Transmission, Transmission); 1];
     type Out = (f32, f32);
     type Err = AtomError;
@@ -118,10 +109,7 @@ where
 }
 
 #[jungle::effect(id = 30)]
-impl<J> Effect<J> for ConcatFusionOutputsEffect
-where
-    J: VoidInferOps + FusionConcatOps,
-{
+impl<J: VoidInferOps + FusionConcatOps> Effect<J> for ConcatFusionOutputsEffect {
     type In = (Uuid, (EmissionId, EmissionId));
     type Out = EmissionId;
     type Err = AtomError;
@@ -157,10 +145,7 @@ where
 }
 
 #[jungle::effect(id = 31)]
-impl<J> Effect<J> for LeftStackTwinOutputsEffect
-where
-    J: VoidInferOps + FusionConcatOps,
-{
+impl<J: VoidInferOps + FusionConcatOps> Effect<J> for LeftStackTwinOutputsEffect {
     type In = (EmissionId, EmissionId);
     type Out = EmissionId;
     type Err = AtomError;
@@ -178,10 +163,7 @@ where
 }
 
 #[jungle::effect(id = 32)]
-impl<J> Effect<J> for RightStackTwinOutputsEffect
-where
-    J: VoidInferOps + FusionConcatOps,
-{
+impl<J: VoidInferOps + FusionConcatOps> Effect<J> for RightStackTwinOutputsEffect {
     type In = (EmissionId, EmissionId);
     type Out = EmissionId;
     type Err = AtomError;
@@ -199,10 +181,7 @@ where
 }
 
 #[jungle::effect(id = 33)]
-impl<J> Effect<J> for RandStackTwinOutputsEffect
-where
-    J: VoidInferOps + FusionConcatOps,
-{
+impl<J: VoidInferOps + FusionConcatOps> Effect<J> for RandStackTwinOutputsEffect {
     type In = (EmissionId, EmissionId);
     type Out = EmissionId;
     type Err = AtomError;

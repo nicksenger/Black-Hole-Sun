@@ -89,10 +89,8 @@ fn total_dark_tokens(output: &InferenceOutput) -> usize {
 pub struct LeftStackEffect<M>(PhantomData<fn() -> M>);
 
 #[jungle::effect(id = 21)]
-impl<M, J> Effect<J> for LeftStackEffect<M>
-where
-    M: Serialize + DeserializeOwned + Send + 'static,
-    J: VoidInferOps,
+impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J>
+    for LeftStackEffect<M>
 {
     type In = (EmissionId, EmissionId);
     type Out = EmissionId;
@@ -134,10 +132,8 @@ where
 pub struct RightStackEffect<M>(PhantomData<fn() -> M>);
 
 #[jungle::effect(id = 22)]
-impl<M, J> Effect<J> for RightStackEffect<M>
-where
-    M: Serialize + DeserializeOwned + Send + 'static,
-    J: VoidInferOps,
+impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J>
+    for RightStackEffect<M>
 {
     type In = (EmissionId, EmissionId);
     type Out = EmissionId;
@@ -179,10 +175,8 @@ where
 pub struct RandStackEffect<M>(PhantomData<fn() -> M>);
 
 #[jungle::effect(id = 23)]
-impl<M, J> Effect<J> for RandStackEffect<M>
-where
-    M: Serialize + DeserializeOwned + Send + 'static,
-    J: VoidInferOps,
+impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J>
+    for RandStackEffect<M>
 {
     type In = (EmissionId, EmissionId);
     type Out = EmissionId;

@@ -37,11 +37,7 @@ impl<J> Effect<J> for GenerateModelIdEffect {
 pub struct QuarkStart<H = DefaultConfig>(PhantomData<fn() -> H>);
 
 #[jungle::effect(id = 10)]
-impl<H, J> Effect<J> for QuarkStart<H>
-where
-    H: ModelConfig,
-    J: VoidInferOps,
-{
+impl<H: ModelConfig, J: VoidInferOps> Effect<J> for QuarkStart<H> {
     type In = Uuid;
     type Out = bool;
     type Err = AtomError;
@@ -68,10 +64,7 @@ where
 pub struct QuarkShutdown;
 
 #[jungle::effect(id = 11)]
-impl<J> Effect<J> for QuarkShutdown
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for QuarkShutdown {
     type In = Uuid;
     type Out = ();
     type Err = AtomError;
@@ -97,10 +90,7 @@ where
 pub struct QuarkPerturbUp;
 
 #[jungle::effect(id = 12)]
-impl<J> Effect<J> for QuarkPerturbUp
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for QuarkPerturbUp {
     type In = (Uuid, u64);
     type Out = ();
     type Err = AtomError;
@@ -127,10 +117,7 @@ where
 pub struct QuarkPerturbDown;
 
 #[jungle::effect(id = 13)]
-impl<J> Effect<J> for QuarkPerturbDown
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for QuarkPerturbDown {
     type In = Uuid;
     type Out = ();
     type Err = AtomError;
@@ -157,10 +144,7 @@ where
 pub struct QuarkOptimize;
 
 #[jungle::effect(id = 14)]
-impl<J> Effect<J> for QuarkOptimize
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for QuarkOptimize {
     type In = (Uuid, Potentiation);
     type Out = bool;
     type Err = AtomError;
@@ -200,10 +184,7 @@ where
 pub struct WaitForPropagation;
 
 #[jungle::effect(id = 15)]
-impl<J> Effect<J> for WaitForPropagation
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for WaitForPropagation {
     type In = ObjectId;
     type Out = Propagation;
     type Err = AtomError;
@@ -252,10 +233,7 @@ where
 pub struct WaitForPotentiation;
 
 #[jungle::effect(id = 16)]
-impl<J> Effect<J> for WaitForPotentiation
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for WaitForPotentiation {
     type In = ObjectId;
     type Out = (Potentiation, ObjectId);
     type Err = AtomError;
@@ -302,10 +280,7 @@ where
 pub struct Transmit;
 
 #[jungle::effect(id = 17)]
-impl<J> Effect<J> for Transmit
-where
-    J: VoidInferOps,
-{
+impl<J: VoidInferOps> Effect<J> for Transmit {
     type In = (black_hole_spec::EmissionId, ObjectId);
     type Out = ();
     type Err = AtomError;
