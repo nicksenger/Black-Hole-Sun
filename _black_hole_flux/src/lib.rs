@@ -86,7 +86,9 @@ pub use cell::effect::{
     QuarkStart, Transmit as TransmitEffect, WaitForPotentiation, WaitForPropagation,
 };
 pub use fusion::action::{FusionSeed, FusionState};
-pub use fusion::{Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch};
+pub use fusion::{
+    Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch, QuzoFusionWithModelConfig,
+};
 pub use model_config::{
     DefaultConfig, ErrorFeedbackPolicy, ModelConfig, NoErrorFeedback, NoOscillation,
     OscillationSchedule,
