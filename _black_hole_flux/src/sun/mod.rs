@@ -92,6 +92,9 @@ pub struct SunNodeAppearance {
     pub state: SunNodeState,
     /// Monotonic logical phase position, including phases crossed between snapshots.
     pub state_sequence: u64,
+    /// 1-based gradient accumulation step currently associated with this node.
+    #[serde(default = "default_gradient_accumulation_steps")]
+    pub grad_step: usize,
 }
 
 /// One port-aware directed edge in the observable Sun topology.
@@ -107,8 +110,15 @@ pub struct SunEdgeAppearance {
 pub struct SunAppearance {
     /// True after the runtime graph has been resolved and validated.
     pub finalized: bool,
+    /// Number of gradient accumulation microsteps per optimization epoch.
+    #[serde(default = "default_gradient_accumulation_steps")]
+    pub grad_steps: usize,
     pub nodes: Vec<SunNodeAppearance>,
     pub edges: Vec<SunEdgeAppearance>,
+}
+
+fn default_gradient_accumulation_steps() -> usize {
+    1
 }
 
 /// State for propagation branch A.
@@ -186,6 +196,7 @@ impl<S> SunStateWithInner<S> {
     /// Build a deterministic, serializable view of the runtime graph.
     pub fn appearance(&self) -> SunAppearance {
         let inner = self.a.shared.lock().unwrap();
+        let grad_steps = inner.grad_steps.max(1);
         let mut nodes = inner
             .journey_ids
             .keys()
@@ -209,6 +220,11 @@ impl<S> SunStateWithInner<S> {
                     .get(&id)
                     .copied()
                     .unwrap_or_default(),
+                grad_step: inner
+                    .node_grad_steps
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_else(|| inner.current_grad_step()),
             })
             .collect::<Vec<_>>();
         nodes.sort_by_key(|node| node.id);
@@ -229,6 +245,7 @@ impl<S> SunStateWithInner<S> {
 
         SunAppearance {
             finalized: inner.finalized,
+            grad_steps,
             nodes,
             edges,
         }
@@ -248,6 +265,8 @@ pub struct SunInner {
     pub node_states: HashMap<u32, SunNodeState>,
     /// Logical phase position for each vertex, used to recover skipped observations.
     pub node_state_sequences: HashMap<u32, u64>,
+    /// 1-based gradient accumulation step currently associated with each vertex.
+    pub node_grad_steps: HashMap<u32, usize>,
     /// Nodes whose first-pass output has been received in the current epoch.
     pub p1_completed: HashSet<u32>,
     /// Nodes whose second pass has been sent in the current epoch.
@@ -285,9 +304,25 @@ pub struct SunInner {
 }
 
 impl SunInner {
+    fn current_grad_step(&self) -> usize {
+        let grad_steps = self.grad_steps.max(1);
+        self.active_micro_step
+            .saturating_add(1)
+            .clamp(1, grad_steps)
+    }
+
+    fn grad_step_for_phase(&self, phase: SunNodeState) -> usize {
+        match phase {
+            SunNodeState::Optimization => self.grad_steps.max(1),
+            _ => self.current_grad_step(),
+        }
+    }
+
     fn record_state_sent(&mut self, node_id: u32, phase: SunNodeState) {
+        let grad_step = self.grad_step_for_phase(phase);
         let current = self.node_states.get(&node_id).copied().unwrap_or_default();
         if current == phase {
+            self.node_grad_steps.insert(node_id, grad_step);
             return;
         }
 
@@ -304,6 +339,7 @@ impl SunInner {
 
         self.node_states.insert(node_id, phase);
         *self.node_state_sequences.entry(node_id).or_default() += distance;
+        self.node_grad_steps.insert(node_id, grad_step);
     }
 
     pub(crate) fn record_propagation_sent(

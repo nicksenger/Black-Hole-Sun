@@ -63,6 +63,10 @@ fn register_vertex<S>(
     inner.node_states.entry(vertex_id).or_default();
     inner.node_state_sequences.entry(vertex_id).or_default();
     inner
+        .node_grad_steps
+        .entry(vertex_id)
+        .or_insert_with(super::default_gradient_accumulation_steps);
+    inner
         .vertex_ports
         .entry(vertex_id)
         .or_insert_with(|| ports.iter().map(|(port_id, _)| *port_id).collect());
@@ -549,6 +553,11 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         inner.outgoing = outgoing;
         inner.grad_steps = GRADIENT_ACCUMULATION_STEPS;
         inner.active_micro_step = 0;
+        for node_id in vertex_ids(&inner) {
+            inner
+                .node_grad_steps
+                .insert(node_id, super::default_gradient_accumulation_steps());
+        }
         inner.po_tx.clear();
         for port_id in port_ids(&inner) {
             inner.po_tx.insert(port_id, Uuid::new_v4());
@@ -1269,6 +1278,13 @@ mod tests {
         <Bound as BoundAction<TestSunAnimal>>::absorb(state, Ok(()))
     }
 
+    fn finalize_with_steps<const STEPS: usize>(
+        state: &mut super::super::SunState,
+    ) -> Result<(), Failure> {
+        type Bound<const N: usize> = <FinalizeGraph<(), N> as Action>::Bind<TestSunAnimal>;
+        <Bound<STEPS> as BoundAction<TestSunAnimal>>::absorb(state, Ok(()))
+    }
+
     #[test]
     fn sun_state_supports_custom_inner_payload() {
         let mut state = super::super::SunState::<(String, String)>::default();
@@ -1418,6 +1434,7 @@ mod tests {
 
         let appearance = state.appearance();
         assert!(appearance.finalized);
+        assert_eq!(appearance.grad_steps, 1);
         assert_eq!(
             appearance
                 .nodes
@@ -1426,13 +1443,14 @@ mod tests {
                     node.id,
                     node.label.as_str(),
                     node.input_ports.clone(),
-                    node.state
+                    node.state,
+                    node.grad_step,
                 ))
                 .collect::<Vec<_>>(),
             vec![
-                (0, "Node0", vec![0], super::super::SunNodeState::Idle),
-                (1, "Node1", vec![1], super::super::SunNodeState::Idle),
-                (2, "Node2", vec![2, 3], super::super::SunNodeState::Idle),
+                (0, "Node0", vec![0], super::super::SunNodeState::Idle, 1),
+                (1, "Node1", vec![1], super::super::SunNodeState::Idle, 1),
+                (2, "Node2", vec![2, 3], super::super::SunNodeState::Idle, 1),
             ]
         );
         assert!(
@@ -1550,5 +1568,59 @@ mod tests {
             super::super::SunNodeState::Propagation2
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 2);
+    }
+
+    #[test]
+    fn appearance_tracks_per_node_gradient_step() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[1]);
+        add_vertex(&mut state, 1, &[1], &[]);
+        finalize_with_steps::<4>(&mut state).unwrap();
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_propagation_sent([0], super::super::SunNodeState::Propagation1);
+        }
+        let appearance = state.appearance();
+        assert_eq!(appearance.grad_steps, 4);
+        assert_eq!(
+            appearance
+                .nodes
+                .iter()
+                .find(|node| node.id == 0)
+                .unwrap()
+                .grad_step,
+            1
+        );
+        assert_eq!(
+            appearance
+                .nodes
+                .iter()
+                .find(|node| node.id == 1)
+                .unwrap()
+                .grad_step,
+            1
+        );
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.active_micro_step = 2;
+            inner.record_propagation_sent([0], super::super::SunNodeState::Propagation1);
+            inner.record_propagation_completed(0, super::super::SunNodeState::Propagation1);
+            inner.record_propagation_sent([0], super::super::SunNodeState::Propagation2);
+        }
+        let appearance = state.appearance();
+        let node0 = appearance.nodes.iter().find(|node| node.id == 0).unwrap();
+        assert_eq!(node0.state, super::super::SunNodeState::Propagation2);
+        assert_eq!(node0.grad_step, 3);
+
+        {
+            let mut inner = state.a.shared.lock().unwrap();
+            inner.record_optimization_sent([0]);
+        }
+        let appearance = state.appearance();
+        let node0 = appearance.nodes.iter().find(|node| node.id == 0).unwrap();
+        assert_eq!(node0.state, super::super::SunNodeState::Optimization);
+        assert_eq!(node0.grad_step, 4);
     }
 }

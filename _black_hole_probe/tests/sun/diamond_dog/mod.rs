@@ -11,8 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use black_hole_sun::cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, InitRecvId, Potentiation, Transmit,
-    WaitForPotentiationAction,
-    WaitForPropagationAction,
+    WaitForPotentiationAction, WaitForPropagationAction,
 };
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
@@ -457,6 +456,7 @@ pub(super) async fn exercise_diamond_dog<A>(
     vertex_count: usize,
     port_count: usize,
     epochs: usize,
+    expected_grad_steps: usize,
 ) -> Vec<FusionObservation>
 where
     A: Animal<Seed = (), State = SunState> + Observe<Appearance = SunAppearance>,
@@ -581,6 +581,17 @@ where
     .await
     .expect("finalized Sun appearance should become available");
     assert_eq!(appearance.nodes.len(), vertex_count);
+    assert_eq!(
+        appearance.grad_steps, expected_grad_steps,
+        "Sun appearance should report configured grad accumulation"
+    );
+    assert!(
+        appearance
+            .nodes
+            .iter()
+            .all(|node| (1..=appearance.grad_steps).contains(&node.grad_step)),
+        "every node should expose a valid 1-based gradient step"
+    );
     assert!(appearance.nodes.iter().all(|node| !node.label.is_empty()));
     assert!(
         appearance
@@ -618,7 +629,14 @@ async fn diamond_dog() {
     const PROPAGATION_PASSES: usize = 2;
     const FUSION_TRANSFORMS_PER_EPOCH: usize =
         PROPAGATION_PASSES * DIAMOND_GRADIENT_ACCUMULATION_STEPS;
-    let observed = exercise_diamond_dog::<BlackHoleAnimal>("diamond_dog", 5, 6, EPOCHS).await;
+    let observed = exercise_diamond_dog::<BlackHoleAnimal>(
+        "diamond_dog",
+        5,
+        6,
+        EPOCHS,
+        DIAMOND_GRADIENT_ACCUMULATION_STEPS,
+    )
+    .await;
 
     assert!(
         observed.len() >= EPOCHS * FUSION_TRANSFORMS_PER_EPOCH,

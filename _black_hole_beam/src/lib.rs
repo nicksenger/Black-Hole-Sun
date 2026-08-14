@@ -1445,6 +1445,7 @@ mod tests {
     fn builds_live_model_from_serialized_sun_appearance() {
         let appearance = SunAppearance {
             finalized: true,
+            grad_steps: 4,
             nodes: vec![
                 SunNodeAppearance {
                     id: 2,
@@ -1453,6 +1454,7 @@ mod tests {
                     input_ports: vec![2, 3],
                     state: SunNodeState::Optimization,
                     state_sequence: 3,
+                    grad_step: 4,
                 },
                 SunNodeAppearance {
                     id: 0,
@@ -1461,6 +1463,7 @@ mod tests {
                     input_ports: vec![0],
                     state: SunNodeState::Propagation1,
                     state_sequence: 1,
+                    grad_step: 1,
                 },
             ],
             edges: vec![
@@ -1498,6 +1501,7 @@ mod tests {
         let frozen_journey = Uuid::new_v4();
         let appearance = SunAppearance {
             finalized: true,
+            grad_steps: 1,
             nodes: vec![SunNodeAppearance {
                 id: 0,
                 journey_id: frozen_journey,
@@ -1505,6 +1509,7 @@ mod tests {
                 input_ports: vec![0],
                 state: SunNodeState::Optimization,
                 state_sequence: 4,
+                grad_step: 1,
             }],
             edges: vec![],
         };
@@ -1517,6 +1522,7 @@ mod tests {
     fn rejects_appearance_edges_with_the_wrong_destination_port() {
         let appearance = SunAppearance {
             finalized: true,
+            grad_steps: 1,
             nodes: vec![
                 SunNodeAppearance {
                     id: 0,
@@ -1525,6 +1531,7 @@ mod tests {
                     input_ports: vec![0],
                     state: SunNodeState::Idle,
                     state_sequence: 0,
+                    grad_step: 1,
                 },
                 SunNodeAppearance {
                     id: 1,
@@ -1533,6 +1540,7 @@ mod tests {
                     input_ports: vec![1],
                     state: SunNodeState::Idle,
                     state_sequence: 0,
+                    grad_step: 1,
                 },
             ],
             edges: vec![SunEdgeAppearance {
@@ -1561,6 +1569,7 @@ mod tests {
     fn strips_generics_from_live_appearance_labels() {
         let appearance = SunAppearance {
             finalized: true,
+            grad_steps: 1,
             nodes: vec![SunNodeAppearance {
                 id: 0,
                 journey_id: Uuid::new_v4(),
@@ -1568,6 +1577,7 @@ mod tests {
                 input_ports: vec![0],
                 state: SunNodeState::Idle,
                 state_sequence: 0,
+                grad_step: 1,
             }],
             edges: vec![],
         };

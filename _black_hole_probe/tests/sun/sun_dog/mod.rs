@@ -31,7 +31,8 @@ async fn sun_dog() {
         EPOCHS * PROPAGATION_PASSES * (FIRST_LAYER_FUSIONS + FINAL_LAYER_FUSIONS);
 
     // Ten vertices own thirteen input ports: seven unary and six binary.
-    let observed = exercise_diamond_dog::<ExpandedBlackHoleAnimal>("sun_dog", 10, 13, EPOCHS).await;
+    let observed =
+        exercise_diamond_dog::<ExpandedBlackHoleAnimal>("sun_dog", 10, 13, EPOCHS, 1).await;
     assert!(
         observed.len() >= FUSION_TRANSFORMS,
         "expected {FUSION_TRANSFORMS} fusion transforms, observed {observed:?}"
