@@ -50,6 +50,8 @@ pub enum QuarkIn {
     Shutdown { model_id: Uuid },
     /// Query the current runtime parameters for a model instance.
     QueryModelParams { model_id: Uuid },
+    /// Query recursive model instance capacity for this quark subtree.
+    QueryModelCapacity,
     /// Register a one-hop tunnel worker with a root quark.
     RegisterTunnel {
         /// Address where the worker quark accepts forwarded tunnel requests.
@@ -84,6 +86,8 @@ pub enum QuarkOut {
     Checkpointed { checkpoint_id: ObjectId },
     /// Runtime model parameters for a running instance.
     ModelParams { params: QuarkModelParams },
+    /// Recursive model instance capacity for this quark subtree.
+    ModelCapacity { capacity: QuarkModelCapacity },
     /// Tunnel worker registration complete; contains root-issued auth token.
     TunnelRegistered { token: Uuid },
     /// Error from any operation.
@@ -111,6 +115,17 @@ pub struct QuarkModelParams {
     pub oscillation_train_steps: Option<u32>,
     pub oscillation_phase_steps: Option<u32>,
     pub oscillation_warmup_steps: Option<u32>,
+}
+
+/// Recursive model-capacity snapshot for a quark server subtree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuarkModelCapacity {
+    /// Total model-instance capacity (local + descendants). None means unbounded.
+    pub total: Option<usize>,
+    /// Available model-instance capacity (total minus occupied). None means unbounded.
+    pub available: Option<usize>,
+    /// Occupied model-instance slots currently routed in this subtree.
+    pub occupied: usize,
 }
 
 /// Error-feedback mode selector for QuZO optimization.

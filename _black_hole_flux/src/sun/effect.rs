@@ -56,9 +56,14 @@ impl<J> Effect<J> for GenFusionSeedEffect {
 pub struct SpawnAnimal<A>(PhantomData<fn() -> A>);
 #[jungle::effect(id = 3)]
 impl<
-    A: Animal<Id: AnimalIdValue, Generation: typosaurus::num::Unsigned, Seed: Sync + Send + 'static>,
-    J: SunOps,
-> Effect<J> for SpawnAnimal<A> {
+        A: Animal<
+            Id: AnimalIdValue,
+            Generation: typosaurus::num::Unsigned,
+            Seed: Sync + Send + 'static,
+        >,
+        J: SunOps,
+    > Effect<J> for SpawnAnimal<A>
+{
     type In = A::Seed;
     type Out = Uuid;
     type Err = AtomError;

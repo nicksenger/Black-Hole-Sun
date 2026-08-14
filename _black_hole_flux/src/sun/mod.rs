@@ -615,10 +615,7 @@ pub struct EpochWithState<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEP
         CollectPropagationInputsStep<Generator, S, GRADIENT_ACCUMULATION_STEPS>,
     >,
     Step<action::PreparePropagationPipeline<S, GRADIENT_ACCUMULATION_STEPS>>,
-    While<
-        PendingPipelineWork<S>,
-        PipelineProgressStep<S, GRADIENT_ACCUMULATION_STEPS>,
-    >,
+    While<PendingPipelineWork<S>, PipelineProgressStep<S, GRADIENT_ACCUMULATION_STEPS>>,
     Step<action::CollectedPropagationPairs<S, GRADIENT_ACCUMULATION_STEPS>>,
     Policy,
     Step<action::BroadcastPotentiation<S>>,

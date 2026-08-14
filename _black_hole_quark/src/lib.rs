@@ -1,4 +1,11 @@
-use std::{collections::HashMap, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs, io,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use paramecia_engine::{
     ErrorFeedbackMode, ErrorFeedbackParams, HyperParameterUpdate, ModelEngine, ReplayParams,
@@ -15,8 +22,8 @@ use uuid::Uuid;
 
 use black_hole_spec::{
     DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId,
-    QuarkErrorFeedbackConfig, QuarkIn, QuarkModelConfig, QuarkModelParams, QuarkOut,
-    SequenceOutput, TunnelRequest,
+    QuarkErrorFeedbackConfig, QuarkIn, QuarkModelCapacity, QuarkModelConfig, QuarkModelParams,
+    QuarkOut, SequenceOutput, TunnelRequest,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -31,6 +38,9 @@ const DEFAULT_MAX_INSTANCES: usize = 1;
 const DEFAULT_CHECKPOINT_TOKENIZER_FILE: &str = "tokenizer.json";
 const DEFAULT_CHECKPOINT_TOKENIZER_DIR: &str = ".black-hole-sun/tokenizers";
 const CHECKPOINT_CACHE_DIR: &str = "black-hole-quark/checkpoints";
+const DEFAULT_TUNNEL_CONNECT_RETRY_MS: u64 = 200;
+const MAX_TUNNEL_CONNECT_RETRY_MS: u64 = 51_200;
+const DEFAULT_TUNNEL_CONNECT_DEADLINE: Duration = Duration::from_secs(10 * 60);
 const RESIDUAL_UPDATE_UNSUPPORTED_FRAGMENT: &str =
     "restore_and_update_with_residual not supported for ";
 
@@ -481,6 +491,7 @@ pub struct ServerBuilder {
     model_path: PathBuf,
     void_addr: Option<SocketAddr>,
     tunnel: Option<SocketAddr>,
+    tunnel_connect_deadline: Duration,
     max_instances: Option<usize>,
     defaults: QuarkServerDefaults,
 }
@@ -499,6 +510,7 @@ impl ServerBuilder {
             model_path: model_path.into(),
             void_addr: None,
             tunnel: None,
+            tunnel_connect_deadline: DEFAULT_TUNNEL_CONNECT_DEADLINE,
             max_instances: Some(DEFAULT_MAX_INSTANCES),
             defaults: QuarkServerDefaults::default(),
         }
@@ -543,6 +555,12 @@ impl ServerBuilder {
     /// Register this quark as a tunnel worker of the parent at `addr`.
     pub fn tunnel(mut self, addr: SocketAddr) -> Self {
         self.tunnel = Some(addr);
+        self
+    }
+
+    /// Configure how long tunnel workers retry parent registration before failing.
+    pub fn tunnel_connect_deadline(mut self, deadline: Duration) -> Self {
+        self.tunnel_connect_deadline = deadline;
         self
     }
 
@@ -666,11 +684,17 @@ impl ServerBuilder {
         info!(%local_addr, "listening");
 
         let mode = if let Some(parent_addr) = self.tunnel {
-            info!(%parent_addr, %local_addr, "registering tunnel worker");
-            let tunnel_token = register_tunnel_worker(
+            info!(
+                %parent_addr,
+                %local_addr,
+                deadline_ms = self.tunnel_connect_deadline.as_millis() as u64,
+                "registering tunnel worker"
+            );
+            let tunnel_token = register_tunnel_worker_with_retry(
                 parent_addr,
                 local_addr,
                 resolve_max_instances(self.max_instances),
+                self.tunnel_connect_deadline,
             )
             .await?;
             info!(%parent_addr, %local_addr, token = %tunnel_token, "tunnel worker registered");
@@ -847,6 +871,7 @@ async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
         QuarkIn::QueryModelParams { model_id } => {
             handle_query_model_params_routed(model_id, ctx).await
         }
+        QuarkIn::QueryModelCapacity => handle_query_model_capacity(ctx).await,
     }
 }
 
@@ -875,6 +900,48 @@ async fn register_tunnel_worker(
         _ => Err(ServerError::UnexpectedTunnelResponse(
             "register tunnel response",
         )),
+    }
+}
+
+async fn register_tunnel_worker_with_retry(
+    parent_addr: SocketAddr,
+    worker_addr: SocketAddr,
+    max_instances: Option<usize>,
+    deadline: Duration,
+) -> Result<Uuid> {
+    let start = Instant::now();
+    let deadline_at = start + deadline;
+    let mut retry_delay = Duration::from_millis(DEFAULT_TUNNEL_CONNECT_RETRY_MS);
+    let max_retry_delay = Duration::from_millis(MAX_TUNNEL_CONNECT_RETRY_MS);
+    let mut attempts = 0u32;
+    loop {
+        attempts = attempts.saturating_add(1);
+        match register_tunnel_worker(parent_addr, worker_addr, max_instances).await {
+            Ok(token) => return Ok(token),
+            Err(error) => {
+                let now = Instant::now();
+                if now >= deadline_at {
+                    return Err(ServerError::TunnelRegistrationDeadlineExceeded {
+                        parent_addr,
+                        deadline,
+                        attempts,
+                        last_error: error.to_string(),
+                    });
+                }
+                let remaining = deadline_at.saturating_duration_since(now);
+                let sleep_for = std::cmp::min(retry_delay, remaining);
+                warn!(
+                    %parent_addr,
+                    attempt = attempts,
+                    retry_ms = sleep_for.as_millis() as u64,
+                    remaining_ms = remaining.as_millis() as u64,
+                    error = %error,
+                    "tunnel registration failed; retrying"
+                );
+                tokio::time::sleep(sleep_for).await;
+                retry_delay = retry_delay.saturating_mul(2).min(max_retry_delay);
+            }
+        }
     }
 }
 
@@ -1542,6 +1609,19 @@ async fn handle_query_model_params(model_id: Uuid, ctx: &QuarkContext) -> Result
     ensure_running(&session, model_id)?;
     Ok(QuarkOut::ModelParams {
         params: build_model_params(instance.runtime_config, instance.oscillation, &session),
+    })
+}
+
+async fn handle_query_model_capacity(ctx: &QuarkContext) -> Result<QuarkOut> {
+    let occupied = ctx.routes.read().await.len();
+    let total = advertised_capacity(ctx).await;
+    let available = total.map(|total| total.saturating_sub(occupied));
+    Ok(QuarkOut::ModelCapacity {
+        capacity: QuarkModelCapacity {
+            total,
+            available,
+            occupied,
+        },
     })
 }
 
@@ -2277,6 +2357,16 @@ pub enum ServerError {
     TunnelCrypto(String),
     #[error("tunnel registration rejected: {0}")]
     TunnelRegistrationRejected(String),
+    #[error(
+        "failed to register tunnel worker with parent {parent_addr} within {:?} after {attempts} attempts: {last_error}",
+        .deadline
+    )]
+    TunnelRegistrationDeadlineExceeded {
+        parent_addr: SocketAddr,
+        deadline: Duration,
+        attempts: u32,
+        last_error: String,
+    },
     #[error("tunnel capacity update rejected: {0}")]
     TunnelCapacityUpdateRejected(String),
     #[error("tunnel worker rejects direct model requests")]
@@ -2316,12 +2406,13 @@ pub enum ServerError {
 mod tests {
     use super::{
         apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
-        handle_register_tunnel, resolve_max_instances, resolve_model_frozen,
-        resolve_model_oscillation, to_engine_error_feedback, FrozenOscillation, ModelRuntimeConfig,
-        QuarkContext, QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState, ServerBuilder,
-        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        handle_query_model_capacity, handle_register_tunnel, resolve_max_instances,
+        resolve_model_frozen, resolve_model_oscillation, to_engine_error_feedback,
+        FrozenOscillation, ModelRuntimeConfig, QuarkContext, QuarkMode, QuarkServerDefaults,
+        QuarkSession, QuarkState, RouteTarget, ServerBuilder, TunnelWorker,
+        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES, DEFAULT_TUNNEL_CONNECT_DEADLINE,
     };
-    use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelConfig};
+    use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
     use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
     use tokio::sync::RwLock;
 
@@ -2739,6 +2830,108 @@ mod tests {
     fn server_builder_defaults_max_instances_to_one() {
         let builder = ServerBuilder::new("model-is-not-loaded-for-this-test");
         assert_eq!(builder.max_instances, Some(DEFAULT_MAX_INSTANCES));
+    }
+
+    #[test]
+    fn server_builder_defaults_tunnel_connect_deadline_to_ten_minutes() {
+        let builder = ServerBuilder::new("model-is-not-loaded-for-this-test");
+        assert_eq!(
+            builder.tunnel_connect_deadline,
+            DEFAULT_TUNNEL_CONNECT_DEADLINE
+        );
+    }
+
+    #[tokio::test]
+    async fn query_model_capacity_reports_recursive_totals_and_occupancy() {
+        let worker_a = uuid::Uuid::new_v4();
+        let worker_b = uuid::Uuid::new_v4();
+        let model_a = uuid::Uuid::new_v4();
+        let model_b = uuid::Uuid::new_v4();
+        let model_c = uuid::Uuid::new_v4();
+        let model_d = uuid::Uuid::new_v4();
+        let mut workers = HashMap::new();
+        workers.insert(
+            worker_a,
+            TunnelWorker {
+                token: worker_a,
+                addr: "127.0.0.1:54331".parse().expect("valid socket address"),
+                max_instances: Some(3),
+            },
+        );
+        workers.insert(
+            worker_b,
+            TunnelWorker {
+                token: worker_b,
+                addr: "127.0.0.1:54332".parse().expect("valid socket address"),
+                max_instances: Some(2),
+            },
+        );
+        let mut routes = HashMap::new();
+        routes.insert(model_a, RouteTarget::Local);
+        routes.insert(model_b, RouteTarget::Local);
+        routes.insert(model_c, RouteTarget::Worker(worker_a));
+        routes.insert(model_d, RouteTarget::Worker(worker_b));
+        let ctx = QuarkContext {
+            local_addr: "127.0.0.1:61011".parse().expect("valid socket address"),
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            void_client: None,
+            defaults: QuarkServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(2),
+            mode: QuarkMode::Root,
+            routes: RwLock::new(routes),
+            workers: RwLock::new(workers),
+            instances: RwLock::new(HashMap::new()),
+        };
+
+        let out = handle_query_model_capacity(&ctx)
+            .await
+            .expect("capacity query should succeed");
+        let black_hole_spec::QuarkOut::ModelCapacity { capacity } = out else {
+            panic!("unexpected query response");
+        };
+        assert_eq!(
+            capacity,
+            QuarkModelCapacity {
+                total: Some(7),
+                available: Some(3),
+                occupied: 4,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn query_model_capacity_saturates_available_at_zero() {
+        let mut routes = HashMap::new();
+        routes.insert(uuid::Uuid::new_v4(), RouteTarget::Local);
+        routes.insert(uuid::Uuid::new_v4(), RouteTarget::Local);
+        let ctx = QuarkContext {
+            local_addr: "127.0.0.1:61012".parse().expect("valid socket address"),
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            void_client: None,
+            defaults: QuarkServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(1),
+            mode: QuarkMode::Root,
+            routes: RwLock::new(routes),
+            workers: RwLock::new(HashMap::new()),
+            instances: RwLock::new(HashMap::new()),
+        };
+
+        let out = handle_query_model_capacity(&ctx)
+            .await
+            .expect("capacity query should succeed");
+        let black_hole_spec::QuarkOut::ModelCapacity { capacity } = out else {
+            panic!("unexpected query response");
+        };
+        assert_eq!(
+            capacity,
+            QuarkModelCapacity {
+                total: Some(1),
+                available: Some(0),
+                occupied: 2,
+            }
+        );
     }
 
     #[tokio::test]

@@ -181,6 +181,7 @@ pub struct TestQuarkServer {
     listen_addr: SocketAddr,
     void_addr: Option<SocketAddr>,
     tunnel: Option<SocketAddr>,
+    tunnel_connect_deadline: Option<Duration>,
     max_instances: Option<usize>,
     top_k: Option<usize>,
     temperature: Option<f64>,
@@ -201,6 +202,7 @@ impl TestQuarkServer {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             void_addr: None,
             tunnel: None,
+            tunnel_connect_deadline: None,
             max_instances: None,
             top_k: None,
             temperature: None,
@@ -227,6 +229,11 @@ impl TestQuarkServer {
 
     pub fn tunnel(mut self, addr: SocketAddr) -> Self {
         self.tunnel = Some(addr);
+        self
+    }
+
+    pub fn tunnel_connect_deadline(mut self, deadline: Duration) -> Self {
+        self.tunnel_connect_deadline = Some(deadline);
         self
     }
 
@@ -302,6 +309,9 @@ impl TestQuarkServer {
         }
         if let Some(tunnel) = self.tunnel {
             builder = builder.tunnel(tunnel);
+        }
+        if let Some(deadline) = self.tunnel_connect_deadline {
+            builder = builder.tunnel_connect_deadline(deadline);
         }
         if let Some(max_instances) = self.max_instances {
             builder = builder.max_instances(max_instances);

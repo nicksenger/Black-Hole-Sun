@@ -9,10 +9,10 @@ mod test_utils;
 mod tokenizer;
 mod void_client;
 
+pub use accumulated_transmissions::{AccumulatedTransmissions, Monoid};
 pub use black_hole_quark;
 pub use black_hole_spec;
 pub use black_hole_void;
-pub use accumulated_transmissions::{AccumulatedTransmissions, Monoid};
 pub use quark_client::QuarkClient;
 #[cfg(feature = "test")]
 pub use test_utils::{
@@ -33,7 +33,8 @@ pub use black_hole_flux::{
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
     InferenceRequest, LogitEntry, ObjectId, QuarkErrorFeedbackConfig, QuarkErrorFeedbackMode,
-    QuarkIn, QuarkModelConfig, QuarkModelParams, QuarkOut, SequenceOutput, Transmission,
+    QuarkIn, QuarkModelCapacity, QuarkModelConfig, QuarkModelParams, QuarkOut, SequenceOutput,
+    Transmission,
 };
 
 // Convenience re-exports — void types

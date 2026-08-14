@@ -3,8 +3,8 @@
 mod common;
 
 use black_hole_sun::{
-    DarkToken, InferenceInput, InferenceRequest, LogitEntry, QuarkClient, QuarkModelConfig,
-    TestQuarkServer, TestVoidServer, Tokenizer, VoidClient,
+    DarkToken, InferenceInput, InferenceRequest, LogitEntry, QuarkClient, QuarkModelCapacity,
+    QuarkModelConfig, TestQuarkServer, TestVoidServer, Tokenizer, VoidClient,
 };
 use postcard::{from_bytes, to_allocvec};
 use std::time::Duration;
@@ -115,6 +115,89 @@ async fn tunnel_root_forwards_start_to_registered_worker() {
         error.contains("Model path does not exist"),
         "unexpected forwarded start error: {error}"
     );
+
+    worker_server.abort();
+    root_server.abort();
+}
+
+#[tokio::test]
+async fn tunnel_worker_retries_parent_registration_until_root_starts() {
+    init_tracing();
+
+    let reserved = std::net::UdpSocket::bind("127.0.0.1:0").expect("failed to reserve root port");
+    let root_addr = reserved
+        .local_addr()
+        .expect("failed to read reserved root port");
+    drop(reserved);
+
+    let worker_task = tokio::spawn(async move {
+        TestQuarkServer::new("model-is-not-loaded-for-this-test")
+            .tunnel(root_addr)
+            .max_instances(1)
+            .tunnel_connect_deadline(Duration::from_secs(3))
+            .serve()
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .listen(root_addr)
+        .max_instances(0)
+        .serve()
+        .await
+        .expect("failed to start root quark server");
+
+    let worker_server = tokio::time::timeout(Duration::from_secs(4), worker_task)
+        .await
+        .expect("worker should register before timeout")
+        .expect("worker task should not panic")
+        .expect("worker should keep retrying until root is available");
+
+    let client = make_client_endpoint().await;
+    let root_client = QuarkClient::new(&client, root_server.local_addr(), "localhost");
+    let capacity = root_client
+        .query_model_capacity()
+        .await
+        .expect("capacity query should succeed");
+    assert_eq!(
+        capacity,
+        QuarkModelCapacity {
+            total: Some(1),
+            available: Some(1),
+            occupied: 0,
+        }
+    );
+
+    worker_server.abort();
+    root_server.abort();
+}
+
+#[tokio::test]
+async fn recursive_capacity_query_reports_total_available_and_occupied() {
+    init_tracing();
+
+    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .max_instances(2)
+        .serve()
+        .await
+        .expect("failed to start root quark server");
+    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .tunnel(root_server.local_addr())
+        .max_instances(3)
+        .serve()
+        .await
+        .expect("failed to start worker quark server");
+
+    let client = make_client_endpoint().await;
+    let root_client = QuarkClient::new(&client, root_server.local_addr(), "localhost");
+    let capacity = root_client
+        .query_model_capacity()
+        .await
+        .expect("capacity query should succeed");
+    assert_eq!(capacity.total, Some(5));
+    assert_eq!(capacity.available, Some(5));
+    assert_eq!(capacity.occupied, 0);
 
     worker_server.abort();
     root_server.abort();

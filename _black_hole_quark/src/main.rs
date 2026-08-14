@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use clap::Parser;
 
@@ -56,6 +56,9 @@ struct Opt {
     /// Optional root quark endpoint to register with as a tunnel worker
     #[clap(long = "tunnel")]
     tunnel: Option<SocketAddr>,
+    /// Max seconds to keep retrying tunnel registration before exiting (default: 600)
+    #[clap(long = "tunnel-connect-deadline-seconds")]
+    tunnel_connect_deadline_seconds: Option<u64>,
     /// Optional max concurrent model instances handled by this quark (defaults to 1)
     #[clap(long = "max-instances")]
     max_instances: Option<usize>,
@@ -106,6 +109,9 @@ impl From<Opt> for black_hole_quark::ServerBuilder {
         }
         if let Some(tunnel) = opt.tunnel {
             builder = builder.tunnel(tunnel);
+        }
+        if let Some(seconds) = opt.tunnel_connect_deadline_seconds {
+            builder = builder.tunnel_connect_deadline(Duration::from_secs(seconds));
         }
         if let Some(max_instances) = opt.max_instances {
             builder = builder.max_instances(max_instances);
