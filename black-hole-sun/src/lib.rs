@@ -2,6 +2,7 @@
 //!
 //! Use this crate as the single dependency point for black-hole-probe.
 
+mod accumulated_transmissions;
 mod quark_client;
 #[cfg(feature = "test")]
 mod test_utils;
@@ -11,6 +12,7 @@ mod void_client;
 pub use black_hole_quark;
 pub use black_hole_spec;
 pub use black_hole_void;
+pub use accumulated_transmissions::{AccumulatedTransmissions, Monoid};
 pub use quark_client::QuarkClient;
 #[cfg(feature = "test")]
 pub use test_utils::{
