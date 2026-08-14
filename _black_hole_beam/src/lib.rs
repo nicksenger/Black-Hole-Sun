@@ -36,6 +36,7 @@ const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
 const CELL_GRAPH_ID: &str = "black-hole-beam-cells";
 const DOT_VERTEX_SPACING: f64 = 128.0;
+const EDGE_STROKE_WIDTH: f32 = 2.4;
 const APPEARANCE_INTERVAL: Duration = Duration::from_millis(200);
 const COLOR_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -1218,7 +1219,7 @@ impl BeamApp {
                         .into(),
                 )
             })
-            .stroke_width(1.4)
+            .stroke_width(EDGE_STROKE_WIDTH)
             .edge_corner_radius(16.0)
             .padding(24)
             .auto_fit(AutoFit::Initial)
