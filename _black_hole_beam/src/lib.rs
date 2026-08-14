@@ -41,6 +41,7 @@ const COLOR_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
+const MAX_OPTIMIZATION_STATE_DURATION: Duration = Duration::from_secs(4);
 const MAX_PENDING_PHASES: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
@@ -707,6 +708,7 @@ struct CellVisualState {
     transition_started_at: Option<Instant>,
     pending: VecDeque<NodeProgress>,
     observed_sequence: u64,
+    timed_out_optimization_sequence: Option<u64>,
 }
 
 impl Default for CellVisualState {
@@ -717,6 +719,7 @@ impl Default for CellVisualState {
             transition_started_at: None,
             pending: VecDeque::new(),
             observed_sequence: 0,
+            timed_out_optimization_sequence: None,
         }
     }
 }
@@ -737,6 +740,16 @@ impl CellVisualState {
             grad_step: grad_step.clamp(1, grad_steps),
         };
         if sequence < self.observed_sequence {
+            return false;
+        }
+        if let Some(timed_out_sequence) = self.timed_out_optimization_sequence {
+            if sequence > timed_out_sequence || activity != SunNodeState::Optimization {
+                self.timed_out_optimization_sequence = None;
+            }
+        }
+        if activity == SunNodeState::Optimization
+            && self.timed_out_optimization_sequence == Some(sequence)
+        {
             return false;
         }
 
@@ -781,6 +794,9 @@ impl CellVisualState {
     }
 
     fn advance(&mut self, now: Instant) -> bool {
+        if self.enforce_optimization_timeout(now) {
+            return true;
+        }
         if !self.can_transition(now) {
             return false;
         }
@@ -825,13 +841,40 @@ impl CellVisualState {
     }
 
     fn needs_transition_poll(&self, now: Instant) -> bool {
-        !self.pending.is_empty() && !self.is_fading(now)
+        (!self.pending.is_empty() && !self.is_fading(now)) || self.awaiting_optimization_timeout(now)
     }
 
     fn can_transition(&self, now: Instant) -> bool {
         self.transition_started_at.is_none_or(|started_at| {
             now.saturating_duration_since(started_at) >= MIN_COLOR_STATE_DURATION
         })
+    }
+
+    fn awaiting_optimization_timeout(&self, now: Instant) -> bool {
+        self.current.state == SunNodeState::Optimization
+            && self.pending.is_empty()
+            && !self.is_fading(now)
+            && self.transition_started_at.is_some()
+    }
+
+    fn should_timeout_optimization(&self, now: Instant) -> bool {
+        self.current.state == SunNodeState::Optimization
+            && self.pending.is_empty()
+            && self.transition_started_at.is_some_and(|started_at| {
+                now.saturating_duration_since(started_at) >= MAX_OPTIMIZATION_STATE_DURATION
+            })
+    }
+
+    fn enforce_optimization_timeout(&mut self, now: Instant) -> bool {
+        if !self.should_timeout_optimization(now) {
+            return false;
+        }
+
+        self.previous = self.current;
+        self.current = NodeProgress::idle();
+        self.transition_started_at = Some(now);
+        self.timed_out_optimization_sequence = Some(self.observed_sequence);
+        true
     }
 
     fn begin_next_transition(&mut self, now: Instant) -> bool {
@@ -1530,6 +1573,51 @@ mod tests {
         let fade_end = start + COLOR_FADE_DURATION;
         assert!(!visual.needs_color_frame(fade_end));
         assert!(visual.needs_transition_poll(fade_end));
+    }
+
+    #[test]
+    fn caps_optimization_state_and_ignores_stale_snapshots() {
+        let start = Instant::now();
+        let mut visual = CellVisualState::default();
+
+        assert_eq!(MAX_OPTIMIZATION_STATE_DURATION, Duration::from_secs(4));
+        assert!(visual.observe(SunNodeState::Optimization, 4, 4, 3, start));
+        assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
+        assert!(visual.advance(start + MIN_COLOR_STATE_DURATION * 2));
+        assert_eq!(visual.current.state, SunNodeState::Optimization);
+
+        let optimize_start = start + MIN_COLOR_STATE_DURATION * 2;
+        let optimize_fade_end = optimize_start + COLOR_FADE_DURATION;
+        assert!(visual.needs_transition_poll(optimize_fade_end));
+
+        let before_timeout =
+            optimize_start + MAX_OPTIMIZATION_STATE_DURATION - Duration::from_millis(1);
+        assert!(!visual.advance(before_timeout));
+        assert_eq!(visual.current.state, SunNodeState::Optimization);
+
+        let timeout_at = optimize_start + MAX_OPTIMIZATION_STATE_DURATION;
+        assert!(visual.advance(timeout_at));
+        assert_eq!(visual.current.state, SunNodeState::Idle);
+        assert_eq!(visual.timed_out_optimization_sequence, Some(3));
+
+        let stale_snapshot_at = timeout_at + MIN_COLOR_STATE_DURATION;
+        assert!(!visual.observe(
+            SunNodeState::Optimization,
+            4,
+            4,
+            3,
+            stale_snapshot_at
+        ));
+        assert_eq!(visual.current.state, SunNodeState::Idle);
+
+        assert!(visual.observe(
+            SunNodeState::Propagation1,
+            1,
+            4,
+            4,
+            stale_snapshot_at + MIN_COLOR_STATE_DURATION
+        ));
+        assert_eq!(visual.current.state, SunNodeState::Propagation1);
     }
 
     #[test]
