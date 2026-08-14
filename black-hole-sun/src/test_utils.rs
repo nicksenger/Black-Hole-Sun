@@ -119,6 +119,11 @@ impl TestVoidServer {
         self
     }
 
+    pub fn listen_on_all_interfaces(mut self) -> Self {
+        self.listen_addr = "0.0.0.0:0".parse().unwrap();
+        self
+    }
+
     pub fn object_store(mut self, object_store: Box<dyn object_store::ObjectStore>) -> Self {
         self.object_store = object_store;
         self
