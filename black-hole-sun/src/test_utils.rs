@@ -222,6 +222,11 @@ impl TestQuarkServer {
         self
     }
 
+    pub fn listen_on_all_interfaces(mut self) -> Self {
+        self.listen_addr = "0.0.0.0:0".parse().unwrap();
+        self
+    }
+
     pub fn void_addr(mut self, addr: SocketAddr) -> Self {
         self.void_addr = Some(addr);
         self
