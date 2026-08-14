@@ -1,7 +1,7 @@
 use black_hole_flux::ops::{InferenceOutputOps, VoidInferOps};
 use black_hole_flux::{AtomError, InferenceOutput, Transmission};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Monoid behavior for metadata merging when accumulating transmissions.
 pub trait Monoid {
@@ -31,7 +31,7 @@ impl Monoid for () {
 }
 
 /// Owned collection of paired up/down propagation transmissions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccumulatedTransmissions(pub Vec<(Transmission, Transmission)>);
 
 impl AccumulatedTransmissions {
