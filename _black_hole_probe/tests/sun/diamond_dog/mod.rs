@@ -3,19 +3,21 @@ mod effect;
 
 #[cfg(test)]
 use futures::stream::StreamExt;
+use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use black_hole_sun::cell::action::{
-    CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiationAction,
+    AdvanceGradientStep, BeginGradientAccumulation, CellState, InitRecvId, Potentiation, Transmit,
+    WaitForPotentiationAction,
     WaitForPropagationAction,
 };
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, QuarkModelParams, Ray,
+    AtomError, EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, QuarkModelParams, Ray,
     TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState};
@@ -23,6 +25,7 @@ use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
 use postcard::to_allocvec;
+use tracing::debug;
 use typosaurus::num::consts::*;
 use uuid::Uuid;
 
@@ -31,6 +34,7 @@ use super::common::*;
 pub(super) const LEFT_EMISSION: u128 = 1;
 pub(super) const RIGHT_EMISSION: u128 = 2;
 pub(super) const FUSED_EMISSION: u128 = 3;
+const DIAMOND_GRADIENT_ACCUMULATION_STEPS: usize = 4;
 
 pub(super) type FusionObservation = (Uuid, ObjectId, ObjectId);
 
@@ -74,13 +78,27 @@ type ExpandedDiamondSun = list![
 pub(super) struct FinishEpoch;
 
 #[derive(Flow)]
+pub(super) struct TestCellMicrostep<Transform>(
+    Step<WaitForPropagationAction>,
+    Transform,
+    Step<Transmit>,
+    Step<AdvanceGradientStep>,
+);
+
+pub(super) struct PendingGradientStep;
+
+impl Predicate<(&CellState, &())> for PendingGradientStep {
+    fn eval((state, _): &(&CellState, &())) -> bool {
+        state.grad_step < state.grad_steps.max(1)
+    }
+}
+
+#[derive(Flow)]
 pub(super) struct TestCellEpoch<Transform>(
-    Step<WaitForPropagationAction>,
-    Transform,
-    Step<Transmit>,
-    Step<WaitForPropagationAction>,
-    Transform,
-    Step<Transmit>,
+    Step<BeginGradientAccumulation>,
+    While<PendingGradientStep, TestCellMicrostep<Transform>>,
+    Step<BeginGradientAccumulation>,
+    While<PendingGradientStep, TestCellMicrostep<Transform>>,
     Step<WaitForPotentiationAction>,
     Step<FinishEpoch>,
 );
@@ -174,11 +192,60 @@ impl Animal for FusionAnimal {
 /// An animal that runs the full BlackHole orchestration flow over a Sun graph.
 pub(super) struct BlackHoleAnimal;
 
+#[derive(Flow)]
+pub struct DiamondPolicy(Step<DiamondComputeLoss>);
+
+pub struct DiamondComputeLoss;
+
+#[jungle::action]
+impl Action for DiamondComputeLoss {
+    type Effect = DiamondComputeLossEffect;
+    type Input = [(Transmission, Transmission); DIAMOND_GRADIENT_ACCUMULATION_STEPS];
+    type Output = (f32, f32);
+    type Carry = ();
+
+    fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("compute loss failed: {error}")))
+    }
+}
+
+pub struct DiamondComputeLossEffect;
+
+#[jungle::effect]
+impl<J> Effect<J> for DiamondComputeLossEffect {
+    type Id = u64;
+    type In = [(Transmission, Transmission); DIAMOND_GRADIENT_ACCUMULATION_STEPS];
+    type Out = (f32, f32);
+    type Err = AtomError;
+
+    fn effect(
+        _jungle: &J,
+        _input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            debug!("using fixed diamond-dog test loss");
+            Ok((0.1, 0.1))
+        }
+    }
+}
+
 #[jungle::animal(observe, id = 1, generation = 0)]
 impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <DiamondSun as BlackHole>::Sun<Generator, Policy, (), 1>;
+    type Flow = <DiamondSun as BlackHole>::Sun<
+        Generator,
+        DiamondPolicy,
+        (),
+        DIAMOND_GRADIENT_ACCUMULATION_STEPS,
+    >;
 }
 
 impl Observe for BlackHoleAnimal {
@@ -548,11 +615,14 @@ where
 #[tokio::test]
 async fn diamond_dog() {
     const EPOCHS: usize = 3;
+    const PROPAGATION_PASSES: usize = 2;
+    const FUSION_TRANSFORMS_PER_EPOCH: usize =
+        PROPAGATION_PASSES * DIAMOND_GRADIENT_ACCUMULATION_STEPS;
     let observed = exercise_diamond_dog::<BlackHoleAnimal>("diamond_dog", 5, 6, EPOCHS).await;
 
     assert!(
-        observed.len() >= EPOCHS * 2,
-        "expected two fusion transforms per epoch, observed {observed:?}"
+        observed.len() >= EPOCHS * FUSION_TRANSFORMS_PER_EPOCH,
+        "expected {FUSION_TRANSFORMS_PER_EPOCH} fusion transforms per epoch, observed {observed:?}"
     );
     let expected_transform_id = observed[0].0;
     assert_ne!(
@@ -561,22 +631,27 @@ async fn diamond_dog() {
         "fusion transform ID should be generated"
     );
     for epoch in 0..EPOCHS {
-        for pass in 0..2 {
-            let (transform_id, p1, p2) = observed[epoch * 2 + pass];
-            assert_eq!(
-                transform_id, expected_transform_id,
-                "fusion transform ID changed in epoch {epoch} propagation pass {pass}"
-            );
-            assert_eq!(
-                p1,
-                Uuid::from_u128(LEFT_EMISSION),
-                "epoch {epoch} propagation pass {pass} did not preserve P1"
-            );
-            assert_eq!(
-                p2,
-                Uuid::from_u128(RIGHT_EMISSION),
-                "epoch {epoch} propagation pass {pass} did not preserve P2"
-            );
+        for pass in 0..PROPAGATION_PASSES {
+            for microstep in 0..DIAMOND_GRADIENT_ACCUMULATION_STEPS {
+                let index = epoch * FUSION_TRANSFORMS_PER_EPOCH
+                    + pass * DIAMOND_GRADIENT_ACCUMULATION_STEPS
+                    + microstep;
+                let (transform_id, p1, p2) = observed[index];
+                assert_eq!(
+                    transform_id, expected_transform_id,
+                    "fusion transform ID changed in epoch {epoch} propagation pass {pass} microstep {microstep}"
+                );
+                assert_eq!(
+                    p1,
+                    Uuid::from_u128(LEFT_EMISSION),
+                    "epoch {epoch} propagation pass {pass} microstep {microstep} did not preserve P1"
+                );
+                assert_eq!(
+                    p2,
+                    Uuid::from_u128(RIGHT_EMISSION),
+                    "epoch {epoch} propagation pass {pass} microstep {microstep} did not preserve P2"
+                );
+            }
         }
     }
 }
