@@ -21,18 +21,15 @@
 //! on quark. Every Atom and QuZO request is routed to that UUID.
 //!
 //! 1. **PerturbUp** - perturbs the associated quark model's weights upward.
-//! 2. **WaitForPropagation** - reads `recv_id` from state, downloads a
-//!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 3. **Atom** - runs the atom pipeline.
-//! 4. **Transmit** - propagates the emission output to the next cell.
-//! 5. **PerturbDown** - perturbs the quark's weights downward.
-//! 6. **WaitForPropagation** - reads `recv_id` from state, downloads a
-//!    `Transmission::Propagation`, stores the new `recv_id` and `send_id`, emits the emission ID.
-//! 7. **Atom** - runs the atom pipeline again.
-//! 8. **Transmit** - propagates the emission output to the next cell.
-//! 9. **WaitForPotentiation** - reads `recv_id` from state, downloads a
+//! 2. **N × (WaitForPropagation -> Atom -> Transmit)** - runs the first
+//!    propagation phase `N` times, resetting model runtime state after each
+//!    inference.
+//! 3. **PerturbDown** - perturbs the quark's weights downward.
+//! 4. **N × (WaitForPropagation -> Atom -> Transmit)** - runs the second
+//!    propagation phase `N` times.
+//! 5. **WaitForPotentiation** - reads `recv_id` from state, downloads a
 //!    `Transmission::Potentiation`, stores the new `recv_id`, emits loss values.
-//! 10. **Optimize** - applies the QuZO optimization update.
+//! 6. **Optimize** - applies the QuZO optimization update.
 //!
 //! # State
 //!

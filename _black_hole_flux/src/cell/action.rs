@@ -32,10 +32,10 @@ pub struct CellState<S = ()> {
     /// Last known frozen status for this model instance.
     #[serde(default)]
     pub is_frozen: bool,
-    /// Number of perturb-up/infer/perturb-down/infer microsteps per optimize step.
+    /// Number of infer/transmit microsteps per perturbation phase.
     #[serde(default = "default_gradient_accumulation_steps")]
     pub grad_steps: usize,
-    /// Number of completed microsteps in the current optimize epoch.
+    /// Number of completed microsteps in the current propagation phase.
     #[serde(default)]
     pub grad_step: usize,
     /// User-provided state threaded through all cell actions.
@@ -63,7 +63,7 @@ use super::effect::{
 pub struct Init {
     /// First propagation mailbox that this cell should await.
     pub recv_id: black_hole_spec::ObjectId,
-    /// Number of propagation microsteps to run per optimize cycle.
+    /// Number of propagation microsteps to run per perturbation phase.
     #[serde(default = "default_gradient_accumulation_steps")]
     pub grad_steps: usize,
 }
@@ -107,7 +107,7 @@ impl<S> Action for InitRecvId<S> {
     }
 }
 
-/// Resets the microstep cursor before an accumulation loop begins.
+/// Resets the microstep cursor before a propagation microstep phase begins.
 pub struct BeginGradientAccumulation<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
@@ -131,7 +131,7 @@ impl<S> Action for BeginGradientAccumulation<S> {
     }
 }
 
-/// Advances the microstep cursor after one full perturb/infer pair.
+/// Advances the microstep cursor after one propagation/infer microstep.
 pub struct AdvanceGradientStep<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]

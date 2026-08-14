@@ -33,13 +33,9 @@ impl Predicate<(&FusionState, &())> for HasPendingFusionGradientStep {
     }
 }
 
-/// One complete two-pass fusion microstep.
+/// One single-pass model-free fusion microstep.
 #[derive(Flow)]
-pub struct FusionMicrostep<Transform>(
-    Step<WaitForFusionPropagationAction>,
-    Step<PrepareTransformInput>,
-    Transform,
-    Step<FusionTransmit>,
+pub struct FusionPropagationMicrostep<Transform>(
     Step<WaitForFusionPropagationAction>,
     Step<PrepareTransformInput>,
     Transform,
@@ -51,11 +47,13 @@ pub struct FusionMicrostep<Transform>(
 #[derive(Flow)]
 pub struct FusionEpoch<Transform>(
     Step<BeginFusionGradientAccumulation>,
-    While<HasPendingFusionGradientStep, FusionMicrostep<Transform>>,
+    While<HasPendingFusionGradientStep, FusionPropagationMicrostep<Transform>>,
+    Step<BeginFusionGradientAccumulation>,
+    While<HasPendingFusionGradientStep, FusionPropagationMicrostep<Transform>>,
     Step<WaitForFusionPotentiationAction>,
 );
 
-/// Infinite model-free fusion loop driven by two input-port mailbox chains.
+/// Infinite model-free fusion loop driven by two staged mailbox chains.
 #[derive(Flow)]
 pub struct Fusion<Transform>(
     Step<InitFusion>,
@@ -63,19 +61,12 @@ pub struct Fusion<Transform>(
     While<Always<FusionState, ()>, FusionEpoch<Transform>>,
 );
 
-/// One complete model-aware two-pass fusion microstep.
+/// One single-pass model-aware fusion microstep.
 #[derive(Flow)]
-pub struct QuzoFusionMicrostep<
+pub struct QuzoFusionPropagationMicrostep<
     Transform,
     M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
 >(
-    Step<FusionPerturbUp>,
-    Step<WaitForFusionPropagationAction>,
-    Step<PrepareTransformInput>,
-    Transform,
-    Step<FusionQuarkInferStep<M>>,
-    Step<FusionTransmit>,
-    Step<FusionPerturbDown>,
     Step<WaitForFusionPropagationAction>,
     Step<PrepareTransformInput>,
     Transform,
@@ -91,7 +82,11 @@ pub struct QuzoFusionEpoch<
     M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
 >(
     Step<BeginFusionGradientAccumulation>,
-    While<HasPendingFusionGradientStep, QuzoFusionMicrostep<Transform, M>>,
+    Step<FusionPerturbUp>,
+    While<HasPendingFusionGradientStep, QuzoFusionPropagationMicrostep<Transform, M>>,
+    Step<BeginFusionGradientAccumulation>,
+    Step<FusionPerturbDown>,
+    While<HasPendingFusionGradientStep, QuzoFusionPropagationMicrostep<Transform, M>>,
     Step<WaitForFusionPotentiationForOptimize>,
     Step<FusionOptimize>,
 );

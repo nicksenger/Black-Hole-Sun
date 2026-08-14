@@ -332,6 +332,7 @@ fn reset_epoch_mailboxes(inner: &mut super::SunInner) {
     inner.p1_rx.clear();
     inner.p2_rx.clear();
     inner.next_p1_tx.clear();
+    inner.next_p2_tx.clear();
 
     for port_id in &port_ids {
         inner.p2_tx.insert(*port_id, Uuid::new_v4());
@@ -341,34 +342,49 @@ fn reset_epoch_mailboxes(inner: &mut super::SunInner) {
         inner.p2_rx.insert(*vertex_id, Uuid::new_v4());
     }
     if inner.grad_steps > 1 {
-        for port_id in port_ids {
-            inner.next_p1_tx.insert(port_id, Uuid::new_v4());
+        for port_id in &port_ids {
+            inner.next_p1_tx.insert(*port_id, Uuid::new_v4());
+            inner.next_p2_tx.insert(*port_id, Uuid::new_v4());
         }
     }
 }
 
-fn prepare_next_microstep(inner: &mut super::SunInner, completed_steps: usize) {
+fn prepare_next_up_microstep(inner: &mut super::SunInner, completed_steps: usize) {
     inner.p1_tx = inner.next_p1_tx.clone();
     inner.active_micro_step = completed_steps;
 
     let port_ids = port_ids(inner);
     let vertex_ids = vertex_ids(inner);
 
-    inner.p2_tx.clear();
     inner.p1_rx.clear();
-    inner.p2_rx.clear();
     inner.next_p1_tx.clear();
 
-    for port_id in &port_ids {
-        inner.p2_tx.insert(*port_id, Uuid::new_v4());
-    }
     for vertex_id in &vertex_ids {
         inner.p1_rx.insert(*vertex_id, Uuid::new_v4());
-        inner.p2_rx.insert(*vertex_id, Uuid::new_v4());
     }
     if completed_steps + 1 < inner.grad_steps {
         for port_id in port_ids {
             inner.next_p1_tx.insert(port_id, Uuid::new_v4());
+        }
+    }
+}
+
+fn prepare_next_down_microstep(inner: &mut super::SunInner, completed_steps: usize) {
+    inner.p2_tx = inner.next_p2_tx.clone();
+    inner.active_micro_step = completed_steps;
+
+    let port_ids = port_ids(inner);
+    let vertex_ids = vertex_ids(inner);
+
+    inner.p2_rx.clear();
+    inner.next_p2_tx.clear();
+
+    for vertex_id in &vertex_ids {
+        inner.p2_rx.insert(*vertex_id, Uuid::new_v4());
+    }
+    if completed_steps + 1 < inner.grad_steps {
+        for port_id in port_ids {
+            inner.next_p2_tx.insert(port_id, Uuid::new_v4());
         }
     }
 }
@@ -395,6 +411,8 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
 
         let mut inner = state.a.shared.lock().unwrap();
         inner.finalized = false;
+        state.propagation_down_inputs.clear();
+        state.propagation_up_outputs.clear();
         state.propagation_pairs.clear();
 
         if GRADIENT_ACCUMULATION_STEPS == 0 {
@@ -790,6 +808,8 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_| Failure::Message("begin sun accumulation failed".to_string()))?;
+        state.propagation_down_inputs.clear();
+        state.propagation_up_outputs.clear();
         state.propagation_pairs.clear();
         let mut inner = state.a.shared.lock().unwrap();
         inner.active_micro_step = 0;
@@ -797,18 +817,18 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
     }
 }
 
-/// Records one propagation output pair and rotates mailboxes when needed.
-pub struct RecordPropagationPair<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+/// Stores one generated second-pass root transmission and returns first-pass input.
+pub struct StoreDownPropagationInput<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
     PhantomData<fn() -> S>,
 );
 
 #[jungle::action(carry = (Transmission, Transmission))]
 impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
-    for RecordPropagationPair<S, GRADIENT_ACCUMULATION_STEPS>
+    for StoreDownPropagationInput<S, GRADIENT_ACCUMULATION_STEPS>
 {
     type Effect = NoEffect;
     type Input = (Transmission, Transmission);
-    type Output = ();
+    type Output = Transmission;
 
     fn emit(_state: &super::SunState<S>, input: Self::Input) -> ((), (Transmission, Transmission)) {
         ((), input)
@@ -818,14 +838,157 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         state: &mut super::SunState<S>,
         output: EffectCompletion<Self::Effect>,
         carry: (Transmission, Transmission),
+    ) -> Result<Transmission, Failure> {
+        output.map_err(|_| Failure::Message("store down propagation input failed".to_string()))?;
+        let (up, down) = carry;
+        state.propagation_down_inputs.push_back(down);
+        Ok(up)
+    }
+}
+
+/// Records one first-pass propagation output and rotates first-pass mailboxes.
+pub struct RecordUpPropagationOutput<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for RecordUpPropagationOutput<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = NoEffect;
+    type Input = Transmission;
+    type Output = ();
+    type Carry = Transmission;
+
+    fn emit(_state: &super::SunState<S>, input: Self::Input) -> ((), Transmission) {
+        ((), input)
+    }
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+        carry: Transmission,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_| Failure::Message("record propagation pair failed".to_string()))?;
-        state.propagation_pairs.push(carry);
+        output.map_err(|_| Failure::Message("record up propagation output failed".to_string()))?;
+        state.propagation_up_outputs.push(carry);
+        let completed_steps = state.propagation_up_outputs.len();
+        let mut inner = state.a.shared.lock().unwrap();
+        let grad_steps = inner.grad_steps.max(1);
+        if completed_steps < grad_steps {
+            prepare_next_up_microstep(&mut inner, completed_steps);
+        }
+        Ok(())
+    }
+}
+
+/// Switches Sun propagation bookkeeping from first-pass to second-pass phase.
+pub struct BeginDownPropagationPhase<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for BeginDownPropagationPhase<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("begin down propagation phase failed".to_string()))?;
+        let expected_steps = GRADIENT_ACCUMULATION_STEPS.max(1);
+        if state.propagation_down_inputs.len() != expected_steps {
+            return Err(Failure::Message(format!(
+                "expected {expected_steps} queued down inputs, got {}",
+                state.propagation_down_inputs.len()
+            )));
+        }
+        if state.propagation_up_outputs.len() != expected_steps {
+            return Err(Failure::Message(format!(
+                "expected {expected_steps} first-pass outputs, got {}",
+                state.propagation_up_outputs.len()
+            )));
+        }
+        let mut inner = state.a.shared.lock().unwrap();
+        inner.active_micro_step = 0;
+        Ok(())
+    }
+}
+
+/// Pops the next generated second-pass root transmission.
+pub struct NextDownPropagationInput<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for NextDownPropagationInput<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = NoEffect;
+    type Input = ();
+    type Output = Transmission;
+
+    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("next down propagation input failed".to_string()))?;
+        state
+            .propagation_down_inputs
+            .pop_front()
+            .ok_or_else(|| Failure::Message("missing queued down propagation input".to_string()))
+    }
+}
+
+/// Records one second-pass output and builds one policy input pair.
+pub struct RecordDownPropagationOutput<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
+    PhantomData<fn() -> S>,
+);
+
+#[jungle::action]
+impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
+    for RecordDownPropagationOutput<S, GRADIENT_ACCUMULATION_STEPS>
+{
+    type Effect = NoEffect;
+    type Input = Transmission;
+    type Output = ();
+    type Carry = Transmission;
+
+    fn emit(_state: &super::SunState<S>, input: Self::Input) -> ((), Transmission) {
+        ((), input)
+    }
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+        carry: Transmission,
+    ) -> Result<Self::Output, Failure> {
+        output
+            .map_err(|_| Failure::Message("record down propagation output failed".to_string()))?;
+        let pair_index = state.propagation_pairs.len();
+        let up = state
+            .propagation_up_outputs
+            .get(pair_index)
+            .cloned()
+            .ok_or_else(|| {
+                Failure::Message(format!(
+                    "missing first-pass output for pair index {pair_index}"
+                ))
+            })?;
+        state.propagation_pairs.push((up, carry));
+
         let completed_steps = state.propagation_pairs.len();
         let mut inner = state.a.shared.lock().unwrap();
         let grad_steps = inner.grad_steps.max(1);
         if completed_steps < grad_steps {
-            prepare_next_microstep(&mut inner, completed_steps);
+            prepare_next_down_microstep(&mut inner, completed_steps);
         }
         Ok(())
     }
@@ -921,6 +1084,8 @@ impl<S> Action for BroadcastPotentiation<S> {
         reset_epoch_mailboxes(&mut inner);
         inner.record_optimization_sent(optimized_node_ids);
         drop(inner);
+        state.propagation_down_inputs.clear();
+        state.propagation_up_outputs.clear();
         state.propagation_pairs.clear();
 
         Ok(())
@@ -982,7 +1147,12 @@ impl PropagationState for super::PropA {
         &HashMap<u32, ObjectId>,
         &HashMap<u32, ObjectId>,
     ) {
-        (&inner.p1_tx, &inner.p2_tx, &inner.p1_rx)
+        let next_map = if inner.active_micro_step + 1 < inner.grad_steps.max(1) {
+            &inner.next_p1_tx
+        } else {
+            &inner.p2_tx
+        };
+        (&inner.p1_tx, next_map, &inner.p1_rx)
     }
     fn pending(&self) -> &HashMap<u32, usize> {
         &self.pending
@@ -1009,7 +1179,7 @@ impl PropagationState for super::PropB {
         &HashMap<u32, ObjectId>,
     ) {
         let next_map = if inner.active_micro_step + 1 < inner.grad_steps.max(1) {
-            &inner.next_p1_tx
+            &inner.next_p2_tx
         } else {
             &inner.po_tx
         };

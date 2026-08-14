@@ -36,10 +36,10 @@ pub struct FusionState {
     send_id: ObjectId,
     /// Random seed passed to perturb-up before each propagation pass.
     pub perturbation_seed: u64,
-    /// Number of propagation microsteps to run per optimize cycle.
+    /// Number of propagation microsteps to run per propagation phase.
     #[serde(default = "default_gradient_accumulation_steps")]
     pub grad_steps: usize,
-    /// Number of completed microsteps in the current optimize epoch.
+    /// Number of completed microsteps in the current propagation phase.
     #[serde(default)]
     pub grad_step: usize,
 }
@@ -75,7 +75,7 @@ impl Action for InitFusion {
     }
 }
 
-/// Resets the fusion microstep cursor before one accumulation loop.
+/// Resets the fusion microstep cursor before one propagation microstep phase.
 pub struct BeginFusionGradientAccumulation;
 
 #[jungle::action]
@@ -99,7 +99,7 @@ impl Action for BeginFusionGradientAccumulation {
     }
 }
 
-/// Advances the fusion microstep cursor after one full perturb/infer pair.
+/// Advances the fusion microstep cursor after one propagation/infer microstep.
 pub struct AdvanceFusionGradientStep;
 
 #[jungle::action]

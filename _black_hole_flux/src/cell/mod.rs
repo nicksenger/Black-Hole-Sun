@@ -47,20 +47,18 @@ pub type Cell<N, S = (), H = DefaultConfig> = CellWithState<N, S, H>;
 #[derive(Flow)]
 pub struct CytoplasmWithState<N, S>(
     Step<BeginGradientAccumulation_<S>>,
-    While<HasPendingGradientStep<S>, CytoplasmMicrostepWithState<N, S>>,
+    Step<PerturbUp_<S>>,
+    While<HasPendingGradientStep<S>, CytoplasmPropagationMicrostepWithState<N, S>>,
+    Step<BeginGradientAccumulation_<S>>,
+    Step<PerturbDown_<S>>,
+    While<HasPendingGradientStep<S>, CytoplasmPropagationMicrostepWithState<N, S>>,
     Step<WaitForPotentiationAction_<S>>,
     Step<Optimize_<S>>,
 );
 
-/// One perturb-up/propagate/perturb-down/propagate microstep.
+/// One propagation/infer/transmit microstep.
 #[derive(Flow)]
-pub struct CytoplasmMicrostepWithState<N, S>(
-    Step<PerturbUp_<S>>,
-    Step<WaitForPropagationAction_<S>>,
-    Step<PrepareAtomInput_<S>>,
-    N,
-    Step<Transmit_<S>>,
-    Step<PerturbDown_<S>>,
+pub struct CytoplasmPropagationMicrostepWithState<N, S>(
     Step<WaitForPropagationAction_<S>>,
     Step<PrepareAtomInput_<S>>,
     N,

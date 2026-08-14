@@ -4,7 +4,7 @@ pub mod action;
 pub mod effect;
 
 use action::GenUuid;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
@@ -145,6 +145,10 @@ pub struct SunStateWithInner<S> {
     pub b: PropB,
     /// User-provided state threaded through Sun actions and flows.
     pub inner: S,
+    /// Generated second-pass root transmissions waiting for phase B.
+    pub propagation_down_inputs: VecDeque<Transmission>,
+    /// First-pass sink outputs captured during phase A accumulation.
+    pub propagation_up_outputs: Vec<Transmission>,
     /// Propagation outputs collected across accumulation microsteps.
     pub propagation_pairs: Vec<(Transmission, Transmission)>,
 }
@@ -171,6 +175,8 @@ where
                 ..PropB::default()
             },
             inner: S::default(),
+            propagation_down_inputs: VecDeque::new(),
+            propagation_up_outputs: Vec::new(),
             propagation_pairs: Vec::new(),
         }
     }
@@ -270,6 +276,8 @@ pub struct SunInner {
     pub p1_rx: HashMap<u32, ObjectId>,
     /// Second-pass input endpoints keyed by port id.
     pub p2_tx: HashMap<u32, ObjectId>,
+    /// Next second-pass endpoints used between microsteps when accumulation > 1.
+    pub next_p2_tx: HashMap<u32, ObjectId>,
     /// Second-pass output endpoints keyed by vertex id.
     pub p2_rx: HashMap<u32, ObjectId>,
     /// Potentiation input endpoints keyed by port id.
@@ -397,9 +405,10 @@ pub struct SunNode<S, U>(S, U);
 /// Maps a type-level graph to its orchestration flow.
 ///
 /// `Generator` is a Jungle flow from `()` to `(Transmission, Transmission)`.
-/// The Sun runs that generator and the propagation graph
-/// `GRADIENT_ACCUMULATION_STEPS` times, then feeds `Policy` an array of
-/// outputs with shape `[(Transmission, Transmission); GRADIENT_ACCUMULATION_STEPS]`.
+/// The Sun runs that generator `GRADIENT_ACCUMULATION_STEPS` times, runs all
+/// first-pass propagation microsteps, then runs all second-pass microsteps, and
+/// finally feeds `Policy` an array with shape
+/// `[(Transmission, Transmission); GRADIENT_ACCUMULATION_STEPS]`.
 /// `Policy` returns `(f32, f32)` losses. Keeping both as flow parameters lets
 /// callers compose arbitrary generation and policy pipelines around the fixed
 /// graph propagation machinery. Set `S` when your generator/policy needs access
@@ -488,21 +497,39 @@ pub type PropagationFlows = Join<PropAFlow, PropBFlow>;
 /// Alias for one iteration of the propagation loop (branch A).
 pub type PropagationLoop = PropALoop;
 
-/// Predicate that keeps accumulating microsteps until `N` is reached.
-pub struct PendingAccumulation<const N: usize, S>(PhantomData<fn() -> S>);
+/// Predicate that keeps running first-pass accumulation until `N` is reached.
+pub struct PendingUpAccumulation<const N: usize, S>(PhantomData<fn() -> S>);
 
-impl<const N: usize, S> Predicate<(&SunState<S>, &())> for PendingAccumulation<N, S> {
+impl<const N: usize, S> Predicate<(&SunState<S>, &())> for PendingUpAccumulation<N, S> {
+    fn eval((state, _): &(&SunState<S>, &())) -> bool {
+        state.propagation_up_outputs.len() < N
+    }
+}
+
+/// Predicate that keeps running second-pass accumulation until `N` is reached.
+pub struct PendingDownAccumulation<const N: usize, S>(PhantomData<fn() -> S>);
+
+impl<const N: usize, S> Predicate<(&SunState<S>, &())> for PendingDownAccumulation<N, S> {
     fn eval((state, _): &(&SunState<S>, &())) -> bool {
         state.propagation_pairs.len() < N
     }
 }
 
-/// One accumulation microstep: generate, propagate, and record outputs.
+/// One first-pass microstep: generate, capture down input, and propagate up.
 #[derive(Flow)]
-pub struct AccumulationStep<Generator, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
+pub struct UpAccumulationStep<Generator, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
     Generator,
-    PropagationFlows,
-    Step<action::RecordPropagationPair<S, GRADIENT_ACCUMULATION_STEPS>>,
+    Step<action::StoreDownPropagationInput<S, GRADIENT_ACCUMULATION_STEPS>>,
+    PropAFlow,
+    Step<action::RecordUpPropagationOutput<S, GRADIENT_ACCUMULATION_STEPS>>,
+);
+
+/// One second-pass microstep: consume queued down input and record the pair.
+#[derive(Flow)]
+pub struct DownAccumulationStep<S, const GRADIENT_ACCUMULATION_STEPS: usize>(
+    Step<action::NextDownPropagationInput<S, GRADIENT_ACCUMULATION_STEPS>>,
+    PropBFlow,
+    Step<action::RecordDownPropagationOutput<S, GRADIENT_ACCUMULATION_STEPS>>,
 );
 
 // ---------------------------------------------------------------------------
@@ -514,8 +541,13 @@ pub struct AccumulationStep<Generator, S, const GRADIENT_ACCUMULATION_STEPS: usi
 pub struct EpochWithState<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
     Step<action::BeginGradientAccumulation<S, GRADIENT_ACCUMULATION_STEPS>>,
     While<
-        PendingAccumulation<GRADIENT_ACCUMULATION_STEPS, S>,
-        AccumulationStep<Generator, S, GRADIENT_ACCUMULATION_STEPS>,
+        PendingUpAccumulation<GRADIENT_ACCUMULATION_STEPS, S>,
+        UpAccumulationStep<Generator, S, GRADIENT_ACCUMULATION_STEPS>,
+    >,
+    Step<action::BeginDownPropagationPhase<S, GRADIENT_ACCUMULATION_STEPS>>,
+    While<
+        PendingDownAccumulation<GRADIENT_ACCUMULATION_STEPS, S>,
+        DownAccumulationStep<S, GRADIENT_ACCUMULATION_STEPS>,
     >,
     Step<action::CollectedPropagationPairs<S, GRADIENT_ACCUMULATION_STEPS>>,
     Policy,
