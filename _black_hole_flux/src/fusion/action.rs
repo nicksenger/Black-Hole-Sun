@@ -16,6 +16,7 @@ use crate::cell::action::Potentiation;
 use crate::cell::effect::{
     QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, QuarkStart, Transmit as TransmitEffect,
 };
+use crate::model_config::{DefaultConfig, ModelConfig};
 
 /// Initial receive mailboxes for a binary vertex, in declared `P1`, `P2` order.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -142,11 +143,14 @@ impl Action for GenerateTransformId {
 }
 
 /// Starts the quark model instance keyed by this fusion journey's ID.
-pub struct FusionStartModel;
+pub struct FusionStartModel<H = DefaultConfig>(PhantomData<fn() -> H>);
 
 #[jungle::action]
-impl Action for FusionStartModel {
-    type Effect = QuarkStart;
+impl<H> Action for FusionStartModel<H>
+where
+    H: ModelConfig,
+{
+    type Effect = QuarkStart<H>;
     type Input = ();
     type Output = ();
 

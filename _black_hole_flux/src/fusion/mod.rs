@@ -11,6 +11,7 @@
 pub mod action;
 pub mod effect;
 
+use crate::model_config::{DefaultConfig, ModelConfig};
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 
@@ -93,28 +94,42 @@ pub struct QuzoFusionEpoch<
 
 /// Infinite two-input QuZO loop for model-aware twin transforms.
 #[derive(Flow)]
-pub struct QuzoFusion<Transform, M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static>(
+pub struct QuzoFusionWithModelConfig<
+    Transform,
+    M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    H: ModelConfig,
+>(
     Step<InitFusion>,
     Step<GenerateTransformId>,
-    Step<FusionStartModel>,
+    Step<FusionStartModel<H>>,
     While<Always<FusionState, ()>, QuzoFusionEpoch<Transform, M>>,
 );
+
+pub type QuzoFusion<Transform, M, H = DefaultConfig> = QuzoFusionWithModelConfig<Transform, M, H>;
 
 /// Marker implemented only by model-free [`Fusion`] flow templates.
 pub trait FusionFlow: sealed::Sealed {}
 
 impl<Transform> FusionFlow for Fusion<Transform> {}
-impl<Transform, M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static> FusionFlow
-    for QuzoFusion<Transform, M>
+impl<
+        Transform,
+        M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+        H: ModelConfig,
+    > FusionFlow for QuzoFusionWithModelConfig<Transform, M, H>
 {
 }
 
 mod sealed {
+    use crate::model_config::ModelConfig;
+
     pub trait Sealed {}
 
     impl<Transform> Sealed for super::Fusion<Transform> {}
-    impl<Transform, M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static> Sealed
-        for super::QuzoFusion<Transform, M>
+    impl<
+            Transform,
+            M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+            H: ModelConfig,
+        > Sealed for super::QuzoFusionWithModelConfig<Transform, M, H>
     {
     }
 }
