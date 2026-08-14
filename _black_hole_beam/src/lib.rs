@@ -321,6 +321,8 @@ struct CellDefinition {
     animal_name: String,
     state: SunNodeState,
     state_sequence: u64,
+    grad_step: usize,
+    grad_steps: usize,
     frozen: Option<bool>,
 }
 
@@ -337,6 +339,8 @@ impl CellDefinition {
             animal_name: short_type_name::<A>(),
             state: SunNodeState::Idle,
             state_sequence: 0,
+            grad_step: 1,
+            grad_steps: 1,
             frozen: None,
         }
     }
@@ -346,6 +350,7 @@ impl CellDefinition {
 struct BeamModel {
     cells: Vec<CellDefinition>,
     graph: Graph,
+    grad_steps: usize,
     errors: Vec<String>,
 }
 
@@ -354,6 +359,7 @@ impl BeamModel {
         Self {
             cells: Vec::new(),
             graph: Graph::new(Vec::new(), Vec::new()),
+            grad_steps: 1,
             errors: Vec::new(),
         }
     }
@@ -415,6 +421,7 @@ impl BeamModel {
         Self {
             cells,
             graph,
+            grad_steps: 1,
             errors,
         }
     }
@@ -426,6 +433,7 @@ impl BeamModel {
         if !appearance.finalized {
             return Err("the Black Hole Sun topology is not finalized".to_string());
         }
+        let grad_steps = appearance.grad_steps.max(1);
 
         let mut errors = Vec::new();
         let mut cells = appearance
@@ -439,6 +447,8 @@ impl BeamModel {
                 animal_name: strip_type_generics(&node.label),
                 state: node.state,
                 state_sequence: node.state_sequence,
+                grad_step: node.grad_step.clamp(1, grad_steps),
+                grad_steps,
                 frozen: child_rays.get(&node.journey_id).map(|ray| ray.frozen),
             })
             .collect::<Vec<_>>();
@@ -502,6 +512,7 @@ impl BeamModel {
         Ok(Self {
             cells,
             graph: Graph::new(nodes, edges),
+            grad_steps,
             errors,
         })
     }
@@ -540,10 +551,6 @@ struct LiveAppearanceSnapshot {
 
 trait NodeStateVisual {
     fn label(self) -> &'static str;
-    fn palette(self) -> (Color, Color);
-    fn palette_with_frozen(self, frozen: Option<bool>) -> (Color, Color);
-    fn color(self, cell_id: u32) -> Color;
-    fn color_with_frozen(self, cell_id: u32, frozen: Option<bool>) -> Color;
 }
 
 impl NodeStateVisual for SunNodeState {
@@ -555,47 +562,94 @@ impl NodeStateVisual for SunNodeState {
             SunNodeState::Optimization => "optimization",
         }
     }
+}
 
-    fn palette(self) -> (Color, Color) {
-        match self {
-            SunNodeState::Idle => (
-                Color::from_rgb8(220, 76, 24),
-                Color::from_rgb8(246, 164, 46),
-            ),
-            SunNodeState::Propagation1 => (
-                Color::from_rgb8(246, 223, 132),
-                Color::from_rgb8(255, 247, 198),
-            ),
-            SunNodeState::Propagation2 => {
-                (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57))
-            }
-            SunNodeState::Optimization => (
-                Color::from_rgb8(208, 107, 26),
-                Color::from_rgb8(242, 156, 56),
-            ),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NodeProgress {
+    state: SunNodeState,
+    grad_step: usize,
+}
+
+impl NodeProgress {
+    const fn idle() -> Self {
+        Self {
+            state: SunNodeState::Idle,
+            grad_step: 1,
         }
     }
+}
 
-    fn palette_with_frozen(self, frozen: Option<bool>) -> (Color, Color) {
-        if self == SunNodeState::Optimization && frozen == Some(true) {
-            (
-                Color::from_rgb8(62, 74, 178),
-                Color::from_rgb8(113, 130, 224),
-            )
-        } else {
-            self.palette()
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct NodeStyleColors {
+    body: Color,
+    border: Color,
+    text: Color,
+}
+
+fn default_grad_step_for_state(state: SunNodeState, grad_steps: usize) -> usize {
+    match state {
+        SunNodeState::Optimization => grad_steps.max(1),
+        _ => 1,
+    }
+}
+
+fn node_phase_progress(grad_step: usize, grad_steps: usize) -> f32 {
+    let grad_steps = grad_steps.max(1);
+    let step = grad_step.clamp(1, grad_steps);
+    step as f32 / grad_steps as f32
+}
+
+fn node_style_colors(
+    state: SunNodeState,
+    grad_step: usize,
+    grad_steps: usize,
+    frozen: Option<bool>,
+) -> NodeStyleColors {
+    let idle_orange = Color::from_rgb8(228, 108, 30);
+    let bright_yellow = Color::from_rgb8(255, 233, 68);
+    let deep_crimson = Color::from_rgb8(195, 24, 41);
+
+    if state == SunNodeState::Optimization {
+        if frozen == Some(true) {
+            let body = Color::from_rgb8(94, 122, 214);
+            let border = Color::from_rgb8(154, 92, 232);
+            return NodeStyleColors {
+                body,
+                border,
+                text: contrasting_text(body),
+            };
         }
+        return NodeStyleColors {
+            body: Color::from_rgb8(255, 255, 255),
+            border: Color::from_rgb8(255, 120, 18),
+            text: Color::from_rgb8(18, 12, 8),
+        };
     }
 
-    fn color(self, cell_id: u32) -> Color {
-        let (low, high) = self.palette();
-        lerp_color(low, high, cell_palette_position(cell_id))
+    let body = match state {
+        SunNodeState::Idle => idle_orange,
+        SunNodeState::Propagation1 => {
+            let progress = node_phase_progress(grad_step, grad_steps);
+            lerp_color(idle_orange, bright_yellow, progress)
+        }
+        SunNodeState::Propagation2 => {
+            let progress = node_phase_progress(grad_step, grad_steps);
+            lerp_color(idle_orange, deep_crimson, progress)
+        }
+        SunNodeState::Optimization => unreachable!("optimization is handled above"),
+    };
+    NodeStyleColors {
+        body,
+        border: lighten(body, 0.18),
+        text: contrasting_text(body),
     }
+}
 
-    fn color_with_frozen(self, cell_id: u32, frozen: Option<bool>) -> Color {
-        let (low, high) = self.palette_with_frozen(frozen);
-        lerp_color(low, high, cell_palette_position(cell_id))
+fn displayed_grad_step(state: SunNodeState, observed: NodeProgress, grad_steps: usize) -> usize {
+    if state == observed.state {
+        return observed.grad_step.clamp(1, grad_steps.max(1));
     }
+    default_grad_step_for_state(state, grad_steps.max(1))
 }
 
 fn next_phase(phase: SunNodeState) -> SunNodeState {
@@ -648,18 +702,18 @@ fn recent_phase_steps(mut phase: SunNodeState, count: u64) -> Vec<SunNodeState> 
 
 #[derive(Debug, Clone)]
 struct CellVisualState {
-    previous: SunNodeState,
-    current: SunNodeState,
+    previous: NodeProgress,
+    current: NodeProgress,
     transition_started_at: Option<Instant>,
-    pending: VecDeque<SunNodeState>,
+    pending: VecDeque<NodeProgress>,
     observed_sequence: u64,
 }
 
 impl Default for CellVisualState {
     fn default() -> Self {
         Self {
-            previous: SunNodeState::Idle,
-            current: SunNodeState::Idle,
+            previous: NodeProgress::idle(),
+            current: NodeProgress::idle(),
             transition_started_at: None,
             pending: VecDeque::new(),
             observed_sequence: 0,
@@ -668,28 +722,55 @@ impl Default for CellVisualState {
 }
 
 impl CellVisualState {
-    fn observe(&mut self, activity: SunNodeState, sequence: u64, now: Instant) -> bool {
+    fn observe(
+        &mut self,
+        activity: SunNodeState,
+        grad_step: usize,
+        grad_steps: usize,
+        sequence: u64,
+        now: Instant,
+    ) -> bool {
+        let grad_steps = grad_steps.max(1);
         let latest = self.pending.back().copied().unwrap_or(self.current);
+        let observed = NodeProgress {
+            state: activity,
+            grad_step: grad_step.clamp(1, grad_steps),
+        };
         if sequence < self.observed_sequence {
             return false;
         }
 
         let path = if sequence > self.observed_sequence {
-            let path = recent_phase_steps(latest, sequence - self.observed_sequence);
+            let path = recent_phase_steps(latest.state, sequence - self.observed_sequence);
             self.observed_sequence = sequence;
             if path.last().copied() == Some(activity) {
                 path
             } else {
-                phase_path(latest, activity)
+                phase_path(latest.state, activity)
             }
         } else {
-            phase_path(latest, activity)
+            phase_path(latest.state, activity)
         };
         if path.is_empty() {
-            return false;
+            if latest != observed {
+                self.pending.push_back(observed);
+            } else {
+                return false;
+            }
+        } else {
+            let path_len = path.len();
+            for (index, state) in path.into_iter().enumerate() {
+                let progress = if index + 1 == path_len {
+                    observed
+                } else {
+                    NodeProgress {
+                        state,
+                        grad_step: default_grad_step_for_state(state, grad_steps),
+                    }
+                };
+                self.pending.push_back(progress);
+            }
         }
-
-        self.pending.extend(path);
         while self.pending.len() > MAX_PENDING_PHASES {
             self.pending.pop_front();
         }
@@ -706,7 +787,7 @@ impl CellVisualState {
         self.begin_next_transition(now)
     }
 
-    fn color(&self, cell_id: u32, frozen: Option<bool>, now: Instant) -> Color {
+    fn style(&self, grad_steps: usize, frozen: Option<bool>, now: Instant) -> NodeStyleColors {
         let progress = self
             .transition_started_at
             .map(|started_at| {
@@ -714,11 +795,23 @@ impl CellVisualState {
                     / COLOR_FADE_DURATION.as_secs_f32()
             })
             .unwrap_or(1.0);
-        lerp_color(
-            self.previous.color_with_frozen(cell_id, frozen),
-            self.current.color_with_frozen(cell_id, frozen),
-            progress,
-        )
+        let previous = node_style_colors(
+            self.previous.state,
+            self.previous.grad_step,
+            grad_steps,
+            frozen,
+        );
+        let current = node_style_colors(
+            self.current.state,
+            self.current.grad_step,
+            grad_steps,
+            frozen,
+        );
+        NodeStyleColors {
+            body: lerp_color(previous.body, current.body, progress),
+            border: lerp_color(previous.border, current.border, progress),
+            text: lerp_color(previous.text, current.text, progress),
+        }
     }
 
     fn is_fading(&self, now: Instant) -> bool {
@@ -758,6 +851,7 @@ impl CellVisualState {
 fn model_display_changed(current: &BeamModel, next: &BeamModel) -> bool {
     current.graph.nodes != next.graph.nodes
         || current.graph.edges != next.graph.edges
+        || current.grad_steps != next.grad_steps
         || current.cells.len() != next.cells.len()
         || current
             .cells
@@ -767,6 +861,8 @@ fn model_display_changed(current: &BeamModel, next: &BeamModel) -> bool {
                 current.id != next.id
                     || current.journey_id != next.journey_id
                     || current.animal_name != next.animal_name
+                    || current.grad_step != next.grad_step
+                    || current.grad_steps != next.grad_steps
                     || current.frozen != next.frozen
             })
 }
@@ -796,7 +892,13 @@ impl BeamApp {
         let mut visuals = HashMap::new();
         for cell in &model.cells {
             let mut visual = CellVisualState::default();
-            visual.observe(cell.state, cell.state_sequence, now);
+            visual.observe(
+                cell.state,
+                cell.grad_step,
+                cell.grad_steps,
+                cell.state_sequence,
+                now,
+            );
             visuals.insert(cell.id, visual);
         }
         let appearance_loading = live.is_some();
@@ -845,11 +947,14 @@ impl BeamApp {
                                     .collect::<HashSet<_>>();
                                 self.visuals.retain(|node_id, _| node_ids.contains(node_id));
                                 for cell in &model.cells {
-                                    transitioned |= self
-                                        .visuals
-                                        .entry(cell.id)
-                                        .or_default()
-                                        .observe(cell.state, cell.state_sequence, now);
+                                    transitioned |=
+                                        self.visuals.entry(cell.id).or_default().observe(
+                                            cell.state,
+                                            cell.grad_step,
+                                            cell.grad_steps,
+                                            cell.state_sequence,
+                                            now,
+                                        );
                                 }
                                 let display_changed = model_display_changed(&self.model, &model);
                                 let had_error = self.appearance_error.is_some();
@@ -946,41 +1051,49 @@ impl BeamApp {
             .cells
             .iter()
             .map(|cell| {
-                let activity = self
-                    .visuals
-                    .get(&cell.id)
-                    .map(|visual| visual.current)
+                let visual = self.visuals.get(&cell.id);
+                let activity = visual
+                    .map(|state| state.current.state)
                     .unwrap_or(cell.state);
-                (cell.id, (cell.animal_name.clone(), activity))
+                let grad_steps = cell.grad_steps.max(1);
+                let grad_step = visual
+                    .map(|state| displayed_grad_step(activity, state.current, grad_steps))
+                    .unwrap_or_else(|| cell.grad_step.clamp(1, grad_steps));
+                let phase_label = if matches!(activity, SunNodeState::Idle) {
+                    activity.label().to_string()
+                } else {
+                    format!("{} · step {grad_step}/{grad_steps}", activity.label())
+                };
+                (cell.id, (cell.animal_name.clone(), phase_label))
             })
             .collect::<HashMap<_, _>>();
-        let colors = self.cell_colors();
-        let colors_for_nodes = colors.clone();
-        let colors_for_edges = colors.clone();
-        let colors_for_endpoints = colors;
+        let styles = self.cell_styles();
+        let styles_for_nodes = styles.clone();
+        let styles_for_edges = styles.clone();
+        let styles_for_endpoints = styles;
 
         let mut graph = Sugiyama::<Message, Theme, iced::Renderer>::new(
             Cow::Owned(layout_graph),
             move |node_id| {
-                let (animal_name, activity) = labels
-                    .get(&node_id)
-                    .cloned()
-                    .unwrap_or((format!("cell {node_id}"), SunNodeState::Idle));
-                let color = colors_for_nodes
+                let (animal_name, phase_label) = labels.get(&node_id).cloned().unwrap_or((
+                    format!("cell {node_id}"),
+                    SunNodeState::Idle.label().to_string(),
+                ));
+                let style = styles_for_nodes
                     .get(&node_id)
                     .copied()
-                    .unwrap_or_else(|| SunNodeState::Idle.color(node_id));
+                    .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None));
                 container(
                     column![
-                        text(animal_name).size(16).color(contrasting_text(color)),
-                        text(format!("cell {node_id} · {}", activity.label()))
+                        text(animal_name).size(16).color(style.text),
+                        text(format!("cell {node_id} · {phase_label}"))
                             .size(12)
-                            .color(contrasting_text(color).scale_alpha(0.82)),
+                            .color(style.text.scale_alpha(0.82)),
                     ]
                     .spacing(3),
                 )
                 .padding([10, 12])
-                .style(move |_theme| cell_node_style(color))
+                .style(move |_theme| cell_node_style(style))
                 .into()
             },
         )
@@ -1031,25 +1144,25 @@ impl BeamApp {
 
         graph = graph
             .edge_color(move |ctx| {
-                let start = colors_for_edges
+                let start = styles_for_edges
                     .get(&ctx.edge.0)
-                    .copied()
-                    .unwrap_or_else(|| SunNodeState::Idle.color(ctx.edge.0));
-                let end = colors_for_edges
+                    .map(|style| style.body)
+                    .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None).body);
+                let end = styles_for_edges
                     .get(&ctx.edge.1)
-                    .copied()
-                    .unwrap_or_else(|| SunNodeState::Idle.color(ctx.edge.1));
-                (lighten(start, 0.18), end)
+                    .map(|style| style.body)
+                    .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None).body);
+                (start, end)
             })
             .edge_endpoint(move |_, edge, kind, endpoint| {
                 if matches!(kind, EdgeEndpointKind::Source) {
                     return None;
                 }
                 let node_id = edge.1;
-                let color = colors_for_endpoints
+                let color = styles_for_endpoints
                     .get(&node_id)
-                    .copied()
-                    .unwrap_or_else(|| SunNodeState::Idle.color(node_id));
+                    .map(|style| style.body)
+                    .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None).body);
                 let glyph = EdgeEndpointGlyph {
                     kind: EdgeEndpointGlyphKind::NormalArrow,
                     color,
@@ -1081,17 +1194,19 @@ impl BeamApp {
             .into()
     }
 
-    fn cell_colors(&self) -> HashMap<u32, Color> {
+    fn cell_styles(&self) -> HashMap<u32, NodeStyleColors> {
         self.model
             .cells
             .iter()
             .map(|cell| {
-                let color = self
+                let style = self
                     .visuals
                     .get(&cell.id)
-                    .map(|visual| visual.color(cell.id, cell.frozen, self.color_now))
-                    .unwrap_or_else(|| cell.state.color_with_frozen(cell.id, cell.frozen));
-                (cell.id, color)
+                    .map(|visual| visual.style(cell.grad_steps, cell.frozen, self.color_now))
+                    .unwrap_or_else(|| {
+                        node_style_colors(cell.state, cell.grad_step, cell.grad_steps, cell.frozen)
+                    });
+                (cell.id, style)
             })
             .collect()
     }
@@ -1155,13 +1270,17 @@ fn app_background_style(_theme: &Theme) -> iced::widget::container::Style {
     }
 }
 
-fn cell_node_style(color: Color) -> iced::widget::container::Style {
+fn cell_node_style(colors: NodeStyleColors) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(color)),
-        text_color: Some(contrasting_text(color)),
-        border: iced::border::rounded(9),
+        background: Some(Background::Color(colors.body)),
+        text_color: Some(colors.text),
+        border: iced::Border {
+            color: colors.border,
+            width: 2.2,
+            ..iced::border::rounded(9)
+        },
         shadow: Shadow {
-            color: Color::from_rgba(color.r, color.g, color.b, 0.32),
+            color: Color::from_rgba(colors.body.r, colors.body.g, colors.body.b, 0.32),
             offset: Vector::new(0.0, 2.0),
             blur_radius: 10.0,
         },
@@ -1186,11 +1305,6 @@ fn lerp_color(a: Color, b: Color, amount: f32) -> Color {
         a.b + (b.b - a.b) * amount,
         a.a + (b.a - a.a) * amount,
     )
-}
-
-fn cell_palette_position(cell_id: u32) -> f32 {
-    const POSITIONS: [f32; 8] = [0.08, 0.76, 0.31, 0.91, 0.52, 0.18, 0.67, 0.42];
-    POSITIONS[cell_id as usize % POSITIONS.len()]
 }
 
 fn lighten(color: Color, amount: f32) -> Color {
@@ -1272,47 +1386,30 @@ mod tests {
     type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium, (), 1>;
 
     #[test]
-    fn uses_black_hole_sun_title_and_activity_palette() {
+    fn uses_black_hole_sun_title_and_grad_step_palette() {
         assert_eq!(BeamBuilder::default().title, "Black Hole Sun");
         assert!(matches!(BeamBuilder::default().layout, BeamLayout::Circo));
         assert!(matches!(
             BeamBuilder::new().dot_layout().layout,
             BeamLayout::Dot
         ));
-        assert_eq!(
-            SunNodeState::Idle.palette(),
-            (
-                Color::from_rgb8(220, 76, 24),
-                Color::from_rgb8(246, 164, 46)
-            )
-        );
-        assert_eq!(
-            SunNodeState::Propagation1.palette(),
-            (
-                Color::from_rgb8(246, 223, 132),
-                Color::from_rgb8(255, 247, 198)
-            )
-        );
-        assert_eq!(
-            SunNodeState::Propagation2.palette(),
-            (Color::from_rgb8(202, 42, 67), Color::from_rgb8(238, 72, 57))
-        );
-        assert_eq!(
-            SunNodeState::Optimization.palette(),
-            (
-                Color::from_rgb8(208, 107, 26),
-                Color::from_rgb8(242, 156, 56)
-            )
-        );
-        assert_eq!(
-            SunNodeState::Optimization.palette_with_frozen(Some(true)),
-            (
-                Color::from_rgb8(62, 74, 178),
-                Color::from_rgb8(113, 130, 224)
-            )
-        );
-        assert_ne!(SunNodeState::Idle.color(0), SunNodeState::Idle.color(1));
-        assert!(SunNodeState::Idle.color(1).g > SunNodeState::Idle.color(0).g);
+        let p1_step1 = node_style_colors(SunNodeState::Propagation1, 1, 4, None).body;
+        let p1_step4 = node_style_colors(SunNodeState::Propagation1, 4, 4, None).body;
+        assert!(p1_step4.g > p1_step1.g);
+
+        let p2_step1 = node_style_colors(SunNodeState::Propagation2, 1, 4, None).body;
+        let p2_step4 = node_style_colors(SunNodeState::Propagation2, 4, 4, None).body;
+        assert!(p2_step4.g < p2_step1.g);
+        assert!(p2_step4.r - p2_step4.g > p2_step1.r - p2_step1.g);
+
+        let optimize = node_style_colors(SunNodeState::Optimization, 4, 4, Some(false));
+        assert_eq!(optimize.body, Color::from_rgb8(255, 255, 255));
+        assert_eq!(optimize.text, Color::from_rgb8(18, 12, 8));
+        assert_eq!(optimize.border, Color::from_rgb8(255, 120, 18));
+
+        let frozen_optimize = node_style_colors(SunNodeState::Optimization, 4, 4, Some(true));
+        assert_eq!(frozen_optimize.body, Color::from_rgb8(94, 122, 214));
+        assert_eq!(frozen_optimize.border, Color::from_rgb8(154, 92, 232));
     }
 
     #[test]
@@ -1323,31 +1420,35 @@ mod tests {
         assert_eq!(APPEARANCE_INTERVAL, Duration::from_secs(5));
         assert_eq!(COLOR_FADE_DURATION, Duration::from_millis(400));
         assert_eq!(MIN_COLOR_STATE_DURATION, Duration::from_secs(1));
-        assert!(visual.observe(SunNodeState::Propagation1, 1, start));
+        assert!(visual.observe(SunNodeState::Propagation1, 1, 4, 1, start));
+        let idle = node_style_colors(SunNodeState::Idle, 1, 4, None).body;
+        let p1_step1 = node_style_colors(SunNodeState::Propagation1, 1, 4, None).body;
         assert_eq!(
-            visual.color(0, None, start),
-            SunNodeState::Idle.color(0),
+            visual.style(4, None, start).body,
+            idle,
             "the fade starts from the previous activity color"
         );
         assert_eq!(
-            visual.color(0, None, start + COLOR_FADE_DURATION / 2),
-            lerp_color(
-                SunNodeState::Idle.color(0),
-                SunNodeState::Propagation1.color(0),
-                0.5
-            ),
+            visual.style(4, None, start + COLOR_FADE_DURATION / 2).body,
+            lerp_color(idle, p1_step1, 0.5),
             "the color is blended halfway through the fade"
         );
         assert_eq!(
-            visual.color(0, None, start + COLOR_FADE_DURATION),
-            SunNodeState::Propagation1.color(0),
+            visual.style(4, None, start + COLOR_FADE_DURATION).body,
+            p1_step1,
             "the fade reaches the new color after 400ms"
         );
 
-        assert!(!visual.observe(SunNodeState::Propagation2, 2, start + COLOR_FADE_DURATION));
+        assert!(!visual.observe(
+            SunNodeState::Propagation2,
+            1,
+            4,
+            2,
+            start + COLOR_FADE_DURATION
+        ));
         assert!(!visual.advance(start + MIN_COLOR_STATE_DURATION - Duration::from_millis(1)));
         assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
-        assert_eq!(visual.current, SunNodeState::Propagation2);
+        assert_eq!(visual.current.state, SunNodeState::Propagation2);
     }
 
     #[test]
@@ -1355,11 +1456,17 @@ mod tests {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
 
-        assert!(visual.observe(SunNodeState::Propagation2, 2, start));
-        assert_eq!(visual.current, SunNodeState::Propagation1);
-        assert_eq!(visual.pending, VecDeque::from([SunNodeState::Propagation2]));
+        assert!(visual.observe(SunNodeState::Propagation2, 1, 4, 2, start));
+        assert_eq!(visual.current.state, SunNodeState::Propagation1);
+        assert_eq!(
+            visual.pending,
+            VecDeque::from([NodeProgress {
+                state: SunNodeState::Propagation2,
+                grad_step: 1,
+            }])
+        );
         assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
-        assert_eq!(visual.current, SunNodeState::Propagation2);
+        assert_eq!(visual.current.state, SunNodeState::Propagation2);
     }
 
     #[test]
@@ -1367,20 +1474,31 @@ mod tests {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
 
-        assert!(visual.observe(SunNodeState::Propagation2, 2, start));
+        assert!(visual.observe(SunNodeState::Propagation2, 1, 4, 2, start));
         assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
-        assert_eq!(visual.current, SunNodeState::Propagation2);
+        assert_eq!(visual.current.state, SunNodeState::Propagation2);
         assert!(visual.pending.is_empty());
 
         assert!(visual.observe(
             SunNodeState::Propagation2,
+            3,
+            4,
             5,
             start + MIN_COLOR_STATE_DURATION * 2
         ));
-        assert_eq!(visual.current, SunNodeState::Optimization);
+        assert_eq!(visual.current.state, SunNodeState::Optimization);
         assert_eq!(
             visual.pending,
-            VecDeque::from([SunNodeState::Propagation1, SunNodeState::Propagation2])
+            VecDeque::from([
+                NodeProgress {
+                    state: SunNodeState::Propagation1,
+                    grad_step: 1,
+                },
+                NodeProgress {
+                    state: SunNodeState::Propagation2,
+                    grad_step: 3,
+                },
+            ])
         );
     }
 
@@ -1396,7 +1514,7 @@ mod tests {
             (6, SunNodeState::Optimization),
             (7, SunNodeState::Propagation1),
         ] {
-            visual.observe(phase, sequence, start);
+            visual.observe(phase, 1, 4, sequence, start);
         }
 
         assert!(visual.pending.len() <= MAX_PENDING_PHASES);
@@ -1406,8 +1524,8 @@ mod tests {
     fn throttles_color_ticks_while_waiting_for_next_transition() {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
-        assert!(visual.observe(SunNodeState::Propagation2, 2, start));
-        assert_eq!(visual.current, SunNodeState::Propagation1);
+        assert!(visual.observe(SunNodeState::Propagation2, 1, 4, 2, start));
+        assert_eq!(visual.current.state, SunNodeState::Propagation1);
 
         let fade_end = start + COLOR_FADE_DURATION;
         assert!(!visual.needs_color_frame(fade_end));
@@ -1483,6 +1601,7 @@ mod tests {
         let decoded = postcard::from_bytes::<SunAppearance>(&bytes).unwrap();
         let model = BeamModel::from_appearance(decoded, &HashMap::new()).unwrap();
 
+        assert_eq!(model.grad_steps, 4);
         assert_eq!(model.graph.nodes, vec![0, 2]);
         assert_eq!(
             model.graph.edges,
@@ -1492,8 +1611,11 @@ mod tests {
         assert_eq!(model.cells[0].animal_name, "Root");
         assert_eq!(model.cells[0].state, SunNodeState::Propagation1);
         assert_eq!(model.cells[0].state_sequence, 1);
+        assert_eq!(model.cells[0].grad_step, 1);
+        assert_eq!(model.cells[0].grad_steps, 4);
         assert_eq!(model.cells[1].state, SunNodeState::Optimization);
         assert_eq!(model.cells[1].state_sequence, 3);
+        assert_eq!(model.cells[1].grad_step, 4);
     }
 
     #[test]
