@@ -20,7 +20,7 @@ use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
-use iced::widget::{column, container, row, scrollable, text};
+use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{
     Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription, Task, Theme,
     Vector,
@@ -53,8 +53,8 @@ type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
 
 #[derive(Clone)]
 struct SubpanelConfig {
+    animal_label: String,
     title: String,
-    journey_id: Uuid,
     build_viewer: fn(SharedJungleClient, Uuid) -> JungleSubpanelViewer,
 }
 
@@ -137,6 +137,7 @@ where
 ///
 /// ```ignore
 /// BeamBuilder::new()
+///     .register_subpanel_animal::<MyChildAnimal>()
 ///     .view_live::<MyBlackHoleAnimal>(client, journey_id)
 /// ```
 #[derive(Clone)]
@@ -145,7 +146,7 @@ pub struct BeamBuilder {
     width: f32,
     height: f32,
     layout: BeamLayout,
-    subpanels: Vec<SubpanelConfig>,
+    subpanel_animals: Vec<SubpanelConfig>,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
 }
@@ -163,7 +164,7 @@ impl Default for BeamBuilder {
             width: DEFAULT_WINDOW_WIDTH,
             height: DEFAULT_WINDOW_HEIGHT,
             layout: BeamLayout::Circo,
-            subpanels: Vec::new(),
+            subpanel_animals: Vec::new(),
             animation_duration: None,
             animation_easing: None,
         }
@@ -213,19 +214,27 @@ impl BeamBuilder {
         self
     }
 
-    /// Render a child workflow panel alongside the Black Hole Sun graph.
+    /// Register an animal type that can be shown in a node-click subpanel.
     ///
-    /// Calling `subpanel` multiple times appends additional subpanels.
-    pub fn subpanel<A>(mut self, journey_id: Uuid) -> Self
+    /// In live mode, clicking a node whose animal matches one of these
+    /// registrations opens that node's journey in the subpanel column.
+    pub fn register_subpanel_animal<A>(mut self) -> Self
     where
         A: Animal + 'static,
         A::Flow: JourneyAstSource,
     {
-        self.subpanels.push(SubpanelConfig {
-            title: short_type_name::<A>(),
-            journey_id,
-            build_viewer: build_subpanel_viewer::<A>,
-        });
+        let animal_label = short_type_name::<A>();
+        if self
+            .subpanel_animals
+            .iter()
+            .all(|registered| registered.animal_label != animal_label)
+        {
+            self.subpanel_animals.push(SubpanelConfig {
+                animal_label: animal_label.clone(),
+                title: animal_label,
+                build_viewer: build_subpanel_viewer::<A>,
+            });
+        }
         self
     }
 
@@ -245,7 +254,7 @@ impl BeamBuilder {
             width: self.width,
             height: self.height,
             layout: self.layout,
-            subpanels: self.subpanels,
+            subpanel_animals: self.subpanel_animals,
             animation_duration: self.animation_duration,
             animation_easing: self.animation_easing,
         }
@@ -344,7 +353,7 @@ struct BeamConfig {
     width: f32,
     height: f32,
     layout: BeamLayout,
-    subpanels: Vec<SubpanelConfig>,
+    subpanel_animals: Vec<SubpanelConfig>,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
 }
@@ -702,7 +711,7 @@ impl BeamModel {
                 journey_id: node.journey_id,
                 ports: node.input_ports,
                 outgoing_ports: Vec::new(),
-                animal_name: strip_type_generics(&node.label),
+                animal_name: animal_label_key(&node.label),
                 state: node.state,
                 state_sequence: node.state_sequence,
                 grad_step: node.grad_step.clamp(1, grad_steps),
@@ -799,6 +808,7 @@ enum Message {
     AppearanceTick,
     AppearanceLoaded(Result<Option<LiveAppearanceSnapshot>, String>),
     ColorTick(Instant),
+    NodeSelected(u32),
     Subpanel(usize, EjectedViewerMessage),
 }
 
@@ -1134,6 +1144,7 @@ struct BeamApp {
     visuals: HashMap<u32, CellVisualState>,
     appearance_loading: bool,
     appearance_error: Option<String>,
+    subpanel_notice: Option<String>,
     color_now: Instant,
 }
 
@@ -1166,22 +1177,7 @@ impl BeamApp {
             .as_ref()
             .map(|live| appearance_task(live.clone()))
             .unwrap_or_else(Task::none);
-        let subpanels = match live.as_ref() {
-            Some(live) => config
-                .subpanels
-                .clone()
-                .into_iter()
-                .map(|subpanel| SubpanelState {
-                    title: subpanel.title,
-                    journey_id: subpanel.journey_id,
-                    viewer: (subpanel.build_viewer)(
-                        SharedJungleClient::new(live.client.clone()),
-                        subpanel.journey_id,
-                    ),
-                })
-                .collect(),
-            None => Vec::new(),
-        };
+        let subpanels = Vec::new();
 
         (
             Self {
@@ -1192,6 +1188,7 @@ impl BeamApp {
                 visuals,
                 appearance_loading,
                 appearance_error: None,
+                subpanel_notice: None,
                 color_now: now,
             },
             task,
@@ -1267,6 +1264,9 @@ impl BeamApp {
                     return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
                 }
             }
+            Message::NodeSelected(node_id) => {
+                self.open_subpanel_for_node(node_id);
+            }
             Message::Subpanel(index, message) => {
                 if let Some(subpanel) = self.subpanels.get_mut(index) {
                     return subpanel
@@ -1326,12 +1326,31 @@ impl BeamApp {
         } else {
             self.cell_graph()
         };
-        let content = if self.subpanels.is_empty() {
-            main_panel
-        } else {
+        let content = if self.live.is_some() && !self.config.subpanel_animals.is_empty() {
             let subpanel_height = (self.config.height * SUBPANEL_HEIGHT_RATIO).max(1.0);
-            let subpanel_stack = self.subpanels.iter().enumerate().fold(
-                column![].spacing(10).width(Length::Fill),
+            let mut subpanel_stack = column![].spacing(10).width(Length::Fill);
+            if self.subpanels.is_empty() {
+                subpanel_stack = subpanel_stack.push(
+                    container(
+                        text("Click a node to open its child workflow subpanel.")
+                            .size(14)
+                            .color(black_hole_text().scale_alpha(0.78)),
+                    )
+                    .padding([10, 12])
+                    .width(Length::Fill)
+                    .style(subpanel_style),
+                );
+            }
+            if let Some(notice) = self.subpanel_notice.as_deref() {
+                subpanel_stack = subpanel_stack.push(
+                    container(text(notice).size(13).color(Color::from_rgb8(255, 181, 120)))
+                        .padding([10, 12])
+                        .width(Length::Fill)
+                        .style(subpanel_style),
+                );
+            }
+            subpanel_stack = self.subpanels.iter().enumerate().fold(
+                subpanel_stack,
                 |column, (index, subpanel)| {
                     column.push(
                         container(
@@ -1375,6 +1394,8 @@ impl BeamApp {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+        } else {
+            main_panel
         };
         container(content)
             .width(Length::Fill)
@@ -1427,17 +1448,22 @@ impl BeamApp {
                     .get(&node_id)
                     .copied()
                     .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None));
-                container(
-                    column![
-                        text(animal_name).size(16).color(style.text),
-                        text(format!("cell {node_id} · {phase_label}"))
-                            .size(12)
-                            .color(style.text.scale_alpha(0.82)),
-                    ]
-                    .spacing(3),
+                button(
+                    container(
+                        column![
+                            text(animal_name).size(16).color(style.text),
+                            text(format!("cell {node_id} · {phase_label}"))
+                                .size(12)
+                                .color(style.text.scale_alpha(0.82)),
+                        ]
+                        .spacing(3),
+                    )
+                    .padding([10, 12])
+                    .style(move |_theme| cell_node_style(style)),
                 )
-                .padding([10, 12])
-                .style(move |_theme| cell_node_style(style))
+                .padding(0)
+                .style(graph_node_button_style)
+                .on_press(Message::NodeSelected(node_id))
                 .into()
             },
         )
@@ -1554,6 +1580,57 @@ impl BeamApp {
             })
             .collect()
     }
+
+    fn open_subpanel_for_node(&mut self, node_id: u32) {
+        let Some(client) = self.live.as_ref().map(|live| live.client.clone()) else {
+            return;
+        };
+
+        let Some(cell) = self.model.cells.iter().find(|cell| cell.id == node_id) else {
+            return;
+        };
+        let journey_id = cell.journey_id;
+        let animal_name = cell.animal_name.clone();
+
+        if journey_id.is_nil() {
+            self.subpanel_notice = Some(format!(
+                "Cell {node_id} does not have an active journey yet."
+            ));
+            return;
+        }
+
+        let Some(subpanel_config) = self.resolve_subpanel_config(&animal_name) else {
+            self.subpanel_notice = Some(format!(
+                "No registered subpanel animal for {}.",
+                animal_name
+            ));
+            return;
+        };
+
+        self.subpanel_notice = None;
+        if self
+            .subpanels
+            .iter()
+            .any(|subpanel| subpanel.journey_id == journey_id)
+        {
+            return;
+        }
+
+        self.subpanels.push(SubpanelState {
+            title: subpanel_config.title,
+            journey_id,
+            viewer: (subpanel_config.build_viewer)(SharedJungleClient::new(client), journey_id),
+        });
+    }
+
+    fn resolve_subpanel_config(&self, animal_label: &str) -> Option<SubpanelConfig> {
+        let lookup_key = animal_label_key(animal_label);
+        self.config
+            .subpanel_animals
+            .iter()
+            .find(|config| config.animal_label == lookup_key)
+            .cloned()
+    }
 }
 
 fn appearance_task(live: LiveConfig) -> Task<Message> {
@@ -1626,6 +1703,19 @@ fn subpanel_style(_theme: &Theme) -> iced::widget::container::Style {
     }
 }
 
+fn graph_node_button_style(
+    _theme: &Theme,
+    _status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: None,
+        text_color: black_hole_text(),
+        border: iced::Border::default(),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
 fn cell_node_style(colors: NodeStyleColors) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(Background::Color(colors.body)),
@@ -1669,11 +1759,16 @@ fn lighten(color: Color, amount: f32) -> Color {
 
 fn short_type_name<T: ?Sized>() -> String {
     let full = core::any::type_name::<T>();
-    let cleaned = strip_type_generics(full);
+    animal_label_key(full)
+}
+
+fn animal_label_key(label: &str) -> String {
+    let cleaned = strip_type_generics(label);
     cleaned
         .rsplit("::")
         .next()
         .unwrap_or(cleaned.as_str())
+        .trim()
         .to_string()
 }
 
@@ -1769,20 +1864,18 @@ mod tests {
     }
 
     #[test]
-    fn appends_configured_subpanels() {
-        let first = Uuid::new_v4();
-        let second = Uuid::new_v4();
-
+    fn registers_unique_subpanel_animals() {
         let config = BeamBuilder::new()
-            .subpanel::<TestCell>(first)
-            .subpanel::<GenericCell<String>>(second)
+            .register_subpanel_animal::<TestCell>()
+            .register_subpanel_animal::<GenericCell<String>>()
+            .register_subpanel_animal::<TestCell>()
             .into_config();
 
-        assert_eq!(config.subpanels.len(), 2);
-        assert_eq!(config.subpanels[0].journey_id, first);
-        assert_eq!(config.subpanels[0].title, "TestCell");
-        assert_eq!(config.subpanels[1].journey_id, second);
-        assert_eq!(config.subpanels[1].title, "GenericCell");
+        assert_eq!(config.subpanel_animals.len(), 2);
+        assert_eq!(config.subpanel_animals[0].animal_label, "TestCell");
+        assert_eq!(config.subpanel_animals[0].title, "TestCell");
+        assert_eq!(config.subpanel_animals[1].animal_label, "GenericCell");
+        assert_eq!(config.subpanel_animals[1].title, "GenericCell");
     }
 
     #[test]
@@ -2054,6 +2147,10 @@ mod tests {
     #[test]
     fn strips_generics_from_type_labels() {
         assert_eq!(short_type_name::<GenericCell<String>>(), "GenericCell");
+        assert_eq!(
+            animal_label_key("my::module::RootAnimal<Result<String, Vec<u8>>>"),
+            "RootAnimal"
+        );
         assert_eq!(
             strip_type_generics("RootAnimal<Result<String, Vec<u8>>>"),
             "RootAnimal"
