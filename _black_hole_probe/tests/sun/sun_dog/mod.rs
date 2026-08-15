@@ -12,7 +12,9 @@ use uuid::Uuid;
 
 use super::common::{init_tracing, make_client_endpoint};
 #[cfg(test)]
-use super::diamond_dog::{exercise_diamond_dog, FUSED_EMISSION, LEFT_EMISSION, RIGHT_EMISSION};
+use super::diamond_dog::{
+    exercise_diamond_dog, exercise_diamond_dog_tcp, FUSED_EMISSION, LEFT_EMISSION, RIGHT_EMISSION,
+};
 use super::diamond_dog::{ExpandedBlackHoleAnimal, ProbeSpaceJungle};
 use black_hole_sun::TestVoidServer;
 
@@ -21,8 +23,7 @@ use black_hole_sun::TestVoidServer;
 /// `Input -> [L0, R0]`, `L0 -> [L1, R1]`, `R0 -> [L2, R2]`,
 /// `[L1, R1] -> F0`, `[L2, R2] -> F1`, and `[F0, F1] -> F2`.
 #[cfg(test)]
-#[tokio::test]
-async fn sun_dog() {
+async fn assert_sun_dog(use_tcp: bool) {
     const EPOCHS: usize = 3;
     const PROPAGATION_PASSES: usize = 2;
     const FIRST_LAYER_FUSIONS: usize = 2;
@@ -31,8 +32,11 @@ async fn sun_dog() {
         EPOCHS * PROPAGATION_PASSES * (FIRST_LAYER_FUSIONS + FINAL_LAYER_FUSIONS);
 
     // Ten vertices own thirteen input ports: seven unary and six binary.
-    let observed =
-        exercise_diamond_dog::<ExpandedBlackHoleAnimal>("sun_dog", 10, 13, EPOCHS, 1).await;
+    let observed = if use_tcp {
+        exercise_diamond_dog_tcp::<ExpandedBlackHoleAnimal>("tcp_sun_dog", 10, 13, EPOCHS, 1).await
+    } else {
+        exercise_diamond_dog::<ExpandedBlackHoleAnimal>("sun_dog", 10, 13, EPOCHS, 1).await
+    };
     assert!(
         observed.len() >= FUSION_TRANSFORMS,
         "expected {FUSION_TRANSFORMS} fusion transforms, observed {observed:?}"
@@ -106,6 +110,18 @@ async fn sun_dog() {
         FINAL_LAYER_FUSIONS,
         "the final-layer transform should have its own stable ID"
     );
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn sun_dog() {
+    assert_sun_dog(false).await;
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn tcp_sun_dog() {
+    assert_sun_dog(true).await;
 }
 
 /// Runs the expanded diamond Sun indefinitely with a live Black Hole Beam viewer.

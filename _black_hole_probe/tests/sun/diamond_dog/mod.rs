@@ -37,6 +37,13 @@ const DIAMOND_GRADIENT_ACCUMULATION_STEPS: usize = 4;
 
 pub(super) type FusionObservation = (Uuid, ObjectId, ObjectId);
 
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum VoidTransportMode {
+    Quic,
+    Tcp,
+}
+
 // ─── Multi-epoch diamond graph ───────────────────────────────────────────────
 
 type Root = Unary<U0, RootAnimal, list![U1, U2]>;
@@ -450,6 +457,29 @@ impl SunOps for ProbeSpaceJungle {
 // ─── Harness ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+async fn start_void_server_and_client(
+    transport_mode: VoidTransportMode,
+) -> (black_hole_sun::RunningTestVoidServer, VoidClient) {
+    let mut builder = TestVoidServer::new();
+    if matches!(transport_mode, VoidTransportMode::Tcp) {
+        builder = builder.tcp();
+    }
+    let void_server = builder
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let void_addr = void_server.local_addr();
+    let void_client = match transport_mode {
+        VoidTransportMode::Quic => {
+            let endpoint = make_client_endpoint().await;
+            VoidClient::new(&endpoint, void_addr, "localhost")
+        }
+        VoidTransportMode::Tcp => VoidClient::new_tcp(void_addr),
+    };
+    (void_server, void_client)
+}
+
+#[cfg(test)]
 pub(super) async fn exercise_diamond_dog<A>(
     name: &str,
     vertex_count: usize,
@@ -462,15 +492,58 @@ where
     A::Id: AnimalIdValue,
     A::Generation: jungle_sdk::typosaurus::num::Unsigned,
 {
+    exercise_diamond_dog_with_transport::<A>(
+        name,
+        VoidTransportMode::Quic,
+        vertex_count,
+        port_count,
+        epochs,
+        expected_grad_steps,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(super) async fn exercise_diamond_dog_tcp<A>(
+    name: &str,
+    vertex_count: usize,
+    port_count: usize,
+    epochs: usize,
+    expected_grad_steps: usize,
+) -> Vec<FusionObservation>
+where
+    A: Animal<Seed = (), State = SunState> + Observe<Appearance = SunAppearance>,
+    A::Id: AnimalIdValue,
+    A::Generation: jungle_sdk::typosaurus::num::Unsigned,
+{
+    exercise_diamond_dog_with_transport::<A>(
+        name,
+        VoidTransportMode::Tcp,
+        vertex_count,
+        port_count,
+        epochs,
+        expected_grad_steps,
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn exercise_diamond_dog_with_transport<A>(
+    name: &str,
+    transport_mode: VoidTransportMode,
+    vertex_count: usize,
+    port_count: usize,
+    epochs: usize,
+    expected_grad_steps: usize,
+) -> Vec<FusionObservation>
+where
+    A: Animal<Seed = (), State = SunState> + Observe<Appearance = SunAppearance>,
+    A::Id: AnimalIdValue,
+    A::Generation: jungle_sdk::typosaurus::num::Unsigned,
+{
     init_tracing();
 
-    let void_server = TestVoidServer::new()
-        .serve()
-        .await
-        .expect("failed to start void server");
-    let void_addr = void_server.local_addr();
-    let endpoint = make_client_endpoint().await;
-    let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
+    let (void_server, void_client) = start_void_server_and_client(transport_mode).await;
     let mut jungle = ProbeSpaceJungle::new(void_client);
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
     let fusion_inputs = Arc::clone(&jungle.fusion_inputs);
@@ -675,16 +748,61 @@ async fn diamond_dog() {
 
 #[cfg(test)]
 #[tokio::test]
-async fn diamond_dog_root_observe_exposes_ray_after_start() {
+async fn tcp_diamond_dog() {
+    const EPOCHS: usize = 3;
+    const PROPAGATION_PASSES: usize = 2;
+    const FUSION_TRANSFORMS_PER_EPOCH: usize =
+        PROPAGATION_PASSES * DIAMOND_GRADIENT_ACCUMULATION_STEPS;
+    let observed = exercise_diamond_dog_tcp::<BlackHoleAnimal>(
+        "tcp_diamond_dog",
+        5,
+        6,
+        EPOCHS,
+        DIAMOND_GRADIENT_ACCUMULATION_STEPS,
+    )
+    .await;
+
+    assert!(
+        observed.len() >= EPOCHS * FUSION_TRANSFORMS_PER_EPOCH,
+        "expected {FUSION_TRANSFORMS_PER_EPOCH} fusion transforms per epoch, observed {observed:?}"
+    );
+    let expected_transform_id = observed[0].0;
+    assert_ne!(
+        expected_transform_id,
+        Uuid::nil(),
+        "fusion transform ID should be generated"
+    );
+    for epoch in 0..EPOCHS {
+        for pass in 0..PROPAGATION_PASSES {
+            for microstep in 0..DIAMOND_GRADIENT_ACCUMULATION_STEPS {
+                let index = epoch * FUSION_TRANSFORMS_PER_EPOCH
+                    + pass * DIAMOND_GRADIENT_ACCUMULATION_STEPS
+                    + microstep;
+                let (transform_id, p1, p2) = observed[index];
+                assert_eq!(
+                    transform_id, expected_transform_id,
+                    "fusion transform ID changed in epoch {epoch} propagation pass {pass} microstep {microstep}"
+                );
+                assert_eq!(
+                    p1,
+                    Uuid::from_u128(LEFT_EMISSION),
+                    "epoch {epoch} propagation pass {pass} microstep {microstep} did not preserve P1"
+                );
+                assert_eq!(
+                    p2,
+                    Uuid::from_u128(RIGHT_EMISSION),
+                    "epoch {epoch} propagation pass {pass} microstep {microstep} did not preserve P2"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+async fn assert_diamond_dog_root_observe_exposes_ray_after_start(transport_mode: VoidTransportMode) {
     init_tracing();
 
-    let void_server = TestVoidServer::new()
-        .serve()
-        .await
-        .expect("failed to start void server");
-    let void_addr = void_server.local_addr();
-    let endpoint = make_client_endpoint().await;
-    let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
+    let (void_server, void_client) = start_void_server_and_client(transport_mode).await;
     let mut jungle = ProbeSpaceJungle::new(void_client);
 
     let client = FusedClient::builder()
@@ -787,4 +905,16 @@ async fn diamond_dog_root_observe_exposes_ray_after_start() {
     }
     drop(client);
     void_server.abort();
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn diamond_dog_root_observe_exposes_ray_after_start() {
+    assert_diamond_dog_root_observe_exposes_ray_after_start(VoidTransportMode::Quic).await;
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn tcp_diamond_dog_root_observe_exposes_ray_after_start() {
+    assert_diamond_dog_root_observe_exposes_ray_after_start(VoidTransportMode::Tcp).await;
 }
