@@ -20,7 +20,7 @@ use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
-use iced::widget::{button, column, container, row, scrollable, text};
+use iced::widget::{button, column, container, row, stack, text};
 use iced::{
     Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription, Task, Theme,
     Vector,
@@ -47,8 +47,6 @@ const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
-const SUBPANEL_HEIGHT_RATIO: f32 = 0.5;
-
 type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
 
 #[derive(Clone)]
@@ -574,6 +572,7 @@ impl JungleClient for SharedJungleClient {
 }
 
 struct SubpanelState {
+    node_id: u32,
     title: String,
     journey_id: Uuid,
     viewer: JungleSubpanelViewer,
@@ -809,6 +808,7 @@ enum Message {
     AppearanceLoaded(Result<Option<LiveAppearanceSnapshot>, String>),
     ColorTick(Instant),
     NodeSelected(u32),
+    CloseSubpanel(usize),
     Subpanel(usize, EjectedViewerMessage),
 }
 
@@ -1267,6 +1267,11 @@ impl BeamApp {
             Message::NodeSelected(node_id) => {
                 self.open_subpanel_for_node(node_id);
             }
+            Message::CloseSubpanel(index) => {
+                if index < self.subpanels.len() {
+                    self.subpanels.remove(index);
+                }
+            }
             Message::Subpanel(index, message) => {
                 if let Some(subpanel) = self.subpanels.get_mut(index) {
                     return subpanel
@@ -1326,43 +1331,40 @@ impl BeamApp {
         } else {
             self.cell_graph()
         };
-        let content = if self.live.is_some() && !self.config.subpanel_animals.is_empty() {
-            let subpanel_height = (self.config.height * SUBPANEL_HEIGHT_RATIO).max(1.0);
-            let mut subpanel_stack = column![].spacing(10).width(Length::Fill);
-            if self.subpanels.is_empty() {
-                subpanel_stack = subpanel_stack.push(
-                    container(
-                        text("Click a node to open its child workflow subpanel.")
-                            .size(14)
-                            .color(black_hole_text().scale_alpha(0.78)),
-                    )
-                    .padding([10, 12])
-                    .width(Length::Fill)
-                    .style(subpanel_style),
-                );
-            }
-            if let Some(notice) = self.subpanel_notice.as_deref() {
-                subpanel_stack = subpanel_stack.push(
-                    container(text(notice).size(13).color(Color::from_rgb8(255, 181, 120)))
-                        .padding([10, 12])
-                        .width(Length::Fill)
-                        .style(subpanel_style),
-                );
-            }
-            subpanel_stack = self.subpanels.iter().enumerate().fold(
-                subpanel_stack,
+        let show_subpanel_overlay = self.live.is_some()
+            && !self.config.subpanel_animals.is_empty()
+            && !self.subpanels.is_empty();
+        let main_layer = container(main_panel)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        let content: Element<'_, Message> = if show_subpanel_overlay {
+            let mut subpanel_column = column![]
+                .spacing(8)
+                .width(Length::Fill)
+                .height(Length::Fill);
+            subpanel_column = self.subpanels.iter().enumerate().fold(
+                subpanel_column,
                 |column, (index, subpanel)| {
+                    let title = format!(
+                        "Cell {} · {} · {}",
+                        subpanel.node_id, subpanel.title, subpanel.journey_id
+                    );
+                    let header = row![
+                        text(title)
+                            .size(14)
+                            .color(black_hole_text().scale_alpha(0.86))
+                            .width(Length::Fill),
+                        button(text("X").size(13))
+                            .padding([1, 6])
+                            .style(subpanel_close_button_style)
+                            .on_press(Message::CloseSubpanel(index)),
+                    ];
+
                     column.push(
                         container(
                             column![
-                                text(format!(
-                                    "subpanel {} · {} · {}",
-                                    index + 1,
-                                    subpanel.title,
-                                    subpanel.journey_id
-                                ))
-                                .size(14)
-                                .color(black_hole_text().scale_alpha(0.84)),
+                                header,
                                 container(
                                     subpanel
                                         .viewer
@@ -1377,25 +1379,29 @@ impl BeamApp {
                         )
                         .padding([10, 12])
                         .width(Length::Fill)
-                        .height(Length::Fixed(subpanel_height))
+                        .height(Length::FillPortion(1))
                         .style(subpanel_style),
                     )
                 },
             );
-            row![
-                container(main_panel)
-                    .width(Length::FillPortion(2))
-                    .height(Length::Fill),
-                container(scrollable(subpanel_stack))
+
+            let right_overlay = row![
+                container(column![]).width(Length::FillPortion(2)),
+                container(subpanel_column)
                     .width(Length::FillPortion(1))
-                    .height(Length::Fill),
+                    .height(Length::Fill)
+                    .padding(8)
+                    .style(subpanel_overlay_style),
             ]
-            .spacing(10)
             .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            .height(Length::Fill);
+
+            stack(vec![main_layer.into(), right_overlay.into()])
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         } else {
-            main_panel
+            main_layer.into()
         };
         container(content)
             .width(Length::Fill)
@@ -1608,19 +1614,25 @@ impl BeamApp {
         };
 
         self.subpanel_notice = None;
-        if self
+        if let Some(existing_index) = self
             .subpanels
             .iter()
-            .any(|subpanel| subpanel.journey_id == journey_id)
+            .position(|subpanel| subpanel.journey_id == journey_id)
         {
+            let existing = self.subpanels.remove(existing_index);
+            self.subpanels.insert(0, existing);
             return;
         }
 
-        self.subpanels.push(SubpanelState {
-            title: subpanel_config.title,
-            journey_id,
-            viewer: (subpanel_config.build_viewer)(SharedJungleClient::new(client), journey_id),
-        });
+        self.subpanels.insert(
+            0,
+            SubpanelState {
+                node_id,
+                title: subpanel_config.title,
+                journey_id,
+                viewer: (subpanel_config.build_viewer)(SharedJungleClient::new(client), journey_id),
+            },
+        );
     }
 
     fn resolve_subpanel_config(&self, animal_label: &str) -> Option<SubpanelConfig> {
@@ -1693,13 +1705,46 @@ fn app_background_style(_theme: &Theme) -> iced::widget::container::Style {
 
 fn subpanel_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgb8(6, 6, 6))),
+        background: Some(Background::Color(Color::from_rgba8(9, 9, 9, 0.86))),
         border: iced::Border {
             color: Color::from_rgb8(44, 44, 44),
             width: 1.0,
             ..iced::border::rounded(8)
         },
         ..Default::default()
+    }
+}
+
+fn subpanel_overlay_style(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(Background::Color(Color::from_rgba8(3, 3, 3, 0.42))),
+        border: iced::Border {
+            color: Color::from_rgba8(120, 120, 120, 0.25),
+            width: 1.0,
+            ..iced::border::rounded(10)
+        },
+        ..Default::default()
+    }
+}
+
+fn subpanel_close_button_style(
+    _theme: &Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let text_color = match status {
+        iced::widget::button::Status::Hovered => Color::from_rgb8(255, 205, 156),
+        _ => black_hole_text().scale_alpha(0.88),
+    };
+    iced::widget::button::Style {
+        background: None,
+        text_color,
+        border: iced::Border {
+            color: Color::from_rgba8(176, 176, 176, 0.35),
+            width: 1.0,
+            ..iced::border::rounded(6)
+        },
+        shadow: Shadow::default(),
+        snap: false,
     }
 }
 
