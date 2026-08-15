@@ -20,7 +20,7 @@ use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
-use iced::widget::{column, container, text};
+use iced::widget::{column, container, scrollable, text};
 use iced::{
     Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription, Task, Theme,
     Vector,
@@ -144,7 +144,7 @@ pub struct BeamBuilder {
     width: f32,
     height: f32,
     layout: BeamLayout,
-    subpanel: Option<SubpanelConfig>,
+    subpanels: Vec<SubpanelConfig>,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
 }
@@ -162,7 +162,7 @@ impl Default for BeamBuilder {
             width: DEFAULT_WINDOW_WIDTH,
             height: DEFAULT_WINDOW_HEIGHT,
             layout: BeamLayout::Circo,
-            subpanel: None,
+            subpanels: Vec::new(),
             animation_duration: None,
             animation_easing: None,
         }
@@ -212,15 +212,15 @@ impl BeamBuilder {
         self
     }
 
-    /// Render one child workflow panel beneath the Black Hole Sun graph.
+    /// Render a child workflow panel beneath the Black Hole Sun graph.
     ///
-    /// Calling `subpanel` multiple times keeps the most recent subpanel.
+    /// Calling `subpanel` multiple times appends additional subpanels.
     pub fn subpanel<A>(mut self, journey_id: Uuid) -> Self
     where
         A: Animal + 'static,
         A::Flow: JourneyAstSource,
     {
-        self.subpanel = Some(SubpanelConfig {
+        self.subpanels.push(SubpanelConfig {
             title: short_type_name::<A>(),
             journey_id,
             build_viewer: build_subpanel_viewer::<A>,
@@ -244,7 +244,7 @@ impl BeamBuilder {
             width: self.width,
             height: self.height,
             layout: self.layout,
-            subpanel: self.subpanel,
+            subpanels: self.subpanels,
             animation_duration: self.animation_duration,
             animation_easing: self.animation_easing,
         }
@@ -343,7 +343,7 @@ struct BeamConfig {
     width: f32,
     height: f32,
     layout: BeamLayout,
-    subpanel: Option<SubpanelConfig>,
+    subpanels: Vec<SubpanelConfig>,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
 }
@@ -798,7 +798,7 @@ enum Message {
     AppearanceTick,
     AppearanceLoaded(Result<Option<LiveAppearanceSnapshot>, String>),
     ColorTick(Instant),
-    Subpanel(EjectedViewerMessage),
+    Subpanel(usize, EjectedViewerMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -1129,7 +1129,7 @@ struct BeamApp {
     config: BeamConfig,
     model: BeamModel,
     live: Option<LiveConfig>,
-    subpanel: Option<SubpanelState>,
+    subpanels: Vec<SubpanelState>,
     visuals: HashMap<u32, CellVisualState>,
     appearance_loading: bool,
     appearance_error: Option<String>,
@@ -1165,16 +1165,21 @@ impl BeamApp {
             .as_ref()
             .map(|live| appearance_task(live.clone()))
             .unwrap_or_else(Task::none);
-        let subpanel = match (config.subpanel.clone(), live.as_ref()) {
-            (Some(subpanel), Some(live)) => Some(SubpanelState {
-                title: subpanel.title,
-                journey_id: subpanel.journey_id,
-                viewer: (subpanel.build_viewer)(
-                    SharedJungleClient::new(live.client.clone()),
-                    subpanel.journey_id,
-                ),
-            }),
-            _ => None,
+        let subpanels = match live.as_ref() {
+            Some(live) => config
+                .subpanels
+                .clone()
+                .into_iter()
+                .map(|subpanel| SubpanelState {
+                    title: subpanel.title,
+                    journey_id: subpanel.journey_id,
+                    viewer: (subpanel.build_viewer)(
+                        SharedJungleClient::new(live.client.clone()),
+                        subpanel.journey_id,
+                    ),
+                })
+                .collect(),
+            None => Vec::new(),
         };
 
         (
@@ -1182,7 +1187,7 @@ impl BeamApp {
                 config,
                 model,
                 live,
-                subpanel,
+                subpanels,
                 visuals,
                 appearance_loading,
                 appearance_error: None,
@@ -1261,9 +1266,12 @@ impl BeamApp {
                     return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
                 }
             }
-            Message::Subpanel(message) => {
-                if let Some(subpanel) = self.subpanel.as_mut() {
-                    return subpanel.viewer.update(message).map(Message::Subpanel);
+            Message::Subpanel(index, message) => {
+                if let Some(subpanel) = self.subpanels.get_mut(index) {
+                    return subpanel
+                        .viewer
+                        .update(message)
+                        .map(move |message| Message::Subpanel(index, message));
                 }
             }
         }
@@ -1291,8 +1299,14 @@ impl BeamApp {
             subscriptions
                 .push(iced::time::every(COLOR_TRANSITION_POLL_INTERVAL).map(Message::ColorTick));
         }
-        if let Some(subpanel) = &self.subpanel {
-            subscriptions.push(subpanel.viewer.subscription().map(Message::Subpanel));
+        for (index, subpanel) in self.subpanels.iter().enumerate() {
+            subscriptions.push(
+                subpanel
+                    .viewer
+                    .subscription()
+                    .with(index)
+                    .map(|(index, message)| Message::Subpanel(index, message)),
+            );
         }
 
         Subscription::batch(subscriptions)
@@ -1311,34 +1325,48 @@ impl BeamApp {
         } else {
             self.cell_graph()
         };
-        let content = if let Some(subpanel) = &self.subpanel {
+        let content = if self.subpanels.is_empty() {
+            main_panel
+        } else {
+            let subpanel_stack = self.subpanels.iter().enumerate().fold(
+                column![].spacing(10).width(Length::Fill),
+                |column, (index, subpanel)| {
+                    column.push(
+                        container(
+                            column![
+                                text(format!(
+                                    "subpanel {} · {} · {}",
+                                    index + 1,
+                                    subpanel.title,
+                                    subpanel.journey_id
+                                ))
+                                .size(14)
+                                .color(black_hole_text().scale_alpha(0.84)),
+                                subpanel
+                                    .viewer
+                                    .view()
+                                    .map(move |message| Message::Subpanel(index, message)),
+                            ]
+                            .spacing(8),
+                        )
+                        .padding([10, 12])
+                        .width(Length::Fill)
+                        .style(subpanel_style),
+                    )
+                },
+            );
             column![
                 container(main_panel)
                     .width(Length::Fill)
                     .height(Length::FillPortion(3)),
-                container(
-                    column![
-                        text(format!(
-                            "subpanel · {} · {}",
-                            subpanel.title, subpanel.journey_id
-                        ))
-                        .size(14)
-                        .color(black_hole_text().scale_alpha(0.84)),
-                        subpanel.viewer.view().map(Message::Subpanel),
-                    ]
-                    .spacing(8)
-                )
-                .padding([10, 12])
-                .width(Length::Fill)
-                .height(Length::FillPortion(2))
-                .style(subpanel_style),
+                container(scrollable(subpanel_stack))
+                    .width(Length::Fill)
+                    .height(Length::FillPortion(2)),
             ]
             .spacing(10)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
-        } else {
-            main_panel
         };
         container(content)
             .width(Length::Fill)
@@ -1733,18 +1761,20 @@ mod tests {
     }
 
     #[test]
-    fn keeps_only_one_configured_subpanel() {
+    fn appends_configured_subpanels() {
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
 
         let config = BeamBuilder::new()
             .subpanel::<TestCell>(first)
-            .subpanel::<TestCell>(second)
+            .subpanel::<GenericCell<String>>(second)
             .into_config();
-        let subpanel = config.subpanel.expect("subpanel should exist");
 
-        assert_eq!(subpanel.journey_id, second);
-        assert_eq!(subpanel.title, "TestCell");
+        assert_eq!(config.subpanels.len(), 2);
+        assert_eq!(config.subpanels[0].journey_id, first);
+        assert_eq!(config.subpanels[0].title, "TestCell");
+        assert_eq!(config.subpanels[1].journey_id, second);
+        assert_eq!(config.subpanels[1].title, "GenericCell");
     }
 
     #[test]
