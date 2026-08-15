@@ -19,18 +19,22 @@ use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
-use iced::widget::{column, container, text};
+use iced::widget::{button, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{
-    Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription, Task, Theme,
-    Vector,
+    Alignment, Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription,
+    Task, Theme, Vector,
 };
 use iced_sugiyama::motion::easing::Easing;
 use iced_sugiyama::{
     circo_layout, AutoFit, Cluster, EdgeEndpointKind, Graph, LayoutInput, Sugiyama,
 };
-use jungle_sdk::{Animal, AnimalIdValue, JungleClient, Observe};
+use jungle_sdk::{Animal, AnimalIdValue, JourneyAstSource, JungleClient, Observe};
 use typenum::Unsigned;
 use uuid::Uuid;
+
+type ChildJourneyViewer =
+    jungle_vision::EjectedViewer<jungle_vision::DefaultTheme, jungle_vision::AnyAnimal>;
+type ChildJourneyViewerFactory = Arc<dyn Fn(Uuid) -> ChildJourneyViewer + Send + Sync>;
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
@@ -161,13 +165,21 @@ impl BeamBuilder {
     }
 
     /// Render a live Black Hole Sun from its Jungle appearance.
-    pub fn view_live<A>(self, client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
+    pub fn view_live<A>(
+        self,
+        client: impl JungleClient + Clone + Send + Sync + 'static,
+        journey_id: Uuid,
+    ) -> iced::Result
     where
         A: BlackHoleSunAnimal + 'static,
+        A::Flow: BlackHoleSunFlow + BlackHoleSunChildFlow,
     {
+        let child_panel_factories =
+            BeamModel::build_child_journey_viewer_factories::<A::Flow, _>(client.clone());
         let live = LiveConfig {
             client: Arc::new(client),
             journey_id,
+            child_panel_factories,
         };
         run_beam(self.into_config(), BeamModel::empty(), Some(live))
     }
@@ -221,9 +233,13 @@ where
 }
 
 /// Render a live Black Hole Sun with default viewer settings.
-pub fn view_live<A>(client: impl JungleClient + 'static, journey_id: Uuid) -> iced::Result
+pub fn view_live<A>(
+    client: impl JungleClient + Clone + Send + Sync + 'static,
+    journey_id: Uuid,
+) -> iced::Result
 where
     A: BlackHoleSunAnimal + 'static,
+    A::Flow: BlackHoleSunFlow + BlackHoleSunChildFlow,
 {
     BeamBuilder::new().view_live::<A>(client, journey_id)
 }
@@ -237,8 +253,20 @@ impl<A, S> BlackHoleSunAnimal for A where
 }
 
 mod private {
+    use super::ChildJourneyViewerFactory;
+    use jungle_sdk::JungleClient;
+    use std::collections::HashMap;
+
     pub(crate) trait DescribeSun {
         fn append_cells(cells: &mut Vec<super::CellDefinition>);
+    }
+
+    pub(crate) trait DescribeSunChildViewers {
+        fn append_child_journey_viewer_factories<C>(
+            factories: &mut HashMap<u32, ChildJourneyViewerFactory>,
+            client: C,
+        ) where
+            C: JungleClient + Clone + Send + Sync + 'static;
     }
 }
 
@@ -252,10 +280,27 @@ pub trait BlackHoleSunFlow: private::DescribeSun {}
 
 impl<T> BlackHoleSunFlow for T where T: private::DescribeSun {}
 
+#[allow(private_bounds)]
+pub trait BlackHoleSunChildFlow: private::DescribeSunChildViewers {}
+
+impl<T> BlackHoleSunChildFlow for T where T: private::DescribeSunChildViewers {}
+
 impl<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::DescribeSun
     for Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>
 {
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
+}
+
+impl<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>
+    private::DescribeSunChildViewers for Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>
+{
+    fn append_child_journey_viewer_factories<C>(
+        _factories: &mut HashMap<u32, ChildJourneyViewerFactory>,
+        _client: C,
+    ) where
+        C: JungleClient + Clone + Send + Sync + 'static,
+    {
+    }
 }
 
 impl<Port, A, Edges, Tail, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::DescribeSun
@@ -273,6 +318,33 @@ where
             Edges::node_ids(),
         ));
         Tail::append_cells(cells);
+    }
+}
+
+impl<Port, A, Edges, Tail, S, const GRADIENT_ACCUMULATION_STEPS: usize>
+    private::DescribeSunChildViewers
+    for SunNode<UnarySunStep<Port, A, Edges, S, GRADIENT_ACCUMULATION_STEPS>, Tail>
+where
+    Port: Unsigned,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = black_hole_flux::CellInit> + 'static,
+    A::Flow: JourneyAstSource,
+    Edges: NodeIdsFromList,
+    Tail: private::DescribeSunChildViewers,
+{
+    fn append_child_journey_viewer_factories<C>(
+        factories: &mut HashMap<u32, ChildJourneyViewerFactory>,
+        client: C,
+    ) where
+        C: JungleClient + Clone + Send + Sync + 'static,
+    {
+        let client_for_viewer = client.clone();
+        factories.insert(
+            Port::U32,
+            Arc::new(move |journey_id| {
+                build_child_journey_viewer::<A, C>(client_for_viewer.clone(), journey_id)
+            }),
+        );
+        Tail::append_child_journey_viewer_factories(factories, client);
     }
 }
 
@@ -297,6 +369,36 @@ where
     }
 }
 
+impl<PortA, PortB, A, Edges, Tail, S, const GRADIENT_ACCUMULATION_STEPS: usize>
+    private::DescribeSunChildViewers
+    for SunNode<BinarySunStep<PortA, PortB, A, Edges, S, GRADIENT_ACCUMULATION_STEPS>, Tail>
+where
+    PortA: Unsigned,
+    PortB: Unsigned,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
+        + 'static,
+    A::Flow: FusionFlow,
+    A::Flow: JourneyAstSource,
+    Edges: NodeIdsFromList,
+    Tail: private::DescribeSunChildViewers,
+{
+    fn append_child_journey_viewer_factories<C>(
+        factories: &mut HashMap<u32, ChildJourneyViewerFactory>,
+        client: C,
+    ) where
+        C: JungleClient + Clone + Send + Sync + 'static,
+    {
+        let client_for_viewer = client.clone();
+        factories.insert(
+            PortA::U32,
+            Arc::new(move |journey_id| {
+                build_child_journey_viewer::<A, C>(client_for_viewer.clone(), journey_id)
+            }),
+        );
+        Tail::append_child_journey_viewer_factories(factories, client);
+    }
+}
+
 #[derive(Clone)]
 struct BeamConfig {
     title: String,
@@ -311,6 +413,7 @@ struct BeamConfig {
 struct LiveConfig {
     client: Arc<dyn JungleClient>,
     journey_id: Uuid,
+    child_panel_factories: HashMap<u32, ChildJourneyViewerFactory>,
 }
 
 #[derive(Clone)]
@@ -325,6 +428,7 @@ struct CellDefinition {
     grad_step: usize,
     grad_steps: usize,
     frozen: Option<bool>,
+    child_panel_factory: Option<ChildJourneyViewerFactory>,
 }
 
 impl CellDefinition {
@@ -343,6 +447,7 @@ impl CellDefinition {
             grad_step: 1,
             grad_steps: 1,
             frozen: None,
+            child_panel_factory: None,
         }
     }
 }
@@ -427,9 +532,25 @@ impl BeamModel {
         }
     }
 
+    fn build_child_journey_viewer_factories<F, C>(
+        client: C,
+    ) -> HashMap<u32, ChildJourneyViewerFactory>
+    where
+        F: BlackHoleSunChildFlow,
+        C: JungleClient + Clone + Send + Sync + 'static,
+    {
+        let mut child_panel_factories = HashMap::new();
+        <F as private::DescribeSunChildViewers>::append_child_journey_viewer_factories(
+            &mut child_panel_factories,
+            client,
+        );
+        child_panel_factories
+    }
+
     fn from_appearance(
         appearance: SunAppearance,
         child_rays: &HashMap<Uuid, Ray>,
+        child_panel_factories: &HashMap<u32, ChildJourneyViewerFactory>,
     ) -> Result<Self, String> {
         if !appearance.finalized {
             return Err("the Black Hole Sun topology is not finalized".to_string());
@@ -451,6 +572,7 @@ impl BeamModel {
                 grad_step: node.grad_step.clamp(1, grad_steps),
                 grad_steps,
                 frozen: child_rays.get(&node.journey_id).map(|ray| ray.frozen),
+                child_panel_factory: child_panel_factories.get(&node.id).cloned(),
             })
             .collect::<Vec<_>>();
         cells.sort_by_key(|cell| cell.id);
@@ -519,6 +641,17 @@ impl BeamModel {
     }
 }
 
+fn build_child_journey_viewer<A, C>(client: C, journey_id: Uuid) -> ChildJourneyViewer
+where
+    A: Animal + 'static,
+    A::Flow: JourneyAstSource,
+    C: JungleClient + Clone + Send + Sync + 'static,
+{
+    jungle_vision::JungleViewerBuilder::new()
+        .title(format!("{} child journey", short_type_name::<A>()))
+        .eject_live_animal::<A, C>(client, journey_id)
+}
+
 fn run_beam(config: BeamConfig, model: BeamModel, live: Option<LiveConfig>) -> iced::Result {
     let title = config.title.clone();
     let width = config.width;
@@ -542,6 +675,9 @@ enum Message {
     AppearanceTick,
     AppearanceLoaded(Result<Option<LiveAppearanceSnapshot>, String>),
     ColorTick(Instant),
+    OpenChildPanel(u32),
+    CloseChildPanel,
+    ChildPanel(jungle_vision::EjectedViewerMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -868,6 +1004,13 @@ fn model_display_changed(current: &BeamModel, next: &BeamModel) -> bool {
             })
 }
 
+struct ChildPanelState {
+    cell_id: u32,
+    journey_id: Uuid,
+    title: String,
+    viewer: ChildJourneyViewer,
+}
+
 struct BeamApp {
     config: BeamConfig,
     model: BeamModel,
@@ -876,6 +1019,7 @@ struct BeamApp {
     appearance_loading: bool,
     appearance_error: Option<String>,
     color_now: Instant,
+    child_panel: Option<ChildPanelState>,
 }
 
 impl BeamApp {
@@ -917,6 +1061,7 @@ impl BeamApp {
                 appearance_loading,
                 appearance_error: None,
                 color_now: now,
+                child_panel: None,
             },
             task,
         )
@@ -936,8 +1081,14 @@ impl BeamApp {
                 self.appearance_loading = false;
                 match result {
                     Ok(Some(snapshot)) if snapshot.appearance.finalized => {
-                        match BeamModel::from_appearance(snapshot.appearance, &snapshot.child_rays)
-                        {
+                        let child_panel_factories =
+                            self.live.as_ref().map(|live| &live.child_panel_factories);
+                        let empty_child_panel_factories = HashMap::new();
+                        match BeamModel::from_appearance(
+                            snapshot.appearance,
+                            &snapshot.child_rays,
+                            child_panel_factories.unwrap_or(&empty_child_panel_factories),
+                        ) {
                             Ok(model) => {
                                 let now = Instant::now();
                                 let mut transitioned = false;
@@ -960,6 +1111,7 @@ impl BeamApp {
                                 let display_changed = model_display_changed(&self.model, &model);
                                 let had_error = self.appearance_error.is_some();
                                 self.model = model;
+                                self.sync_child_panel_to_model();
                                 self.appearance_error = None;
                                 if display_changed || transitioned || had_error {
                                     self.color_now = now;
@@ -991,6 +1143,43 @@ impl BeamApp {
                     return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
                 }
             }
+            Message::OpenChildPanel(cell_id) => {
+                let Some(cell) = self
+                    .model
+                    .cells
+                    .iter()
+                    .find(|cell| cell.id == cell_id)
+                    .cloned()
+                else {
+                    return Task::none();
+                };
+                let Some(factory) = cell.child_panel_factory.clone() else {
+                    return Task::none();
+                };
+                if cell.journey_id.is_nil() {
+                    return Task::none();
+                }
+                if self.child_panel.as_ref().is_some_and(|panel| {
+                    panel.cell_id == cell.id && panel.journey_id == cell.journey_id
+                }) {
+                    self.child_panel = None;
+                    return Task::none();
+                }
+                self.child_panel = Some(ChildPanelState {
+                    cell_id: cell.id,
+                    journey_id: cell.journey_id,
+                    title: format!("{} · cell {}", cell.animal_name, cell.id),
+                    viewer: factory(cell.journey_id),
+                });
+            }
+            Message::CloseChildPanel => {
+                self.child_panel = None;
+            }
+            Message::ChildPanel(message) => {
+                if let Some(panel) = self.child_panel.as_mut() {
+                    return panel.viewer.update(message).map(Message::ChildPanel);
+                }
+            }
         }
 
         Task::none()
@@ -1016,6 +1205,9 @@ impl BeamApp {
             subscriptions
                 .push(iced::time::every(COLOR_TRANSITION_POLL_INTERVAL).map(Message::ColorTick));
         }
+        if let Some(child_panel) = self.child_panel.as_ref() {
+            subscriptions.push(child_panel.viewer.subscription().map(Message::ChildPanel));
+        }
 
         Subscription::batch(subscriptions)
     }
@@ -1033,11 +1225,38 @@ impl BeamApp {
         } else {
             self.cell_graph()
         };
-        container(content)
+        let base = container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(app_background_style)
-            .into()
+            .into();
+
+        let Some(child_panel) = self.child_panel.as_ref() else {
+            return base;
+        };
+
+        let dimmer = mouse_area(
+            container(Space::new().width(Length::Fill).height(Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(overlay_dimmer_style),
+        )
+        .on_press(Message::CloseChildPanel);
+        let panel = opaque(self.child_panel_element(child_panel));
+
+        stack([
+            base,
+            dimmer.into(),
+            container(
+                row![Space::new().width(Length::Fill), panel]
+                    .align_y(Alignment::Center)
+                    .padding(24),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        ])
+        .into()
     }
 
     fn cell_graph(&self) -> Element<'_, Message> {
@@ -1084,17 +1303,20 @@ impl BeamApp {
                     .get(&node_id)
                     .copied()
                     .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None));
-                container(
-                    column![
-                        text(animal_name).size(16).color(style.text),
-                        text(format!("cell {node_id} · {phase_label}"))
-                            .size(12)
-                            .color(style.text.scale_alpha(0.82)),
-                    ]
-                    .spacing(3),
+                mouse_area(
+                    container(
+                        column![
+                            text(animal_name).size(16).color(style.text),
+                            text(format!("cell {node_id} · {phase_label}"))
+                                .size(12)
+                                .color(style.text.scale_alpha(0.82)),
+                        ]
+                        .spacing(3),
+                    )
+                    .padding([10, 12])
+                    .style(move |_theme| cell_node_style(style)),
                 )
-                .padding([10, 12])
-                .style(move |_theme| cell_node_style(style))
+                .on_press(Message::OpenChildPanel(node_id))
                 .into()
             },
         )
@@ -1195,6 +1417,64 @@ impl BeamApp {
             .into()
     }
 
+    fn child_panel_element<'a>(&self, child_panel: &'a ChildPanelState) -> Element<'a, Message> {
+        let header = row![
+            column![
+                text(&child_panel.title).size(18).color(black_hole_text()),
+                text(child_panel.journey_id.to_string())
+                    .size(12)
+                    .color(black_hole_text().scale_alpha(0.75)),
+            ]
+            .spacing(2),
+            Space::new().width(Length::Fill),
+            button(text("Close").size(14)).on_press(Message::CloseChildPanel),
+        ]
+        .align_y(Alignment::Center);
+
+        container(column![header, child_panel.viewer.view().map(Message::ChildPanel)].spacing(12))
+            .width(Length::Fixed(680.0))
+            .height(Length::Fill)
+            .padding(18)
+            .style(child_panel_container_style)
+            .into()
+    }
+
+    fn sync_child_panel_to_model(&mut self) {
+        let Some(current_panel) = self.child_panel.as_ref() else {
+            return;
+        };
+        let Some(cell) = self
+            .model
+            .cells
+            .iter()
+            .find(|cell| cell.id == current_panel.cell_id)
+            .cloned()
+        else {
+            self.child_panel = None;
+            return;
+        };
+        if cell.journey_id.is_nil() {
+            self.child_panel = None;
+            return;
+        }
+        let Some(factory) = cell.child_panel_factory.clone() else {
+            self.child_panel = None;
+            return;
+        };
+
+        let journey_changed = current_panel.journey_id != cell.journey_id;
+        if journey_changed {
+            self.child_panel = Some(ChildPanelState {
+                cell_id: cell.id,
+                journey_id: cell.journey_id,
+                title: format!("{} · cell {}", cell.animal_name, cell.id),
+                viewer: factory(cell.journey_id),
+            });
+        } else if let Some(panel) = self.child_panel.as_mut() {
+            panel.title = format!("{} · cell {}", cell.animal_name, cell.id);
+        }
+    }
+
     fn cell_styles(&self) -> HashMap<u32, NodeStyleColors> {
         self.model
             .cells
@@ -1267,6 +1547,31 @@ fn app_background_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(Background::Color(Color::BLACK)),
         text_color: Some(black_hole_text()),
+        ..Default::default()
+    }
+}
+
+fn overlay_dimmer_style(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(Background::Color(Color::from_rgba8(0, 0, 0, 0.55))),
+        ..Default::default()
+    }
+}
+
+fn child_panel_container_style(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(Background::Color(Color::from_rgba8(12, 16, 26, 0.97))),
+        text_color: Some(black_hole_text()),
+        border: iced::Border {
+            color: Color::from_rgb8(84, 94, 122),
+            width: 1.2,
+            ..iced::border::rounded(14)
+        },
+        shadow: Shadow {
+            color: Color::from_rgba8(0, 0, 0, 0.35),
+            offset: Vector::new(0.0, 3.0),
+            blur_radius: 18.0,
+        },
         ..Default::default()
     }
 }
@@ -1600,7 +1905,7 @@ mod tests {
         };
         let bytes = postcard::to_allocvec(&appearance).unwrap();
         let decoded = postcard::from_bytes::<SunAppearance>(&bytes).unwrap();
-        let model = BeamModel::from_appearance(decoded, &HashMap::new()).unwrap();
+        let model = BeamModel::from_appearance(decoded, &HashMap::new(), &HashMap::new()).unwrap();
 
         assert_eq!(model.grad_steps, 4);
         assert_eq!(model.graph.nodes, vec![0, 2]);
@@ -1637,8 +1942,50 @@ mod tests {
             edges: vec![],
         };
         let rays = HashMap::from([(frozen_journey, Ray { frozen: true })]);
-        let model = BeamModel::from_appearance(appearance, &rays).unwrap();
+        let model = BeamModel::from_appearance(appearance, &rays, &HashMap::new()).unwrap();
         assert_eq!(model.cells[0].frozen, Some(true));
+    }
+
+    #[test]
+    fn maps_child_viewer_factories_into_live_cells() {
+        let appearance = SunAppearance {
+            finalized: true,
+            grad_steps: 1,
+            nodes: vec![
+                SunNodeAppearance {
+                    id: 0,
+                    journey_id: Uuid::new_v4(),
+                    label: "Root".to_string(),
+                    input_ports: vec![0],
+                    state: SunNodeState::Idle,
+                    state_sequence: 0,
+                    grad_step: 1,
+                },
+                SunNodeAppearance {
+                    id: 1,
+                    journey_id: Uuid::new_v4(),
+                    label: "Sink".to_string(),
+                    input_ports: vec![1],
+                    state: SunNodeState::Idle,
+                    state_sequence: 0,
+                    grad_step: 1,
+                },
+            ],
+            edges: vec![SunEdgeAppearance {
+                source: 0,
+                target: 1,
+                target_port: 1,
+            }],
+        };
+        let factories = HashMap::from([(
+            0,
+            Arc::new(|_| -> ChildJourneyViewer { panic!("test factory is not expected to run") })
+                as ChildJourneyViewerFactory,
+        )]);
+        let model = BeamModel::from_appearance(appearance, &HashMap::new(), &factories).unwrap();
+
+        assert!(model.cells[0].child_panel_factory.is_some());
+        assert!(model.cells[1].child_panel_factory.is_none());
     }
 
     #[test]
@@ -1673,7 +2020,7 @@ mod tests {
             }],
         };
 
-        let error = BeamModel::from_appearance(appearance, &HashMap::new())
+        let error = BeamModel::from_appearance(appearance, &HashMap::new(), &HashMap::new())
             .err()
             .expect("appearance should be rejected");
         assert!(error.contains("unowned input port 9"));
@@ -1705,7 +2052,8 @@ mod tests {
             edges: vec![],
         };
 
-        let model = BeamModel::from_appearance(appearance, &HashMap::new()).unwrap();
+        let model =
+            BeamModel::from_appearance(appearance, &HashMap::new(), &HashMap::new()).unwrap();
         assert_eq!(model.cells[0].animal_name, "RootAnimal");
     }
 }
