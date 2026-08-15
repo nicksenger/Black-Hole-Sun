@@ -760,6 +760,98 @@ async fn inference() {
     quark_server.abort();
 }
 
+#[ignore]
+#[tokio::test]
+async fn qwen3_8_27b_q3_k_s_initialize_and_single_token_inference() {
+    init_tracing();
+
+    let Some(model_path) = std::env::var("BLACK_HOLE_PROBE_27B_MODEL_PATH").ok() else {
+        tracing::warn!(
+            test = "qwen3_8_27b_q3_k_s_initialize_and_single_token_inference",
+            "Skipping test: BLACK_HOLE_PROBE_27B_MODEL_PATH not set"
+        );
+        return;
+    };
+    if !std::path::Path::new(&model_path).exists() {
+        tracing::warn!(
+            test = "qwen3_8_27b_q3_k_s_initialize_and_single_token_inference",
+            "Skipping test: model file does not exist"
+        );
+        return;
+    }
+
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let quark_server = TestQuarkServer::new(model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start quark server");
+    let void_local = void_server.local_addr();
+    let quark_local = quark_server.local_addr();
+
+    let void_endpoint = make_client_endpoint().await;
+    let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
+    let quark_endpoint = make_client_endpoint().await;
+    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
+
+    let model_id = Uuid::new_v4();
+    quark_client
+        .start(
+            model_id,
+            Some(QuarkModelConfig {
+                inference_limit: Some(1),
+                ..QuarkModelConfig::default()
+            }),
+        )
+        .await
+        .expect("qwen3.8-27b-q3_k_s model should initialize");
+
+    let tokenizer = Tokenizer::init();
+
+    let request = InferenceRequest::Sequences {
+        sequences: vec![vec![InferenceInput::Text(
+            "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?".into(),
+        )]; 2],
+        limit: Some(100),
+    };
+    let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
+    let input_id = void_client.upload(request_bytes).await.unwrap();
+
+    quark_client
+        .perturb_up(model_id, 42)
+        .await
+        .expect("perturb-up should succeed before inference");
+
+    let output_id = quark_client
+        .infer(model_id, input_id)
+        .await
+        .expect("inference with perturbed-up weights should succeed");
+    let output_bytes = void_client.download(output_id).await.unwrap();
+    let output: black_hole_sun::InferenceOutput =
+        from_bytes(&output_bytes).expect("failed to decode inference output");
+
+    assert_eq!(
+        output.results.len(),
+        2,
+        "expected one result for batch size 2"
+    );
+    assert!(
+        !output.results[0].0.is_empty(),
+        "inference should produce at least one predicted token"
+    );
+    let output_text = tokenizer.decode(&output.results[0].0);
+    println!("Output: {output_text}");
+
+    quark_client.shutdown(model_id).await.unwrap();
+    drop(void_endpoint);
+    drop(quark_endpoint);
+    void_server.abort();
+    quark_server.abort();
+}
+
 #[tokio::test]
 async fn dark_inference() {
     init_tracing();
