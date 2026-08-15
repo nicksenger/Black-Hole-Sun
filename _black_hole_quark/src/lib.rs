@@ -3,7 +3,10 @@ use std::{
     fs, io,
     net::SocketAddr,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -14,9 +17,13 @@ use paramecia_engine::{
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::{mpsc, oneshot, Mutex},
+};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -43,6 +50,18 @@ const MAX_TUNNEL_CONNECT_RETRY_MS: u64 = 25_600;
 const TUNNEL_REGISTRATION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const RESIDUAL_UPDATE_UNSUPPORTED_FRAGMENT: &str =
     "restore_and_update_with_residual not supported for ";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportMode {
+    Quic,
+    Tcp,
+}
+
+impl Default for TransportMode {
+    fn default() -> Self {
+        Self::Quic
+    }
+}
 
 fn client_bind_addr_for(remote_addr: SocketAddr) -> SocketAddr {
     if remote_addr.is_ipv4() {
@@ -117,15 +136,33 @@ impl rustls::client::danger::ServerCertVerifier for PermissiveCertVerifier {
     }
 }
 
-/// A QUIC client connection to the void object store.
+enum VoidClientTransport {
+    Quic {
+        endpoint: quinn::Endpoint,
+        remote_addr: SocketAddr,
+    },
+    Tcp {
+        remote_addr: SocketAddr,
+    },
+}
+
+/// A client connection to the void object store.
 pub struct VoidClient {
-    endpoint: quinn::Endpoint,
-    remote_addr: SocketAddr,
+    transport: VoidClientTransport,
 }
 
 impl VoidClient {
     /// Connect to the void service at `addr`.
-    pub async fn connect(addr: SocketAddr) -> Result<Self> {
+    pub async fn connect(addr: SocketAddr, transport_mode: TransportMode) -> Result<Self> {
+        match transport_mode {
+            TransportMode::Quic => Self::connect_quic(addr).await,
+            TransportMode::Tcp => Ok(Self {
+                transport: VoidClientTransport::Tcp { remote_addr: addr },
+            }),
+        }
+    }
+
+    async fn connect_quic(addr: SocketAddr) -> Result<Self> {
         // Void uses self-signed certs by default in local dev — skip verification.
         let crypto = rustls::ClientConfig::builder()
             .dangerous()
@@ -144,29 +181,44 @@ impl VoidClient {
         endpoint.set_default_client_config(client_config);
 
         Ok(Self {
-            endpoint,
-            remote_addr: addr,
+            transport: VoidClientTransport::Quic {
+                endpoint,
+                remote_addr: addr,
+            },
         })
     }
 
-    /// Open a bidirectional stream, send a void request, and read the response.
+    /// Open a transport channel, send a void request, and read the response.
     async fn call(&self, req: VoidIn) -> Result<VoidOut> {
-        let server_name = self.remote_addr.ip().to_string();
-        let conn = self
-            .endpoint
-            .connect(self.remote_addr, &server_name)
-            .map_err(|e| ServerError::VoidConnect(e.to_string()))?
-            .await
-            .map_err(|e| ServerError::VoidConnect(e.to_string()))?;
+        match &self.transport {
+            VoidClientTransport::Quic {
+                endpoint,
+                remote_addr,
+            } => {
+                let server_name = remote_addr.ip().to_string();
+                let conn = endpoint
+                    .connect(*remote_addr, &server_name)
+                    .map_err(|e| ServerError::VoidConnect(e.to_string()))?
+                    .await
+                    .map_err(|e| ServerError::VoidConnect(e.to_string()))?;
 
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| ServerError::VoidStream(e.to_string()))?;
+                let (mut send, mut recv) = conn
+                    .open_bi()
+                    .await
+                    .map_err(|e| ServerError::VoidStream(e.to_string()))?;
 
-        write_frame(&mut send, &req).await?;
-        let resp = read_frame(&mut recv).await?;
-        Ok(resp)
+                write_frame_quic(&mut send, &req).await?;
+                let resp = read_frame_quic(&mut recv).await?;
+                Ok(resp)
+            }
+            VoidClientTransport::Tcp { remote_addr } => {
+                let mut stream = TcpStream::connect(*remote_addr)
+                    .await
+                    .map_err(|e| ServerError::VoidTcpConnect(e.to_string()))?;
+                write_frame_io(&mut stream, &req).await?;
+                read_frame_io(&mut stream).await
+            }
+        }
     }
 
     /// Download an object from void by its ID. Returns the raw bytes.
@@ -194,63 +246,313 @@ impl VoidClient {
     }
 }
 
-/// A QUIC client connection to another quark server.
+enum QuarkRpcClientInner {
+    Quic {
+        endpoint: quinn::Endpoint,
+        remote_addr: SocketAddr,
+    },
+    Tcp {
+        remote_addr: SocketAddr,
+    },
+}
+
+/// A client connection to another quark server.
 struct QuarkRpcClient {
-    endpoint: quinn::Endpoint,
-    remote_addr: SocketAddr,
+    inner: QuarkRpcClientInner,
+}
+
+#[derive(Clone)]
+enum TunnelConnectionHandle {
+    Quic(quinn::Connection),
+    Tcp(Arc<TcpTunnelSession>),
+}
+
+impl TunnelConnectionHandle {
+    async fn close(&self, reason: &'static [u8]) {
+        match self {
+            Self::Quic(connection) => connection.close(0u32.into(), reason),
+            Self::Tcp(session) => session.close("tunnel tcp session replaced").await,
+        }
+    }
 }
 
 struct ParentTunnelSession {
     // Holds the client endpoint open for the lifetime of the parent tunnel.
     _client: QuarkRpcClient,
-    connection: quinn::Connection,
+    connection: TunnelConnectionHandle,
+}
+
+enum RpcConnection {
+    Quic(quinn::Connection),
+    Tcp(TcpStream),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum TunnelTcpEnvelope {
+    Request { request_id: u64, request: QuarkIn },
+    Response { request_id: u64, response: QuarkOut },
+}
+
+#[derive(Debug)]
+struct TunnelTcpRequest {
+    request_id: u64,
+    request: QuarkIn,
+}
+
+struct TcpTunnelSession {
+    outbound: mpsc::Sender<TunnelTcpEnvelope>,
+    inbound: Mutex<mpsc::Receiver<TunnelTcpRequest>>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<QuarkOut>>>,
+    next_request_id: AtomicU64,
+    closed_tx: tokio::sync::watch::Sender<bool>,
+    reader_abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    writer_abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+}
+
+impl TcpTunnelSession {
+    fn new(stream: TcpStream) -> Arc<Self> {
+        let (read_half, write_half) = tokio::io::split(stream);
+        let (outbound_tx, outbound_rx) = mpsc::channel(256);
+        let (inbound_tx, inbound_rx) = mpsc::channel(256);
+        let (closed_tx, _closed_rx) = tokio::sync::watch::channel(false);
+        let session = Arc::new(Self {
+            outbound: outbound_tx,
+            inbound: Mutex::new(inbound_rx),
+            pending: Mutex::new(HashMap::new()),
+            next_request_id: AtomicU64::new(1),
+            closed_tx,
+            reader_abort: std::sync::Mutex::new(None),
+            writer_abort: std::sync::Mutex::new(None),
+        });
+
+        let reader_session = Arc::clone(&session);
+        let reader_handle = tokio::spawn(async move {
+            reader_session.reader_loop(read_half, inbound_tx).await;
+        });
+        if let Ok(mut slot) = session.reader_abort.lock() {
+            *slot = Some(reader_handle.abort_handle());
+        }
+
+        let writer_session = Arc::clone(&session);
+        let writer_handle = tokio::spawn(async move {
+            writer_session.writer_loop(write_half, outbound_rx).await;
+        });
+        if let Ok(mut slot) = session.writer_abort.lock() {
+            *slot = Some(writer_handle.abort_handle());
+        }
+
+        session
+    }
+
+    async fn reader_loop<R>(
+        self: Arc<Self>,
+        mut read_half: R,
+        inbound_tx: mpsc::Sender<TunnelTcpRequest>,
+    ) where
+        R: AsyncRead + Unpin,
+    {
+        loop {
+            let frame: TunnelTcpEnvelope = match read_frame_io(&mut read_half).await {
+                Ok(frame) => frame,
+                Err(ServerError::UnexpectedEof) => {
+                    self.mark_closed("tunnel tcp session reached EOF").await;
+                    return;
+                }
+                Err(error) => {
+                    warn!(error = %error, "failed to read tunnel tcp frame");
+                    self.mark_closed(&format!("failed to read tunnel tcp frame: {error}"))
+                        .await;
+                    return;
+                }
+            };
+
+            match frame {
+                TunnelTcpEnvelope::Request {
+                    request_id,
+                    request,
+                } => {
+                    if inbound_tx
+                        .send(TunnelTcpRequest {
+                            request_id,
+                            request,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        self.mark_closed("tunnel tcp request channel closed").await;
+                        return;
+                    }
+                }
+                TunnelTcpEnvelope::Response {
+                    request_id,
+                    response,
+                } => {
+                    if let Some(waiter) = self.pending.lock().await.remove(&request_id) {
+                        let _ = waiter.send(response);
+                    } else {
+                        debug!(
+                            request_id,
+                            "dropping tunnel tcp response for unknown request"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    async fn writer_loop<W>(
+        self: Arc<Self>,
+        mut write_half: W,
+        mut outbound_rx: mpsc::Receiver<TunnelTcpEnvelope>,
+    ) where
+        W: AsyncWrite + Unpin,
+    {
+        while let Some(frame) = outbound_rx.recv().await {
+            if let Err(error) = write_frame_io(&mut write_half, &frame).await {
+                warn!(error = %error, "failed to write tunnel tcp frame");
+                self.mark_closed(&format!("failed to write tunnel tcp frame: {error}"))
+                    .await;
+                return;
+            }
+        }
+
+        self.mark_closed("tunnel tcp writer channel closed").await;
+    }
+
+    async fn mark_closed(&self, reason: &str) {
+        let already_closed = *self.closed_tx.borrow();
+        if !already_closed {
+            let _ = self.closed_tx.send(true);
+        }
+
+        let mut pending = self.pending.lock().await;
+        for (_, waiter) in pending.drain() {
+            let _ = waiter.send(QuarkOut::Error {
+                message: reason.to_string(),
+            });
+        }
+    }
+
+    async fn close(&self, reason: &str) {
+        if let Ok(mut slot) = self.reader_abort.lock() {
+            if let Some(abort) = slot.take() {
+                abort.abort();
+            }
+        }
+        if let Ok(mut slot) = self.writer_abort.lock() {
+            if let Some(abort) = slot.take() {
+                abort.abort();
+            }
+        }
+        self.mark_closed(reason).await;
+    }
+
+    async fn call(&self, request: QuarkIn) -> Result<QuarkOut> {
+        if *self.closed_tx.borrow() {
+            return Err(ServerError::TunnelTcpSessionClosed);
+        }
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(request_id, tx);
+        if let Err(_send_error) = self
+            .outbound
+            .send(TunnelTcpEnvelope::Request {
+                request_id,
+                request,
+            })
+            .await
+        {
+            self.pending.lock().await.remove(&request_id);
+            return Err(ServerError::TunnelTcpSessionClosed);
+        }
+        rx.await.map_err(|_| ServerError::TunnelTcpSessionClosed)
+    }
+
+    async fn send_response(&self, request_id: u64, response: QuarkOut) -> Result<()> {
+        self.outbound
+            .send(TunnelTcpEnvelope::Response {
+                request_id,
+                response,
+            })
+            .await
+            .map_err(|_| ServerError::TunnelTcpSessionClosed)
+    }
+
+    async fn recv_request(&self) -> Option<TunnelTcpRequest> {
+        self.inbound.lock().await.recv().await
+    }
 }
 
 impl QuarkRpcClient {
-    async fn connect(addr: SocketAddr) -> Result<Self> {
-        let crypto = rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(PermissiveCertVerifier))
-            .with_no_client_auth();
-        let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(crypto))
-            .map_err(|e| ServerError::TunnelCrypto(e.to_string()))?;
-        let client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+    async fn connect(addr: SocketAddr, transport_mode: TransportMode) -> Result<Self> {
+        let inner = match transport_mode {
+            TransportMode::Quic => {
+                let crypto = rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(PermissiveCertVerifier))
+                    .with_no_client_auth();
+                let quic_crypto =
+                    quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(crypto))
+                        .map_err(|e| ServerError::TunnelCrypto(e.to_string()))?;
+                let client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
 
-        let local_addr = client_bind_addr_for(addr);
-        let mut endpoint =
-            quinn::Endpoint::client(local_addr).map_err(ServerError::BindTunnelClient)?;
-        endpoint.set_default_client_config(client_config);
-
-        Ok(Self {
-            endpoint,
-            remote_addr: addr,
-        })
+                let local_addr = client_bind_addr_for(addr);
+                let mut endpoint =
+                    quinn::Endpoint::client(local_addr).map_err(ServerError::BindTunnelClient)?;
+                endpoint.set_default_client_config(client_config);
+                QuarkRpcClientInner::Quic {
+                    endpoint,
+                    remote_addr: addr,
+                }
+            }
+            TransportMode::Tcp => QuarkRpcClientInner::Tcp { remote_addr: addr },
+        };
+        Ok(Self { inner })
     }
 
-    async fn establish_connection(&self) -> Result<quinn::Connection> {
-        let server_name = self.remote_addr.ip().to_string();
-        self.endpoint
-            .connect(self.remote_addr, &server_name)
-            .map_err(|e| ServerError::TunnelConnect(e.to_string()))?
-            .await
-            .map_err(|e| ServerError::TunnelConnect(e.to_string()))
+    async fn establish_connection(&self) -> Result<RpcConnection> {
+        match &self.inner {
+            QuarkRpcClientInner::Quic {
+                endpoint,
+                remote_addr,
+            } => {
+                let server_name = remote_addr.ip().to_string();
+                let connection = endpoint
+                    .connect(*remote_addr, &server_name)
+                    .map_err(|e| ServerError::TunnelConnect(e.to_string()))?
+                    .await
+                    .map_err(|e| ServerError::TunnelConnect(e.to_string()))?;
+                Ok(RpcConnection::Quic(connection))
+            }
+            QuarkRpcClientInner::Tcp { remote_addr } => {
+                let stream = TcpStream::connect(*remote_addr)
+                    .await
+                    .map_err(|e| ServerError::TunnelTcpConnect(e.to_string()))?;
+                Ok(RpcConnection::Tcp(stream))
+            }
+        }
     }
 }
 
 async fn request_over_connection(
-    connection: &quinn::Connection,
-    req: &QuarkIn,
+    connection: &TunnelConnectionHandle,
+    req: QuarkIn,
 ) -> Result<QuarkOut> {
-    let (mut send, mut recv) = connection
-        .open_bi()
-        .await
-        .map_err(|e| ServerError::TunnelStream(e.to_string()))?;
-    write_frame(&mut send, req).await?;
-    read_frame(&mut recv).await
+    match connection {
+        TunnelConnectionHandle::Quic(connection) => {
+            let (mut send, mut recv) = connection
+                .open_bi()
+                .await
+                .map_err(|e| ServerError::TunnelStream(e.to_string()))?;
+            write_frame_quic(&mut send, &req).await?;
+            read_frame_quic(&mut recv).await
+        }
+        TunnelConnectionHandle::Tcp(session) => session.call(req).await,
+    }
 }
 
 /// Write a length-prefixed postcard frame to a QUIC send stream.
-async fn write_frame(send: &mut quinn::SendStream, msg: &impl Serialize) -> Result<()> {
+async fn write_frame_quic(send: &mut quinn::SendStream, msg: &impl Serialize) -> Result<()> {
     let payload = to_allocvec(msg).map_err(ServerError::EncodeFrame)?;
     let len =
         u32::try_from(payload.len()).map_err(|_| ServerError::FrameTooLarge(payload.len()))?;
@@ -265,7 +567,7 @@ async fn write_frame(send: &mut quinn::SendStream, msg: &impl Serialize) -> Resu
 }
 
 /// Read a length-prefixed postcard frame from a QUIC recv stream.
-async fn read_frame<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) -> Result<T> {
+async fn read_frame_quic<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) -> Result<T> {
     let len = match recv.read_u32().await {
         Ok(len) => len as usize,
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
@@ -284,6 +586,46 @@ async fn read_frame<T: for<'de> Deserialize<'de>>(recv: &mut quinn::RecvStream) 
         .map_err(ServerError::ReadFramePayload)?;
 
     from_bytes(&payload).map_err(ServerError::DecodeFrame)
+}
+
+async fn read_frame_io<R, T>(recv: &mut R) -> Result<T>
+where
+    R: AsyncRead + Unpin,
+    T: DeserializeOwned,
+{
+    let len = match recv.read_u32().await {
+        Ok(len) => len as usize,
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+            return Err(ServerError::UnexpectedEof);
+        }
+        Err(e) => return Err(ServerError::ReadFrameLength(e)),
+    };
+
+    if len > MAX_FRAME_SIZE {
+        return Err(ServerError::FrameTooLarge(len));
+    }
+
+    let mut payload = vec![0u8; len];
+    recv.read_exact(&mut payload)
+        .await
+        .map_err(ServerError::ReadFramePayloadIo)?;
+    from_bytes(&payload).map_err(ServerError::DecodeFrame)
+}
+
+async fn write_frame_io<W>(send: &mut W, msg: &impl Serialize) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let payload = to_allocvec(msg).map_err(ServerError::EncodeFrame)?;
+    let len =
+        u32::try_from(payload.len()).map_err(|_| ServerError::FrameTooLarge(payload.len()))?;
+    send.write_all(&len.to_be_bytes())
+        .await
+        .map_err(ServerError::WriteFrameIo)?;
+    send.write_all(&payload)
+        .await
+        .map_err(ServerError::WriteFrameIo)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +720,7 @@ enum QuarkMode {
 struct WorkerModeState {
     parent_addr: SocketAddr,
     worker_id: Uuid,
+    transport_mode: TransportMode,
     tunnel_token: tokio::sync::RwLock<Uuid>,
     parent_session: tokio::sync::RwLock<Option<ParentTunnelSession>>,
     tunnel_connect_deadline: Option<Duration>,
@@ -398,6 +741,7 @@ struct TunnelWorker {
 
 struct QuarkContext {
     model_path: PathBuf,
+    transport_mode: TransportMode,
     void_client: Option<Arc<VoidClient>>,
     defaults: QuarkServerDefaults,
     frozen: bool,
@@ -405,7 +749,7 @@ struct QuarkContext {
     mode: QuarkMode,
     routes: tokio::sync::RwLock<HashMap<Uuid, RouteTarget>>,
     workers: tokio::sync::RwLock<HashMap<Uuid, TunnelWorker>>,
-    worker_connections: tokio::sync::RwLock<HashMap<Uuid, quinn::Connection>>,
+    worker_connections: tokio::sync::RwLock<HashMap<Uuid, TunnelConnectionHandle>>,
     instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
 }
 
@@ -508,6 +852,7 @@ pub struct ServerBuilder {
     key: Option<PathBuf>,
     cert: Option<PathBuf>,
     stateless_retry: bool,
+    transport_mode: TransportMode,
     frozen: bool,
     listen: SocketAddr,
     model_path: PathBuf,
@@ -525,6 +870,7 @@ impl ServerBuilder {
             key: None,
             cert: None,
             stateless_retry: false,
+            transport_mode: TransportMode::Quic,
             frozen: false,
             listen: DEFAULT_LISTEN_ADDR
                 .parse()
@@ -555,6 +901,16 @@ impl ServerBuilder {
 
     pub fn stateless_retry(mut self, v: bool) -> Self {
         self.stateless_retry = v;
+        self
+    }
+
+    pub fn transport_mode(mut self, mode: TransportMode) -> Self {
+        self.transport_mode = mode;
+        self
+    }
+
+    pub fn tcp(mut self) -> Self {
+        self.transport_mode = TransportMode::Tcp;
         self
     }
 
@@ -659,50 +1015,72 @@ impl ServerBuilder {
     }
 
     /// Build the void client, endpoint and shared server context.
-    async fn setup(self) -> Result<(quinn::Endpoint, SocketAddr, Arc<QuarkContext>)> {
+    async fn setup(self) -> Result<(QuarkListener, SocketAddr, Arc<QuarkContext>)> {
         let model_path_str = self.model_path.to_string_lossy().to_string();
         info!(model_path = %model_path_str, "configured model");
 
         // Optionally connect to void.
         let void_client = if let Some(addr) = self.void_addr {
             info!(%addr, "connecting to void");
-            let client = VoidClient::connect(addr).await?;
+            let client = VoidClient::connect(addr, self.transport_mode).await?;
             Some(Arc::new(client))
         } else {
             warn!("no void address configured — inference will fail without object store");
             None
         };
 
-        let (cert_chain, key) = match (self.key.as_ref(), self.cert.as_ref()) {
-            (Some(key_path), Some(cert_path)) => load_user_cert_chain_and_key(key_path, cert_path)?,
-            _ => load_or_generate_self_signed_cert()?,
+        let listener = match self.transport_mode {
+            TransportMode::Quic => {
+                let (cert_chain, key) = match (self.key.as_ref(), self.cert.as_ref()) {
+                    (Some(key_path), Some(cert_path)) => {
+                        load_user_cert_chain_and_key(key_path, cert_path)?
+                    }
+                    _ => load_or_generate_self_signed_cert()?,
+                };
+
+                let mut server_config = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(cert_chain, key)
+                    .map_err(ServerError::RustlsCertConfig)?;
+
+                if self.keylog {
+                    server_config.key_log = Arc::new(rustls::KeyLogFile::new());
+                }
+
+                let crypto = QuicServerConfig::try_from(server_config)
+                    .map_err(ServerError::QuicServerConfig)?;
+
+                let endpoint_cfg = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+
+                let udp_listener =
+                    std::net::UdpSocket::bind(self.listen).map_err(ServerError::BindEndpoint)?;
+                let runtime = quinn::TokioRuntime;
+                let endpoint = quinn::Endpoint::new(
+                    Default::default(),
+                    Some(endpoint_cfg),
+                    udp_listener,
+                    Arc::new(runtime),
+                )
+                .map_err(ServerError::BindEndpoint)?;
+                QuarkListener::Quic(endpoint)
+            }
+            TransportMode::Tcp => {
+                if self.keylog || self.key.is_some() || self.cert.is_some() {
+                    warn!(
+                        "ignoring TLS options (--keylog/--key/--cert) because TCP transport is enabled"
+                    );
+                }
+                if self.stateless_retry {
+                    warn!("ignoring --stateless-retry because TCP transport is enabled");
+                }
+                let listener = TcpListener::bind(self.listen)
+                    .await
+                    .map_err(ServerError::BindTcpListener)?;
+                QuarkListener::Tcp(listener)
+            }
         };
 
-        let mut server_config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
-            .map_err(ServerError::RustlsCertConfig)?;
-
-        if self.keylog {
-            server_config.key_log = Arc::new(rustls::KeyLogFile::new());
-        }
-
-        let crypto =
-            QuicServerConfig::try_from(server_config).map_err(ServerError::QuicServerConfig)?;
-
-        let endpoint_cfg = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-
-        let listener = std::net::UdpSocket::bind(self.listen).map_err(ServerError::BindEndpoint)?;
-        let runtime = quinn::TokioRuntime;
-        let endpoint = quinn::Endpoint::new(
-            Default::default(),
-            Some(endpoint_cfg),
-            listener,
-            Arc::new(runtime),
-        )
-        .map_err(ServerError::BindEndpoint)?;
-
-        let local_addr = endpoint.local_addr().map_err(ServerError::LocalAddr)?;
+        let local_addr = listener.local_addr().map_err(ServerError::LocalAddr)?;
         info!(%local_addr, "listening");
 
         let mode = if let Some(parent_addr) = self.tunnel {
@@ -727,6 +1105,7 @@ impl ServerBuilder {
                 worker_id,
                 resolve_max_instances(self.max_instances),
                 self.tunnel_connect_deadline,
+                self.transport_mode,
             )
             .await?;
             info!(
@@ -739,6 +1118,7 @@ impl ServerBuilder {
             QuarkMode::Worker(Arc::new(WorkerModeState {
                 parent_addr,
                 worker_id,
+                transport_mode: self.transport_mode,
                 tunnel_token: tokio::sync::RwLock::new(tunnel_token),
                 parent_session: tokio::sync::RwLock::new(Some(parent_session)),
                 tunnel_connect_deadline: self.tunnel_connect_deadline,
@@ -749,6 +1129,7 @@ impl ServerBuilder {
 
         let context = Arc::new(QuarkContext {
             model_path: self.model_path,
+            transport_mode: self.transport_mode,
             void_client,
             defaults: self.defaults,
             frozen: self.frozen,
@@ -760,75 +1141,104 @@ impl ServerBuilder {
             instances: tokio::sync::RwLock::new(HashMap::new()),
         });
 
-        Ok((endpoint, local_addr, context))
+        Ok((listener, local_addr, context))
     }
 
     /// Start the server in a background task. Returns the bound address and
     /// a handle that can be used to await or abort the server.
     pub async fn serve(self) -> Result<(SocketAddr, tokio::task::JoinHandle<Result<()>>)> {
         let stateless_retry = self.stateless_retry;
-        let (endpoint, local_addr, context) = self.setup().await?;
-        let handle = tokio::spawn(Self::run_server_loops(endpoint, context, stateless_retry));
+        let (listener, local_addr, context) = self.setup().await?;
+        let handle = tokio::spawn(Self::run_server_loops(listener, context, stateless_retry));
         Ok((local_addr, handle))
     }
 
     /// Run the server, blocking until the endpoint is closed.
     pub async fn run(self) -> Result<()> {
         let stateless_retry = self.stateless_retry;
-        let (endpoint, _local_addr, context) = self.setup().await?;
-        Self::run_server_loops(endpoint, context, stateless_retry).await
+        let (listener, _local_addr, context) = self.setup().await?;
+        Self::run_server_loops(listener, context, stateless_retry).await
     }
 
     async fn run_server_loops(
-        endpoint: quinn::Endpoint,
+        listener: QuarkListener,
         context: Arc<QuarkContext>,
         stateless_retry: bool,
     ) -> Result<()> {
         let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         if matches!(&context.mode, QuarkMode::Worker(_)) {
-            tokio::select! {
-                accept_result = Self::accept_loop(endpoint, Arc::clone(&context), stateless_retry, shutdown_rx.clone()) => accept_result,
-                _ = maintain_parent_registration_loop(Arc::clone(&context)) => Ok(()),
-                _ = parent_tunnel_stream_loop(context) => Ok(()),
+            let transport_mode = context.transport_mode;
+            match transport_mode {
+                TransportMode::Quic => {
+                    tokio::select! {
+                        accept_result = Self::accept_loop(listener, Arc::clone(&context), stateless_retry, shutdown_rx.clone()) => accept_result,
+                        _ = maintain_parent_registration_loop(Arc::clone(&context)) => Ok(()),
+                        _ = parent_tunnel_stream_loop(context) => Ok(()),
+                    }
+                }
+                TransportMode::Tcp => {
+                    tokio::select! {
+                        accept_result = Self::accept_loop(listener, Arc::clone(&context), stateless_retry, shutdown_rx.clone()) => accept_result,
+                        _ = maintain_parent_registration_loop(Arc::clone(&context)) => Ok(()),
+                        _ = parent_tunnel_tcp_session_loop(context) => Ok(()),
+                    }
+                }
             }
         } else {
-            Self::accept_loop(endpoint, context, stateless_retry, shutdown_rx).await
+            Self::accept_loop(listener, context, stateless_retry, shutdown_rx).await
         }
     }
 
     /// Accept-loop shared by both `run()` and `serve()`.
     async fn accept_loop(
-        endpoint: quinn::Endpoint,
+        listener: QuarkListener,
         context: Arc<QuarkContext>,
         stateless_retry: bool,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
-        loop {
-            let conn = tokio::select! {
-                incoming = endpoint.accept() => match incoming {
-                    Some(c) => c,
-                    None => break,
-                },
-                changed = shutdown_rx.changed() => {
-                    if changed.is_err() {
-                        break;
+        match listener {
+            QuarkListener::Quic(endpoint) => loop {
+                let conn = tokio::select! {
+                    incoming = endpoint.accept() => match incoming {
+                        Some(c) => c,
+                        None => break,
+                    },
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        if *shutdown_rx.borrow() {
+                            break;
+                        }
+                        continue;
                     }
-                    if *shutdown_rx.borrow() {
-                        break;
-                    }
+                };
+
+                if stateless_retry && !conn.remote_address_validated() {
+                    info!("requiring connection to validate its address");
+                    let _ = conn.retry();
                     continue;
                 }
-            };
 
-            if stateless_retry && !conn.remote_address_validated() {
-                info!("requiring connection to validate its address");
-                let _ = conn.retry();
-                continue;
-            }
-
-            info!(remote = %conn.remote_address(), "accepting connection");
-            let ctx = Arc::clone(&context);
-            tokio::spawn(handle_connection(conn, ctx, shutdown_rx.clone()));
+                info!(remote = %conn.remote_address(), "accepting connection");
+                let ctx = Arc::clone(&context);
+                tokio::spawn(handle_connection(conn, ctx, shutdown_rx.clone()));
+            },
+            QuarkListener::Tcp(listener) => loop {
+                let accepted = tokio::select! {
+                    accepted = listener.accept() => accepted.map_err(ServerError::AcceptTcpConnection)?,
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let (stream, remote_addr) = accepted;
+                info!(remote = %remote_addr, "accepting tcp connection");
+                let ctx = Arc::clone(&context);
+                tokio::spawn(handle_tcp_connection(stream, ctx));
+            },
         }
 
         Ok(())
@@ -838,6 +1248,20 @@ impl ServerBuilder {
 impl Default for ServerBuilder {
     fn default() -> Self {
         panic!("use ServerBuilder::new(model_path) instead");
+    }
+}
+
+enum QuarkListener {
+    Quic(quinn::Endpoint),
+    Tcp(TcpListener),
+}
+
+impl QuarkListener {
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        match self {
+            Self::Quic(endpoint) => endpoint.local_addr(),
+            Self::Tcp(listener) => listener.local_addr(),
+        }
     }
 }
 
@@ -883,7 +1307,11 @@ async fn handle_connection(
         };
 
         let ctx = Arc::clone(&context);
-        tokio::spawn(handle_stream(stream, ctx, connection.clone()));
+        tokio::spawn(handle_stream(
+            stream,
+            ctx,
+            Some(TunnelConnectionHandle::Quic(connection.clone())),
+        ));
     }
 }
 
@@ -901,7 +1329,7 @@ async fn parent_tunnel_stream_loop(context: Arc<QuarkContext>) {
                 .as_ref()
                 .map(|session| session.connection.clone())
         };
-        let Some(connection) = connection else {
+        let Some(TunnelConnectionHandle::Quic(connection)) = connection else {
             last_connection_id = None;
             logged_closed_for_connection = false;
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -944,19 +1372,186 @@ async fn parent_tunnel_stream_loop(context: Arc<QuarkContext>) {
         logged_closed_for_connection = false;
 
         let ctx = Arc::clone(&context);
-        tokio::spawn(handle_stream(stream, ctx, connection.clone()));
+        tokio::spawn(handle_stream(
+            stream,
+            ctx,
+            Some(TunnelConnectionHandle::Quic(connection.clone())),
+        ));
+    }
+}
+
+async fn parent_tunnel_tcp_session_loop(context: Arc<QuarkContext>) {
+    let worker_mode = match &context.mode {
+        QuarkMode::Worker(worker_mode) => Arc::clone(worker_mode),
+        QuarkMode::Root => return,
+    };
+
+    loop {
+        let session = {
+            let parent_session = worker_mode.parent_session.read().await;
+            parent_session
+                .as_ref()
+                .and_then(|session| match &session.connection {
+                    TunnelConnectionHandle::Tcp(session) => Some(Arc::clone(session)),
+                    TunnelConnectionHandle::Quic(_) => None,
+                })
+        };
+        let Some(session) = session else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+
+        let Some(request) = session.recv_request().await else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+
+        let ctx = Arc::clone(&context);
+        tokio::spawn(async move {
+            handle_tunnel_tcp_request(request, session, ctx).await;
+        });
+    }
+}
+
+async fn handle_tunnel_tcp_request(
+    request: TunnelTcpRequest,
+    session: Arc<TcpTunnelSession>,
+    context: Arc<QuarkContext>,
+) {
+    let out = match handle_request(request.request, &context, None).await {
+        Ok(out) => out,
+        Err(error) => QuarkOut::Error {
+            message: error.to_string(),
+        },
+    };
+    if let Err(error) = session.send_response(request.request_id, out).await {
+        warn!(error = %error, "failed to send tunnel tcp response");
+    }
+}
+
+async fn set_worker_connection(
+    token: Uuid,
+    connection: TunnelConnectionHandle,
+    ctx: &QuarkContext,
+) {
+    let old_connection = ctx
+        .worker_connections
+        .write()
+        .await
+        .insert(token, connection);
+    if let Some(old_connection) = old_connection {
+        old_connection
+            .close(b"replaced worker tunnel connection")
+            .await;
+    }
+}
+
+async fn drive_worker_tcp_session(
+    token: Uuid,
+    session: Arc<TcpTunnelSession>,
+    context: Arc<QuarkContext>,
+) {
+    loop {
+        let Some(request) = session.recv_request().await else {
+            break;
+        };
+        let session = Arc::clone(&session);
+        let ctx = Arc::clone(&context);
+        tokio::spawn(async move {
+            handle_tunnel_tcp_request(request, session, ctx).await;
+        });
+    }
+
+    let mut worker_connections = context.worker_connections.write().await;
+    let should_remove = worker_connections
+        .get(&token)
+        .is_some_and(|connection| match connection {
+            TunnelConnectionHandle::Tcp(existing) => Arc::ptr_eq(existing, &session),
+            TunnelConnectionHandle::Quic(_) => false,
+        });
+    if should_remove {
+        worker_connections.remove(&token);
+    }
+}
+
+async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<QuarkContext>) {
+    loop {
+        let req: QuarkIn = match read_frame_io(&mut stream).await {
+            Ok(req) => req,
+            Err(ServerError::UnexpectedEof) => return,
+            Err(error) => {
+                warn!(error = %error, "failed to read tcp request frame");
+                return;
+            }
+        };
+
+        match req {
+            QuarkIn::RegisterTunnel {
+                worker_id,
+                max_instances,
+            } => {
+                let out =
+                    match handle_register_tunnel(worker_id, max_instances, None, &context).await {
+                        Ok(out) => out,
+                        Err(error) => QuarkOut::Error {
+                            message: error.to_string(),
+                        },
+                    };
+                if let Err(error) = write_frame_io(&mut stream, &out).await {
+                    warn!(error = %error, "failed to write tcp tunnel registration response");
+                    return;
+                }
+                let QuarkOut::TunnelRegistered { token } = out else {
+                    return;
+                };
+                let session = TcpTunnelSession::new(stream);
+                set_worker_connection(
+                    token,
+                    TunnelConnectionHandle::Tcp(Arc::clone(&session)),
+                    &context,
+                )
+                .await;
+                tokio::spawn(drive_worker_tcp_session(token, session, context));
+                return;
+            }
+            req => {
+                let out = match handle_request(req, &context, None).await {
+                    Ok(out) => out,
+                    Err(error) => QuarkOut::Error {
+                        message: error.to_string(),
+                    },
+                };
+                if let Err(error) = write_frame_io(&mut stream, &out).await {
+                    if matches!(
+                        error,
+                        ServerError::WriteFrameIo(ref io_error)
+                            if matches!(
+                                io_error.kind(),
+                                io::ErrorKind::BrokenPipe
+                                    | io::ErrorKind::ConnectionAborted
+                                    | io::ErrorKind::ConnectionReset
+                            )
+                    ) {
+                        debug!("tcp client disconnected before response write completed");
+                    } else {
+                        warn!(error = %error, "failed to write tcp response frame");
+                    }
+                    return;
+                }
+            }
+        }
     }
 }
 
 async fn handle_stream(
     (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
     context: Arc<QuarkContext>,
-    connection: quinn::Connection,
+    connection: Option<TunnelConnectionHandle>,
 ) {
-    let req: QuarkIn = match read_frame(&mut recv).await {
+    let req: QuarkIn = match read_frame_quic(&mut recv).await {
         Ok(r) => r,
         Err(e) => {
-            let _ = write_frame(
+            let _ = write_frame_quic(
                 &mut send,
                 &QuarkOut::Error {
                     message: e.to_string(),
@@ -976,7 +1571,7 @@ async fn handle_stream(
         },
     };
 
-    if write_frame(&mut send, &out).await.is_err() {
+    if write_frame_quic(&mut send, &out).await.is_err() {
         warn!("failed to write response");
     }
 }
@@ -984,13 +1579,13 @@ async fn handle_stream(
 async fn handle_request(
     req: QuarkIn,
     ctx: &QuarkContext,
-    connection: quinn::Connection,
+    connection: Option<TunnelConnectionHandle>,
 ) -> Result<QuarkOut> {
     match req {
         QuarkIn::RegisterTunnel {
             worker_id,
             max_instances,
-        } => handle_register_tunnel(worker_id, max_instances, Some(connection), ctx).await,
+        } => handle_register_tunnel(worker_id, max_instances, connection, ctx).await,
         QuarkIn::UpdateTunnelCapacity {
             token,
             max_instances,
@@ -1033,29 +1628,62 @@ async fn register_tunnel_worker(
     parent_addr: SocketAddr,
     worker_id: Uuid,
     max_instances: Option<usize>,
+    transport_mode: TransportMode,
 ) -> Result<(Uuid, ParentTunnelSession)> {
-    let client = QuarkRpcClient::connect(parent_addr).await?;
+    let client = QuarkRpcClient::connect(parent_addr, transport_mode).await?;
     let connection = client.establish_connection().await?;
-    let out = request_over_connection(
-        &connection,
-        &QuarkIn::RegisterTunnel {
-            worker_id,
-            max_instances,
-        },
-    )
-    .await?;
-    match out {
-        QuarkOut::TunnelRegistered { token } => Ok((
-            token,
-            ParentTunnelSession {
-                _client: client,
-                connection,
-            },
-        )),
-        QuarkOut::Error { message } => Err(ServerError::TunnelRegistrationRejected(message)),
-        _ => Err(ServerError::UnexpectedTunnelResponse(
-            "register tunnel response",
-        )),
+    match connection {
+        RpcConnection::Quic(connection) => {
+            let out = request_over_connection(
+                &TunnelConnectionHandle::Quic(connection.clone()),
+                QuarkIn::RegisterTunnel {
+                    worker_id,
+                    max_instances,
+                },
+            )
+            .await?;
+            match out {
+                QuarkOut::TunnelRegistered { token } => Ok((
+                    token,
+                    ParentTunnelSession {
+                        _client: client,
+                        connection: TunnelConnectionHandle::Quic(connection),
+                    },
+                )),
+                QuarkOut::Error { message } => {
+                    Err(ServerError::TunnelRegistrationRejected(message))
+                }
+                _ => Err(ServerError::UnexpectedTunnelResponse(
+                    "register tunnel response",
+                )),
+            }
+        }
+        RpcConnection::Tcp(mut stream) => {
+            write_frame_io(
+                &mut stream,
+                &QuarkIn::RegisterTunnel {
+                    worker_id,
+                    max_instances,
+                },
+            )
+            .await?;
+            let out: QuarkOut = read_frame_io(&mut stream).await?;
+            match out {
+                QuarkOut::TunnelRegistered { token } => Ok((
+                    token,
+                    ParentTunnelSession {
+                        _client: client,
+                        connection: TunnelConnectionHandle::Tcp(TcpTunnelSession::new(stream)),
+                    },
+                )),
+                QuarkOut::Error { message } => {
+                    Err(ServerError::TunnelRegistrationRejected(message))
+                }
+                _ => Err(ServerError::UnexpectedTunnelResponse(
+                    "register tunnel response",
+                )),
+            }
+        }
     }
 }
 
@@ -1064,6 +1692,7 @@ async fn register_tunnel_worker_with_retry(
     worker_id: Uuid,
     max_instances: Option<usize>,
     deadline: Option<Duration>,
+    transport_mode: TransportMode,
 ) -> Result<(Uuid, ParentTunnelSession)> {
     let start = Instant::now();
     let deadline_at = deadline.map(|deadline| start + deadline);
@@ -1072,7 +1701,7 @@ async fn register_tunnel_worker_with_retry(
     let mut attempts = 0u32;
     loop {
         attempts = attempts.saturating_add(1);
-        match register_tunnel_worker(parent_addr, worker_id, max_instances).await {
+        match register_tunnel_worker(parent_addr, worker_id, max_instances, transport_mode).await {
             Ok(registered) => return Ok(registered),
             Err(error) => {
                 let now = Instant::now();
@@ -1116,13 +1745,13 @@ async fn register_tunnel_worker_with_retry(
 }
 
 async fn update_tunnel_capacity(
-    parent_connection: &quinn::Connection,
+    parent_connection: &TunnelConnectionHandle,
     tunnel_token: Uuid,
     max_instances: Option<usize>,
 ) -> Result<()> {
     let out = request_over_connection(
         parent_connection,
-        &QuarkIn::UpdateTunnelCapacity {
+        QuarkIn::UpdateTunnelCapacity {
             token: tunnel_token,
             max_instances,
         },
@@ -1182,6 +1811,7 @@ async fn propagate_capacity_to_parent(ctx: &QuarkContext) -> Result<()> {
                         worker_mode.worker_id,
                         max_instances,
                         worker_mode.tunnel_connect_deadline,
+                        worker_mode.transport_mode,
                     )
                     .await?;
                     {
@@ -1189,7 +1819,8 @@ async fn propagate_capacity_to_parent(ctx: &QuarkContext) -> Result<()> {
                         if let Some(old_session) = parent_session.replace(new_session) {
                             old_session
                                 .connection
-                                .close(0u32.into(), b"replaced parent tunnel session");
+                                .close(b"replaced parent tunnel session")
+                                .await;
                         }
                     }
                     {
@@ -1224,7 +1855,7 @@ async fn maintain_parent_registration_loop(context: Arc<QuarkContext>) {
 async fn handle_register_tunnel(
     worker_id: Uuid,
     max_instances: Option<usize>,
-    connection: Option<quinn::Connection>,
+    connection: Option<TunnelConnectionHandle>,
     ctx: &QuarkContext,
 ) -> Result<QuarkOut> {
     let max_instances = resolve_max_instances(max_instances);
@@ -1252,20 +1883,7 @@ async fn handle_register_tunnel(
     };
 
     if let Some(connection) = connection {
-        let old_connection = ctx
-            .worker_connections
-            .write()
-            .await
-            .insert(token, connection);
-        if let Some(old_connection) = old_connection {
-            old_connection.close(0u32.into(), b"replaced worker tunnel connection");
-        }
-    } else {
-        warn!(
-            %worker_id,
-            token = %token,
-            "registered tunnel worker without connection handle"
-        );
+        set_worker_connection(token, connection, ctx).await;
     }
 
     propagate_capacity_to_parent(ctx).await?;
@@ -1406,7 +2024,7 @@ async fn get_worker(token: Uuid, ctx: &QuarkContext) -> Result<TunnelWorker> {
         .ok_or(ServerError::TunnelWorkerUnavailable(token))
 }
 
-async fn get_worker_connection(token: Uuid, ctx: &QuarkContext) -> Result<quinn::Connection> {
+async fn get_worker_connection(token: Uuid, ctx: &QuarkContext) -> Result<TunnelConnectionHandle> {
     ctx.worker_connections
         .read()
         .await
@@ -1424,7 +2042,7 @@ async fn forward_tunnel_request(
     let connection = get_worker_connection(worker_token, ctx).await?;
     let out = request_over_connection(
         &connection,
-        &QuarkIn::TunnelForward {
+        QuarkIn::TunnelForward {
             token: worker_token,
             request,
         },
@@ -2578,6 +3196,10 @@ pub enum ServerError {
     QuicServerConfig(#[source] quinn::crypto::rustls::NoInitialCipherSuite),
     #[error("failed to bind QUIC endpoint: {0}")]
     BindEndpoint(#[source] io::Error),
+    #[error("failed to bind TCP listener: {0}")]
+    BindTcpListener(#[source] io::Error),
+    #[error("failed to accept TCP connection: {0}")]
+    AcceptTcpConnection(#[source] io::Error),
     #[error("failed to fetch local listen address: {0}")]
     LocalAddr(#[source] io::Error),
     #[error("model error: {0}")]
@@ -2622,6 +3244,8 @@ pub enum ServerError {
     VoidConnect(String),
     #[error("failed to open void stream: {0}")]
     VoidStream(String),
+    #[error("failed to connect to void over tcp: {0}")]
+    VoidTcpConnect(String),
     #[error("void crypto config error: {0}")]
     VoidCrypto(String),
     #[error("void error: {0}")]
@@ -2630,6 +3254,8 @@ pub enum ServerError {
     BindTunnelClient(#[source] io::Error),
     #[error("failed to connect to tunnel peer: {0}")]
     TunnelConnect(String),
+    #[error("failed to connect to tunnel peer over tcp: {0}")]
+    TunnelTcpConnect(String),
     #[error("failed to open tunnel stream: {0}")]
     TunnelStream(String),
     #[error("tunnel crypto config error: {0}")]
@@ -2662,6 +3288,8 @@ pub enum ServerError {
     TunnelWorkerUnavailable(Uuid),
     #[error("tunnel worker returned error: {0}")]
     TunnelWorkerError(String),
+    #[error("tunnel tcp session closed")]
+    TunnelTcpSessionClosed,
     #[error("unexpected tunnel protocol response: {0}")]
     UnexpectedTunnelResponse(&'static str),
     #[error("unexpected EOF while reading frame length")]
@@ -2672,12 +3300,16 @@ pub enum ServerError {
     FrameTooLarge(usize),
     #[error("failed to read frame payload: {0}")]
     ReadFramePayload(#[source] quinn::ReadExactError),
+    #[error("failed to read frame payload: {0}")]
+    ReadFramePayloadIo(#[source] io::Error),
     #[error("failed to decode frame: {0}")]
     DecodeFrame(postcard::Error),
     #[error("failed to encode frame: {0}")]
     EncodeFrame(postcard::Error),
     #[error("failed to write frame: {0}")]
     WriteFrame(quinn::WriteError),
+    #[error("failed to write frame: {0}")]
+    WriteFrameIo(io::Error),
 }
 
 #[cfg(test)]
@@ -2688,8 +3320,8 @@ mod tests {
         client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
         resolve_max_instances, resolve_model_frozen, resolve_model_oscillation,
         to_engine_error_feedback, FrozenOscillation, ModelRuntimeConfig, QuarkContext, QuarkMode,
-        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder, TunnelWorker,
-        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder, TransportMode,
+        TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
     use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
@@ -3163,6 +3795,7 @@ mod tests {
         routes.insert(model_d, RouteTarget::Worker(worker_b));
         let ctx = QuarkContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Quic,
             void_client: None,
             defaults: QuarkServerDefaults::default(),
             frozen: false,
@@ -3197,6 +3830,7 @@ mod tests {
         routes.insert(uuid::Uuid::new_v4(), RouteTarget::Local);
         let ctx = QuarkContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Quic,
             void_client: None,
             defaults: QuarkServerDefaults::default(),
             frozen: false,
@@ -3228,6 +3862,7 @@ mod tests {
     async fn tunnel_registration_defaults_capacity_to_one_when_omitted() {
         let ctx = QuarkContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Quic,
             void_client: None,
             defaults: QuarkServerDefaults::default(),
             frozen: false,
@@ -3262,6 +3897,7 @@ mod tests {
     async fn tunnel_registration_preserves_explicit_capacity() {
         let ctx = QuarkContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Quic,
             void_client: None,
             defaults: QuarkServerDefaults::default(),
             frozen: false,

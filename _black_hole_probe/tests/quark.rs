@@ -121,6 +121,77 @@ async fn tunnel_root_forwards_start_to_registered_worker() {
 }
 
 #[tokio::test]
+async fn tcp_tunnel_root_forwards_start_to_registered_worker() {
+    init_tracing();
+
+    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .tcp()
+        .max_instances(0)
+        .serve()
+        .await
+        .expect("failed to start root quark server");
+    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .tcp()
+        .tunnel(root_server.local_addr())
+        .max_instances(1)
+        .serve()
+        .await
+        .expect("failed to start worker quark server");
+
+    let root_client = QuarkClient::new_tcp(root_server.local_addr());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(capacity) = root_client.query_model_capacity().await {
+                if capacity.total == Some(1) && capacity.available == Some(1) {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("worker capacity should propagate over tcp tunnel");
+
+    let model_id = Uuid::new_v4();
+    let error = root_client
+        .start(model_id, None)
+        .await
+        .expect_err("start should be forwarded to worker and fail on invalid model path");
+    assert!(
+        error.contains("Model path does not exist"),
+        "unexpected forwarded start error: {error}"
+    );
+
+    worker_server.abort();
+    root_server.abort();
+}
+
+#[tokio::test]
+async fn tcp_void_upload_download_round_trip() {
+    init_tracing();
+
+    let void_server = TestVoidServer::new()
+        .tcp()
+        .serve()
+        .await
+        .expect("failed to start tcp void server");
+    let void_client = VoidClient::new_tcp(void_server.local_addr());
+
+    let payload = b"tcp transport keeps length-prefixed postcard framing".to_vec();
+    let object_id = void_client
+        .upload(payload.clone())
+        .await
+        .expect("tcp upload should succeed");
+    let downloaded = void_client
+        .download(object_id)
+        .await
+        .expect("tcp download should succeed");
+    assert_eq!(downloaded, payload);
+
+    void_server.abort();
+}
+
+#[tokio::test]
 async fn tunnel_worker_retries_parent_registration_until_root_starts() {
     init_tracing();
 

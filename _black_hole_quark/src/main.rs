@@ -23,6 +23,9 @@ struct Opt {
     /// Address to listen on
     #[clap(long = "listen", default_value = "[::1]:4433")]
     listen: SocketAddr,
+    /// Use TCP transport instead of QUIC
+    #[clap(long = "tcp")]
+    tcp: bool,
     /// Path to the GGUF model file
     #[clap(long = "model")]
     model: PathBuf,
@@ -70,6 +73,9 @@ impl From<Opt> for black_hole_quark::ServerBuilder {
             .keylog(opt.keylog)
             .stateless_retry(opt.stateless_retry)
             .listen(opt.listen);
+        if opt.tcp {
+            builder = builder.tcp();
+        }
         if opt.frozen {
             builder = builder.frozen();
         }

@@ -101,6 +101,7 @@ impl Drop for RunningTestVoidServer {
 /// Builder for a local test void server.
 pub struct TestVoidServer {
     listen_addr: SocketAddr,
+    transport_mode: black_hole_void::TransportMode,
     object_store: Box<dyn object_store::ObjectStore>,
     store: Box<dyn persist::VoidStore>,
 }
@@ -109,6 +110,7 @@ impl TestVoidServer {
     pub fn new() -> Self {
         Self {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
+            transport_mode: black_hole_void::TransportMode::Quic,
             object_store: Box::new(object_store::InMemoryObjectStore::new()),
             store: Box::new(persist::InMemoryStore::new()),
         }
@@ -124,6 +126,11 @@ impl TestVoidServer {
         self
     }
 
+    pub fn tcp(mut self) -> Self {
+        self.transport_mode = black_hole_void::TransportMode::Tcp;
+        self
+    }
+
     pub fn object_store(mut self, object_store: Box<dyn object_store::ObjectStore>) -> Self {
         self.object_store = object_store;
         self
@@ -136,6 +143,7 @@ impl TestVoidServer {
 
     pub async fn serve(self) -> Result<RunningTestVoidServer, black_hole_void::ServerError> {
         let (local_addr, handle) = VoidServerBuilder::new(self.object_store, self.store)
+            .transport_mode(self.transport_mode)
             .listen(self.listen_addr)
             .serve()
             .await?;
@@ -184,6 +192,7 @@ impl Drop for RunningTestQuarkServer {
 pub struct TestQuarkServer {
     model_path: PathBuf,
     listen_addr: SocketAddr,
+    transport_mode: black_hole_quark::TransportMode,
     void_addr: Option<SocketAddr>,
     tunnel: Option<SocketAddr>,
     tunnel_connect_deadline: Option<Duration>,
@@ -205,6 +214,7 @@ impl TestQuarkServer {
         Self {
             model_path: model_path.into(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
+            transport_mode: black_hole_quark::TransportMode::Quic,
             void_addr: None,
             tunnel: None,
             tunnel_connect_deadline: None,
@@ -229,6 +239,11 @@ impl TestQuarkServer {
 
     pub fn listen_on_all_interfaces(mut self) -> Self {
         self.listen_addr = "0.0.0.0:0".parse().unwrap();
+        self
+    }
+
+    pub fn tcp(mut self) -> Self {
+        self.transport_mode = black_hole_quark::TransportMode::Tcp;
         self
     }
 
@@ -309,6 +324,7 @@ impl TestQuarkServer {
 
     pub async fn serve(self) -> Result<RunningTestQuarkServer, black_hole_quark::ServerError> {
         let mut builder = QuarkServerBuilder::new(self.model_path)
+            .transport_mode(self.transport_mode)
             .listen(self.listen_addr)
             .kv_cache_quant(self.kv_cache_quant);
         if self.frozen {

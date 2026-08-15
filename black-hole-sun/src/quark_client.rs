@@ -5,14 +5,27 @@ use black_hole_spec::{
 };
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
+};
 
-/// QUIC client for interacting with the Quark service.
+#[derive(Clone, Debug)]
+enum QuarkTransport {
+    Quic {
+        endpoint: quinn::Endpoint,
+        addr: SocketAddr,
+        server_name: String,
+    },
+    Tcp {
+        addr: SocketAddr,
+    },
+}
+
+/// Client for interacting with the Quark service.
 #[derive(Clone, Debug)]
 pub struct QuarkClient {
-    endpoint: quinn::Endpoint,
-    addr: SocketAddr,
-    server_name: String,
+    transport: QuarkTransport,
 }
 
 impl QuarkClient {
@@ -22,9 +35,17 @@ impl QuarkClient {
         server_name: impl Into<String>,
     ) -> Self {
         Self {
-            endpoint: endpoint.clone(),
-            addr,
-            server_name: server_name.into(),
+            transport: QuarkTransport::Quic {
+                endpoint: endpoint.clone(),
+                addr,
+                server_name: server_name.into(),
+            },
+        }
+    }
+
+    pub fn new_tcp(addr: SocketAddr) -> Self {
+        Self {
+            transport: QuarkTransport::Tcp { addr },
         }
     }
 
@@ -141,24 +162,38 @@ impl QuarkClient {
     }
 
     async fn request(&self, request: &QuarkIn) -> Result<QuarkOut, String> {
-        let connecting = self
-            .endpoint
-            .connect(self.addr, &self.server_name)
-            .map_err(|e| format!("connect init failed: {e}"))?;
-        let conn = connecting
-            .await
-            .map_err(|e| format!("connect failed: {e}"))?;
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| format!("open_bi failed: {e}"))?;
+        match &self.transport {
+            QuarkTransport::Quic {
+                endpoint,
+                addr,
+                server_name,
+            } => {
+                let connecting = endpoint
+                    .connect(*addr, server_name)
+                    .map_err(|e| format!("connect init failed: {e}"))?;
+                let conn = connecting
+                    .await
+                    .map_err(|e| format!("connect failed: {e}"))?;
+                let (mut send, mut recv) = conn
+                    .open_bi()
+                    .await
+                    .map_err(|e| format!("open_bi failed: {e}"))?;
 
-        send_frame(&mut send, request).await?;
-        read_frame(&mut recv).await
+                send_frame_quic(&mut send, request).await?;
+                read_frame_quic(&mut recv).await
+            }
+            QuarkTransport::Tcp { addr } => {
+                let mut stream = TcpStream::connect(*addr)
+                    .await
+                    .map_err(|e| format!("tcp connect failed: {e}"))?;
+                send_frame_io(&mut stream, request).await?;
+                read_frame_io(&mut stream).await
+            }
+        }
     }
 }
 
-async fn send_frame(send: &mut quinn::SendStream, msg: &impl Serialize) -> Result<(), String> {
+async fn send_frame_quic(send: &mut quinn::SendStream, msg: &impl Serialize) -> Result<(), String> {
     let payload = to_allocvec(msg).map_err(|e| format!("failed to encode frame: {e}"))?;
     let len = u32::try_from(payload.len()).map_err(|_| "frame too large".to_string())?;
     send.write_all(&len.to_be_bytes())
@@ -170,9 +205,40 @@ async fn send_frame(send: &mut quinn::SendStream, msg: &impl Serialize) -> Resul
     Ok(())
 }
 
-async fn read_frame<T: for<'de> Deserialize<'de>>(
+async fn read_frame_quic<T: for<'de> Deserialize<'de>>(
     recv: &mut quinn::RecvStream,
 ) -> Result<T, String> {
+    let len = recv
+        .read_u32()
+        .await
+        .map_err(|e| format!("failed to read frame len: {e}"))? as usize;
+    let mut payload = vec![0u8; len];
+    recv.read_exact(&mut payload)
+        .await
+        .map_err(|e| format!("failed to read frame payload: {e}"))?;
+    from_bytes(&payload).map_err(|e| format!("failed to decode frame: {e}"))
+}
+
+async fn send_frame_io<W>(send: &mut W, msg: &impl Serialize) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
+    let payload = to_allocvec(msg).map_err(|e| format!("failed to encode frame: {e}"))?;
+    let len = u32::try_from(payload.len()).map_err(|_| "frame too large".to_string())?;
+    send.write_all(&len.to_be_bytes())
+        .await
+        .map_err(|e| format!("failed to write frame len: {e}"))?;
+    send.write_all(&payload)
+        .await
+        .map_err(|e| format!("failed to write frame payload: {e}"))?;
+    Ok(())
+}
+
+async fn read_frame_io<R, T>(recv: &mut R) -> Result<T, String>
+where
+    R: AsyncRead + Unpin,
+    T: for<'de> Deserialize<'de>,
+{
     let len = recv
         .read_u32()
         .await

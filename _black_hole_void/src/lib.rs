@@ -3,10 +3,11 @@ use std::{collections::HashMap, fs, io, net::SocketAddr, path::PathBuf, sync::Ar
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
     sync::Mutex,
     time::{timeout, Duration},
 };
@@ -20,6 +21,18 @@ pub mod persist;
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4434";
 const S3_MAX_FRAME_SIZE: usize = 1024 * 1024 * 1024; // 1 GB
 const MAX_DOWNLOAD_WAIT_TIMEOUT_MS: u64 = 30_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportMode {
+    Quic,
+    Tcp,
+}
+
+impl Default for TransportMode {
+    fn default() -> Self {
+        Self::Quic
+    }
+}
 
 /// Wire request sent by the client.
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,6 +66,7 @@ pub struct ServerBuilder {
     key: Option<PathBuf>,
     cert: Option<PathBuf>,
     stateless_retry: bool,
+    transport_mode: TransportMode,
     listen: SocketAddr,
     object_namespace: String,
     object_store: Box<dyn object_store::ObjectStore>,
@@ -69,6 +83,7 @@ impl ServerBuilder {
             key: None,
             cert: None,
             stateless_retry: false,
+            transport_mode: TransportMode::Quic,
             listen: DEFAULT_LISTEN_ADDR
                 .parse()
                 .expect("default listen address must be valid"),
@@ -103,13 +118,23 @@ impl ServerBuilder {
         self
     }
 
+    pub fn transport_mode(mut self, mode: TransportMode) -> Self {
+        self.transport_mode = mode;
+        self
+    }
+
+    pub fn tcp(mut self) -> Self {
+        self.transport_mode = TransportMode::Tcp;
+        self
+    }
+
     pub fn object_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.object_namespace = namespace.into();
         self
     }
 
     /// Build the server endpoint and context, returning them for reuse.
-    async fn setup(self) -> Result<(quinn::Endpoint, SocketAddr, Arc<VoidContext>)> {
+    async fn setup(self) -> Result<(VoidListener, SocketAddr, Arc<VoidContext>)> {
         // Run migrations before accepting connections.
         self.store.migrate().await.map_err(|e| {
             ServerError::Store(persist::PersistenceError::Message(format!(
@@ -117,36 +142,58 @@ impl ServerBuilder {
             )))
         })?;
 
-        let (cert_chain, key) = match (self.key.as_ref(), self.cert.as_ref()) {
-            (Some(key_path), Some(cert_path)) => load_user_cert_chain_and_key(key_path, cert_path)?,
-            _ => load_or_generate_self_signed_cert()?,
+        let listener = match self.transport_mode {
+            TransportMode::Quic => {
+                let (cert_chain, key) = match (self.key.as_ref(), self.cert.as_ref()) {
+                    (Some(key_path), Some(cert_path)) => {
+                        load_user_cert_chain_and_key(key_path, cert_path)?
+                    }
+                    _ => load_or_generate_self_signed_cert()?,
+                };
+
+                let mut server_config = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(cert_chain, key)
+                    .map_err(ServerError::RustlsCertConfig)?;
+
+                if self.keylog {
+                    server_config.key_log = Arc::new(rustls::KeyLogFile::new());
+                }
+
+                let crypto = QuicServerConfig::try_from(server_config)
+                    .map_err(ServerError::QuicServerConfig)?;
+
+                let endpoint_cfg = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+
+                let udp_listener =
+                    std::net::UdpSocket::bind(self.listen).map_err(ServerError::BindEndpoint)?;
+                let runtime = quinn::TokioRuntime;
+                let endpoint = quinn::Endpoint::new(
+                    Default::default(),
+                    Some(endpoint_cfg),
+                    udp_listener,
+                    Arc::new(runtime),
+                )
+                .map_err(ServerError::BindEndpoint)?;
+                VoidListener::Quic(endpoint)
+            }
+            TransportMode::Tcp => {
+                if self.keylog || self.key.is_some() || self.cert.is_some() {
+                    warn!(
+                        "ignoring TLS options (--keylog/--key/--cert) because TCP transport is enabled"
+                    );
+                }
+                if self.stateless_retry {
+                    warn!("ignoring --stateless-retry because TCP transport is enabled");
+                }
+                let listener = TcpListener::bind(self.listen)
+                    .await
+                    .map_err(ServerError::BindTcpListener)?;
+                VoidListener::Tcp(listener)
+            }
         };
 
-        let mut server_config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
-            .map_err(ServerError::RustlsCertConfig)?;
-
-        if self.keylog {
-            server_config.key_log = Arc::new(rustls::KeyLogFile::new());
-        }
-
-        let crypto =
-            QuicServerConfig::try_from(server_config).map_err(ServerError::QuicServerConfig)?;
-
-        let endpoint_cfg = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-
-        let listener = std::net::UdpSocket::bind(self.listen).map_err(ServerError::BindEndpoint)?;
-        let runtime = quinn::TokioRuntime;
-        let endpoint = quinn::Endpoint::new(
-            Default::default(),
-            Some(endpoint_cfg),
-            listener,
-            Arc::new(runtime),
-        )
-        .map_err(ServerError::BindEndpoint)?;
-
-        let local_addr = endpoint.local_addr().map_err(ServerError::LocalAddr)?;
+        let local_addr = listener.local_addr().map_err(ServerError::LocalAddr)?;
         info!(%local_addr, "listening");
 
         let context = Arc::new(VoidContext {
@@ -156,51 +203,75 @@ impl ServerBuilder {
             wait_registry: WaitRegistry::default(),
         });
 
-        Ok((endpoint, local_addr, context))
+        Ok((listener, local_addr, context))
     }
 
     /// Start the server in a background task. Returns the bound address and
     /// a handle that can be used to await or abort the server.
     pub async fn serve(self) -> Result<(SocketAddr, tokio::task::JoinHandle<Result<()>>)> {
         let stateless_retry = self.stateless_retry;
-        let (endpoint, local_addr, context) = self.setup().await?;
-        let handle = tokio::spawn(Self::accept_loop(endpoint, context, stateless_retry));
+        let (listener, local_addr, context) = self.setup().await?;
+        let handle = tokio::spawn(Self::accept_loop(listener, context, stateless_retry));
         Ok((local_addr, handle))
     }
 
     /// Run the server, blocking until the endpoint is closed.
     pub async fn run(self) -> Result<()> {
         let stateless_retry = self.stateless_retry;
-        let (endpoint, _local_addr, context) = self.setup().await?;
-        Self::accept_loop(endpoint, context, stateless_retry).await
+        let (listener, _local_addr, context) = self.setup().await?;
+        Self::accept_loop(listener, context, stateless_retry).await
     }
 
     /// Accept-loop shared by both `run()` and `serve()`.
     async fn accept_loop(
-        endpoint: quinn::Endpoint,
+        listener: VoidListener,
         context: Arc<VoidContext>,
         stateless_retry: bool,
     ) -> Result<()> {
-        loop {
-            let conn = tokio::select! {
-                incoming = endpoint.accept() => match incoming {
-                    Some(c) => c,
-                    None => break,
-                },
-            };
+        match listener {
+            VoidListener::Quic(endpoint) => loop {
+                let conn = tokio::select! {
+                    incoming = endpoint.accept() => match incoming {
+                        Some(c) => c,
+                        None => break,
+                    },
+                };
 
-            if stateless_retry && !conn.remote_address_validated() {
-                info!("requiring connection to validate its address");
-                let _ = conn.retry();
-                continue;
-            }
+                if stateless_retry && !conn.remote_address_validated() {
+                    info!("requiring connection to validate its address");
+                    let _ = conn.retry();
+                    continue;
+                }
 
-            info!(remote = %conn.remote_address(), "accepting connection");
-            let ctx = Arc::clone(&context);
-            tokio::spawn(handle_connection(conn, ctx));
+                info!(remote = %conn.remote_address(), "accepting connection");
+                let ctx = Arc::clone(&context);
+                tokio::spawn(handle_connection(conn, ctx));
+            },
+            VoidListener::Tcp(listener) => loop {
+                let (stream, remote_addr) = listener
+                    .accept()
+                    .await
+                    .map_err(ServerError::AcceptTcpConnection)?;
+                info!(remote = %remote_addr, "accepting tcp connection");
+                let ctx = Arc::clone(&context);
+                tokio::spawn(handle_tcp_connection(stream, ctx));
+            },
         }
-
         Ok(())
+    }
+}
+
+enum VoidListener {
+    Quic(quinn::Endpoint),
+    Tcp(TcpListener),
+}
+
+impl VoidListener {
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        match self {
+            Self::Quic(endpoint) => endpoint.local_addr(),
+            Self::Tcp(listener) => listener.local_addr(),
+        }
     }
 }
 
@@ -278,7 +349,8 @@ async fn handle_stream(
     (mut send, recv): (quinn::SendStream, quinn::RecvStream),
     context: Arc<VoidContext>,
 ) {
-    let request = match read_frame(recv).await {
+    let mut recv = recv;
+    let request = match read_frame_quic(&mut recv).await {
         Ok(r) => r,
         Err(e) => {
             error!("failed to read request frame: {e}");
@@ -295,7 +367,7 @@ async fn handle_stream(
         }
     };
 
-    if let Err(e) = write_frame(&mut send, &response).await {
+    if let Err(e) = write_frame_quic(&mut send, &response).await {
         match &e {
             // High-throughput flows can cancel in-flight requests while this server
             // is preparing a response. Treat those disconnects as expected churn.
@@ -303,6 +375,42 @@ async fn handle_stream(
                 debug!("client disconnected before response frame write completed")
             }
             _ => error!("failed to write response frame: {e}"),
+        }
+    }
+}
+
+async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<VoidContext>) {
+    loop {
+        let request: VoidIn = match read_frame_io(&mut stream).await {
+            Ok(request) => request,
+            Err(ServerError::UnexpectedEof) => return,
+            Err(error) => {
+                error!("failed to read tcp request frame: {error}");
+                return;
+            }
+        };
+
+        let response = match request {
+            VoidIn::Upload { data } => handle_upload(&context, None, data).await,
+            VoidIn::UploadWith { id, data } => handle_upload(&context, Some(id), data).await,
+            VoidIn::Download { id } => handle_download(&context, id).await,
+            VoidIn::DownloadWait { id, timeout_ms } => {
+                handle_download_wait(&context, id, timeout_ms).await
+            }
+        };
+
+        if let Err(error) = write_frame_io(&mut stream, &response).await {
+            if matches!(error, ServerError::WriteFrameIo(ref err) if matches!(
+                err.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::ConnectionReset
+            )) {
+                debug!("tcp client disconnected before response frame write completed");
+            } else {
+                error!("failed to write tcp response frame: {error}");
+            }
+            return;
         }
     }
 }
@@ -478,7 +586,9 @@ async fn try_download(context: &VoidContext, id: uuid::Uuid) -> DownloadAttempt 
 }
 
 /// Read a length-prefixed postcard frame from the stream.
-async fn read_frame(mut recv: quinn::RecvStream) -> std::result::Result<VoidIn, ServerError> {
+async fn read_frame_quic<T: for<'de> Deserialize<'de>>(
+    recv: &mut quinn::RecvStream,
+) -> std::result::Result<T, ServerError> {
     let len = match recv.read_u32().await {
         Ok(len) => len as usize,
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
@@ -502,9 +612,9 @@ async fn read_frame(mut recv: quinn::RecvStream) -> std::result::Result<VoidIn, 
 }
 
 /// Write a length-prefixed postcard frame to the stream.
-async fn write_frame(
+async fn write_frame_quic(
     send: &mut quinn::SendStream,
-    out: &VoidOut,
+    out: &impl Serialize,
 ) -> std::result::Result<(), ServerError> {
     let payload = to_allocvec(out).map_err(ServerError::EncodeResponse)?;
     let len =
@@ -516,6 +626,53 @@ async fn write_frame(
     send.write_all(&payload)
         .await
         .map_err(ServerError::WriteFrame)?;
+    Ok(())
+}
+
+async fn read_frame_io<R, T>(recv: &mut R) -> std::result::Result<T, ServerError>
+where
+    R: AsyncRead + Unpin,
+    T: DeserializeOwned,
+{
+    let len = match recv.read_u32().await {
+        Ok(len) => len as usize,
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+            return Err(ServerError::UnexpectedEof);
+        }
+        Err(e) => {
+            return Err(ServerError::ReadFrameLength(e));
+        }
+    };
+
+    if len > S3_MAX_FRAME_SIZE {
+        return Err(ServerError::FrameTooLarge(len));
+    }
+
+    let mut payload = vec![0u8; len];
+    recv.read_exact(&mut payload)
+        .await
+        .map_err(ServerError::ReadFramePayloadIo)?;
+
+    from_bytes(&payload).map_err(ServerError::DecodeRequest)
+}
+
+async fn write_frame_io<W>(
+    send: &mut W,
+    out: &impl Serialize,
+) -> std::result::Result<(), ServerError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let payload = to_allocvec(out).map_err(ServerError::EncodeResponse)?;
+    let len =
+        u32::try_from(payload.len()).map_err(|_| ServerError::FrameTooLarge(payload.len()))?;
+
+    send.write_all(&len.to_be_bytes())
+        .await
+        .map_err(ServerError::WriteFrameIo)?;
+    send.write_all(&payload)
+        .await
+        .map_err(ServerError::WriteFrameIo)?;
     Ok(())
 }
 
@@ -603,6 +760,10 @@ pub enum ServerError {
     QuicServerConfig(#[source] quinn::crypto::rustls::NoInitialCipherSuite),
     #[error("failed to bind QUIC endpoint: {0}")]
     BindEndpoint(#[source] io::Error),
+    #[error("failed to bind TCP listener: {0}")]
+    BindTcpListener(#[source] io::Error),
+    #[error("failed to accept TCP connection: {0}")]
+    AcceptTcpConnection(#[source] io::Error),
     #[error("failed to fetch local listen address: {0}")]
     LocalAddr(#[source] io::Error),
     #[error("unexpected EOF while reading frame length")]
@@ -613,12 +774,16 @@ pub enum ServerError {
     FrameTooLarge(usize),
     #[error("failed to read frame payload: {0}")]
     ReadFramePayload(#[source] quinn::ReadExactError),
+    #[error("failed to read frame payload: {0}")]
+    ReadFramePayloadIo(#[source] io::Error),
     #[error("failed to decode request: {0}")]
     DecodeRequest(postcard::Error),
     #[error("failed to encode response: {0}")]
     EncodeResponse(postcard::Error),
     #[error("failed to write frame: {0}")]
     WriteFrame(quinn::WriteError),
+    #[error("failed to write frame: {0}")]
+    WriteFrameIo(io::Error),
     #[error("persistence error: {0}")]
     Store(#[source] persist::PersistenceError),
 }

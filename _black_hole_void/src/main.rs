@@ -30,6 +30,9 @@ struct Opt {
     /// Address to listen on
     #[clap(long = "listen", default_value = "[::1]:4434")]
     listen: SocketAddr,
+    /// Use TCP transport instead of QUIC
+    #[clap(long = "tcp")]
+    tcp: bool,
     /// Use in-memory storage for both objects and metadata (no S3 or PostgreSQL needed)
     #[clap(long = "memory-store", conflicts_with = "filesystem_store")]
     memory_store: bool,
@@ -88,6 +91,9 @@ fn apply_common_server_options(
         .keylog(opt.keylog)
         .stateless_retry(opt.stateless_retry)
         .listen(opt.listen);
+    if opt.tcp {
+        builder = builder.tcp();
+    }
 
     if let Some(key) = opt.key.clone() {
         builder = builder.key(key);
