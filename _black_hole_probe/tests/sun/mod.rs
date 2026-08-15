@@ -43,6 +43,7 @@ fn run_beam_example(example: &str) {
         (cfg!(feature = "qwen35_4b"), "qwen35_4b"),
         (cfg!(feature = "qwen35_9b"), "qwen35_9b"),
         (cfg!(feature = "qwen35_27b"), "qwen35_27b"),
+        (cfg!(feature = "qwen38_27b"), "qwen38_27b"),
     ]
     .into_iter()
     .filter_map(|(enabled, feature)| enabled.then_some(feature))

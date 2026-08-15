@@ -11,6 +11,7 @@ qwen35_2b = ["black-hole-sun/qwen35_2b"]
 qwen35_4b = ["black-hole-sun/qwen35_4b"]
 qwen35_9b = ["black-hole-sun/qwen35_9b"]
 qwen35_27b = ["black-hole-sun/qwen35_27b"]
+qwen38_27b = ["black-hole-sun/qwen38_27b"]
 
 [dependencies]
 async-trait = "0.1"

@@ -13,6 +13,7 @@ qwen35_2b = ["black-hole-quark/qwen35_2b"]
 qwen35_4b = ["black-hole-quark/qwen35_4b"]
 qwen35_9b = ["black-hole-quark/qwen35_9b"]
 qwen35_27b = ["black-hole-quark/qwen35_27b"]
+qwen38_27b = ["black-hole-quark/qwen38_27b"]
 
 [dependencies]
 black-hole-flux = { path = "../_black_hole_flux" }
