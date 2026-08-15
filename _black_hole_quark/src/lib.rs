@@ -1984,11 +1984,11 @@ fn has_capacity(limit: Option<usize>, current: usize) -> bool {
 
 async fn select_start_target(ctx: &QuarkContext) -> Result<RouteTarget> {
     let routes = ctx.routes.read().await;
-    let mut local_count = 0usize;
+    let local_count = ctx.instances.read().await.len();
     let mut worker_counts: HashMap<Uuid, usize> = HashMap::new();
     for target in routes.values() {
         match target {
-            RouteTarget::Local => local_count += 1,
+            RouteTarget::Local => {}
             RouteTarget::Worker(token) => {
                 *worker_counts.entry(*token).or_insert(0) += 1;
             }
@@ -3325,9 +3325,10 @@ mod tests {
         apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
         client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
         resolve_max_instances, resolve_model_frozen, resolve_model_oscillation,
-        to_engine_error_feedback, FrozenOscillation, ModelRuntimeConfig, QuarkContext, QuarkMode,
-        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder, TransportMode,
-        TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        select_start_target, to_engine_error_feedback, FrozenOscillation, ModelRuntimeConfig,
+        ModelSlot, QuarkContext, QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState,
+        RouteTarget, ServerBuilder, TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT,
+        DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
     use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
@@ -3933,6 +3934,40 @@ mod tests {
             .expect("worker should be tracked");
         assert_eq!(worker.worker_id, worker_id);
         assert_eq!(worker.max_instances, requested);
+    }
+
+    #[tokio::test]
+    async fn select_start_target_uses_starting_local_instances_for_capacity() {
+        let worker_token = uuid::Uuid::new_v4();
+        let mut workers = HashMap::new();
+        workers.insert(
+            worker_token,
+            TunnelWorker {
+                token: worker_token,
+                worker_id: uuid::Uuid::new_v4(),
+                max_instances: Some(1),
+            },
+        );
+        let mut instances = HashMap::new();
+        instances.insert(uuid::Uuid::new_v4(), ModelSlot::Starting);
+        let ctx = QuarkContext {
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Tcp,
+            void_client: None,
+            defaults: QuarkServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(1),
+            mode: QuarkMode::Root,
+            routes: RwLock::new(HashMap::new()),
+            workers: RwLock::new(workers),
+            worker_connections: RwLock::new(HashMap::new()),
+            instances: RwLock::new(instances),
+        };
+
+        let selected = select_start_target(&ctx)
+            .await
+            .expect("worker should be selected when local start is in progress");
+        assert_eq!(selected, RouteTarget::Worker(worker_token));
     }
 }
 
