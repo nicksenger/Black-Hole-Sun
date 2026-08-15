@@ -753,6 +753,7 @@ struct QuarkContext {
     frozen: bool,
     max_instances: Option<usize>,
     mode: QuarkMode,
+    start_dispatch: tokio::sync::Mutex<()>,
     routes: tokio::sync::RwLock<HashMap<Uuid, RouteTarget>>,
     start_reservations: tokio::sync::RwLock<HashMap<Uuid, RouteTarget>>,
     start_target_selection: tokio::sync::Mutex<()>,
@@ -1143,6 +1144,7 @@ impl ServerBuilder {
             frozen: self.frozen,
             max_instances: resolve_max_instances(self.max_instances),
             mode,
+            start_dispatch: tokio::sync::Mutex::new(()),
             routes: tokio::sync::RwLock::new(HashMap::new()),
             start_reservations: tokio::sync::RwLock::new(HashMap::new()),
             start_target_selection: tokio::sync::Mutex::new(()),
@@ -2110,6 +2112,9 @@ async fn handle_start_distributed(
     model_config: Option<QuarkModelConfig>,
     ctx: &QuarkContext,
 ) -> Result<QuarkOut> {
+    // Keep distributed starts serialized so routed and local model initialization
+    // cannot overlap on the same quark context.
+    let _start_dispatch_guard = ctx.start_dispatch.lock().await;
     let target = reserve_start_target(model_id, ctx).await?;
     let result = async {
         let out = match target {
@@ -3842,6 +3847,7 @@ mod tests {
             frozen: false,
             max_instances: Some(2),
             mode: QuarkMode::Root,
+            start_dispatch: Mutex::new(()),
             routes: RwLock::new(routes),
             start_reservations: RwLock::new(HashMap::new()),
             start_target_selection: Mutex::new(()),
@@ -3879,6 +3885,7 @@ mod tests {
             frozen: false,
             max_instances: Some(1),
             mode: QuarkMode::Root,
+            start_dispatch: Mutex::new(()),
             routes: RwLock::new(routes),
             start_reservations: RwLock::new(HashMap::new()),
             start_target_selection: Mutex::new(()),
@@ -3913,6 +3920,7 @@ mod tests {
             frozen: false,
             max_instances: Some(DEFAULT_MAX_INSTANCES),
             mode: QuarkMode::Root,
+            start_dispatch: Mutex::new(()),
             routes: RwLock::new(HashMap::new()),
             start_reservations: RwLock::new(HashMap::new()),
             start_target_selection: Mutex::new(()),
@@ -3950,6 +3958,7 @@ mod tests {
             frozen: false,
             max_instances: Some(DEFAULT_MAX_INSTANCES),
             mode: QuarkMode::Root,
+            start_dispatch: Mutex::new(()),
             routes: RwLock::new(HashMap::new()),
             start_reservations: RwLock::new(HashMap::new()),
             start_target_selection: Mutex::new(()),
@@ -4000,6 +4009,7 @@ mod tests {
             frozen: false,
             max_instances: Some(1),
             mode: QuarkMode::Root,
+            start_dispatch: Mutex::new(()),
             routes: RwLock::new(HashMap::new()),
             start_reservations: RwLock::new(HashMap::new()),
             start_target_selection: Mutex::new(()),
@@ -4036,6 +4046,7 @@ mod tests {
             frozen: false,
             max_instances: Some(1),
             mode: QuarkMode::Root,
+            start_dispatch: Mutex::new(()),
             routes: RwLock::new(HashMap::new()),
             start_reservations: RwLock::new(start_reservations),
             start_target_selection: Mutex::new(()),
@@ -4072,6 +4083,7 @@ mod tests {
             frozen: false,
             max_instances: Some(0),
             mode: QuarkMode::Root,
+            start_dispatch: Mutex::new(()),
             routes: RwLock::new(HashMap::new()),
             start_reservations: RwLock::new(start_reservations),
             start_target_selection: Mutex::new(()),
