@@ -167,6 +167,101 @@ async fn tcp_tunnel_root_forwards_start_to_registered_worker() {
 }
 
 #[tokio::test]
+async fn tcp_tunnel_root_forwards_model_load_and_inference_to_registered_worker() {
+    init_tracing();
+
+    let model_path = match require_model_path(
+        "tcp_tunnel_root_forwards_model_load_and_inference_to_registered_worker",
+    ) {
+        Some(path) => path,
+        None => return,
+    };
+
+    let void_server = TestVoidServer::new()
+        .tcp()
+        .serve()
+        .await
+        .expect("failed to start tcp void server");
+    let root_server = TestQuarkServer::new(&model_path)
+        .tcp()
+        .void_addr(void_server.local_addr())
+        .max_instances(0)
+        .serve()
+        .await
+        .expect("failed to start tcp root quark server");
+    let worker_server = TestQuarkServer::new(&model_path)
+        .tcp()
+        .void_addr(void_server.local_addr())
+        .tunnel(root_server.local_addr())
+        .max_instances(1)
+        .serve()
+        .await
+        .expect("failed to start tcp worker quark server");
+
+    let void_client = VoidClient::new_tcp(void_server.local_addr());
+    let root_client = QuarkClient::new_tcp(root_server.local_addr());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(capacity) = root_client.query_model_capacity().await {
+                if capacity.total == Some(1) && capacity.available == Some(1) {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("worker capacity should propagate over tcp tunnel before model load");
+
+    let model_id = Uuid::new_v4();
+    root_client
+        .start(
+            model_id,
+            Some(QuarkModelConfig {
+                inference_limit: Some(1),
+                ..QuarkModelConfig::default()
+            }),
+        )
+        .await
+        .expect("root should forward model initialization to tcp tunnel worker");
+
+    let request = InferenceRequest::Sequences {
+        sequences: vec![vec![InferenceInput::Text(
+            "Return one token to prove tcp tunnel inference routing.".into(),
+        )]],
+        limit: Some(1),
+    };
+    let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
+    let input_id = void_client.upload(request_bytes).await.unwrap();
+
+    let output_id = root_client
+        .infer(model_id, input_id)
+        .await
+        .expect("root should forward inference to tcp tunnel worker");
+    let output_bytes = void_client
+        .download(output_id)
+        .await
+        .expect("tcp void should return tunneled inference output");
+    let output: black_hole_sun::InferenceOutput =
+        from_bytes(&output_bytes).expect("failed to decode inference output");
+
+    assert_eq!(output.results.len(), 1, "expected one batch result");
+    assert!(
+        output.results[0].0.len() <= 1,
+        "inference limit should cap output to at most one token"
+    );
+
+    root_client
+        .shutdown(model_id)
+        .await
+        .expect("shutdown should succeed through tcp tunnel root");
+
+    worker_server.abort();
+    root_server.abort();
+    void_server.abort();
+}
+
+#[tokio::test]
 async fn tcp_void_upload_download_round_trip() {
     init_tracing();
 
