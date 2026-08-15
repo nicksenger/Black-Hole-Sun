@@ -48,7 +48,6 @@ const CHECKPOINT_CACHE_DIR: &str = "black-hole-quark/checkpoints";
 const DEFAULT_TUNNEL_CONNECT_RETRY_MS: u64 = 200;
 const MAX_TUNNEL_CONNECT_RETRY_MS: u64 = 25_600;
 const TUNNEL_REGISTRATION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const TUNNEL_TCP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const RESIDUAL_UPDATE_UNSUPPORTED_FRAGMENT: &str =
     "restore_and_update_with_residual not supported for ";
 
@@ -466,14 +465,11 @@ impl TcpTunnelSession {
             self.pending.lock().await.remove(&request_id);
             return Err(ServerError::TunnelTcpSessionClosed);
         }
-        match tokio::time::timeout(TUNNEL_TCP_RESPONSE_TIMEOUT, rx).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(ServerError::TunnelTcpSessionClosed),
+        match rx.await {
+            Ok(response) => Ok(response),
             Err(_) => {
                 self.pending.lock().await.remove(&request_id);
-                Err(ServerError::TunnelTcpRequestTimedOut(
-                    TUNNEL_TCP_RESPONSE_TIMEOUT,
-                ))
+                Err(ServerError::TunnelTcpSessionClosed)
             }
         }
     }
@@ -3300,8 +3296,6 @@ pub enum ServerError {
     TunnelWorkerError(String),
     #[error("tunnel tcp session closed")]
     TunnelTcpSessionClosed,
-    #[error("tunnel tcp request timed out waiting for response after {:?}", .0)]
-    TunnelTcpRequestTimedOut(Duration),
     #[error("unexpected tunnel protocol response: {0}")]
     UnexpectedTunnelResponse(&'static str),
     #[error("unexpected EOF while reading frame length")]
