@@ -1468,9 +1468,12 @@ async fn handle_tunnel_tcp_request(
 ) {
     let out = match handle_request(request.request, &context, None).await {
         Ok(out) => out,
-        Err(error) => QuarkOut::Error {
-            message: error.to_string(),
-        },
+        Err(error) => {
+            warn!(error = %error, "tunnel tcp request failed");
+            QuarkOut::Error {
+                message: error.to_string(),
+            }
+        }
     };
     if let Err(error) = session.send_response(request.request_id, out).await {
         warn!(error = %error, "failed to send tunnel tcp response");
@@ -1614,9 +1617,12 @@ async fn handle_stream(
 
     let out = match handle_request(req, &context, connection).await {
         Ok(o) => o,
-        Err(e) => QuarkOut::Error {
-            message: e.to_string(),
-        },
+        Err(error) => {
+            warn!(error = %error, "request failed");
+            QuarkOut::Error {
+                message: error.to_string(),
+            }
+        }
     };
 
     if write_frame_quic(&mut send, &out).await.is_err() {
@@ -2730,10 +2736,7 @@ async fn resolve_model_source(
     };
 
     let tokenizer_path = resolve_checkpoint_tokenizer_path()?;
-    let void = ctx
-        .void_client
-        .as_ref()
-        .ok_or_else(|| ServerError::VoidNotConfigured)?;
+    let void = require_void_client(ctx, "checkpoint restore")?;
     let checkpoint_bytes = void.download(checkpoint_id).await?;
     if checkpoint_bytes.is_empty() {
         return Err(ServerError::CheckpointEmpty(checkpoint_id));
@@ -2744,6 +2747,22 @@ async fn resolve_model_source(
         tokenizer_path: Some(tokenizer_path),
         checkpoint_path: Some(checkpoint_path),
     })
+}
+
+fn require_void_client<'a>(
+    ctx: &'a QuarkContext,
+    operation: &'static str,
+) -> Result<&'a Arc<VoidClient>> {
+    ctx.void_client
+        .as_ref()
+        .ok_or_else(|| void_not_configured_error(ctx, operation))
+}
+
+fn void_not_configured_error(ctx: &QuarkContext, operation: &'static str) -> ServerError {
+    match &ctx.mode {
+        QuarkMode::Root => ServerError::VoidNotConfigured,
+        QuarkMode::Worker(_) => ServerError::TunnelWorkerVoidNotConfigured(operation),
+    }
 }
 
 async fn reset_model(engine: &ModelEngine) -> Result<()> {
@@ -2878,10 +2897,7 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &QuarkContext) ->
     let state = session.state;
 
     // Resolve void client.
-    let void = ctx
-        .void_client
-        .as_ref()
-        .ok_or_else(|| ServerError::VoidNotConfigured)?;
+    let void = require_void_client(ctx, "inference")?;
 
     // Download input object from void and decode the inference request.
     let input_bytes = void.download(input_id).await?;
@@ -3038,10 +3054,7 @@ async fn handle_checkpoint(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOu
     let session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
 
-    let void = ctx
-        .void_client
-        .as_ref()
-        .ok_or_else(|| ServerError::VoidNotConfigured)?;
+    let void = require_void_client(ctx, "checkpoint upload")?;
     let checkpoint_bytes = checkpoint_model(&instance.engine).await?;
     let checkpoint_id = void.upload(checkpoint_bytes).await?;
 
@@ -3272,6 +3285,10 @@ pub enum ServerError {
     InvalidOscillationTrainSteps { train_steps: u32, period_steps: u32 },
     #[error("void service not configured")]
     VoidNotConfigured,
+    #[error(
+        "void service not configured on tunnel worker (required for {0}); set --void-addr to the same void service as the root quark"
+    )]
+    TunnelWorkerVoidNotConfigured(&'static str),
     #[error("failed to resolve home directory for checkpoint tokenizer")]
     HomeDirectoryUnavailable,
     #[error("checkpoint start requires tokenizer file at {0}")]

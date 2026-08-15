@@ -29,7 +29,7 @@ struct Opt {
     /// Path to the GGUF model file
     #[clap(long = "model")]
     model: PathBuf,
-    /// Address of the void object store (e.g. [::1]:4434)
+    /// Address of the void object store (e.g. [::1]:4434). Required for inference/checkpoint, including tunnel workers.
     #[clap(long = "void-addr")]
     void_addr: Option<SocketAddr>,
     /// Default top-k sampler value for model instances
