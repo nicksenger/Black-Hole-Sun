@@ -10,9 +10,10 @@ use black_hole_sun::cell::{CellState, Primordium};
 use black_hole_sun::ops::{InferenceOutputOps, SunOps, TransmissionOps, VoidInferOps};
 use black_hole_sun::sun::{BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    AtomError, CellInit, DarkToken, EmissionId, InferenceOutput, InferenceRequest, ModelConfig,
-    NoErrorFeedback, NoOscillation, ObjectId, QuarkClient, QuarkModelConfig, QuarkModelParams,
-    Ray, SequenceOutput, TestQuarkServer, TestVoidServer, Tokenizer, Transmission, VoidClient,
+    AtomError, CellInit, DarkToken, EmissionId, ErrorFeedbackPolicy, InferenceOutput,
+    InferenceRequest, ModelConfig, ObjectId, OscillationSchedule, QuarkClient,
+    QuarkErrorFeedbackMode, QuarkModelConfig, QuarkModelParams, Ray, SequenceOutput,
+    TestQuarkServer, TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
@@ -38,24 +39,58 @@ struct WhiteDwarfStateInner {
 
 type WhiteDwarfState = SunState<WhiteDwarfStateInner>;
 
-struct WhiteDwarfModelConfig;
+#[derive(Clone)]
+struct WhiteDwarfOscillationA;
 
-impl ModelConfig for WhiteDwarfModelConfig {
-    type Oscillation = NoOscillation;
-    type ErrorFeedback = NoErrorFeedback;
+impl OscillationSchedule for WhiteDwarfOscillationA {
+    const PERIOD_STEPS: Option<u32> = Some(2);
+    const TRAIN_STEPS: Option<u32> = Some(1);
+    const PHASE_STEPS: Option<u32> = Some(0);
+}
+
+#[derive(Clone)]
+struct WhiteDwarfOscillationB;
+
+impl OscillationSchedule for WhiteDwarfOscillationB {
+    const PERIOD_STEPS: Option<u32> = Some(2);
+    const TRAIN_STEPS: Option<u32> = Some(1);
+    const PHASE_STEPS: Option<u32> = Some(1);
+}
+
+struct WhiteDwarfPersistentResiduals;
+
+impl ErrorFeedbackPolicy for WhiteDwarfPersistentResiduals {
+    const MODE: Option<QuarkErrorFeedbackMode> = Some(QuarkErrorFeedbackMode::Persistent);
+}
+
+struct WhiteDwarfModelConfigA;
+
+impl ModelConfig for WhiteDwarfModelConfigA {
+    type Oscillation = WhiteDwarfOscillationA;
+    type ErrorFeedback = WhiteDwarfPersistentResiduals;
+    const FROZEN: Option<bool> = Some(false);
     const INFERENCE_LIMIT: Option<u32> = Some(WHITE_DWARF_CELL_INFERENCE_LIMIT);
 }
 
-struct WhiteDwarfCellAnimal;
+struct WhiteDwarfModelConfigB;
 
-#[jungle::animal(observe, id = 45, generation = 0)]
-impl Animal for WhiteDwarfCellAnimal {
-    type State = CellState;
-    type Seed = CellInit;
-    type Flow = Primordium<(), WhiteDwarfModelConfig>;
+impl ModelConfig for WhiteDwarfModelConfigB {
+    type Oscillation = WhiteDwarfOscillationB;
+    type ErrorFeedback = WhiteDwarfPersistentResiduals;
+    const FROZEN: Option<bool> = Some(false);
+    const INFERENCE_LIMIT: Option<u32> = Some(WHITE_DWARF_CELL_INFERENCE_LIMIT);
 }
 
-impl Observe for WhiteDwarfCellAnimal {
+struct WhiteDwarfCell0Animal;
+
+#[jungle::animal(observe, id = 45, generation = 0)]
+impl Animal for WhiteDwarfCell0Animal {
+    type State = CellState;
+    type Seed = CellInit;
+    type Flow = Primordium<(), WhiteDwarfModelConfigA>;
+}
+
+impl Observe for WhiteDwarfCell0Animal {
     type Appearance = Ray;
 
     fn observe(state: &Self::State) -> Self::Appearance {
@@ -65,8 +100,27 @@ impl Observe for WhiteDwarfCellAnimal {
     }
 }
 
-type WhiteDwarfCell0 = Unary<U0, WhiteDwarfCellAnimal, list![U1]>;
-type WhiteDwarfCell1 = Unary<U1, WhiteDwarfCellAnimal, list![]>;
+struct WhiteDwarfCell1Animal;
+
+#[jungle::animal(observe, id = 46, generation = 0)]
+impl Animal for WhiteDwarfCell1Animal {
+    type State = CellState;
+    type Seed = CellInit;
+    type Flow = Primordium<(), WhiteDwarfModelConfigB>;
+}
+
+impl Observe for WhiteDwarfCell1Animal {
+    type Appearance = Ray;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        Ray {
+            frozen: state.is_frozen,
+        }
+    }
+}
+
+type WhiteDwarfCell0 = Unary<U0, WhiteDwarfCell0Animal, list![U1]>;
+type WhiteDwarfCell1 = Unary<U1, WhiteDwarfCell1Animal, list![]>;
 type WhiteDwarfSun = list![WhiteDwarfCell0, WhiteDwarfCell1];
 
 #[derive(Flow)]
@@ -204,7 +258,7 @@ impl Observe for WhiteDwarfBlackHole {
 }
 
 #[derive(Animals)]
-struct WhiteDwarfAnimals(WhiteDwarfCellAnimal, WhiteDwarfBlackHole);
+struct WhiteDwarfAnimals(WhiteDwarfCell0Animal, WhiteDwarfCell1Animal, WhiteDwarfBlackHole);
 
 #[derive(Clone)]
 struct WhiteDwarfJungle {
