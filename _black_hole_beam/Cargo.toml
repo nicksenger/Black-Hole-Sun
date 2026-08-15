@@ -8,7 +8,6 @@ black-hole-flux = { path = "../_black_hole_flux" }
 iced = { version = "0.14", features = ["advanced", "canvas", "tokio"] }
 iced-sugiyama = { git = "https://github.com/nicksenger/iced-sugiyama.git", branch = "blackholesun", features = ["circo"] }
 jungle-sdk = { workspace = true }
-jungle-vision = { workspace = true }
 postcard = "1"
 typenum = "1"
 uuid = { version = "1", features = ["serde"] }
