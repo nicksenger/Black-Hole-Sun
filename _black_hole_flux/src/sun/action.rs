@@ -87,29 +87,36 @@ fn register_vertex<S>(
 }
 
 fn short_type_name<T: ?Sized>() -> String {
-    let full = core::any::type_name::<T>();
-    let cleaned = strip_type_generics(full);
-    cleaned
-        .rsplit("::")
-        .next()
-        .unwrap_or(cleaned.as_str())
-        .to_string()
+    short_type_label(core::any::type_name::<T>())
 }
 
-fn strip_type_generics(name: &str) -> String {
-    let mut depth = 0usize;
-    let mut cleaned = String::with_capacity(name.len());
+fn short_type_label(label: &str) -> String {
+    let mut shortened = String::with_capacity(label.len());
+    let mut token = String::new();
 
-    for ch in name.chars() {
-        match ch {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => cleaned.push(ch),
-            _ => {}
+    for ch in label.chars() {
+        let token_char = ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '\'');
+        if token_char {
+            token.push(ch);
+            continue;
         }
+
+        push_shortened_type_token(&mut shortened, &mut token);
+        shortened.push(ch);
     }
 
-    cleaned.trim().to_string()
+    push_shortened_type_token(&mut shortened, &mut token);
+    shortened.trim().to_string()
+}
+
+fn push_shortened_type_token(shortened: &mut String, token: &mut String) {
+    if token.is_empty() {
+        return;
+    }
+
+    let short = token.rsplit("::").next().unwrap_or(token.as_str());
+    shortened.push_str(short);
+    token.clear();
 }
 
 /// Spawns and registers a [`Unary`](super::Unary) descriptor.
@@ -1954,12 +1961,15 @@ mod tests {
     }
 
     #[test]
-    fn short_type_name_omits_generic_arguments() {
+    fn short_type_name_preserves_generic_arguments() {
         type Nested = GenericType<Result<String, Vec<u8>>>;
-        assert_eq!(short_type_name::<Nested>(), "GenericType");
         assert_eq!(
-            strip_type_generics("crate::Animal<module::Inner<leaf::Type>>"),
-            "crate::Animal"
+            short_type_name::<Nested>(),
+            "GenericType<Result<String, Vec<u8>>>"
+        );
+        assert_eq!(
+            short_type_label("my::module::Animal<crate::Inner<leaf::Type>, alloc::vec::Vec<u8>>"),
+            "Animal<Inner<Type>, Vec<u8>>"
         );
     }
 

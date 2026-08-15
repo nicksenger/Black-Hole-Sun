@@ -1758,34 +1758,40 @@ fn lighten(color: Color, amount: f32) -> Color {
 }
 
 fn short_type_name<T: ?Sized>() -> String {
-    let full = core::any::type_name::<T>();
-    animal_label_key(full)
+    animal_label_key(core::any::type_name::<T>())
 }
 
 fn animal_label_key(label: &str) -> String {
-    let cleaned = strip_type_generics(label);
-    cleaned
-        .rsplit("::")
-        .next()
-        .unwrap_or(cleaned.as_str())
-        .trim()
-        .to_string()
+    short_type_label(label)
 }
 
-fn strip_type_generics(name: &str) -> String {
-    let mut depth = 0usize;
-    let mut cleaned = String::with_capacity(name.len());
+fn short_type_label(label: &str) -> String {
+    let mut shortened = String::with_capacity(label.len());
+    let mut token = String::new();
 
-    for ch in name.chars() {
-        match ch {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => cleaned.push(ch),
-            _ => {}
+    for ch in label.chars() {
+        let token_char = ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '\'');
+        if token_char {
+            token.push(ch);
+            continue;
         }
+
+        push_shortened_type_token(&mut shortened, &mut token);
+        shortened.push(ch);
     }
 
-    cleaned.trim().to_string()
+    push_shortened_type_token(&mut shortened, &mut token);
+    shortened.trim().to_string()
+}
+
+fn push_shortened_type_token(shortened: &mut String, token: &mut String) {
+    if token.is_empty() {
+        return;
+    }
+
+    let short = token.rsplit("::").next().unwrap_or(token.as_str());
+    shortened.push_str(short);
+    token.clear();
 }
 
 #[cfg(test)]
@@ -1868,14 +1874,20 @@ mod tests {
         let config = BeamBuilder::new()
             .register_subpanel_animal::<TestCell>()
             .register_subpanel_animal::<GenericCell<String>>()
+            .register_subpanel_animal::<GenericCell<u8>>()
             .register_subpanel_animal::<TestCell>()
             .into_config();
 
-        assert_eq!(config.subpanel_animals.len(), 2);
+        assert_eq!(config.subpanel_animals.len(), 3);
         assert_eq!(config.subpanel_animals[0].animal_label, "TestCell");
         assert_eq!(config.subpanel_animals[0].title, "TestCell");
-        assert_eq!(config.subpanel_animals[1].animal_label, "GenericCell");
-        assert_eq!(config.subpanel_animals[1].title, "GenericCell");
+        assert_eq!(
+            config.subpanel_animals[1].animal_label,
+            "GenericCell<String>"
+        );
+        assert_eq!(config.subpanel_animals[1].title, "GenericCell<String>");
+        assert_eq!(config.subpanel_animals[2].animal_label, "GenericCell<u8>");
+        assert_eq!(config.subpanel_animals[2].title, "GenericCell<u8>");
     }
 
     #[test]
@@ -2145,20 +2157,19 @@ mod tests {
     }
 
     #[test]
-    fn strips_generics_from_type_labels() {
-        assert_eq!(short_type_name::<GenericCell<String>>(), "GenericCell");
+    fn keeps_generics_in_type_labels() {
         assert_eq!(
-            animal_label_key("my::module::RootAnimal<Result<String, Vec<u8>>>"),
-            "RootAnimal"
+            short_type_name::<GenericCell<String>>(),
+            "GenericCell<String>"
         );
         assert_eq!(
-            strip_type_generics("RootAnimal<Result<String, Vec<u8>>>"),
-            "RootAnimal"
+            animal_label_key("my::module::RootAnimal<crate::leaf::Type, alloc::vec::Vec<u8>>"),
+            "RootAnimal<Type, Vec<u8>>"
         );
     }
 
     #[test]
-    fn strips_generics_from_live_appearance_labels() {
+    fn keeps_generics_in_live_appearance_labels() {
         let appearance = SunAppearance {
             finalized: true,
             grad_steps: 1,
@@ -2175,6 +2186,9 @@ mod tests {
         };
 
         let model = BeamModel::from_appearance(appearance, &HashMap::new()).unwrap();
-        assert_eq!(model.cells[0].animal_name, "RootAnimal");
+        assert_eq!(
+            model.cells[0].animal_name,
+            "RootAnimal<Result<String, Vec<u8>>>"
+        );
     }
 }
