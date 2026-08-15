@@ -6,12 +6,13 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use black_hole_sun::cell::{CellState, Primordium};
 use black_hole_sun::ops::{InferenceOutputOps, SunOps, TransmissionOps, VoidInferOps};
 use black_hole_sun::sun::{BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    AtomError, DarkToken, EmissionId, InferenceOutput, InferenceRequest, ObjectId, Progenitor,
-    QuarkClient, QuarkModelConfig, QuarkModelParams, SequenceOutput, TestQuarkServer,
-    TestVoidServer, Tokenizer, Transmission, VoidClient,
+    AtomError, CellInit, DarkToken, EmissionId, InferenceOutput, InferenceRequest, ModelConfig,
+    NoErrorFeedback, NoOscillation, ObjectId, QuarkClient, QuarkModelConfig, QuarkModelParams,
+    Ray, SequenceOutput, TestQuarkServer, TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
@@ -28,9 +29,44 @@ const WHITE_DWARF_NODE_COUNT: usize = 2;
 const WHITE_DWARF_BATCH_SIZE: usize = 8;
 const WHITE_DWARF_GRADIENT_ACCUMULATION_STEPS: usize = 2;
 const WHITE_DWARF_DEFAULT_INFERENCE_LIMIT: u32 = 512;
+const WHITE_DWARF_CELL_INFERENCE_LIMIT: u32 = 10;
 
-type WhiteDwarfCell0 = Unary<U0, Progenitor, list![U1]>;
-type WhiteDwarfCell1 = Unary<U1, Progenitor, list![]>;
+#[derive(Default)]
+struct WhiteDwarfStateInner {
+    _seen_epoch_count: usize,
+}
+
+type WhiteDwarfState = SunState<WhiteDwarfStateInner>;
+
+struct WhiteDwarfModelConfig;
+
+impl ModelConfig for WhiteDwarfModelConfig {
+    type Oscillation = NoOscillation;
+    type ErrorFeedback = NoErrorFeedback;
+    const INFERENCE_LIMIT: Option<u32> = Some(WHITE_DWARF_CELL_INFERENCE_LIMIT);
+}
+
+struct WhiteDwarfCellAnimal;
+
+#[jungle::animal(observe, id = 45, generation = 0)]
+impl Animal for WhiteDwarfCellAnimal {
+    type State = CellState;
+    type Seed = CellInit;
+    type Flow = Primordium<(), WhiteDwarfModelConfig>;
+}
+
+impl Observe for WhiteDwarfCellAnimal {
+    type Appearance = Ray;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        Ray {
+            frozen: state.is_frozen,
+        }
+    }
+}
+
+type WhiteDwarfCell0 = Unary<U0, WhiteDwarfCellAnimal, list![U1]>;
+type WhiteDwarfCell1 = Unary<U1, WhiteDwarfCellAnimal, list![]>;
 type WhiteDwarfSun = list![WhiteDwarfCell0, WhiteDwarfCell1];
 
 #[derive(Flow)]
@@ -45,10 +81,10 @@ impl Action for GenerateWhiteDwarfPrompt {
     type Input = ();
     type Output = (Transmission, Transmission);
 
-    fn emit(_state: &SunState, _input: Self::Input) {}
+    fn emit(_state: &WhiteDwarfState, _input: Self::Input) {}
 
     fn absorb(
-        _state: &mut SunState,
+        _state: &mut WhiteDwarfState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|error| Failure::Message(format!("white dwarf generator failed: {error}")))
@@ -94,12 +130,12 @@ impl Action for WhiteDwarfLossPolicy {
     type Output = (f32, f32);
     type Carry = ();
 
-    fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
+    fn emit(_state: &WhiteDwarfState, input: Self::Input) -> Self::Input {
         input
     }
 
     fn absorb(
-        _state: &mut SunState,
+        _state: &mut WhiteDwarfState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|error| Failure::Message(format!("white dwarf policy failed: {error}")))
@@ -149,12 +185,12 @@ struct WhiteDwarfBlackHole;
 
 #[jungle::animal(observe, id = 44, generation = 0)]
 impl Animal for WhiteDwarfBlackHole {
-    type State = SunState;
+    type State = WhiteDwarfState;
     type Seed = ();
     type Flow = <WhiteDwarfSun as BlackHole>::Sun<
         WhiteDwarfGenerator,
         WhiteDwarfPolicy,
-        (),
+        WhiteDwarfStateInner,
         WHITE_DWARF_GRADIENT_ACCUMULATION_STEPS,
     >;
 }
@@ -168,7 +204,7 @@ impl Observe for WhiteDwarfBlackHole {
 }
 
 #[derive(Animals)]
-struct WhiteDwarfAnimals(Progenitor, WhiteDwarfBlackHole);
+struct WhiteDwarfAnimals(WhiteDwarfCellAnimal, WhiteDwarfBlackHole);
 
 #[derive(Clone)]
 struct WhiteDwarfJungle {
