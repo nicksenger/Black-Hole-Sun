@@ -1,7 +1,5 @@
 //! Shared types for the black-hole workspace.
 
-use std::net::SocketAddr;
-
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -54,8 +52,8 @@ pub enum QuarkIn {
     QueryModelCapacity,
     /// Register a one-hop tunnel worker with a root quark.
     RegisterTunnel {
-        /// Address where the worker quark accepts forwarded tunnel requests.
-        worker_addr: SocketAddr,
+        /// Stable worker identity used by parent quarks to match reconnects.
+        worker_id: Uuid,
         /// Optional total model capacity advertised by this worker subtree (defaults to 1).
         max_instances: Option<usize>,
     },

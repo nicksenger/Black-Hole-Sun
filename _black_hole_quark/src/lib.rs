@@ -200,6 +200,12 @@ struct QuarkRpcClient {
     remote_addr: SocketAddr,
 }
 
+struct ParentTunnelSession {
+    // Holds the client endpoint open for the lifetime of the parent tunnel.
+    _client: QuarkRpcClient,
+    connection: quinn::Connection,
+}
+
 impl QuarkRpcClient {
     async fn connect(addr: SocketAddr) -> Result<Self> {
         let crypto = rustls::ClientConfig::builder()
@@ -221,21 +227,26 @@ impl QuarkRpcClient {
         })
     }
 
-    async fn request(&self, req: QuarkIn) -> Result<QuarkOut> {
+    async fn establish_connection(&self) -> Result<quinn::Connection> {
         let server_name = self.remote_addr.ip().to_string();
-        let conn = self
-            .endpoint
+        self.endpoint
             .connect(self.remote_addr, &server_name)
             .map_err(|e| ServerError::TunnelConnect(e.to_string()))?
             .await
-            .map_err(|e| ServerError::TunnelConnect(e.to_string()))?;
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| ServerError::TunnelStream(e.to_string()))?;
-        write_frame(&mut send, &req).await?;
-        read_frame(&mut recv).await
+            .map_err(|e| ServerError::TunnelConnect(e.to_string()))
     }
+}
+
+async fn request_over_connection(
+    connection: &quinn::Connection,
+    req: &QuarkIn,
+) -> Result<QuarkOut> {
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .map_err(|e| ServerError::TunnelStream(e.to_string()))?;
+    write_frame(&mut send, req).await?;
+    read_frame(&mut recv).await
 }
 
 /// Write a length-prefixed postcard frame to a QUIC send stream.
@@ -359,16 +370,16 @@ enum ModelSlot {
     ShuttingDown,
 }
 
-#[derive(Debug)]
 enum QuarkMode {
     Root,
     Worker(Arc<WorkerModeState>),
 }
 
-#[derive(Debug)]
 struct WorkerModeState {
     parent_addr: SocketAddr,
+    worker_id: Uuid,
     tunnel_token: tokio::sync::RwLock<Uuid>,
+    parent_session: tokio::sync::RwLock<Option<ParentTunnelSession>>,
     tunnel_connect_deadline: Option<Duration>,
 }
 
@@ -381,12 +392,11 @@ enum RouteTarget {
 #[derive(Debug, Clone, Copy)]
 struct TunnelWorker {
     token: Uuid,
-    addr: SocketAddr,
+    worker_id: Uuid,
     max_instances: Option<usize>,
 }
 
 struct QuarkContext {
-    local_addr: SocketAddr,
     model_path: PathBuf,
     void_client: Option<Arc<VoidClient>>,
     defaults: QuarkServerDefaults,
@@ -395,6 +405,7 @@ struct QuarkContext {
     mode: QuarkMode,
     routes: tokio::sync::RwLock<HashMap<Uuid, RouteTarget>>,
     workers: tokio::sync::RwLock<HashMap<Uuid, TunnelWorker>>,
+    worker_connections: tokio::sync::RwLock<HashMap<Uuid, quinn::Connection>>,
     instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
 }
 
@@ -710,17 +721,26 @@ impl ServerBuilder {
                     "registering tunnel worker"
                 );
             }
-            let tunnel_token = register_tunnel_worker_with_retry(
+            let worker_id = Uuid::new_v4();
+            let (tunnel_token, parent_session) = register_tunnel_worker_with_retry(
                 parent_addr,
-                local_addr,
+                worker_id,
                 resolve_max_instances(self.max_instances),
                 self.tunnel_connect_deadline,
             )
             .await?;
-            info!(%parent_addr, %local_addr, token = %tunnel_token, "tunnel worker registered");
+            info!(
+                %parent_addr,
+                %local_addr,
+                %worker_id,
+                token = %tunnel_token,
+                "tunnel worker registered"
+            );
             QuarkMode::Worker(Arc::new(WorkerModeState {
                 parent_addr,
+                worker_id,
                 tunnel_token: tokio::sync::RwLock::new(tunnel_token),
+                parent_session: tokio::sync::RwLock::new(Some(parent_session)),
                 tunnel_connect_deadline: self.tunnel_connect_deadline,
             }))
         } else {
@@ -728,7 +748,6 @@ impl ServerBuilder {
         };
 
         let context = Arc::new(QuarkContext {
-            local_addr,
             model_path: self.model_path,
             void_client,
             defaults: self.defaults,
@@ -737,6 +756,7 @@ impl ServerBuilder {
             mode,
             routes: tokio::sync::RwLock::new(HashMap::new()),
             workers: tokio::sync::RwLock::new(HashMap::new()),
+            worker_connections: tokio::sync::RwLock::new(HashMap::new()),
             instances: tokio::sync::RwLock::new(HashMap::new()),
         });
 
@@ -764,13 +784,15 @@ impl ServerBuilder {
         context: Arc<QuarkContext>,
         stateless_retry: bool,
     ) -> Result<()> {
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         if matches!(&context.mode, QuarkMode::Worker(_)) {
             tokio::select! {
-                accept_result = Self::accept_loop(endpoint, Arc::clone(&context), stateless_retry) => accept_result,
-                _ = maintain_parent_registration_loop(context) => Ok(()),
+                accept_result = Self::accept_loop(endpoint, Arc::clone(&context), stateless_retry, shutdown_rx.clone()) => accept_result,
+                _ = maintain_parent_registration_loop(Arc::clone(&context)) => Ok(()),
+                _ = parent_tunnel_stream_loop(context) => Ok(()),
             }
         } else {
-            Self::accept_loop(endpoint, context, stateless_retry).await
+            Self::accept_loop(endpoint, context, stateless_retry, shutdown_rx).await
         }
     }
 
@@ -779,6 +801,7 @@ impl ServerBuilder {
         endpoint: quinn::Endpoint,
         context: Arc<QuarkContext>,
         stateless_retry: bool,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
         loop {
             let conn = tokio::select! {
@@ -786,6 +809,15 @@ impl ServerBuilder {
                     Some(c) => c,
                     None => break,
                 },
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    continue;
+                }
             };
 
             if stateless_retry && !conn.remote_address_validated() {
@@ -796,7 +828,7 @@ impl ServerBuilder {
 
             info!(remote = %conn.remote_address(), "accepting connection");
             let ctx = Arc::clone(&context);
-            tokio::spawn(handle_connection(conn, ctx));
+            tokio::spawn(handle_connection(conn, ctx, shutdown_rx.clone()));
         }
 
         Ok(())
@@ -813,7 +845,11 @@ impl Default for ServerBuilder {
 // Connection / stream handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_connection(incoming: quinn::Incoming, context: Arc<QuarkContext>) {
+async fn handle_connection(
+    incoming: quinn::Incoming,
+    context: Arc<QuarkContext>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     let connection = match incoming.await {
         Ok(c) => c,
         Err(e) => {
@@ -825,7 +861,16 @@ async fn handle_connection(incoming: quinn::Incoming, context: Arc<QuarkContext>
     info!("established");
 
     loop {
-        let stream = match connection.accept_bi().await {
+        let stream = match tokio::select! {
+            stream = connection.accept_bi() => stream,
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    connection.close(0u32.into(), b"server shutdown");
+                    return;
+                }
+                continue;
+            }
+        } {
             Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
                 info!("connection closed");
                 return;
@@ -838,13 +883,75 @@ async fn handle_connection(incoming: quinn::Incoming, context: Arc<QuarkContext>
         };
 
         let ctx = Arc::clone(&context);
-        tokio::spawn(handle_stream(stream, ctx));
+        tokio::spawn(handle_stream(stream, ctx, connection.clone()));
+    }
+}
+
+async fn parent_tunnel_stream_loop(context: Arc<QuarkContext>) {
+    let worker_mode = match &context.mode {
+        QuarkMode::Worker(worker_mode) => Arc::clone(worker_mode),
+        QuarkMode::Root => return,
+    };
+    let mut last_connection_id: Option<usize> = None;
+    let mut logged_closed_for_connection = false;
+    loop {
+        let connection = {
+            let parent_session = worker_mode.parent_session.read().await;
+            parent_session
+                .as_ref()
+                .map(|session| session.connection.clone())
+        };
+        let Some(connection) = connection else {
+            last_connection_id = None;
+            logged_closed_for_connection = false;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        let connection_id = connection.stable_id();
+        if last_connection_id != Some(connection_id) {
+            last_connection_id = Some(connection_id);
+            logged_closed_for_connection = false;
+        }
+
+        let stream = match connection.accept_bi().await {
+            Ok(stream) => stream,
+            Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
+                if !logged_closed_for_connection {
+                    info!(
+                        parent_addr = %worker_mode.parent_addr,
+                        worker_id = %worker_mode.worker_id,
+                        "parent tunnel connection closed"
+                    );
+                    logged_closed_for_connection = true;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(error) => {
+                if !logged_closed_for_connection {
+                    warn!(
+                        parent_addr = %worker_mode.parent_addr,
+                        worker_id = %worker_mode.worker_id,
+                        error = %error,
+                        "parent tunnel stream accept failed"
+                    );
+                    logged_closed_for_connection = true;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        logged_closed_for_connection = false;
+
+        let ctx = Arc::clone(&context);
+        tokio::spawn(handle_stream(stream, ctx, connection.clone()));
     }
 }
 
 async fn handle_stream(
     (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
     context: Arc<QuarkContext>,
+    connection: quinn::Connection,
 ) {
     let req: QuarkIn = match read_frame(&mut recv).await {
         Ok(r) => r,
@@ -862,7 +969,7 @@ async fn handle_stream(
 
     debug!(?req, "handling request");
 
-    let out = match handle_request(req, &context).await {
+    let out = match handle_request(req, &context, connection).await {
         Ok(o) => o,
         Err(e) => QuarkOut::Error {
             message: e.to_string(),
@@ -874,12 +981,16 @@ async fn handle_stream(
     }
 }
 
-async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_request(
+    req: QuarkIn,
+    ctx: &QuarkContext,
+    connection: quinn::Connection,
+) -> Result<QuarkOut> {
     match req {
         QuarkIn::RegisterTunnel {
-            worker_addr,
+            worker_id,
             max_instances,
-        } => handle_register_tunnel(worker_addr, max_instances, ctx).await,
+        } => handle_register_tunnel(worker_id, max_instances, Some(connection), ctx).await,
         QuarkIn::UpdateTunnelCapacity {
             token,
             max_instances,
@@ -920,18 +1031,27 @@ fn ensure_root_mode(ctx: &QuarkContext) -> Result<()> {
 
 async fn register_tunnel_worker(
     parent_addr: SocketAddr,
-    worker_addr: SocketAddr,
+    worker_id: Uuid,
     max_instances: Option<usize>,
-) -> Result<Uuid> {
+) -> Result<(Uuid, ParentTunnelSession)> {
     let client = QuarkRpcClient::connect(parent_addr).await?;
-    let out = client
-        .request(QuarkIn::RegisterTunnel {
-            worker_addr,
+    let connection = client.establish_connection().await?;
+    let out = request_over_connection(
+        &connection,
+        &QuarkIn::RegisterTunnel {
+            worker_id,
             max_instances,
-        })
-        .await?;
+        },
+    )
+    .await?;
     match out {
-        QuarkOut::TunnelRegistered { token } => Ok(token),
+        QuarkOut::TunnelRegistered { token } => Ok((
+            token,
+            ParentTunnelSession {
+                _client: client,
+                connection,
+            },
+        )),
         QuarkOut::Error { message } => Err(ServerError::TunnelRegistrationRejected(message)),
         _ => Err(ServerError::UnexpectedTunnelResponse(
             "register tunnel response",
@@ -941,10 +1061,10 @@ async fn register_tunnel_worker(
 
 async fn register_tunnel_worker_with_retry(
     parent_addr: SocketAddr,
-    worker_addr: SocketAddr,
+    worker_id: Uuid,
     max_instances: Option<usize>,
     deadline: Option<Duration>,
-) -> Result<Uuid> {
+) -> Result<(Uuid, ParentTunnelSession)> {
     let start = Instant::now();
     let deadline_at = deadline.map(|deadline| start + deadline);
     let mut retry_delay = Duration::from_millis(DEFAULT_TUNNEL_CONNECT_RETRY_MS);
@@ -952,8 +1072,8 @@ async fn register_tunnel_worker_with_retry(
     let mut attempts = 0u32;
     loop {
         attempts = attempts.saturating_add(1);
-        match register_tunnel_worker(parent_addr, worker_addr, max_instances).await {
-            Ok(token) => return Ok(token),
+        match register_tunnel_worker(parent_addr, worker_id, max_instances).await {
+            Ok(registered) => return Ok(registered),
             Err(error) => {
                 let now = Instant::now();
                 if let Some(deadline_at) = deadline_at {
@@ -996,17 +1116,18 @@ async fn register_tunnel_worker_with_retry(
 }
 
 async fn update_tunnel_capacity(
-    parent_addr: SocketAddr,
+    parent_connection: &quinn::Connection,
     tunnel_token: Uuid,
     max_instances: Option<usize>,
 ) -> Result<()> {
-    let client = QuarkRpcClient::connect(parent_addr).await?;
-    let out = client
-        .request(QuarkIn::UpdateTunnelCapacity {
+    let out = request_over_connection(
+        parent_connection,
+        &QuarkIn::UpdateTunnelCapacity {
             token: tunnel_token,
             max_instances,
-        })
-        .await?;
+        },
+    )
+    .await?;
     match out {
         QuarkOut::Ack => Ok(()),
         QuarkOut::Error { message } => Err(ServerError::TunnelCapacityUpdateRejected(message)),
@@ -1037,29 +1158,47 @@ async fn propagate_capacity_to_parent(ctx: &QuarkContext) -> Result<()> {
         QuarkMode::Worker(worker_mode) => {
             let max_instances = advertised_capacity(ctx).await;
             let tunnel_token = *worker_mode.tunnel_token.read().await;
-            match update_tunnel_capacity(worker_mode.parent_addr, tunnel_token, max_instances).await
-            {
+            let parent_connection = {
+                let parent_session = worker_mode.parent_session.read().await;
+                parent_session
+                    .as_ref()
+                    .map(|session| session.connection.clone())
+                    .ok_or_else(|| {
+                        ServerError::TunnelConnect("tunnel parent session unavailable".into())
+                    })?
+            };
+            match update_tunnel_capacity(&parent_connection, tunnel_token, max_instances).await {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     warn!(
                         parent_addr = %worker_mode.parent_addr,
+                        worker_id = %worker_mode.worker_id,
                         token = %tunnel_token,
                         error = %error,
                         "tunnel capacity update failed; attempting worker re-registration"
                     );
-                    let new_token = register_tunnel_worker_with_retry(
+                    let (new_token, new_session) = register_tunnel_worker_with_retry(
                         worker_mode.parent_addr,
-                        ctx.local_addr,
+                        worker_mode.worker_id,
                         max_instances,
                         worker_mode.tunnel_connect_deadline,
                     )
                     .await?;
+                    {
+                        let mut parent_session = worker_mode.parent_session.write().await;
+                        if let Some(old_session) = parent_session.replace(new_session) {
+                            old_session
+                                .connection
+                                .close(0u32.into(), b"replaced parent tunnel session");
+                        }
+                    }
                     {
                         let mut tunnel_token = worker_mode.tunnel_token.write().await;
                         *tunnel_token = new_token;
                     }
                     info!(
                         parent_addr = %worker_mode.parent_addr,
+                        worker_id = %worker_mode.worker_id,
                         token = %new_token,
                         "tunnel worker re-registered after parent reconnect"
                     );
@@ -1083,8 +1222,9 @@ async fn maintain_parent_registration_loop(context: Arc<QuarkContext>) {
 }
 
 async fn handle_register_tunnel(
-    worker_addr: SocketAddr,
+    worker_id: Uuid,
     max_instances: Option<usize>,
+    connection: Option<quinn::Connection>,
     ctx: &QuarkContext,
 ) -> Result<QuarkOut> {
     let max_instances = resolve_max_instances(max_instances);
@@ -1093,7 +1233,7 @@ async fn handle_register_tunnel(
         let mut workers = ctx.workers.write().await;
         if let Some((token, worker)) = workers
             .iter_mut()
-            .find(|(_, worker)| worker.addr == worker_addr)
+            .find(|(_, worker)| worker.worker_id == worker_id)
         {
             worker.max_instances = max_instances;
             *token
@@ -1103,7 +1243,7 @@ async fn handle_register_tunnel(
                 token,
                 TunnelWorker {
                     token,
-                    addr: worker_addr,
+                    worker_id,
                     max_instances,
                 },
             );
@@ -1111,9 +1251,26 @@ async fn handle_register_tunnel(
         }
     };
 
+    if let Some(connection) = connection {
+        let old_connection = ctx
+            .worker_connections
+            .write()
+            .await
+            .insert(token, connection);
+        if let Some(old_connection) = old_connection {
+            old_connection.close(0u32.into(), b"replaced worker tunnel connection");
+        }
+    } else {
+        warn!(
+            %worker_id,
+            token = %token,
+            "registered tunnel worker without connection handle"
+        );
+    }
+
     propagate_capacity_to_parent(ctx).await?;
 
-    info!(%worker_addr, ?max_instances, token = %token, "registered tunnel worker");
+    info!(%worker_id, ?max_instances, token = %token, "registered tunnel worker");
     Ok(QuarkOut::TunnelRegistered { token })
 }
 
@@ -1249,14 +1406,31 @@ async fn get_worker(token: Uuid, ctx: &QuarkContext) -> Result<TunnelWorker> {
         .ok_or(ServerError::TunnelWorkerUnavailable(token))
 }
 
-async fn forward_tunnel_request(worker: TunnelWorker, request: TunnelRequest) -> Result<QuarkOut> {
-    let client = QuarkRpcClient::connect(worker.addr).await?;
-    let out = client
-        .request(QuarkIn::TunnelForward {
-            token: worker.token,
+async fn get_worker_connection(token: Uuid, ctx: &QuarkContext) -> Result<quinn::Connection> {
+    ctx.worker_connections
+        .read()
+        .await
+        .get(&token)
+        .cloned()
+        .ok_or(ServerError::TunnelWorkerUnavailable(token))
+}
+
+async fn forward_tunnel_request(
+    worker_token: Uuid,
+    request: TunnelRequest,
+    ctx: &QuarkContext,
+) -> Result<QuarkOut> {
+    let _worker = get_worker(worker_token, ctx).await?;
+    let connection = get_worker_connection(worker_token, ctx).await?;
+    let out = request_over_connection(
+        &connection,
+        &QuarkIn::TunnelForward {
+            token: worker_token,
             request,
-        })
-        .await?;
+        },
+    )
+    .await
+    .map_err(|error| ServerError::TunnelWorkerError(error.to_string()))?;
     match out {
         QuarkOut::Error { message } => Err(ServerError::TunnelWorkerError(message)),
         _ => Ok(out),
@@ -1287,13 +1461,13 @@ async fn handle_start_distributed(
     let out = match target {
         RouteTarget::Local => handle_start(model_id, model_config, ctx).await?,
         RouteTarget::Worker(token) => {
-            let worker = get_worker(token, ctx).await?;
             forward_tunnel_request(
-                worker,
+                token,
                 TunnelRequest::Start {
                     model_id,
                     model_config,
                 },
+                ctx,
             )
             .await?
         }
@@ -1324,8 +1498,7 @@ async fn handle_perturb_up_distributed(
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_perturb_up(model_id, seed, ctx).await,
         RouteTarget::Worker(token) => {
-            let worker = get_worker(token, ctx).await?;
-            forward_tunnel_request(worker, TunnelRequest::PerturbUp { model_id, seed }).await
+            forward_tunnel_request(token, TunnelRequest::PerturbUp { model_id, seed }, ctx).await
         }
     }
 }
@@ -1347,8 +1520,7 @@ async fn handle_infer_distributed(
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_infer(model_id, input_id, ctx).await,
         RouteTarget::Worker(token) => {
-            let worker = get_worker(token, ctx).await?;
-            forward_tunnel_request(worker, TunnelRequest::Infer { model_id, input_id }).await
+            forward_tunnel_request(token, TunnelRequest::Infer { model_id, input_id }, ctx).await
         }
     }
 }
@@ -1362,8 +1534,7 @@ async fn handle_reset_distributed(model_id: Uuid, ctx: &QuarkContext) -> Result<
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_reset(model_id, ctx).await,
         RouteTarget::Worker(token) => {
-            let worker = get_worker(token, ctx).await?;
-            forward_tunnel_request(worker, TunnelRequest::Reset { model_id }).await
+            forward_tunnel_request(token, TunnelRequest::Reset { model_id }, ctx).await
         }
     }
 }
@@ -1377,8 +1548,7 @@ async fn handle_perturb_down_distributed(model_id: Uuid, ctx: &QuarkContext) -> 
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_perturb_down(model_id, ctx).await,
         RouteTarget::Worker(token) => {
-            let worker = get_worker(token, ctx).await?;
-            forward_tunnel_request(worker, TunnelRequest::PerturbDown { model_id }).await
+            forward_tunnel_request(token, TunnelRequest::PerturbDown { model_id }, ctx).await
         }
     }
 }
@@ -1392,8 +1562,7 @@ async fn handle_checkpoint_distributed(model_id: Uuid, ctx: &QuarkContext) -> Re
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_checkpoint(model_id, ctx).await,
         RouteTarget::Worker(token) => {
-            let worker = get_worker(token, ctx).await?;
-            forward_tunnel_request(worker, TunnelRequest::Checkpoint { model_id }).await
+            forward_tunnel_request(token, TunnelRequest::Checkpoint { model_id }, ctx).await
         }
     }
 }
@@ -1417,14 +1586,14 @@ async fn handle_optimize_distributed(
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_optimize(model_id, loss_up, loss_down, ctx).await,
         RouteTarget::Worker(token) => {
-            let worker = get_worker(token, ctx).await?;
             forward_tunnel_request(
-                worker,
+                token,
                 TunnelRequest::Optimize {
                     model_id,
                     loss_up,
                     loss_down,
                 },
+                ctx,
             )
             .await
         }
@@ -1441,8 +1610,7 @@ async fn handle_shutdown_distributed(model_id: Uuid, ctx: &QuarkContext) -> Resu
     let out = match target {
         RouteTarget::Local => handle_shutdown(model_id, ctx).await?,
         RouteTarget::Worker(token) => {
-            let worker = get_worker(token, ctx).await?;
-            forward_tunnel_request(worker, TunnelRequest::Shutdown { model_id }).await?
+            forward_tunnel_request(token, TunnelRequest::Shutdown { model_id }, ctx).await?
         }
     };
     if matches!(out, QuarkOut::Ack) {
@@ -1463,8 +1631,7 @@ async fn handle_query_model_params_distributed(
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_query_model_params(model_id, ctx).await,
         RouteTarget::Worker(token) => {
-            let worker = get_worker(token, ctx).await?;
-            forward_tunnel_request(worker, TunnelRequest::QueryModelParams { model_id }).await
+            forward_tunnel_request(token, TunnelRequest::QueryModelParams { model_id }, ctx).await
         }
     }
 }
@@ -2977,7 +3144,7 @@ mod tests {
             worker_a,
             TunnelWorker {
                 token: worker_a,
-                addr: "127.0.0.1:54331".parse().expect("valid socket address"),
+                worker_id: uuid::Uuid::new_v4(),
                 max_instances: Some(3),
             },
         );
@@ -2985,7 +3152,7 @@ mod tests {
             worker_b,
             TunnelWorker {
                 token: worker_b,
-                addr: "127.0.0.1:54332".parse().expect("valid socket address"),
+                worker_id: uuid::Uuid::new_v4(),
                 max_instances: Some(2),
             },
         );
@@ -2995,7 +3162,6 @@ mod tests {
         routes.insert(model_c, RouteTarget::Worker(worker_a));
         routes.insert(model_d, RouteTarget::Worker(worker_b));
         let ctx = QuarkContext {
-            local_addr: "127.0.0.1:61011".parse().expect("valid socket address"),
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             void_client: None,
             defaults: QuarkServerDefaults::default(),
@@ -3004,6 +3170,7 @@ mod tests {
             mode: QuarkMode::Root,
             routes: RwLock::new(routes),
             workers: RwLock::new(workers),
+            worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
         };
 
@@ -3029,7 +3196,6 @@ mod tests {
         routes.insert(uuid::Uuid::new_v4(), RouteTarget::Local);
         routes.insert(uuid::Uuid::new_v4(), RouteTarget::Local);
         let ctx = QuarkContext {
-            local_addr: "127.0.0.1:61012".parse().expect("valid socket address"),
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             void_client: None,
             defaults: QuarkServerDefaults::default(),
@@ -3038,6 +3204,7 @@ mod tests {
             mode: QuarkMode::Root,
             routes: RwLock::new(routes),
             workers: RwLock::new(HashMap::new()),
+            worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
         };
 
@@ -3060,7 +3227,6 @@ mod tests {
     #[tokio::test]
     async fn tunnel_registration_defaults_capacity_to_one_when_omitted() {
         let ctx = QuarkContext {
-            local_addr: "127.0.0.1:61001".parse().expect("valid socket address"),
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             void_client: None,
             defaults: QuarkServerDefaults::default(),
@@ -3069,11 +3235,12 @@ mod tests {
             mode: QuarkMode::Root,
             routes: RwLock::new(HashMap::new()),
             workers: RwLock::new(HashMap::new()),
+            worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
         };
-        let worker_addr: SocketAddr = "127.0.0.1:54321".parse().expect("valid socket address");
+        let worker_id = uuid::Uuid::new_v4();
 
-        let out = handle_register_tunnel(worker_addr, None, &ctx)
+        let out = handle_register_tunnel(worker_id, None, None, &ctx)
             .await
             .expect("registration should succeed");
         let token = match out {
@@ -3087,13 +3254,13 @@ mod tests {
             .get(&token)
             .copied()
             .expect("worker should be tracked");
+        assert_eq!(worker.worker_id, worker_id);
         assert_eq!(worker.max_instances, Some(DEFAULT_MAX_INSTANCES));
     }
 
     #[tokio::test]
     async fn tunnel_registration_preserves_explicit_capacity() {
         let ctx = QuarkContext {
-            local_addr: "127.0.0.1:61002".parse().expect("valid socket address"),
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             void_client: None,
             defaults: QuarkServerDefaults::default(),
@@ -3102,12 +3269,13 @@ mod tests {
             mode: QuarkMode::Root,
             routes: RwLock::new(HashMap::new()),
             workers: RwLock::new(HashMap::new()),
+            worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
         };
-        let worker_addr: SocketAddr = "127.0.0.1:54322".parse().expect("valid socket address");
+        let worker_id = uuid::Uuid::new_v4();
         let requested = Some(3usize);
 
-        let out = handle_register_tunnel(worker_addr, requested, &ctx)
+        let out = handle_register_tunnel(worker_id, requested, None, &ctx)
             .await
             .expect("registration should succeed");
         let token = match out {
@@ -3121,6 +3289,7 @@ mod tests {
             .get(&token)
             .copied()
             .expect("worker should be tracked");
+        assert_eq!(worker.worker_id, worker_id);
         assert_eq!(worker.max_instances, requested);
     }
 }
