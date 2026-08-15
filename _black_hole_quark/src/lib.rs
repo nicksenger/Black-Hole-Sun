@@ -2117,39 +2117,14 @@ async fn handle_start_distributed(
     model_config: Option<QuarkModelConfig>,
     ctx: &QuarkContext,
 ) -> Result<QuarkOut> {
-<<<<<<< HEAD
     // Keep distributed starts serialized so routed and local model initialization
     // cannot overlap on the same quark context.
     let _start_dispatch_guard = ctx.start_dispatch.lock().await;
-    let target = reserve_start_target(model_id, ctx).await?;
-    let result = async {
-        let out = match target {
-            RouteTarget::Local => handle_start(model_id, model_config, ctx).await?,
-            RouteTarget::Worker(token) => {
-                forward_tunnel_request(
-                    token,
-                    TunnelRequest::Start {
-                        model_id,
-                        model_config,
-                    },
-                    ctx,
-                )
-                .await?
-            }
-        };
 
-        if !matches!(out, QuarkOut::Ack) {
-            return Err(ServerError::UnexpectedTunnelResponse("start response"));
-        }
-
-        ctx.routes.write().await.insert(model_id, target);
-        Ok(QuarkOut::Ack)
-=======
     if ctx.routes.read().await.contains_key(&model_id)
         || ctx.instances.read().await.contains_key(&model_id)
     {
         return Err(ServerError::ModelInstanceAlreadyRunning(model_id));
->>>>>>> parent of b7af187 (chore: Address comment 10775)
     }
 
     let target = select_start_target(ctx).await?;
@@ -3395,27 +3370,15 @@ mod tests {
     use super::{
         apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
         client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
-<<<<<<< HEAD
         repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
         resolve_model_oscillation, select_start_target, to_engine_error_feedback,
         FrozenOscillation, ModelRuntimeConfig, ModelSlot, QuarkContext, QuarkMode,
-        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder, ServerError,
+        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder,
         TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
     use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
     use tokio::sync::{Mutex, RwLock};
-=======
-        resolve_max_instances, resolve_model_frozen, resolve_model_oscillation,
-        select_start_target, to_engine_error_feedback, FrozenOscillation, ModelRuntimeConfig,
-        ModelSlot, QuarkContext, QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState,
-        RouteTarget, ServerBuilder, TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT,
-        DEFAULT_MAX_INSTANCES,
-    };
-    use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
-    use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
-    use tokio::sync::RwLock;
->>>>>>> parent of b7af187 (chore: Address comment 10775)
 
     #[test]
     fn model_config_none_passes_through_server_defaults() {
@@ -4112,83 +4075,6 @@ mod tests {
             .expect("worker should be selected when local start is in progress");
         assert_eq!(selected, RouteTarget::Worker(worker_token));
     }
-<<<<<<< HEAD
-
-    #[tokio::test]
-    async fn select_start_target_uses_reserved_local_starts_for_capacity() {
-        let worker_token = uuid::Uuid::new_v4();
-        let mut workers = HashMap::new();
-        workers.insert(
-            worker_token,
-            TunnelWorker {
-                token: worker_token,
-                worker_id: uuid::Uuid::new_v4(),
-                max_instances: Some(1),
-            },
-        );
-        let mut start_reservations = HashMap::new();
-        start_reservations.insert(uuid::Uuid::new_v4(), RouteTarget::Local);
-        let ctx = QuarkContext {
-            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
-            transport_mode: TransportMode::Tcp,
-            void_client: None,
-            defaults: QuarkServerDefaults::default(),
-            frozen: false,
-            max_instances: Some(1),
-            mode: QuarkMode::Root,
-            start_dispatch: Mutex::new(()),
-            routes: RwLock::new(HashMap::new()),
-            start_reservations: RwLock::new(start_reservations),
-            start_target_selection: Mutex::new(()),
-            workers: RwLock::new(workers),
-            worker_connections: RwLock::new(HashMap::new()),
-            instances: RwLock::new(HashMap::new()),
-        };
-
-        let selected = select_start_target(&ctx)
-            .await
-            .expect("worker should be selected when a local start is reserved");
-        assert_eq!(selected, RouteTarget::Worker(worker_token));
-    }
-
-    #[tokio::test]
-    async fn select_start_target_uses_reserved_worker_starts_for_capacity() {
-        let worker_token = uuid::Uuid::new_v4();
-        let mut workers = HashMap::new();
-        workers.insert(
-            worker_token,
-            TunnelWorker {
-                token: worker_token,
-                worker_id: uuid::Uuid::new_v4(),
-                max_instances: Some(1),
-            },
-        );
-        let mut start_reservations = HashMap::new();
-        start_reservations.insert(uuid::Uuid::new_v4(), RouteTarget::Worker(worker_token));
-        let ctx = QuarkContext {
-            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
-            transport_mode: TransportMode::Tcp,
-            void_client: None,
-            defaults: QuarkServerDefaults::default(),
-            frozen: false,
-            max_instances: Some(0),
-            mode: QuarkMode::Root,
-            start_dispatch: Mutex::new(()),
-            routes: RwLock::new(HashMap::new()),
-            start_reservations: RwLock::new(start_reservations),
-            start_target_selection: Mutex::new(()),
-            workers: RwLock::new(workers),
-            worker_connections: RwLock::new(HashMap::new()),
-            instances: RwLock::new(HashMap::new()),
-        };
-
-        let error = select_start_target(&ctx)
-            .await
-            .expect_err("worker reservation should block additional assignments");
-        assert!(matches!(error, ServerError::NoTunnelCapacity));
-    }
-=======
->>>>>>> parent of b7af187 (chore: Address comment 10775)
 }
 
 pub type Result<T> = std::result::Result<T, ServerError>;
