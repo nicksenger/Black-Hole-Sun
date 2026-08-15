@@ -754,6 +754,8 @@ struct QuarkContext {
     max_instances: Option<usize>,
     mode: QuarkMode,
     routes: tokio::sync::RwLock<HashMap<Uuid, RouteTarget>>,
+    start_reservations: tokio::sync::RwLock<HashMap<Uuid, RouteTarget>>,
+    start_target_selection: tokio::sync::Mutex<()>,
     workers: tokio::sync::RwLock<HashMap<Uuid, TunnelWorker>>,
     worker_connections: tokio::sync::RwLock<HashMap<Uuid, TunnelConnectionHandle>>,
     instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
@@ -1142,6 +1144,8 @@ impl ServerBuilder {
             max_instances: resolve_max_instances(self.max_instances),
             mode,
             routes: tokio::sync::RwLock::new(HashMap::new()),
+            start_reservations: tokio::sync::RwLock::new(HashMap::new()),
+            start_target_selection: tokio::sync::Mutex::new(()),
             workers: tokio::sync::RwLock::new(HashMap::new()),
             worker_connections: tokio::sync::RwLock::new(HashMap::new()),
             instances: tokio::sync::RwLock::new(HashMap::new()),
@@ -1984,7 +1988,8 @@ fn has_capacity(limit: Option<usize>, current: usize) -> bool {
 
 async fn select_start_target(ctx: &QuarkContext) -> Result<RouteTarget> {
     let routes = ctx.routes.read().await;
-    let local_count = ctx.instances.read().await.len();
+    let start_reservations = ctx.start_reservations.read().await;
+    let mut local_count = ctx.instances.read().await.len();
     let mut worker_counts: HashMap<Uuid, usize> = HashMap::new();
     for target in routes.values() {
         match target {
@@ -1994,6 +1999,15 @@ async fn select_start_target(ctx: &QuarkContext) -> Result<RouteTarget> {
             }
         }
     }
+    for target in start_reservations.values() {
+        match target {
+            RouteTarget::Local => local_count += 1,
+            RouteTarget::Worker(token) => {
+                *worker_counts.entry(*token).or_insert(0) += 1;
+            }
+        }
+    }
+    drop(start_reservations);
     drop(routes);
 
     let mut best: Option<(RouteTarget, usize)> = None;
@@ -2019,6 +2033,27 @@ async fn select_start_target(ctx: &QuarkContext) -> Result<RouteTarget> {
 
     best.map(|(target, _)| target)
         .ok_or(ServerError::NoTunnelCapacity)
+}
+
+async fn reserve_start_target(model_id: Uuid, ctx: &QuarkContext) -> Result<RouteTarget> {
+    let _selection_guard = ctx.start_target_selection.lock().await;
+    if ctx.routes.read().await.contains_key(&model_id)
+        || ctx.instances.read().await.contains_key(&model_id)
+        || ctx.start_reservations.read().await.contains_key(&model_id)
+    {
+        return Err(ServerError::ModelInstanceAlreadyRunning(model_id));
+    }
+
+    let target = select_start_target(ctx).await?;
+    ctx.start_reservations
+        .write()
+        .await
+        .insert(model_id, target);
+    Ok(target)
+}
+
+async fn clear_start_reservation(model_id: Uuid, ctx: &QuarkContext) {
+    ctx.start_reservations.write().await.remove(&model_id);
 }
 
 async fn get_worker(token: Uuid, ctx: &QuarkContext) -> Result<TunnelWorker> {
@@ -2075,34 +2110,33 @@ async fn handle_start_distributed(
     model_config: Option<QuarkModelConfig>,
     ctx: &QuarkContext,
 ) -> Result<QuarkOut> {
-    if ctx.routes.read().await.contains_key(&model_id)
-        || ctx.instances.read().await.contains_key(&model_id)
-    {
-        return Err(ServerError::ModelInstanceAlreadyRunning(model_id));
-    }
+    let target = reserve_start_target(model_id, ctx).await?;
+    let result = async {
+        let out = match target {
+            RouteTarget::Local => handle_start(model_id, model_config, ctx).await?,
+            RouteTarget::Worker(token) => {
+                forward_tunnel_request(
+                    token,
+                    TunnelRequest::Start {
+                        model_id,
+                        model_config,
+                    },
+                    ctx,
+                )
+                .await?
+            }
+        };
 
-    let target = select_start_target(ctx).await?;
-    let out = match target {
-        RouteTarget::Local => handle_start(model_id, model_config, ctx).await?,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(
-                token,
-                TunnelRequest::Start {
-                    model_id,
-                    model_config,
-                },
-                ctx,
-            )
-            .await?
+        if !matches!(out, QuarkOut::Ack) {
+            return Err(ServerError::UnexpectedTunnelResponse("start response"));
         }
-    };
 
-    if !matches!(out, QuarkOut::Ack) {
-        return Err(ServerError::UnexpectedTunnelResponse("start response"));
+        ctx.routes.write().await.insert(model_id, target);
+        Ok(QuarkOut::Ack)
     }
-
-    ctx.routes.write().await.insert(model_id, target);
-    Ok(QuarkOut::Ack)
+    .await;
+    clear_start_reservation(model_id, ctx).await;
+    result
 }
 
 async fn handle_perturb_up_routed(
@@ -3327,12 +3361,12 @@ mod tests {
         resolve_max_instances, resolve_model_frozen, resolve_model_oscillation,
         select_start_target, to_engine_error_feedback, FrozenOscillation, ModelRuntimeConfig,
         ModelSlot, QuarkContext, QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState,
-        RouteTarget, ServerBuilder, TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT,
-        DEFAULT_MAX_INSTANCES,
+        RouteTarget, ServerBuilder, ServerError, TransportMode, TunnelWorker,
+        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
     use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
-    use tokio::sync::RwLock;
+    use tokio::sync::{Mutex, RwLock};
 
     #[test]
     fn model_config_none_passes_through_server_defaults() {
@@ -3809,6 +3843,8 @@ mod tests {
             max_instances: Some(2),
             mode: QuarkMode::Root,
             routes: RwLock::new(routes),
+            start_reservations: RwLock::new(HashMap::new()),
+            start_target_selection: Mutex::new(()),
             workers: RwLock::new(workers),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
@@ -3844,6 +3880,8 @@ mod tests {
             max_instances: Some(1),
             mode: QuarkMode::Root,
             routes: RwLock::new(routes),
+            start_reservations: RwLock::new(HashMap::new()),
+            start_target_selection: Mutex::new(()),
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
@@ -3876,6 +3914,8 @@ mod tests {
             max_instances: Some(DEFAULT_MAX_INSTANCES),
             mode: QuarkMode::Root,
             routes: RwLock::new(HashMap::new()),
+            start_reservations: RwLock::new(HashMap::new()),
+            start_target_selection: Mutex::new(()),
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
@@ -3911,6 +3951,8 @@ mod tests {
             max_instances: Some(DEFAULT_MAX_INSTANCES),
             mode: QuarkMode::Root,
             routes: RwLock::new(HashMap::new()),
+            start_reservations: RwLock::new(HashMap::new()),
+            start_target_selection: Mutex::new(()),
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
@@ -3959,6 +4001,8 @@ mod tests {
             max_instances: Some(1),
             mode: QuarkMode::Root,
             routes: RwLock::new(HashMap::new()),
+            start_reservations: RwLock::new(HashMap::new()),
+            start_target_selection: Mutex::new(()),
             workers: RwLock::new(workers),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(instances),
@@ -3968,6 +4012,78 @@ mod tests {
             .await
             .expect("worker should be selected when local start is in progress");
         assert_eq!(selected, RouteTarget::Worker(worker_token));
+    }
+
+    #[tokio::test]
+    async fn select_start_target_uses_reserved_local_starts_for_capacity() {
+        let worker_token = uuid::Uuid::new_v4();
+        let mut workers = HashMap::new();
+        workers.insert(
+            worker_token,
+            TunnelWorker {
+                token: worker_token,
+                worker_id: uuid::Uuid::new_v4(),
+                max_instances: Some(1),
+            },
+        );
+        let mut start_reservations = HashMap::new();
+        start_reservations.insert(uuid::Uuid::new_v4(), RouteTarget::Local);
+        let ctx = QuarkContext {
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Tcp,
+            void_client: None,
+            defaults: QuarkServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(1),
+            mode: QuarkMode::Root,
+            routes: RwLock::new(HashMap::new()),
+            start_reservations: RwLock::new(start_reservations),
+            start_target_selection: Mutex::new(()),
+            workers: RwLock::new(workers),
+            worker_connections: RwLock::new(HashMap::new()),
+            instances: RwLock::new(HashMap::new()),
+        };
+
+        let selected = select_start_target(&ctx)
+            .await
+            .expect("worker should be selected when a local start is reserved");
+        assert_eq!(selected, RouteTarget::Worker(worker_token));
+    }
+
+    #[tokio::test]
+    async fn select_start_target_uses_reserved_worker_starts_for_capacity() {
+        let worker_token = uuid::Uuid::new_v4();
+        let mut workers = HashMap::new();
+        workers.insert(
+            worker_token,
+            TunnelWorker {
+                token: worker_token,
+                worker_id: uuid::Uuid::new_v4(),
+                max_instances: Some(1),
+            },
+        );
+        let mut start_reservations = HashMap::new();
+        start_reservations.insert(uuid::Uuid::new_v4(), RouteTarget::Worker(worker_token));
+        let ctx = QuarkContext {
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Tcp,
+            void_client: None,
+            defaults: QuarkServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(0),
+            mode: QuarkMode::Root,
+            routes: RwLock::new(HashMap::new()),
+            start_reservations: RwLock::new(start_reservations),
+            start_target_selection: Mutex::new(()),
+            workers: RwLock::new(workers),
+            worker_connections: RwLock::new(HashMap::new()),
+            instances: RwLock::new(HashMap::new()),
+        };
+
+        let error = select_start_target(&ctx)
+            .await
+            .expect_err("worker reservation should block additional assignments");
+        assert!(matches!(error, ServerError::NoTunnelCapacity));
     }
 }
 
