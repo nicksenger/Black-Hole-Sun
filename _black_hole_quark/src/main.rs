@@ -56,7 +56,7 @@ struct Opt {
     /// Optional root quark endpoint to register with as a tunnel worker
     #[clap(long = "tunnel")]
     tunnel: Option<SocketAddr>,
-    /// Max seconds to keep retrying tunnel registration before exiting (default: 600)
+    /// Max seconds to keep retrying tunnel registration before exiting (default: no deadline)
     #[clap(long = "tunnel-connect-deadline-seconds")]
     tunnel_connect_deadline_seconds: Option<u64>,
     /// Optional max concurrent model instances handled by this quark (defaults to 1)

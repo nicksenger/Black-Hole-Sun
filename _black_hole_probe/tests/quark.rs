@@ -174,6 +174,70 @@ async fn tunnel_worker_retries_parent_registration_until_root_starts() {
 }
 
 #[tokio::test]
+async fn tunnel_worker_re_registers_after_root_restart() {
+    init_tracing();
+
+    let reserved = std::net::UdpSocket::bind("127.0.0.1:0").expect("failed to reserve root port");
+    let root_addr = reserved
+        .local_addr()
+        .expect("failed to read reserved root port");
+    drop(reserved);
+
+    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .listen(root_addr)
+        .max_instances(0)
+        .serve()
+        .await
+        .expect("failed to start root quark server");
+    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .tunnel(root_addr)
+        .max_instances(1)
+        .serve()
+        .await
+        .expect("failed to start worker quark server");
+
+    let client = make_client_endpoint().await;
+    let root_client = QuarkClient::new(&client, root_addr, "localhost");
+
+    let initial_capacity = root_client
+        .query_model_capacity()
+        .await
+        .expect("initial capacity query should succeed");
+    assert_eq!(initial_capacity.total, Some(1));
+    assert_eq!(initial_capacity.available, Some(1));
+    assert_eq!(initial_capacity.occupied, 0);
+
+    root_server.abort();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let restarted_root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .listen(root_addr)
+        .max_instances(0)
+        .serve()
+        .await
+        .expect("failed to restart root quark server");
+
+    tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            if let Ok(capacity) = root_client.query_model_capacity().await {
+                if capacity.total == Some(1)
+                    && capacity.available == Some(1)
+                    && capacity.occupied == 0
+                {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("worker should re-register with restarted root");
+
+    worker_server.abort();
+    restarted_root_server.abort();
+}
+
+#[tokio::test]
 async fn recursive_capacity_query_reports_total_available_and_occupied() {
     init_tracing();
 

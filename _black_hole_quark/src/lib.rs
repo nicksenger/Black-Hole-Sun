@@ -39,8 +39,8 @@ const DEFAULT_CHECKPOINT_TOKENIZER_FILE: &str = "tokenizer.json";
 const DEFAULT_CHECKPOINT_TOKENIZER_DIR: &str = ".black-hole-sun/tokenizers";
 const CHECKPOINT_CACHE_DIR: &str = "black-hole-quark/checkpoints";
 const DEFAULT_TUNNEL_CONNECT_RETRY_MS: u64 = 200;
-const MAX_TUNNEL_CONNECT_RETRY_MS: u64 = 51_200;
-const DEFAULT_TUNNEL_CONNECT_DEADLINE: Duration = Duration::from_secs(10 * 60);
+const MAX_TUNNEL_CONNECT_RETRY_MS: u64 = 25_600;
+const TUNNEL_REGISTRATION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const RESIDUAL_UPDATE_UNSUPPORTED_FRAGMENT: &str =
     "restore_and_update_with_residual not supported for ";
 
@@ -359,13 +359,17 @@ enum ModelSlot {
     ShuttingDown,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 enum QuarkMode {
     Root,
-    Worker {
-        parent_addr: SocketAddr,
-        tunnel_token: Uuid,
-    },
+    Worker(Arc<WorkerModeState>),
+}
+
+#[derive(Debug)]
+struct WorkerModeState {
+    parent_addr: SocketAddr,
+    tunnel_token: tokio::sync::RwLock<Uuid>,
+    tunnel_connect_deadline: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -382,7 +386,6 @@ struct TunnelWorker {
 }
 
 struct QuarkContext {
-    #[allow(dead_code)]
     local_addr: SocketAddr,
     model_path: PathBuf,
     void_client: Option<Arc<VoidClient>>,
@@ -499,7 +502,7 @@ pub struct ServerBuilder {
     model_path: PathBuf,
     void_addr: Option<SocketAddr>,
     tunnel: Option<SocketAddr>,
-    tunnel_connect_deadline: Duration,
+    tunnel_connect_deadline: Option<Duration>,
     max_instances: Option<usize>,
     defaults: QuarkServerDefaults,
 }
@@ -518,7 +521,7 @@ impl ServerBuilder {
             model_path: model_path.into(),
             void_addr: None,
             tunnel: None,
-            tunnel_connect_deadline: DEFAULT_TUNNEL_CONNECT_DEADLINE,
+            tunnel_connect_deadline: None,
             max_instances: Some(DEFAULT_MAX_INSTANCES),
             defaults: QuarkServerDefaults::default(),
         }
@@ -568,7 +571,7 @@ impl ServerBuilder {
 
     /// Configure how long tunnel workers retry parent registration before failing.
     pub fn tunnel_connect_deadline(mut self, deadline: Duration) -> Self {
-        self.tunnel_connect_deadline = deadline;
+        self.tunnel_connect_deadline = Some(deadline);
         self
     }
 
@@ -692,12 +695,21 @@ impl ServerBuilder {
         info!(%local_addr, "listening");
 
         let mode = if let Some(parent_addr) = self.tunnel {
-            info!(
-                %parent_addr,
-                %local_addr,
-                deadline_ms = self.tunnel_connect_deadline.as_millis() as u64,
-                "registering tunnel worker"
-            );
+            if let Some(deadline) = self.tunnel_connect_deadline {
+                info!(
+                    %parent_addr,
+                    %local_addr,
+                    deadline_ms = deadline.as_millis() as u64,
+                    "registering tunnel worker"
+                );
+            } else {
+                info!(
+                    %parent_addr,
+                    %local_addr,
+                    deadline = "none",
+                    "registering tunnel worker"
+                );
+            }
             let tunnel_token = register_tunnel_worker_with_retry(
                 parent_addr,
                 local_addr,
@@ -706,10 +718,11 @@ impl ServerBuilder {
             )
             .await?;
             info!(%parent_addr, %local_addr, token = %tunnel_token, "tunnel worker registered");
-            QuarkMode::Worker {
+            QuarkMode::Worker(Arc::new(WorkerModeState {
                 parent_addr,
-                tunnel_token,
-            }
+                tunnel_token: tokio::sync::RwLock::new(tunnel_token),
+                tunnel_connect_deadline: self.tunnel_connect_deadline,
+            }))
         } else {
             QuarkMode::Root
         };
@@ -735,7 +748,7 @@ impl ServerBuilder {
     pub async fn serve(self) -> Result<(SocketAddr, tokio::task::JoinHandle<Result<()>>)> {
         let stateless_retry = self.stateless_retry;
         let (endpoint, local_addr, context) = self.setup().await?;
-        let handle = tokio::spawn(Self::accept_loop(endpoint, context, stateless_retry));
+        let handle = tokio::spawn(Self::run_server_loops(endpoint, context, stateless_retry));
         Ok((local_addr, handle))
     }
 
@@ -743,7 +756,22 @@ impl ServerBuilder {
     pub async fn run(self) -> Result<()> {
         let stateless_retry = self.stateless_retry;
         let (endpoint, _local_addr, context) = self.setup().await?;
-        Self::accept_loop(endpoint, context, stateless_retry).await
+        Self::run_server_loops(endpoint, context, stateless_retry).await
+    }
+
+    async fn run_server_loops(
+        endpoint: quinn::Endpoint,
+        context: Arc<QuarkContext>,
+        stateless_retry: bool,
+    ) -> Result<()> {
+        if matches!(&context.mode, QuarkMode::Worker(_)) {
+            tokio::select! {
+                accept_result = Self::accept_loop(endpoint, Arc::clone(&context), stateless_retry) => accept_result,
+                _ = maintain_parent_registration_loop(context) => Ok(()),
+            }
+        } else {
+            Self::accept_loop(endpoint, context, stateless_retry).await
+        }
     }
 
     /// Accept-loop shared by both `run()` and `serve()`.
@@ -884,9 +912,9 @@ async fn handle_request(req: QuarkIn, ctx: &QuarkContext) -> Result<QuarkOut> {
 }
 
 fn ensure_root_mode(ctx: &QuarkContext) -> Result<()> {
-    match ctx.mode {
+    match &ctx.mode {
         QuarkMode::Root => Ok(()),
-        QuarkMode::Worker { .. } => Err(ServerError::TunnelWorkerRejectsModelRequests),
+        QuarkMode::Worker(_) => Err(ServerError::TunnelWorkerRejectsModelRequests),
     }
 }
 
@@ -915,10 +943,10 @@ async fn register_tunnel_worker_with_retry(
     parent_addr: SocketAddr,
     worker_addr: SocketAddr,
     max_instances: Option<usize>,
-    deadline: Duration,
+    deadline: Option<Duration>,
 ) -> Result<Uuid> {
     let start = Instant::now();
-    let deadline_at = start + deadline;
+    let deadline_at = deadline.map(|deadline| start + deadline);
     let mut retry_delay = Duration::from_millis(DEFAULT_TUNNEL_CONNECT_RETRY_MS);
     let max_retry_delay = Duration::from_millis(MAX_TUNNEL_CONNECT_RETRY_MS);
     let mut attempts = 0u32;
@@ -928,24 +956,38 @@ async fn register_tunnel_worker_with_retry(
             Ok(token) => return Ok(token),
             Err(error) => {
                 let now = Instant::now();
-                if now >= deadline_at {
-                    return Err(ServerError::TunnelRegistrationDeadlineExceeded {
-                        parent_addr,
-                        deadline,
-                        attempts,
-                        last_error: error.to_string(),
-                    });
+                if let Some(deadline_at) = deadline_at {
+                    if now >= deadline_at {
+                        return Err(ServerError::TunnelRegistrationDeadlineExceeded {
+                            parent_addr,
+                            deadline: deadline.expect("deadline_at implies deadline is set"),
+                            attempts,
+                            last_error: error.to_string(),
+                        });
+                    }
                 }
-                let remaining = deadline_at.saturating_duration_since(now);
-                let sleep_for = std::cmp::min(retry_delay, remaining);
-                warn!(
-                    %parent_addr,
-                    attempt = attempts,
-                    retry_ms = sleep_for.as_millis() as u64,
-                    remaining_ms = remaining.as_millis() as u64,
-                    error = %error,
-                    "tunnel registration failed; retrying"
-                );
+                let sleep_for = if let Some(deadline_at) = deadline_at {
+                    let remaining = deadline_at.saturating_duration_since(now);
+                    let sleep_for = std::cmp::min(retry_delay, remaining);
+                    warn!(
+                        %parent_addr,
+                        attempt = attempts,
+                        retry_ms = sleep_for.as_millis() as u64,
+                        remaining_ms = remaining.as_millis() as u64,
+                        error = %error,
+                        "tunnel registration failed; retrying"
+                    );
+                    sleep_for
+                } else {
+                    warn!(
+                        %parent_addr,
+                        attempt = attempts,
+                        retry_ms = retry_delay.as_millis() as u64,
+                        error = %error,
+                        "tunnel registration failed; retrying"
+                    );
+                    retry_delay
+                };
                 tokio::time::sleep(sleep_for).await;
                 retry_delay = retry_delay.saturating_mul(2).min(max_retry_delay);
             }
@@ -990,14 +1032,52 @@ async fn advertised_capacity(ctx: &QuarkContext) -> Option<usize> {
 }
 
 async fn propagate_capacity_to_parent(ctx: &QuarkContext) -> Result<()> {
-    match ctx.mode {
+    match &ctx.mode {
         QuarkMode::Root => Ok(()),
-        QuarkMode::Worker {
-            parent_addr,
-            tunnel_token,
-        } => {
+        QuarkMode::Worker(worker_mode) => {
             let max_instances = advertised_capacity(ctx).await;
-            update_tunnel_capacity(parent_addr, tunnel_token, max_instances).await
+            let tunnel_token = *worker_mode.tunnel_token.read().await;
+            match update_tunnel_capacity(worker_mode.parent_addr, tunnel_token, max_instances).await
+            {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    warn!(
+                        parent_addr = %worker_mode.parent_addr,
+                        token = %tunnel_token,
+                        error = %error,
+                        "tunnel capacity update failed; attempting worker re-registration"
+                    );
+                    let new_token = register_tunnel_worker_with_retry(
+                        worker_mode.parent_addr,
+                        ctx.local_addr,
+                        max_instances,
+                        worker_mode.tunnel_connect_deadline,
+                    )
+                    .await?;
+                    {
+                        let mut tunnel_token = worker_mode.tunnel_token.write().await;
+                        *tunnel_token = new_token;
+                    }
+                    info!(
+                        parent_addr = %worker_mode.parent_addr,
+                        token = %new_token,
+                        "tunnel worker re-registered after parent reconnect"
+                    );
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+async fn maintain_parent_registration_loop(context: Arc<QuarkContext>) {
+    loop {
+        tokio::time::sleep(TUNNEL_REGISTRATION_REFRESH_INTERVAL).await;
+        if let Err(error) = propagate_capacity_to_parent(context.as_ref()).await {
+            warn!(
+                error = %error,
+                "failed to refresh tunnel worker registration with parent"
+            );
         }
     }
 }
@@ -1061,11 +1141,15 @@ async fn handle_tunnel_forward(
     request: TunnelRequest,
     ctx: &QuarkContext,
 ) -> Result<QuarkOut> {
-    match ctx.mode {
-        QuarkMode::Worker { tunnel_token, .. } if tunnel_token == token => {
-            handle_tunnel_request_local(request, ctx).await
+    match &ctx.mode {
+        QuarkMode::Worker(worker_mode) => {
+            let tunnel_token = *worker_mode.tunnel_token.read().await;
+            if tunnel_token == token {
+                handle_tunnel_request_local(request, ctx).await
+            } else {
+                Err(ServerError::TunnelUnauthorizedForward)
+            }
         }
-        QuarkMode::Worker { .. } => Err(ServerError::TunnelUnauthorizedForward),
         QuarkMode::Root => Err(ServerError::TunnelForwardUnsupportedOnRoot),
     }
 }
@@ -2435,11 +2519,10 @@ mod tests {
     use super::{
         apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
         client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
-        resolve_max_instances,
-        resolve_model_frozen, resolve_model_oscillation, to_engine_error_feedback,
-        FrozenOscillation, ModelRuntimeConfig, QuarkContext, QuarkMode, QuarkServerDefaults,
-        QuarkSession, QuarkState, RouteTarget, ServerBuilder, TunnelWorker,
-        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES, DEFAULT_TUNNEL_CONNECT_DEADLINE,
+        resolve_max_instances, resolve_model_frozen, resolve_model_oscillation,
+        to_engine_error_feedback, FrozenOscillation, ModelRuntimeConfig, QuarkContext, QuarkMode,
+        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder, TunnelWorker,
+        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
     use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
@@ -2862,12 +2945,9 @@ mod tests {
     }
 
     #[test]
-    fn server_builder_defaults_tunnel_connect_deadline_to_ten_minutes() {
+    fn server_builder_defaults_tunnel_connect_deadline_to_none() {
         let builder = ServerBuilder::new("model-is-not-loaded-for-this-test");
-        assert_eq!(
-            builder.tunnel_connect_deadline,
-            DEFAULT_TUNNEL_CONNECT_DEADLINE
-        );
+        assert_eq!(builder.tunnel_connect_deadline, None);
     }
 
     #[test]
