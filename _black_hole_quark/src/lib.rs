@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs, io,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -68,6 +68,45 @@ fn client_bind_addr_for(remote_addr: SocketAddr) -> SocketAddr {
         "0.0.0.0:0".parse().expect("valid ipv4 any-address")
     } else {
         "[::]:0".parse().expect("valid ipv6 any-address")
+    }
+}
+
+fn path_root(path: &Path) -> Option<&Path> {
+    path.ancestors().last()
+}
+
+fn repair_duplicated_absolute_model_path(model_path: &Path, cwd: &Path) -> Option<PathBuf> {
+    if !model_path.is_absolute() || model_path.exists() {
+        return None;
+    }
+
+    let duplicated_suffix = model_path.strip_prefix(cwd).ok()?;
+    if duplicated_suffix.as_os_str().is_empty() {
+        return None;
+    }
+
+    let root = path_root(cwd)?;
+    let repaired = root.join(duplicated_suffix);
+    if repaired == model_path || !repaired.exists() {
+        return None;
+    }
+    Some(repaired)
+}
+
+fn resolve_configured_model_path(model_path: &Path) -> PathBuf {
+    let Ok(cwd) = std::env::current_dir() else {
+        return model_path.to_path_buf();
+    };
+    if let Some(repaired) = repair_duplicated_absolute_model_path(model_path, &cwd) {
+        warn!(
+            configured_model_path = %model_path.display(),
+            repaired_model_path = %repaired.display(),
+            cwd = %cwd.display(),
+            "corrected duplicated absolute model path"
+        );
+        repaired
+    } else {
+        model_path.to_path_buf()
     }
 }
 
@@ -1025,7 +1064,8 @@ impl ServerBuilder {
 
     /// Build the void client, endpoint and shared server context.
     async fn setup(self) -> Result<(QuarkListener, SocketAddr, Arc<QuarkContext>)> {
-        let model_path_str = self.model_path.to_string_lossy().to_string();
+        let configured_model_path = resolve_configured_model_path(&self.model_path);
+        let model_path_str = configured_model_path.to_string_lossy().to_string();
         info!(model_path = %model_path_str, "configured model");
 
         // Optionally connect to void.
@@ -1137,7 +1177,7 @@ impl ServerBuilder {
         };
 
         let context = Arc::new(QuarkContext {
-            model_path: self.model_path,
+            model_path: configured_model_path,
             transport_mode: self.transport_mode,
             void_client,
             defaults: self.defaults,
@@ -3363,14 +3403,14 @@ mod tests {
     use super::{
         apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
         client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
-        resolve_max_instances, resolve_model_frozen, resolve_model_oscillation,
-        select_start_target, to_engine_error_feedback, FrozenOscillation, ModelRuntimeConfig,
-        ModelSlot, QuarkContext, QuarkMode, QuarkServerDefaults, QuarkSession, QuarkState,
-        RouteTarget, ServerBuilder, ServerError, TransportMode, TunnelWorker,
-        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
+        resolve_model_oscillation, select_start_target, to_engine_error_feedback,
+        FrozenOscillation, ModelRuntimeConfig, ModelSlot, QuarkContext, QuarkMode,
+        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder, ServerError,
+        TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
-    use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
+    use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
     use tokio::sync::{Mutex, RwLock};
 
     #[test]
@@ -3793,6 +3833,61 @@ mod tests {
     fn server_builder_defaults_tunnel_connect_deadline_to_none() {
         let builder = ServerBuilder::new("model-is-not-loaded-for-this-test");
         assert_eq!(builder.tunnel_connect_deadline, None);
+    }
+
+    #[test]
+    fn repair_duplicated_absolute_model_path_recovers_existing_original_path() {
+        let root = std::env::temp_dir().join(format!(
+            "black-hole-quark-path-repair-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cwd = root.join("sandbox/current");
+        fs::create_dir_all(&cwd).expect("failed to create cwd directory");
+        let original = root.join("weights/model.gguf");
+        fs::create_dir_all(
+            original
+                .parent()
+                .expect("model path should include a parent directory"),
+        )
+        .expect("failed to create model parent directory");
+        fs::write(&original, b"gguf").expect("failed to create model file");
+
+        let cwd_root = cwd.ancestors().last().expect("cwd should have a filesystem root");
+        let absolute_suffix = original
+            .strip_prefix(cwd_root)
+            .expect("original path should share root with cwd");
+        let duplicated = cwd.join(absolute_suffix);
+
+        let repaired = repair_duplicated_absolute_model_path(&duplicated, &cwd)
+            .expect("duplicated absolute path should be repaired");
+        assert_eq!(repaired, original);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repair_duplicated_absolute_model_path_returns_none_when_repaired_path_missing() {
+        let root = std::env::temp_dir().join(format!(
+            "black-hole-quark-path-repair-missing-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cwd = root.join("sandbox/current");
+        fs::create_dir_all(&cwd).expect("failed to create cwd directory");
+        let expected = root.join("weights/missing-model.gguf");
+
+        let cwd_root = cwd.ancestors().last().expect("cwd should have a filesystem root");
+        let absolute_suffix = expected
+            .strip_prefix(cwd_root)
+            .expect("expected path should share root with cwd");
+        let duplicated = cwd.join(absolute_suffix);
+
+        let repaired = repair_duplicated_absolute_model_path(&duplicated, &cwd);
+        assert!(
+            repaired.is_none(),
+            "repair should not rewrite to a non-existent model path"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
