@@ -3390,8 +3390,8 @@ mod tests {
         repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
         resolve_model_oscillation, select_start_target, to_engine_error_feedback,
         FrozenOscillation, ModelRuntimeConfig, ModelSlot, QuarkContext, QuarkMode,
-        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder,
-        TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder, TransportMode,
+        TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
     use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
@@ -3836,7 +3836,10 @@ mod tests {
         .expect("failed to create model parent directory");
         fs::write(&original, b"gguf").expect("failed to create model file");
 
-        let cwd_root = cwd.ancestors().last().expect("cwd should have a filesystem root");
+        let cwd_root = cwd
+            .ancestors()
+            .last()
+            .expect("cwd should have a filesystem root");
         let absolute_suffix = original
             .strip_prefix(cwd_root)
             .expect("original path should share root with cwd");
@@ -3859,7 +3862,10 @@ mod tests {
         fs::create_dir_all(&cwd).expect("failed to create cwd directory");
         let expected = root.join("weights/missing-model.gguf");
 
-        let cwd_root = cwd.ancestors().last().expect("cwd should have a filesystem root");
+        let cwd_root = cwd
+            .ancestors()
+            .last()
+            .expect("cwd should have a filesystem root");
         let absolute_suffix = expected
             .strip_prefix(cwd_root)
             .expect("expected path should share root with cwd");

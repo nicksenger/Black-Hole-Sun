@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use black_hole_flux::sun::{
     BinarySunStep, NodeIdsFromList, Sun, SunAppearance, SunNode, SunNodeState, SunState,
     UnarySunStep,
@@ -28,7 +29,10 @@ use iced_sugiyama::motion::easing::Easing;
 use iced_sugiyama::{
     circo_layout, AutoFit, Cluster, EdgeEndpointKind, Graph, LayoutInput, Sugiyama,
 };
-use jungle_sdk::{Animal, AnimalIdValue, JungleClient, Observe};
+use jungle_sdk::{Animal, AnimalIdValue, JourneyAstSource, JungleClient, Observe};
+use jungle_vision::{
+    AnyAnimal, DefaultTheme, EjectedViewer, EjectedViewerMessage, JungleViewerBuilder,
+};
 use typenum::Unsigned;
 use uuid::Uuid;
 
@@ -43,6 +47,23 @@ const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
+
+type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
+
+#[derive(Clone)]
+struct SubpanelConfig {
+    title: String,
+    journey_id: Uuid,
+    build_viewer: fn(SharedJungleClient, Uuid) -> JungleSubpanelViewer,
+}
+
+fn build_subpanel_viewer<A>(client: SharedJungleClient, journey_id: Uuid) -> JungleSubpanelViewer
+where
+    A: Animal + 'static,
+    A::Flow: JourneyAstSource,
+{
+    JungleViewerBuilder::new().eject_live_animal::<A, SharedJungleClient>(client, journey_id)
+}
 
 #[derive(Debug, Clone, Copy)]
 enum EdgeEndpointGlyphKind {
@@ -123,6 +144,7 @@ pub struct BeamBuilder {
     width: f32,
     height: f32,
     layout: BeamLayout,
+    subpanel: Option<SubpanelConfig>,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
 }
@@ -140,6 +162,7 @@ impl Default for BeamBuilder {
             width: DEFAULT_WINDOW_WIDTH,
             height: DEFAULT_WINDOW_HEIGHT,
             layout: BeamLayout::Circo,
+            subpanel: None,
             animation_duration: None,
             animation_easing: None,
         }
@@ -189,6 +212,22 @@ impl BeamBuilder {
         self
     }
 
+    /// Render one child workflow panel beneath the Black Hole Sun graph.
+    ///
+    /// Calling `subpanel` multiple times keeps the most recent subpanel.
+    pub fn subpanel<A>(mut self, journey_id: Uuid) -> Self
+    where
+        A: Animal + 'static,
+        A::Flow: JourneyAstSource,
+    {
+        self.subpanel = Some(SubpanelConfig {
+            title: short_type_name::<A>(),
+            journey_id,
+            build_viewer: build_subpanel_viewer::<A>,
+        });
+        self
+    }
+
     pub fn animation_duration(mut self, duration: Duration) -> Self {
         self.animation_duration = Some(duration);
         self
@@ -205,6 +244,7 @@ impl BeamBuilder {
             width: self.width,
             height: self.height,
             layout: self.layout,
+            subpanel: self.subpanel,
             animation_duration: self.animation_duration,
             animation_easing: self.animation_easing,
         }
@@ -303,6 +343,7 @@ struct BeamConfig {
     width: f32,
     height: f32,
     layout: BeamLayout,
+    subpanel: Option<SubpanelConfig>,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
 }
@@ -311,6 +352,221 @@ struct BeamConfig {
 struct LiveConfig {
     client: Arc<dyn JungleClient>,
     journey_id: Uuid,
+}
+
+#[derive(Clone)]
+struct SharedJungleClient {
+    inner: Arc<dyn JungleClient>,
+}
+
+impl SharedJungleClient {
+    fn new(inner: Arc<dyn JungleClient>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl JungleClient for SharedJungleClient {
+    async fn spawn<A>(
+        &self,
+        _seed: &A::Seed,
+    ) -> Result<jungle_sdk::JourneyHandle, jungle_sdk::ExecutorError>
+    where
+        Self: Sized,
+        A: jungle_sdk::SpawnableAnimal,
+        A::Seed: Sync,
+    {
+        Err(jungle_sdk::ExecutorError::ClientTransport(
+            "shared beam client does not support spawn".to_string(),
+        ))
+    }
+
+    async fn journey_history(
+        &self,
+        id: Uuid,
+    ) -> Result<Vec<jungle_sdk::RunnerOut>, jungle_sdk::ExecutorError> {
+        self.inner.journey_history(id).await
+    }
+
+    async fn journey_replay_page(
+        &self,
+        journey_id: Uuid,
+        after_sequence_id: Option<u64>,
+        snapshot_end_sequence_id: Option<u64>,
+        limit: u32,
+    ) -> Result<jungle_sdk::JourneyReplayPage, jungle_sdk::ExecutorError> {
+        self.inner
+            .journey_replay_page(
+                journey_id,
+                after_sequence_id,
+                snapshot_end_sequence_id,
+                limit,
+            )
+            .await
+    }
+
+    async fn list_journeys(
+        &self,
+        namespace: String,
+    ) -> Result<Vec<jungle_sdk::JourneyRecord>, jungle_sdk::ExecutorError> {
+        self.inner.list_journeys(namespace).await
+    }
+
+    async fn subscribe_step_updates(
+        &self,
+        journey_id: Uuid,
+        after_sequence_id: Option<u64>,
+    ) -> Result<jungle_sdk::client::JourneyUpdateSubscription, jungle_sdk::ExecutorError> {
+        self.inner
+            .subscribe_step_updates(journey_id, after_sequence_id)
+            .await
+    }
+
+    async fn journey_details(
+        &self,
+        id: Uuid,
+    ) -> Result<jungle_sdk::JourneyStatus, jungle_sdk::ExecutorError> {
+        self.inner.journey_details(id).await
+    }
+
+    async fn animal_appearance(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<Vec<u8>>, jungle_sdk::ExecutorError> {
+        self.inner.animal_appearance(id).await
+    }
+
+    async fn animal_appearance_update(
+        &self,
+        id: Uuid,
+        data: Vec<u8>,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner.animal_appearance_update(id, data).await
+    }
+
+    async fn perturb_animal(
+        &self,
+        id: Uuid,
+        payload: Vec<u8>,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner.perturb_animal(id, payload).await
+    }
+
+    async fn claim_animal_perturbation(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<jungle_sdk::ClaimedPerturbable>, jungle_sdk::ExecutorError> {
+        self.inner.claim_animal_perturbation(id).await
+    }
+
+    async fn ack_animal_perturbation(
+        &self,
+        id: Uuid,
+        perturbation_id: u64,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner
+            .ack_animal_perturbation(id, perturbation_id)
+            .await
+    }
+
+    async fn heartbeat_journey_lease(
+        &self,
+        journey_id: Uuid,
+        owner_id: Uuid,
+        lease_ttl_ms: i64,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner
+            .heartbeat_journey_lease(journey_id, owner_id, lease_ttl_ms)
+            .await
+    }
+
+    async fn poll_owner_wake(
+        &self,
+        owner_id: Uuid,
+    ) -> Result<Option<jungle_sdk::OwnerWake>, jungle_sdk::ExecutorError> {
+        self.inner.poll_owner_wake(owner_id).await
+    }
+
+    async fn schedule_sleep_timer(
+        &self,
+        journey_id: Uuid,
+        timer_id: Uuid,
+        wake_at_unix_ms: i64,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner
+            .schedule_sleep_timer(journey_id, timer_id, wake_at_unix_ms)
+            .await
+    }
+
+    async fn complete_journey(&self, id: Uuid) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner.complete_journey(id).await
+    }
+
+    async fn dead_journey(&self, id: Uuid) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner.dead_journey(id).await
+    }
+
+    async fn poll_timers(&self) -> Result<Option<()>, jungle_sdk::ExecutorError> {
+        self.inner.poll_timers().await
+    }
+
+    async fn poll_work(
+        &self,
+        supported_animals: Vec<jungle_sdk::SupportedAnimal>,
+    ) -> Result<Option<jungle_sdk::Work>, jungle_sdk::ExecutorError> {
+        self.inner.poll_work(supported_animals).await
+    }
+
+    async fn wait_for_worker_wake(
+        &self,
+        owner_id: Uuid,
+        supported_animals: Vec<jungle_sdk::SupportedAnimal>,
+        timeout: Duration,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner
+            .wait_for_worker_wake(owner_id, supported_animals, timeout)
+            .await
+    }
+
+    async fn effect_input(
+        &self,
+        id: Uuid,
+        node_id: u32,
+        input: Vec<u8>,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner.effect_input(id, node_id, input).await
+    }
+
+    async fn effect_success_output(
+        &self,
+        id: Uuid,
+        node_id: u32,
+        output: Vec<u8>,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner.effect_success_output(id, node_id, output).await
+    }
+
+    async fn effect_failure_output(
+        &self,
+        id: Uuid,
+        node_id: u32,
+        err: Vec<u8>,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner.effect_failure_output(id, node_id, err).await
+    }
+
+    async fn submit_history_event(
+        &self,
+        event: jungle_sdk::RunnerOut,
+    ) -> Result<(), jungle_sdk::ExecutorError> {
+        self.inner.submit_history_event(event).await
+    }
+}
+
+struct SubpanelState {
+    title: String,
+    journey_id: Uuid,
+    viewer: JungleSubpanelViewer,
 }
 
 #[derive(Clone)]
@@ -542,6 +798,7 @@ enum Message {
     AppearanceTick,
     AppearanceLoaded(Result<Option<LiveAppearanceSnapshot>, String>),
     ColorTick(Instant),
+    Subpanel(EjectedViewerMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -872,6 +1129,7 @@ struct BeamApp {
     config: BeamConfig,
     model: BeamModel,
     live: Option<LiveConfig>,
+    subpanel: Option<SubpanelState>,
     visuals: HashMap<u32, CellVisualState>,
     appearance_loading: bool,
     appearance_error: Option<String>,
@@ -907,12 +1165,24 @@ impl BeamApp {
             .as_ref()
             .map(|live| appearance_task(live.clone()))
             .unwrap_or_else(Task::none);
+        let subpanel = match (config.subpanel.clone(), live.as_ref()) {
+            (Some(subpanel), Some(live)) => Some(SubpanelState {
+                title: subpanel.title,
+                journey_id: subpanel.journey_id,
+                viewer: (subpanel.build_viewer)(
+                    SharedJungleClient::new(live.client.clone()),
+                    subpanel.journey_id,
+                ),
+            }),
+            _ => None,
+        };
 
         (
             Self {
                 config,
                 model,
                 live,
+                subpanel,
                 visuals,
                 appearance_loading,
                 appearance_error: None,
@@ -991,6 +1261,11 @@ impl BeamApp {
                     return iced_sugiyama::force_review(iced_sugiyama::Id::new(CELL_GRAPH_ID));
                 }
             }
+            Message::Subpanel(message) => {
+                if let Some(subpanel) = self.subpanel.as_mut() {
+                    return subpanel.viewer.update(message).map(Message::Subpanel);
+                }
+            }
         }
 
         Task::none()
@@ -1016,12 +1291,15 @@ impl BeamApp {
             subscriptions
                 .push(iced::time::every(COLOR_TRANSITION_POLL_INTERVAL).map(Message::ColorTick));
         }
+        if let Some(subpanel) = &self.subpanel {
+            subscriptions.push(subpanel.viewer.subscription().map(Message::Subpanel));
+        }
 
         Subscription::batch(subscriptions)
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let content: Element<'_, Message> = if self.model.cells.is_empty() {
+        let main_panel: Element<'_, Message> = if self.model.cells.is_empty() {
             text(
                 self.appearance_error
                     .as_deref()
@@ -1032,6 +1310,35 @@ impl BeamApp {
             .into()
         } else {
             self.cell_graph()
+        };
+        let content = if let Some(subpanel) = &self.subpanel {
+            column![
+                container(main_panel)
+                    .width(Length::Fill)
+                    .height(Length::FillPortion(3)),
+                container(
+                    column![
+                        text(format!(
+                            "subpanel · {} · {}",
+                            subpanel.title, subpanel.journey_id
+                        ))
+                        .size(14)
+                        .color(black_hole_text().scale_alpha(0.84)),
+                        subpanel.viewer.view().map(Message::Subpanel),
+                    ]
+                    .spacing(8)
+                )
+                .padding([10, 12])
+                .width(Length::Fill)
+                .height(Length::FillPortion(2))
+                .style(subpanel_style),
+            ]
+            .spacing(10)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            main_panel
         };
         container(content)
             .width(Length::Fill)
@@ -1271,6 +1578,18 @@ fn app_background_style(_theme: &Theme) -> iced::widget::container::Style {
     }
 }
 
+fn subpanel_style(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(Background::Color(Color::from_rgb8(6, 6, 6))),
+        border: iced::Border {
+            color: Color::from_rgb8(44, 44, 44),
+            width: 1.0,
+            ..iced::border::rounded(8)
+        },
+        ..Default::default()
+    }
+}
+
 fn cell_node_style(colors: NodeStyleColors) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(Background::Color(colors.body)),
@@ -1411,6 +1730,21 @@ mod tests {
         let frozen_optimize = node_style_colors(SunNodeState::Optimization, 4, 4, Some(true));
         assert_eq!(frozen_optimize.body, Color::from_rgb8(94, 122, 214));
         assert_eq!(frozen_optimize.border, Color::from_rgb8(154, 92, 232));
+    }
+
+    #[test]
+    fn keeps_only_one_configured_subpanel() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+
+        let config = BeamBuilder::new()
+            .subpanel::<TestCell>(first)
+            .subpanel::<TestCell>(second)
+            .into_config();
+        let subpanel = config.subpanel.expect("subpanel should exist");
+
+        assert_eq!(subpanel.journey_id, second);
+        assert_eq!(subpanel.title, "TestCell");
     }
 
     #[test]

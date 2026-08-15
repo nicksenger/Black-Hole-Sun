@@ -9,9 +9,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::EmissionId;
 use crate::cell::action::CellState;
 use crate::model_config::{DefaultConfig, ModelConfig};
+use crate::EmissionId;
 use action::{ExtractQuarkInferBackoffResult, QuarkInferStep};
 
 const QUARK_INFER_BACKOFF_INITIAL_DELAY_MS: u64 = 100;

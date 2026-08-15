@@ -30,6 +30,6 @@ impl<S> Action for ExtractQuarkInferBackoffResult<S> {
         _output: EffectCompletion<Self::Effect>,
         carry: Self::Carry,
     ) -> Result<Self::Output, Failure> {
-        carry.1.1
+        carry.1 .1
     }
 }

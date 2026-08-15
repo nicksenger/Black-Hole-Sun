@@ -258,7 +258,11 @@ impl Observe for WhiteDwarfBlackHole {
 }
 
 #[derive(Animals)]
-struct WhiteDwarfAnimals(WhiteDwarfCell0Animal, WhiteDwarfCell1Animal, WhiteDwarfBlackHole);
+struct WhiteDwarfAnimals(
+    WhiteDwarfCell0Animal,
+    WhiteDwarfCell1Animal,
+    WhiteDwarfBlackHole,
+);
 
 #[derive(Clone)]
 struct WhiteDwarfJungle {
