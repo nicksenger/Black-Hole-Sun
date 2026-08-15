@@ -47,6 +47,7 @@ const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
+const SUBPANEL_VIEWPORT_HEIGHT: f32 = 320.0;
 
 type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
 
@@ -1342,10 +1343,14 @@ impl BeamApp {
                                 ))
                                 .size(14)
                                 .color(black_hole_text().scale_alpha(0.84)),
-                                subpanel
-                                    .viewer
-                                    .view()
-                                    .map(move |message| Message::Subpanel(index, message)),
+                                container(
+                                    subpanel
+                                        .viewer
+                                        .view()
+                                        .map(move |message| Message::Subpanel(index, message)),
+                                )
+                                .width(Length::Fill)
+                                .height(Length::Fixed(SUBPANEL_VIEWPORT_HEIGHT)),
                             ]
                             .spacing(8),
                         )
