@@ -44,6 +44,14 @@ const DEFAULT_TUNNEL_CONNECT_DEADLINE: Duration = Duration::from_secs(10 * 60);
 const RESIDUAL_UPDATE_UNSUPPORTED_FRAGMENT: &str =
     "restore_and_update_with_residual not supported for ";
 
+fn client_bind_addr_for(remote_addr: SocketAddr) -> SocketAddr {
+    if remote_addr.is_ipv4() {
+        "0.0.0.0:0".parse().expect("valid ipv4 any-address")
+    } else {
+        "[::]:0".parse().expect("valid ipv6 any-address")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Void client — connects to black-hole-void over QUIC, sends/receives frames
 // ---------------------------------------------------------------------------
@@ -129,8 +137,8 @@ impl VoidClient {
 
         let client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
 
-        // Bind to any local address/port.
-        let local_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        // Bind with a compatible local address family for the remote endpoint.
+        let local_addr = client_bind_addr_for(addr);
         let mut endpoint =
             quinn::Endpoint::client(local_addr).map_err(ServerError::BindVoidClient)?;
         endpoint.set_default_client_config(client_config);
@@ -202,7 +210,7 @@ impl QuarkRpcClient {
             .map_err(|e| ServerError::TunnelCrypto(e.to_string()))?;
         let client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
 
-        let local_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let local_addr = client_bind_addr_for(addr);
         let mut endpoint =
             quinn::Endpoint::client(local_addr).map_err(ServerError::BindTunnelClient)?;
         endpoint.set_default_client_config(client_config);
@@ -2426,7 +2434,8 @@ pub enum ServerError {
 mod tests {
     use super::{
         apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
-        handle_query_model_capacity, handle_register_tunnel, resolve_max_instances,
+        client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
+        resolve_max_instances,
         resolve_model_frozen, resolve_model_oscillation, to_engine_error_feedback,
         FrozenOscillation, ModelRuntimeConfig, QuarkContext, QuarkMode, QuarkServerDefaults,
         QuarkSession, QuarkState, RouteTarget, ServerBuilder, TunnelWorker,
@@ -2859,6 +2868,20 @@ mod tests {
             builder.tunnel_connect_deadline,
             DEFAULT_TUNNEL_CONNECT_DEADLINE
         );
+    }
+
+    #[test]
+    fn client_bind_addr_matches_ipv4_remote_family() {
+        let remote: SocketAddr = "127.0.0.1:4433".parse().expect("valid socket address");
+        let local = client_bind_addr_for(remote);
+        assert!(local.is_ipv4());
+    }
+
+    #[test]
+    fn client_bind_addr_matches_ipv6_remote_family() {
+        let remote: SocketAddr = "[::1]:4433".parse().expect("valid socket address");
+        let local = client_bind_addr_for(remote);
+        assert!(local.is_ipv6());
     }
 
     #[tokio::test]
