@@ -20,7 +20,7 @@ use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
-use iced::widget::{column, container, scrollable, text};
+use iced::widget::{column, container, row, scrollable, text};
 use iced::{
     Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription, Task, Theme,
     Vector,
@@ -47,7 +47,7 @@ const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
-const SUBPANEL_VIEWPORT_HEIGHT: f32 = 320.0;
+const SUBPANEL_HEIGHT_RATIO: f32 = 0.5;
 
 type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
 
@@ -213,7 +213,7 @@ impl BeamBuilder {
         self
     }
 
-    /// Render a child workflow panel beneath the Black Hole Sun graph.
+    /// Render a child workflow panel alongside the Black Hole Sun graph.
     ///
     /// Calling `subpanel` multiple times appends additional subpanels.
     pub fn subpanel<A>(mut self, journey_id: Uuid) -> Self
@@ -1329,6 +1329,7 @@ impl BeamApp {
         let content = if self.subpanels.is_empty() {
             main_panel
         } else {
+            let subpanel_height = (self.config.height * SUBPANEL_HEIGHT_RATIO).max(1.0);
             let subpanel_stack = self.subpanels.iter().enumerate().fold(
                 column![].spacing(10).width(Length::Fill),
                 |column, (index, subpanel)| {
@@ -1350,23 +1351,25 @@ impl BeamApp {
                                         .map(move |message| Message::Subpanel(index, message)),
                                 )
                                 .width(Length::Fill)
-                                .height(Length::Fixed(SUBPANEL_VIEWPORT_HEIGHT)),
+                                .height(Length::Fill),
                             ]
-                            .spacing(8),
+                            .spacing(8)
+                            .height(Length::Fill),
                         )
                         .padding([10, 12])
                         .width(Length::Fill)
+                        .height(Length::Fixed(subpanel_height))
                         .style(subpanel_style),
                     )
                 },
             );
-            column![
+            row![
                 container(main_panel)
-                    .width(Length::Fill)
-                    .height(Length::FillPortion(3)),
+                    .width(Length::FillPortion(2))
+                    .height(Length::Fill),
                 container(scrollable(subpanel_stack))
-                    .width(Length::Fill)
-                    .height(Length::FillPortion(2)),
+                    .width(Length::FillPortion(1))
+                    .height(Length::Fill),
             ]
             .spacing(10)
             .width(Length::Fill)
