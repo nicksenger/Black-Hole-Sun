@@ -81,13 +81,17 @@ impl ModelConfig for WhiteDwarfModelConfigB {
     const INFERENCE_LIMIT: Option<u32> = Some(WHITE_DWARF_CELL_INFERENCE_LIMIT);
 }
 
+// Primordium expands to Cell<Atom<...>> and keeps inference on Atom's
+// QuarkInferWithBackoff retry path.
+type WhiteDwarfBackoffPrimordium<H> = Primordium<(), H>;
+
 struct WhiteDwarfCell0Animal;
 
 #[jungle::animal(observe, id = 45, generation = 0)]
 impl Animal for WhiteDwarfCell0Animal {
     type State = CellState;
     type Seed = CellInit;
-    type Flow = Primordium<(), WhiteDwarfModelConfigA>;
+    type Flow = WhiteDwarfBackoffPrimordium<WhiteDwarfModelConfigA>;
 }
 
 impl Observe for WhiteDwarfCell0Animal {
@@ -106,7 +110,7 @@ struct WhiteDwarfCell1Animal;
 impl Animal for WhiteDwarfCell1Animal {
     type State = CellState;
     type Seed = CellInit;
-    type Flow = Primordium<(), WhiteDwarfModelConfigB>;
+    type Flow = WhiteDwarfBackoffPrimordium<WhiteDwarfModelConfigB>;
 }
 
 impl Observe for WhiteDwarfCell1Animal {
