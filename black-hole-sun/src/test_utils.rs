@@ -121,8 +121,14 @@ impl TestVoidServer {
         self
     }
 
+    pub fn listen_port(mut self, port: u16) -> Self {
+        self.listen_addr.set_port(port);
+        self
+    }
+
     pub fn listen_on_all_interfaces(mut self) -> Self {
-        self.listen_addr = "0.0.0.0:0".parse().unwrap();
+        let port = self.listen_addr.port();
+        self.listen_addr = SocketAddr::from(([0, 0, 0, 0], port));
         self
     }
 
@@ -237,8 +243,14 @@ impl TestQuarkServer {
         self
     }
 
+    pub fn listen_port(mut self, port: u16) -> Self {
+        self.listen_addr.set_port(port);
+        self
+    }
+
     pub fn listen_on_all_interfaces(mut self) -> Self {
-        self.listen_addr = "0.0.0.0:0".parse().unwrap();
+        let port = self.listen_addr.port();
+        self.listen_addr = SocketAddr::from(([0, 0, 0, 0], port));
         self
     }
 
@@ -374,5 +386,27 @@ impl TestQuarkServer {
             local_addr,
             abort_handle,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TestQuarkServer, TestVoidServer};
+    use std::net::SocketAddr;
+
+    #[test]
+    fn void_server_listen_on_all_interfaces_preserves_configured_port() {
+        let server = TestVoidServer::new()
+            .listen_port(4545)
+            .listen_on_all_interfaces();
+        assert_eq!(server.listen_addr, SocketAddr::from(([0, 0, 0, 0], 4545)));
+    }
+
+    #[test]
+    fn quark_server_listen_port_works_after_switching_to_all_interfaces() {
+        let server = TestQuarkServer::new("model-does-not-need-to-exist")
+            .listen_on_all_interfaces()
+            .listen_port(5656);
+        assert_eq!(server.listen_addr, SocketAddr::from(([0, 0, 0, 0], 5656)));
     }
 }
