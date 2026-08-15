@@ -12,6 +12,7 @@ aws-sdk-s3 = "1.140"
 clap = { version = "4", features = ["derive"] }
 directories-next = "2"
 futures = "0.3"
+fjall = "3"
 postcard = { version = "1", features = ["alloc"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = "0.14"

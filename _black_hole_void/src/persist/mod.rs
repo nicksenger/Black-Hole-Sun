@@ -1,11 +1,13 @@
 //! Persistence layer for tracking object metadata.
 //!
 //! When the `postgres` feature is enabled, provides a PostgreSQL-backed store
-//! that maps opaque UUIDs to S3 bucket+key references.
+//! that maps opaque UUIDs to object storage references.
 
+pub mod fjall;
 #[cfg(feature = "postgres")]
 pub mod pg;
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
@@ -16,13 +18,13 @@ pub type Error = PersistenceError;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Metadata for a stored object.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectRecord {
     /// Opaque UUID assigned by the server.
     pub id: Uuid,
-    /// S3 bucket name.
+    /// Object namespace (for example an S3 bucket or filesystem).
     pub bucket: String,
-    /// S3 object key (matches the id).
+    /// Object storage key (usually matches the id).
     pub key: String,
     /// Object size in bytes.
     pub size_bytes: i64,

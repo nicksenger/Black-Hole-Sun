@@ -54,6 +54,7 @@ pub struct ServerBuilder {
     cert: Option<PathBuf>,
     stateless_retry: bool,
     listen: SocketAddr,
+    object_namespace: String,
     object_store: Box<dyn object_store::ObjectStore>,
     store: Box<dyn persist::VoidStore>,
 }
@@ -71,6 +72,7 @@ impl ServerBuilder {
             listen: DEFAULT_LISTEN_ADDR
                 .parse()
                 .expect("default listen address must be valid"),
+            object_namespace: "memory".to_string(),
             object_store,
             store,
         }
@@ -98,6 +100,11 @@ impl ServerBuilder {
 
     pub fn listen(mut self, addr: SocketAddr) -> Self {
         self.listen = addr;
+        self
+    }
+
+    pub fn object_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.object_namespace = namespace.into();
         self
     }
 
@@ -143,6 +150,7 @@ impl ServerBuilder {
         info!(%local_addr, "listening");
 
         let context = Arc::new(VoidContext {
+            object_namespace: self.object_namespace,
             object_store: self.object_store,
             store: self.store,
             wait_registry: WaitRegistry::default(),
@@ -197,6 +205,7 @@ impl ServerBuilder {
 }
 
 struct VoidContext {
+    object_namespace: String,
     object_store: Box<dyn object_store::ObjectStore>,
     store: Box<dyn persist::VoidStore>,
     wait_registry: WaitRegistry,
@@ -318,7 +327,12 @@ async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<
             // Persist the object metadata.
             if let Err(e) = context
                 .store
-                .insert_object(id, "memory".to_string(), key.clone(), size_bytes)
+                .insert_object(
+                    id,
+                    context.object_namespace.clone(),
+                    key.clone(),
+                    size_bytes,
+                )
                 .await
             {
                 warn!(error = %e, "failed to persist object metadata");

@@ -953,6 +953,7 @@ dependencies = [
  "clap",
  "directories-next",
  "dyn-clone",
+ "fjall",
  "futures",
  "postcard",
  "quinn",
