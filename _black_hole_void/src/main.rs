@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, sync::Once};
 
 use aws_sdk_s3::Client as S3Client;
 use clap::Parser;
@@ -50,7 +50,18 @@ async fn build_s3_client(opt: &Opt) -> S3Client {
     S3Client::from_conf(builder.build())
 }
 
+fn install_rustls_crypto_provider() {
+    static RUSTLS_PROVIDER: Once = Once::new();
+    RUSTLS_PROVIDER.call_once(|| {
+        // rustls may be built with multiple crypto backends enabled via transitive
+        // features; explicitly selecting ring avoids runtime provider ambiguity.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 fn main() {
+    install_rustls_crypto_provider();
+
     if black_hole_void::init_tracing().is_err() {
         eprintln!("ERROR: failed to initialize tracing subscriber");
         std::process::exit(1);
