@@ -553,11 +553,11 @@ async fn tunnel_recursive_tree_aggregates_descendant_capacity() {
 async fn tcp_tunnel_recursive_tree_aggregates_descendant_capacity() {
     init_tracing();
 
-    let model_path = match require_model_path("tcp_tunnel_recursive_tree_aggregates_descendant_capacity")
-    {
-        Some(path) => path,
-        None => return,
-    };
+    let model_path =
+        match require_model_path("tcp_tunnel_recursive_tree_aggregates_descendant_capacity") {
+            Some(path) => path,
+            None => return,
+        };
 
     async fn infer_space_probe_once(
         quark_client: &QuarkClient,

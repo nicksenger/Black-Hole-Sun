@@ -464,10 +464,7 @@ async fn start_void_server_and_client(
     if matches!(transport_mode, VoidTransportMode::Tcp) {
         builder = builder.tcp();
     }
-    let void_server = builder
-        .serve()
-        .await
-        .expect("failed to start void server");
+    let void_server = builder.serve().await.expect("failed to start void server");
     let void_addr = void_server.local_addr();
     let void_client = match transport_mode {
         VoidTransportMode::Quic => {
@@ -799,7 +796,9 @@ async fn tcp_diamond_dog() {
 }
 
 #[cfg(test)]
-async fn assert_diamond_dog_root_observe_exposes_ray_after_start(transport_mode: VoidTransportMode) {
+async fn assert_diamond_dog_root_observe_exposes_ray_after_start(
+    transport_mode: VoidTransportMode,
+) {
     init_tracing();
 
     let (void_server, void_client) = start_void_server_and_client(transport_mode).await;

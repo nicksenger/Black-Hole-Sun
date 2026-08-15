@@ -8,6 +8,7 @@ mod dark_star;
 mod diamond_dog;
 mod red_dwarf;
 mod sun_dog;
+mod white_dwarf;
 
 #[cfg(not(test))]
 pub(crate) use black_dwarf::run_beam_black_dwarf;
