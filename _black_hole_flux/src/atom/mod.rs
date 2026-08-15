@@ -4,11 +4,38 @@ pub mod action;
 pub mod effect;
 
 use jungle_sdk::prelude::*;
+use jungle_zoo::backoff::Backoff;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use uuid::Uuid;
 
+use crate::EmissionId;
+use crate::cell::action::CellState;
 use crate::model_config::{DefaultConfig, ModelConfig};
-use action::QuarkInferStep;
+use action::{ExtractQuarkInferBackoffResult, QuarkInferStep};
+
+const QUARK_INFER_BACKOFF_INITIAL_DELAY_MS: u64 = 100;
+const QUARK_INFER_BACKOFF_MAX_DELAY_MS: u64 = 10_000;
+const QUARK_INFER_BACKOFF_MULTIPLIER: u8 = 2;
+
+/// Runs one Atom inference step with automatic retry backoff.
+#[derive(Flow)]
+pub struct QuarkInferWithBackoff<
+    M: Serialize + DeserializeOwned + Send + 'static,
+    S,
+    H: ModelConfig,
+>(
+    Backoff<
+        CellState<S>,
+        (Uuid, EmissionId),
+        EmissionId,
+        Step<QuarkInferStep<M, S, H>>,
+        QUARK_INFER_BACKOFF_INITIAL_DELAY_MS,
+        QUARK_INFER_BACKOFF_MAX_DELAY_MS,
+        QUARK_INFER_BACKOFF_MULTIPLIER,
+    >,
+    Step<ExtractQuarkInferBackoffResult<S>>,
+);
 
 /// An Atom composes three sequential stages.
 ///
@@ -24,6 +51,6 @@ pub struct AtomWithState<
     M: Serialize + DeserializeOwned + Send + 'static,
     S,
     H: ModelConfig,
->(In, Step<QuarkInferStep<M, S, H>>, Out);
+>(In, QuarkInferWithBackoff<M, S, H>, Out);
 
 pub type Atom<In, Out, M, S = (), H = DefaultConfig> = AtomWithState<In, Out, M, S, H>;
