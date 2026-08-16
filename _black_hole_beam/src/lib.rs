@@ -1804,7 +1804,7 @@ fn subpanel_style(colors: NodeStyleColors) -> iced::widget::container::Style {
 
 fn subpanel_overlay_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgba8(3, 3, 3, 0.504))),
+        background: Some(Background::Color(Color::from_rgba8(3, 3, 3, 0.7))),
         border: iced::Border {
             color: Color::from_rgba8(120, 120, 120, 0.25),
             width: 1.0,
