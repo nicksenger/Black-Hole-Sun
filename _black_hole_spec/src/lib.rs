@@ -404,10 +404,16 @@ pub enum Transmission {
         send: ObjectId,
     },
     Potentiation {
-        loss_up: f32,
-        loss_down: f32,
+        potentiation: Potentiation,
         recv: ObjectId,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Potentiation {
+    pub loss_up: f32,
+    pub loss_down: f32,
+    pub seed: u64,
 }
 
 #[cfg(test)]
