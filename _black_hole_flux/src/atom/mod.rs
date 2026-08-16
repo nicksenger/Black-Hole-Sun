@@ -34,7 +34,6 @@ pub struct QuarkInferWithBackoff<
         QUARK_INFER_BACKOFF_MAX_DELAY_MS,
         QUARK_INFER_BACKOFF_MULTIPLIER,
     >,
-    Step<ExtractQuarkInferBackoffResult<S>>,
 );
 
 /// An Atom composes three sequential stages.
