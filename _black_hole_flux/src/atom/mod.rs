@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::cell::action::CellState;
 use crate::model_config::{DefaultConfig, ModelConfig};
 use crate::EmissionId;
-use action::{ExtractQuarkInferBackoffResult, QuarkInferStep};
+use action::QuarkInferStep;
 
 const QUARK_INFER_BACKOFF_INITIAL_DELAY_MS: u64 = 100;
 const QUARK_INFER_BACKOFF_MAX_DELAY_MS: u64 = 10_000;
