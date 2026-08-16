@@ -1404,7 +1404,7 @@ impl BeamApp {
                     let header = row![
                         text(title)
                             .size(14)
-                            .color(subpanel_colors.text.scale_alpha(0.9))
+                            .color(black_hole_text().scale_alpha(0.86))
                             .width(Length::Fill),
                         button(text("X").size(13))
                             .padding([1, 6])
@@ -1790,7 +1790,7 @@ fn subpanel_style(colors: NodeStyleColors) -> iced::widget::container::Style {
             colors.body.r,
             colors.body.g,
             colors.body.b,
-            0.3,
+            0.2,
         ))),
         border: iced::Border {
             color: Color::from_rgba(colors.border.r, colors.border.g, colors.border.b, 0.58),
