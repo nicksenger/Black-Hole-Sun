@@ -423,11 +423,15 @@ async fn white_dwarf() {
 
     let void_server = TestVoidServer::new()
         .tcp()
+        .listen_on_all_interfaces()
+        .listen_port(8889)
         .serve()
         .await
         .expect("failed to start void server");
     let quark_server = TestQuarkServer::new(&model_path)
         .tcp()
+        .listen_on_all_interfaces()
+        .listen_port(8888)
         .void_addr(void_server.local_addr())
         .default_inference_limit(WHITE_DWARF_DEFAULT_INFERENCE_LIMIT)
         .serve()
