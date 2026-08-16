@@ -36,7 +36,7 @@ impl Action for GenerateBlackDwarfPrompt {
 impl Action for DarkStarLossPolicy {
     type Effect = DarkStarLossPolicyEffect;
     type Input = [(Transmission, Transmission); 1];
-    type Output = (f32, f32);
+    type Output = Potentiation;
     type Carry = ();
 
     fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
@@ -55,7 +55,7 @@ impl Action for DarkStarLossPolicy {
 impl Action for BlackDwarfLossPolicy {
     type Effect = BlackDwarfLossPolicyEffect;
     type Input = [(Transmission, Transmission); 1];
-    type Output = (f32, f32);
+    type Output = Potentiation;
     type Carry = ();
 
     fn emit(_state: &SunState, input: Self::Input) -> Self::Input {

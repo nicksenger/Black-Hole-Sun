@@ -158,6 +158,7 @@ impl<J: VoidInferOps> Effect<J> for QuarkOptimize {
                 %model_id,
                 loss_up = potentiation.loss_up,
                 loss_down = potentiation.loss_down,
+                seed = potentiation.seed,
                 "applying quark optimization"
             );
             jungle
@@ -249,17 +250,14 @@ impl<J: VoidInferOps> Effect<J> for WaitForPotentiation {
                 .await
                 .map_err(AtomError::Transmission)?;
             match transmission {
-                Transmission::Potentiation {
-                    loss_up,
-                    loss_down,
-                    recv,
-                } => {
-                    let potentiation = Potentiation {
-                        loss_up,
-                        loss_down,
-                        recv_id: recv,
-                    };
-                    debug!(loss_up, loss_down, %recv, "potentiation received");
+                Transmission::Potentiation { potentiation, recv } => {
+                    debug!(
+                        loss_up = potentiation.loss_up,
+                        loss_down = potentiation.loss_down,
+                        seed = potentiation.seed,
+                        %recv,
+                        "potentiation received"
+                    );
                     Ok((potentiation, recv))
                 }
                 other => {

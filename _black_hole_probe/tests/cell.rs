@@ -325,8 +325,11 @@ async fn cell() {
 
     // ── Potentiation (links second propagation to third) ──
     let potentiation = Transmission::Potentiation {
-        loss_up: 0.5,
-        loss_down: 0.3,
+        potentiation: black_hole_sun::cell::action::Potentiation {
+            loss_up: 0.5,
+            loss_down: 0.3,
+            seed: 13,
+        },
         recv: propagation_void_id_3,
     };
     let potentiation_bytes = to_allocvec(&potentiation).expect("serialize potentiation");

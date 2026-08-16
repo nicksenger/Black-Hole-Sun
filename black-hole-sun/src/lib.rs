@@ -33,9 +33,9 @@ pub use black_hole_flux::{
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, ObjectId, QuarkErrorFeedbackConfig, QuarkErrorFeedbackMode,
-    QuarkIn, QuarkModelCapacity, QuarkModelConfig, QuarkModelParams, QuarkOut, SequenceOutput,
-    Transmission,
+    InferenceRequest, LogitEntry, ObjectId, Potentiation, QuarkErrorFeedbackConfig,
+    QuarkErrorFeedbackMode, QuarkIn, QuarkModelCapacity, QuarkModelConfig, QuarkModelParams,
+    QuarkOut, SequenceOutput, Transmission,
 };
 
 // Convenience re-exports — void types

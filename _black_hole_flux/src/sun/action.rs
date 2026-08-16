@@ -1621,7 +1621,7 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
 }
 
 // ---------------------------------------------------------------------------
-// BroadcastPotentiation — broadcast losses to all nodes
+// BroadcastPotentiation — broadcast potentiation payload to all nodes
 // ---------------------------------------------------------------------------
 
 /// Broadcasts matching potentiation envelopes to every input port.
@@ -1633,7 +1633,7 @@ pub struct BroadcastPotentiation<S = ()>(PhantomData<fn() -> S>);
 #[jungle::action]
 impl<S> Action for BroadcastPotentiation<S> {
     type Effect = BroadcastPotentiationEffect;
-    type Input = (f32, f32);
+    type Input = black_hole_spec::Potentiation;
     type Output = ();
     type Carry = ();
 
@@ -1648,8 +1648,7 @@ impl<S> Action for BroadcastPotentiation<S> {
         drop(inner);
 
         BroadcastPotentiationInput {
-            loss_up: input.0,
-            loss_down: input.1,
+            potentiation: input,
             port_endpoints,
         }
     }
@@ -1702,8 +1701,7 @@ impl<S> Action for BroadcastPotentiation<S> {
 /// Input for the [`BroadcastPotentiation`] effect.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BroadcastPotentiationInput {
-    pub loss_up: f32,
-    pub loss_down: f32,
+    pub potentiation: black_hole_spec::Potentiation,
     /// (port_id, potentiation inbox) pairs.
     pub port_endpoints: Vec<(u32, ObjectId)>,
 }
@@ -1931,7 +1929,14 @@ mod tests {
 
         type BroadcastBound =
             <BroadcastPotentiation<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
-        <BroadcastBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, (0.1, 0.2));
+        <BroadcastBound as BoundAction<TestSunAnimalWithPayload>>::emit(
+            &state,
+            black_hole_spec::Potentiation {
+                loss_up: 0.1,
+                loss_down: 0.2,
+                seed: 7,
+            },
+        );
 
         type SpawnUnaryBound =
             <SpawnUnary<U1, TestUnaryChildAnimal, Empty, Payload> as Action>::Bind<

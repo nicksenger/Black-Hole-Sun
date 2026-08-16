@@ -63,21 +63,27 @@ impl<J: VoidInferOps> Effect<J> for GenerateBlackDwarfPromptEffect {
 #[jungle::effect(id = 78)]
 impl<J> Effect<J> for DarkStarLossPolicyEffect {
     type In = [(Transmission, Transmission); 1];
-    type Out = (f32, f32);
+    type Out = Potentiation;
     type Err = AtomError;
 
     fn effect(
         _jungle: &J,
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        async move { Ok((0.4, 0.8)) }
+        async move {
+            Ok(Potentiation {
+                loss_up: 0.4,
+                loss_down: 0.8,
+                seed: 29,
+            })
+        }
     }
 }
 
 #[jungle::effect(id = 79)]
 impl<J: VoidInferOps> Effect<J> for BlackDwarfLossPolicyEffect {
     type In = [(Transmission, Transmission); 1];
-    type Out = (f32, f32);
+    type Out = Potentiation;
     type Err = AtomError;
 
     fn effect(
@@ -103,7 +109,11 @@ impl<J: VoidInferOps> Effect<J> for BlackDwarfLossPolicyEffect {
                 )));
             }
 
-            Ok((0.4, 0.8))
+            Ok(Potentiation {
+                loss_up: 0.4,
+                loss_down: 0.8,
+                seed: 31,
+            })
         }
     }
 }

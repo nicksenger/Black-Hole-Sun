@@ -48,6 +48,7 @@ fn default_gradient_accumulation_steps() -> usize {
 }
 
 pub use black_hole_spec::EmissionId;
+pub use black_hole_spec::Potentiation;
 
 use super::effect::{
     GenerateModelIdEffect, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, QuarkShutdown,
@@ -251,14 +252,6 @@ impl<S> Action for PrepareAtomInput<S> {
 // Potentiation — payload from a Transmission::Potentiation
 // ---------------------------------------------------------------------------
 
-/// Payload carried by a [`Transmission::Potentiation`](black_hole_spec::Transmission).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Potentiation {
-    pub loss_up: f32,
-    pub loss_down: f32,
-    pub recv_id: black_hole_spec::ObjectId,
-}
-
 // ---------------------------------------------------------------------------
 // Propagation — payload from a Transmission::Propagation
 // ---------------------------------------------------------------------------
@@ -436,6 +429,7 @@ impl<S> Action for WaitForPotentiationAction<S> {
         let (potentiation, recv_id) =
             output.map_err(|e| Failure::Message(format!("wait for potentiation failed: {e}")))?;
         state.recv_id = recv_id;
+        state.perturbation_seed = potentiation.seed;
         Ok(potentiation)
     }
 }

@@ -482,10 +482,10 @@ pub struct SunNode<S, U>(S, U);
 /// microsteps as soon as their required inputs are available. It finally feeds
 /// `Policy` an array with shape
 /// `[(Transmission, Transmission); GRADIENT_ACCUMULATION_STEPS]`.
-/// `Policy` returns `(f32, f32)` losses. Keeping both as flow parameters lets
-/// callers compose arbitrary generation and policy pipelines around the fixed
-/// graph propagation machinery. Set `S` when your generator/policy needs access
-/// to `SunState<S>::inner`.
+/// `Policy` returns [`black_hole_spec::Potentiation`]. Keeping this as a flow
+/// parameter lets callers compose arbitrary generation and policy pipelines
+/// around the fixed graph propagation machinery. Set `S` when your
+/// generator/policy needs access to `SunState<S>::inner`.
 pub trait BlackHole {
     type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>;
 }

@@ -9,7 +9,7 @@ use action::{
     AdvanceGradientStep as AdvanceGradientStep_,
     BeginGradientAccumulation as BeginGradientAccumulation_, GenerateModelId as GenerateModelId_,
     InitRecvId as InitRecvId_, Optimize as Optimize_, PerturbDown as PerturbDown_,
-    PerturbUp as PerturbUp_, PrepareAtomInput as PrepareAtomInput_, Potentiation,
+    PerturbUp as PerturbUp_, Potentiation, PrepareAtomInput as PrepareAtomInput_,
     StartModel as StartModel_, Transmit as Transmit_,
     WaitForPotentiationAction as WaitForPotentiationAction_,
     WaitForPropagationAction as WaitForPropagationAction_,

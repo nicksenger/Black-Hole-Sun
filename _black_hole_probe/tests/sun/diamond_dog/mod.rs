@@ -207,7 +207,7 @@ pub struct DiamondComputeLoss;
 impl Action for DiamondComputeLoss {
     type Effect = DiamondComputeLossEffect;
     type Input = [(Transmission, Transmission); DIAMOND_GRADIENT_ACCUMULATION_STEPS];
-    type Output = (f32, f32);
+    type Output = Potentiation;
     type Carry = ();
 
     fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
@@ -227,7 +227,7 @@ pub struct DiamondComputeLossEffect;
 #[jungle::effect(id = 86)]
 impl<J> Effect<J> for DiamondComputeLossEffect {
     type In = [(Transmission, Transmission); DIAMOND_GRADIENT_ACCUMULATION_STEPS];
-    type Out = (f32, f32);
+    type Out = Potentiation;
     type Err = AtomError;
 
     fn effect(
@@ -236,7 +236,11 @@ impl<J> Effect<J> for DiamondComputeLossEffect {
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             debug!("using fixed diamond-dog test loss");
-            Ok((0.1, 0.1))
+            Ok(Potentiation {
+                loss_up: 0.1,
+                loss_down: 0.1,
+                seed: 3,
+            })
         }
     }
 }

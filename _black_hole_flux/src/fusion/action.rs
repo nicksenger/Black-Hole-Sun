@@ -10,7 +10,8 @@ use uuid::Uuid;
 use black_hole_spec::{EmissionId, ObjectId};
 
 use super::effect::{
-    GenerateTransformIdEffect, WaitForFusionPotentiation, WaitForFusionPropagation,
+    FusionPotentiationEnvelope, GenerateTransformIdEffect, WaitForFusionPotentiation,
+    WaitForFusionPropagation,
 };
 use crate::cell::action::Potentiation;
 use crate::cell::effect::{
@@ -317,6 +318,28 @@ where
 /// Receives matching potentiation envelopes and advances both port chains.
 pub struct WaitForFusionPotentiationAction;
 
+fn ensure_matching_fusion_potentiation(
+    p1: &FusionPotentiationEnvelope,
+    p2: &FusionPotentiationEnvelope,
+) -> Result<(), Failure> {
+    if p1.potentiation.loss_up.to_bits() != p2.potentiation.loss_up.to_bits()
+        || p1.potentiation.loss_down.to_bits() != p2.potentiation.loss_down.to_bits()
+        || p1.potentiation.seed != p2.potentiation.seed
+    {
+        return Err(Failure::Message(format!(
+            "fusion potentiation payloads disagree: P1=({}, {}, {}), P2=({}, {}, {})",
+            p1.potentiation.loss_up,
+            p1.potentiation.loss_down,
+            p1.potentiation.seed,
+            p2.potentiation.loss_up,
+            p2.potentiation.loss_down,
+            p2.potentiation.seed
+        )));
+    }
+
+    Ok(())
+}
+
 #[jungle::action]
 impl Action for WaitForFusionPotentiationAction {
     type Effect = WaitForFusionPotentiation;
@@ -335,17 +358,11 @@ impl Action for WaitForFusionPotentiationAction {
             Failure::Message(format!("wait for fusion potentiation failed: {error}"))
         })?;
 
-        if p1.loss_up.to_bits() != p2.loss_up.to_bits()
-            || p1.loss_down.to_bits() != p2.loss_down.to_bits()
-        {
-            return Err(Failure::Message(format!(
-                "fusion potentiation losses disagree: P1=({}, {}), P2=({}, {})",
-                p1.loss_up, p1.loss_down, p2.loss_up, p2.loss_down
-            )));
-        }
+        ensure_matching_fusion_potentiation(&p1, &p2)?;
 
         state.p1_recv_id = p1.recv_id;
         state.p2_recv_id = p2.recv_id;
+        state.perturbation_seed = p1.potentiation.seed;
         Ok(())
     }
 }
@@ -371,19 +388,13 @@ impl Action for WaitForFusionPotentiationForOptimize {
             Failure::Message(format!("wait for fusion potentiation failed: {error}"))
         })?;
 
-        if p1.loss_up.to_bits() != p2.loss_up.to_bits()
-            || p1.loss_down.to_bits() != p2.loss_down.to_bits()
-        {
-            return Err(Failure::Message(format!(
-                "fusion potentiation losses disagree: P1=({}, {}), P2=({}, {})",
-                p1.loss_up, p1.loss_down, p2.loss_up, p2.loss_down
-            )));
-        }
+        ensure_matching_fusion_potentiation(&p1, &p2)?;
 
         state.p1_recv_id = p1.recv_id;
         state.p2_recv_id = p2.recv_id;
+        state.perturbation_seed = p1.potentiation.seed;
 
-        Ok(p1)
+        Ok(p1.potentiation)
     }
 }
 

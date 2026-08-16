@@ -4,12 +4,19 @@ use std::future::Future;
 
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 use uuid::Uuid;
 
 use crate::cell::action::{Potentiation, Propagation};
 use crate::ops::VoidInferOps;
 use crate::AtomError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FusionPotentiationEnvelope {
+    pub potentiation: Potentiation,
+    pub recv_id: ObjectId,
+}
 
 /// Generates the stable ID passed to one fusion journey's transform.
 pub struct GenerateTransformIdEffect;
@@ -113,7 +120,7 @@ pub struct WaitForFusionPotentiation;
 #[jungle::effect(id = 70)]
 impl<J: VoidInferOps> Effect<J> for WaitForFusionPotentiation {
     type In = (ObjectId, ObjectId);
-    type Out = (Potentiation, Potentiation);
+    type Out = (FusionPotentiationEnvelope, FusionPotentiationEnvelope);
     type Err = AtomError;
 
     fn effect(
@@ -125,13 +132,8 @@ impl<J: VoidInferOps> Effect<J> for WaitForFusionPotentiation {
             let (p1, p2) = wait_for_pair(jungle, p1_recv_id, p2_recv_id).await?;
 
             let p1 = match p1 {
-                Transmission::Potentiation {
-                    loss_up,
-                    loss_down,
-                    recv,
-                } => Potentiation {
-                    loss_up,
-                    loss_down,
+                Transmission::Potentiation { potentiation, recv } => FusionPotentiationEnvelope {
+                    potentiation,
                     recv_id: recv,
                 },
                 other => {
@@ -141,13 +143,8 @@ impl<J: VoidInferOps> Effect<J> for WaitForFusionPotentiation {
                 }
             };
             let p2 = match p2 {
-                Transmission::Potentiation {
-                    loss_up,
-                    loss_down,
-                    recv,
-                } => Potentiation {
-                    loss_up,
-                    loss_down,
+                Transmission::Potentiation { potentiation, recv } => FusionPotentiationEnvelope {
+                    potentiation,
                     recv_id: recv,
                 },
                 other => {

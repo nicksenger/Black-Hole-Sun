@@ -315,7 +315,7 @@ impl<J: VoidInferOps> Effect<J> for WaitForNodeTransmission {
 }
 
 // ---------------------------------------------------------------------------
-// BroadcastPotentiationEffect — broadcast losses to all nodes
+// BroadcastPotentiationEffect — broadcast potentiation payloads to all nodes
 // ---------------------------------------------------------------------------
 
 /// Output from [`BroadcastPotentiationEffect`]: each port's first inbox for
@@ -325,9 +325,8 @@ pub struct BroadcastPotentiationResult {
     pub next_p1_tx_map: Vec<(u32, ObjectId)>,
 }
 
-/// Effect that broadcasts `Transmission::Potentiation` with the given loss
-/// values to all input ports. Each transmission gives that port a fresh inbox
-/// for the next epoch.
+/// Effect that broadcasts `Transmission::Potentiation` payloads to all input
+/// ports. Each transmission gives that port a fresh inbox for the next epoch.
 pub struct BroadcastPotentiationEffect;
 
 #[jungle::effect(id = 57)]
@@ -342,8 +341,9 @@ impl<J: VoidInferOps> Effect<J> for BroadcastPotentiationEffect {
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             debug!(
-                loss_up = input.loss_up,
-                loss_down = input.loss_down,
+                loss_up = input.potentiation.loss_up,
+                loss_down = input.potentiation.loss_down,
+                seed = input.potentiation.seed,
                 port_count = input.port_endpoints.len(),
                 "broadcasting potentiation to all input ports"
             );
@@ -353,8 +353,7 @@ impl<J: VoidInferOps> Effect<J> for BroadcastPotentiationEffect {
             for &(port_id, potentiation_input_id) in &input.port_endpoints {
                 let next_p1_tx = Uuid::new_v4();
                 let potentiation = black_hole_spec::Transmission::Potentiation {
-                    loss_up: input.loss_up,
-                    loss_down: input.loss_down,
+                    potentiation: input.potentiation.clone(),
                     recv: next_p1_tx,
                 };
 

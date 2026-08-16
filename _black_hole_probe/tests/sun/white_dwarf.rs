@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use black_hole_sun::cell::action::Potentiation;
 use black_hole_sun::cell::{CellState, Primordium};
 use black_hole_sun::ops::{InferenceOutputOps, SunOps, TransmissionOps, VoidInferOps};
 use black_hole_sun::sun::{BlackHole, SunAppearance, SunNodeState, SunState, Unary};
@@ -200,7 +201,7 @@ pub struct WhiteDwarfLossPolicyEffect;
 impl Action for WhiteDwarfLossPolicy {
     type Effect = WhiteDwarfLossPolicyEffect;
     type Input = [(Transmission, Transmission); WHITE_DWARF_GRADIENT_ACCUMULATION_STEPS];
-    type Output = (f32, f32);
+    type Output = Potentiation;
     type Carry = ();
 
     fn emit(_state: &WhiteDwarfState, input: Self::Input) -> Self::Input {
@@ -218,7 +219,7 @@ impl Action for WhiteDwarfLossPolicy {
 #[jungle::effect(id = 88)]
 impl<J: VoidInferOps> Effect<J> for WhiteDwarfLossPolicyEffect {
     type In = [(Transmission, Transmission); WHITE_DWARF_GRADIENT_ACCUMULATION_STEPS];
-    type Out = (f32, f32);
+    type Out = Potentiation;
     type Err = AtomError;
 
     fn effect(
@@ -249,7 +250,11 @@ impl<J: VoidInferOps> Effect<J> for WhiteDwarfLossPolicyEffect {
                 }
             }
 
-            Ok((0.4, 0.8))
+            Ok(Potentiation {
+                loss_up: 0.4,
+                loss_down: 0.8,
+                seed: 11,
+            })
         }
     }
 }
@@ -457,7 +462,9 @@ async fn connect_jungle_client(
                 let _ = error;
             }
             Err(error) => {
-                return Err(format!("failed to connect jungle client to {addr}: {error}"))
+                return Err(format!(
+                    "failed to connect jungle client to {addr}: {error}"
+                ))
             }
         }
     }

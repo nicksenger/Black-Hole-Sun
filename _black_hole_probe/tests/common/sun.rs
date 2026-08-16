@@ -2,6 +2,7 @@
 
 use std::future::Future;
 
+use black_hole_sun::cell::action::Potentiation;
 use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::sun::SunState;
 use black_hole_sun::AtomError;
@@ -95,7 +96,7 @@ pub struct ComputeLoss;
 impl Action for ComputeLoss {
     type Effect = ComputeLossEffect;
     type Input = [(Transmission, Transmission); 1];
-    type Output = (f32, f32);
+    type Output = Potentiation;
     type Carry = ();
 
     fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
@@ -116,7 +117,7 @@ pub struct ComputeLossEffect;
 #[jungle::effect(id = 75)]
 impl<J> Effect<J> for ComputeLossEffect {
     type In = [(Transmission, Transmission); 1];
-    type Out = (f32, f32);
+    type Out = Potentiation;
     type Err = AtomError;
 
     fn effect(
@@ -125,7 +126,11 @@ impl<J> Effect<J> for ComputeLossEffect {
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             debug!("using fixed test loss");
-            Ok((0.1, 0.1))
+            Ok(Potentiation {
+                loss_up: 0.1,
+                loss_down: 0.1,
+                seed: 1,
+            })
         }
     }
 }

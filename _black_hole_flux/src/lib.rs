@@ -28,7 +28,8 @@
 //! 4. **N × (WaitForPropagation -> Atom -> Transmit)** - runs the second
 //!    propagation phase `N` times.
 //! 5. **WaitForPotentiation** - reads `recv_id` from state, downloads a
-//!    `Transmission::Potentiation`, stores the new `recv_id`, emits loss values.
+//!    `Transmission::Potentiation`, stores the new `recv_id`, and emits a
+//!    [`Potentiation`] payload.
 //! 6. **Optimize** - applies the QuZO optimization update.
 //!
 //! # State
