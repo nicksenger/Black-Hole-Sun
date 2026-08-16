@@ -23,7 +23,7 @@ use tracing::info;
 use typosaurus::num::consts::*;
 use uuid::Uuid;
 
-use super::common::{init_tracing, make_client_endpoint, require_model_path};
+use super::common::{init_tracing, require_model_path};
 use super::dark_star::SPACE_PROBE_DISTANCE_PROMPT;
 
 const WHITE_DWARF_NODE_COUNT: usize = 2;
@@ -422,10 +422,12 @@ async fn white_dwarf() {
     };
 
     let void_server = TestVoidServer::new()
+        .tcp()
         .serve()
         .await
         .expect("failed to start void server");
     let quark_server = TestQuarkServer::new(&model_path)
+        .tcp()
         .void_addr(void_server.local_addr())
         .default_inference_limit(WHITE_DWARF_DEFAULT_INFERENCE_LIMIT)
         .serve()
@@ -434,9 +436,8 @@ async fn white_dwarf() {
     let void_addr = void_server.local_addr();
     let quark_addr = quark_server.local_addr();
 
-    let endpoint = make_client_endpoint().await;
-    let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
-    let quark_client = QuarkClient::new(&endpoint, quark_addr, "localhost");
+    let void_client = VoidClient::new_tcp(void_addr);
+    let quark_client = QuarkClient::new_tcp(quark_addr);
     let mut jungle = WhiteDwarfJungle::new(void_client, quark_client);
 
     let client = FusedClient::builder()
