@@ -10,7 +10,7 @@ use super::*;
 
 const BLACK_DWARF_BATCH_SIZE: usize = 8;
 
-#[jungle::effect(id = 26)]
+#[jungle::effect(id = 76)]
 impl<J: VoidInferOps> Effect<J> for GenerateDarkStarPromptEffect {
     type In = ();
     type Out = (Transmission, Transmission);
@@ -34,7 +34,7 @@ impl<J: VoidInferOps> Effect<J> for GenerateDarkStarPromptEffect {
     }
 }
 
-#[jungle::effect(id = 27)]
+#[jungle::effect(id = 77)]
 impl<J: VoidInferOps> Effect<J> for GenerateBlackDwarfPromptEffect {
     type In = ();
     type Out = (Transmission, Transmission);
@@ -60,7 +60,7 @@ impl<J: VoidInferOps> Effect<J> for GenerateBlackDwarfPromptEffect {
     }
 }
 
-#[jungle::effect(id = 28)]
+#[jungle::effect(id = 78)]
 impl<J> Effect<J> for DarkStarLossPolicyEffect {
     type In = [(Transmission, Transmission); 1];
     type Out = (f32, f32);
@@ -74,7 +74,7 @@ impl<J> Effect<J> for DarkStarLossPolicyEffect {
     }
 }
 
-#[jungle::effect(id = 29)]
+#[jungle::effect(id = 79)]
 impl<J: VoidInferOps> Effect<J> for BlackDwarfLossPolicyEffect {
     type In = [(Transmission, Transmission); 1];
     type Out = (f32, f32);
@@ -108,7 +108,7 @@ impl<J: VoidInferOps> Effect<J> for BlackDwarfLossPolicyEffect {
     }
 }
 
-#[jungle::effect(id = 30)]
+#[jungle::effect(id = 80)]
 impl<J: VoidInferOps + FusionConcatOps> Effect<J> for ConcatFusionOutputsEffect {
     type In = (Uuid, (EmissionId, EmissionId));
     type Out = EmissionId;
@@ -144,7 +144,7 @@ impl<J: VoidInferOps + FusionConcatOps> Effect<J> for ConcatFusionOutputsEffect 
     }
 }
 
-#[jungle::effect(id = 31)]
+#[jungle::effect(id = 81)]
 impl<J: VoidInferOps + FusionConcatOps> Effect<J> for LeftStackTwinOutputsEffect {
     type In = (EmissionId, EmissionId);
     type Out = EmissionId;
@@ -162,7 +162,7 @@ impl<J: VoidInferOps + FusionConcatOps> Effect<J> for LeftStackTwinOutputsEffect
     }
 }
 
-#[jungle::effect(id = 32)]
+#[jungle::effect(id = 82)]
 impl<J: VoidInferOps + FusionConcatOps> Effect<J> for RightStackTwinOutputsEffect {
     type In = (EmissionId, EmissionId);
     type Out = EmissionId;
@@ -180,7 +180,7 @@ impl<J: VoidInferOps + FusionConcatOps> Effect<J> for RightStackTwinOutputsEffec
     }
 }
 
-#[jungle::effect(id = 33)]
+#[jungle::effect(id = 83)]
 impl<J: VoidInferOps + FusionConcatOps> Effect<J> for RandStackTwinOutputsEffect {
     type In = (EmissionId, EmissionId);
     type Out = EmissionId;

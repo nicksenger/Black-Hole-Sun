@@ -14,7 +14,7 @@ use crate::AtomError;
 /// Generates the stable ID passed to one fusion journey's transform.
 pub struct GenerateTransformIdEffect;
 
-#[jungle::effect(id = 18)]
+#[jungle::effect(id = 68)]
 impl<J> Effect<J> for GenerateTransformIdEffect {
     type In = ();
     type Out = Uuid;
@@ -55,7 +55,7 @@ where
 /// Waits for one propagation envelope on each fusion input port.
 pub struct WaitForFusionPropagation;
 
-#[jungle::effect(id = 19)]
+#[jungle::effect(id = 69)]
 impl<J: VoidInferOps> Effect<J> for WaitForFusionPropagation {
     type In = (ObjectId, ObjectId);
     type Out = (Propagation, Propagation);
@@ -110,7 +110,7 @@ impl<J: VoidInferOps> Effect<J> for WaitForFusionPropagation {
 /// Waits for one potentiation envelope on each fusion input port.
 pub struct WaitForFusionPotentiation;
 
-#[jungle::effect(id = 20)]
+#[jungle::effect(id = 70)]
 impl<J: VoidInferOps> Effect<J> for WaitForFusionPotentiation {
     type In = (ObjectId, ObjectId);
     type Out = (Potentiation, Potentiation);

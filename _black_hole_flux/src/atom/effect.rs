@@ -22,7 +22,7 @@ use crate::AtomError;
 /// Effect that performs one quark-inference step.
 pub struct QuarkInfer<M, H = DefaultConfig>(PhantomData<fn() -> (M, H)>);
 
-#[jungle::effect(id = 8)]
+#[jungle::effect(id = 58)]
 impl<M: Serialize + DeserializeOwned + Send + 'static, H, J: VoidInferOps> Effect<J>
     for QuarkInfer<M, H>
 {

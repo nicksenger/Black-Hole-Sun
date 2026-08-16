@@ -20,7 +20,7 @@ use crate::AtomError;
 
 pub struct GenerateModelIdEffect;
 
-#[jungle::effect(id = 9)]
+#[jungle::effect(id = 59)]
 impl<J> Effect<J> for GenerateModelIdEffect {
     type In = ();
     type Out = Uuid;
@@ -36,7 +36,7 @@ impl<J> Effect<J> for GenerateModelIdEffect {
 
 pub struct QuarkStart<H = DefaultConfig>(PhantomData<fn() -> H>);
 
-#[jungle::effect(id = 10)]
+#[jungle::effect(id = 60)]
 impl<H: ModelConfig, J: VoidInferOps> Effect<J> for QuarkStart<H> {
     type In = Uuid;
     type Out = bool;
@@ -63,7 +63,7 @@ impl<H: ModelConfig, J: VoidInferOps> Effect<J> for QuarkStart<H> {
 
 pub struct QuarkShutdown;
 
-#[jungle::effect(id = 11)]
+#[jungle::effect(id = 61)]
 impl<J: VoidInferOps> Effect<J> for QuarkShutdown {
     type In = Uuid;
     type Out = ();
@@ -89,7 +89,7 @@ impl<J: VoidInferOps> Effect<J> for QuarkShutdown {
 
 pub struct QuarkPerturbUp;
 
-#[jungle::effect(id = 12)]
+#[jungle::effect(id = 62)]
 impl<J: VoidInferOps> Effect<J> for QuarkPerturbUp {
     type In = (Uuid, u64);
     type Out = ();
@@ -116,7 +116,7 @@ impl<J: VoidInferOps> Effect<J> for QuarkPerturbUp {
 
 pub struct QuarkPerturbDown;
 
-#[jungle::effect(id = 13)]
+#[jungle::effect(id = 63)]
 impl<J: VoidInferOps> Effect<J> for QuarkPerturbDown {
     type In = Uuid;
     type Out = ();
@@ -143,7 +143,7 @@ impl<J: VoidInferOps> Effect<J> for QuarkPerturbDown {
 
 pub struct QuarkOptimize;
 
-#[jungle::effect(id = 14)]
+#[jungle::effect(id = 64)]
 impl<J: VoidInferOps> Effect<J> for QuarkOptimize {
     type In = (Uuid, Potentiation);
     type Out = bool;
@@ -183,7 +183,7 @@ impl<J: VoidInferOps> Effect<J> for QuarkOptimize {
 /// the next receive transmission ID for state threading, and the send ID.
 pub struct WaitForPropagation;
 
-#[jungle::effect(id = 15)]
+#[jungle::effect(id = 65)]
 impl<J: VoidInferOps> Effect<J> for WaitForPropagation {
     type In = ObjectId;
     type Out = Propagation;
@@ -232,7 +232,7 @@ impl<J: VoidInferOps> Effect<J> for WaitForPropagation {
 /// and returns it alongside the next transmission ID for state threading.
 pub struct WaitForPotentiation;
 
-#[jungle::effect(id = 16)]
+#[jungle::effect(id = 66)]
 impl<J: VoidInferOps> Effect<J> for WaitForPotentiation {
     type In = ObjectId;
     type Out = (Potentiation, ObjectId);
@@ -279,7 +279,7 @@ impl<J: VoidInferOps> Effect<J> for WaitForPotentiation {
 /// Effect that propagates an [`EmissionId`](black_hole_spec::EmissionId) to the next cell.
 pub struct Transmit;
 
-#[jungle::effect(id = 17)]
+#[jungle::effect(id = 67)]
 impl<J: VoidInferOps> Effect<J> for Transmit {
     type In = (black_hole_spec::EmissionId, ObjectId);
     type Out = ();

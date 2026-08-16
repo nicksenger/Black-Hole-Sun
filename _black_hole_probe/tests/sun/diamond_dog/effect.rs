@@ -4,7 +4,7 @@ use black_hole_sun::AtomError;
 
 use super::*;
 
-#[jungle::effect(id = 34)]
+#[jungle::effect(id = 84)]
 impl<J> Effect<J> for DelayedLeftEffect {
     type In = ();
     type Out = EmissionId;
@@ -21,7 +21,7 @@ impl<J> Effect<J> for DelayedLeftEffect {
     }
 }
 
-#[jungle::effect(id = 35)]
+#[jungle::effect(id = 85)]
 impl<J: FusionProbeOps> Effect<J> for RecordFusionInputsEffect {
     type In = (Uuid, (EmissionId, EmissionId));
     type Out = EmissionId;

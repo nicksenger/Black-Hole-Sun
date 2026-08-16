@@ -88,7 +88,7 @@ fn total_dark_tokens(output: &InferenceOutput) -> usize {
 /// corresponding left-hand sequence.
 pub struct LeftStackEffect<M>(PhantomData<fn() -> M>);
 
-#[jungle::effect(id = 21)]
+#[jungle::effect(id = 71)]
 impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J>
     for LeftStackEffect<M>
 {
@@ -131,7 +131,7 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J
 /// corresponding right-hand sequence.
 pub struct RightStackEffect<M>(PhantomData<fn() -> M>);
 
-#[jungle::effect(id = 22)]
+#[jungle::effect(id = 72)]
 impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J>
     for RightStackEffect<M>
 {
@@ -174,7 +174,7 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J
 /// per-sequence dark tokens.
 pub struct RandStackEffect<M>(PhantomData<fn() -> M>);
 
-#[jungle::effect(id = 23)]
+#[jungle::effect(id = 73)]
 impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J>
     for RandStackEffect<M>
 {

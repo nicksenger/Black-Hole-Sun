@@ -42,7 +42,7 @@ impl Action for Initialize {
 /// Creates a minimal initial emission for the test Sun.
 pub struct InitializeEffect;
 
-#[jungle::effect(id = 24)]
+#[jungle::effect(id = 74)]
 impl<J: VoidInferOps> Effect<J> for InitializeEffect {
     type In = ();
     type Out = (Transmission, Transmission);
@@ -113,7 +113,7 @@ impl Action for ComputeLoss {
 /// Returns deterministic losses suitable for orchestration tests.
 pub struct ComputeLossEffect;
 
-#[jungle::effect(id = 25)]
+#[jungle::effect(id = 75)]
 impl<J> Effect<J> for ComputeLossEffect {
     type In = [(Transmission, Transmission); 1];
     type Out = (f32, f32);

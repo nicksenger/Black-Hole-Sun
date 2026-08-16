@@ -149,7 +149,7 @@ impl Action for GenerateWhiteDwarfPrompt {
     }
 }
 
-#[jungle::effect(id = 37)]
+#[jungle::effect(id = 87)]
 impl<J: VoidInferOps> Effect<J> for GenerateWhiteDwarfPromptEffect {
     type In = ();
     type Out = (Transmission, Transmission);
@@ -200,7 +200,7 @@ impl Action for WhiteDwarfLossPolicy {
     }
 }
 
-#[jungle::effect(id = 38)]
+#[jungle::effect(id = 88)]
 impl<J: VoidInferOps> Effect<J> for WhiteDwarfLossPolicyEffect {
     type In = [(Transmission, Transmission); WHITE_DWARF_GRADIENT_ACCUMULATION_STEPS];
     type Out = (f32, f32);
