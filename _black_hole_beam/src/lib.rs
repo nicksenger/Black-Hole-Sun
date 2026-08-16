@@ -1751,9 +1751,10 @@ fn app_background_style(_theme: &Theme) -> iced::widget::container::Style {
 
 fn subpanel_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgba8(9, 9, 9, 0.86))),
+        // Keep each subpanel legible while allowing the graph beneath to bleed through.
+        background: Some(Background::Color(Color::from_rgba8(9, 9, 9, 0.72))),
         border: iced::Border {
-            color: Color::from_rgb8(44, 44, 44),
+            color: Color::from_rgba8(64, 64, 64, 0.7),
             width: 1.0,
             ..iced::border::rounded(8)
         },
