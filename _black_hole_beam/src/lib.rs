@@ -1416,7 +1416,8 @@ impl BeamApp {
                                         .map(move |message| Message::Subpanel(index, message)),
                                 )
                                 .width(Length::Fill)
-                                .height(Length::Fill),
+                                .height(Length::Fill)
+                                .style(subpanel_child_canvas_style),
                             ]
                             .spacing(8)
                             .height(Length::Fill),
@@ -1770,9 +1771,9 @@ fn app_background_style(_theme: &Theme) -> iced::widget::container::Style {
 fn subpanel_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         // Keep each subpanel legible while allowing the graph beneath to bleed through.
-        background: Some(Background::Color(Color::from_rgba8(9, 9, 9, 0.58))),
+        background: Some(Background::Color(Color::from_rgba8(9, 9, 9, 0.72))),
         border: iced::Border {
-            color: Color::from_rgba8(64, 64, 64, 0.56),
+            color: Color::from_rgba8(64, 64, 64, 0.7),
             width: 1.0,
             ..iced::border::rounded(8)
         },
@@ -1782,11 +1783,24 @@ fn subpanel_style(_theme: &Theme) -> iced::widget::container::Style {
 
 fn subpanel_overlay_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgba8(3, 3, 3, 0.3))),
+        background: Some(Background::Color(Color::from_rgba8(3, 3, 3, 0.42))),
         border: iced::Border {
-            color: Color::from_rgba8(120, 120, 120, 0.18),
+            color: Color::from_rgba8(120, 120, 120, 0.25),
             width: 1.0,
             ..iced::border::rounded(10)
+        },
+        ..Default::default()
+    }
+}
+
+fn subpanel_child_canvas_style(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        // Child graph canvases should feel translucent without reducing text legibility.
+        background: Some(Background::Color(Color::from_rgba8(7, 17, 11, 0.62))),
+        border: iced::Border {
+            color: Color::from_rgba8(104, 140, 121, 0.24),
+            width: 1.0,
+            ..iced::border::rounded(6)
         },
         ..Default::default()
     }
