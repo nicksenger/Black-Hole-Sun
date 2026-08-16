@@ -976,6 +976,8 @@ struct CellVisualState {
     transition_started_at: Option<Instant>,
     pending: VecDeque<NodeProgress>,
     observed_sequence: u64,
+    latest_frozen: Option<bool>,
+    optimization_frozen: Option<bool>,
 }
 
 impl Default for CellVisualState {
@@ -986,6 +988,8 @@ impl Default for CellVisualState {
             transition_started_at: None,
             pending: VecDeque::new(),
             observed_sequence: 0,
+            latest_frozen: None,
+            optimization_frozen: None,
         }
     }
 }
@@ -997,6 +1001,7 @@ impl CellVisualState {
         grad_step: usize,
         grad_steps: usize,
         sequence: u64,
+        frozen: Option<bool>,
         now: Instant,
     ) -> bool {
         let grad_steps = grad_steps.max(1);
@@ -1008,6 +1013,7 @@ impl CellVisualState {
         if sequence < self.observed_sequence {
             return false;
         }
+        self.latest_frozen = frozen;
 
         let path = if sequence > self.observed_sequence {
             let path = recent_phase_steps(latest.state, sequence - self.observed_sequence);
@@ -1064,23 +1070,35 @@ impl CellVisualState {
                     / COLOR_FADE_DURATION.as_secs_f32()
             })
             .unwrap_or(1.0);
+        let previous_frozen = self.frozen_for_state(self.previous.state, frozen);
+        let current_frozen = self.frozen_for_state(self.current.state, frozen);
         let previous = node_style_colors(
             self.previous.state,
             self.previous.grad_step,
             grad_steps,
-            frozen,
+            previous_frozen,
         );
         let current = node_style_colors(
             self.current.state,
             self.current.grad_step,
             grad_steps,
-            frozen,
+            current_frozen,
         );
         NodeStyleColors {
             body: lerp_color(previous.body, current.body, progress),
             border: lerp_color(previous.border, current.border, progress),
             text: lerp_color(previous.text, current.text, progress),
         }
+    }
+
+    fn frozen_for_state(&self, state: SunNodeState, fallback: Option<bool>) -> Option<bool> {
+        if state == SunNodeState::Optimization {
+            return self
+                .optimization_frozen
+                .or(self.latest_frozen)
+                .or(fallback);
+        }
+        fallback
     }
 
     fn is_fading(&self, now: Instant) -> bool {
@@ -1109,6 +1127,11 @@ impl CellVisualState {
         };
         if activity == self.current {
             return self.begin_next_transition(now);
+        }
+        if self.current.state == SunNodeState::Propagation1
+            && activity.state == SunNodeState::Propagation2
+        {
+            self.optimization_frozen = self.latest_frozen;
         }
         self.previous = self.current;
         self.current = activity;
@@ -1168,6 +1191,7 @@ impl BeamApp {
                 cell.grad_step,
                 cell.grad_steps,
                 cell.state_sequence,
+                cell.frozen,
                 now,
             );
             visuals.insert(cell.id, visual);
@@ -1234,6 +1258,7 @@ impl BeamApp {
                                             cell.grad_step,
                                             cell.grad_steps,
                                             cell.state_sequence,
+                                            cell.frozen,
                                             now,
                                         );
                                 }
@@ -1964,7 +1989,7 @@ mod tests {
         assert_eq!(APPEARANCE_INTERVAL, Duration::from_millis(200));
         assert_eq!(COLOR_FADE_DURATION, Duration::from_millis(400));
         assert_eq!(MIN_COLOR_STATE_DURATION, Duration::from_secs(1));
-        assert!(visual.observe(SunNodeState::Propagation1, 1, 4, 1, start));
+        assert!(visual.observe(SunNodeState::Propagation1, 1, 4, 1, None, start));
         let idle = node_style_colors(SunNodeState::Idle, 1, 4, None).body;
         let p1_step1 = node_style_colors(SunNodeState::Propagation1, 1, 4, None).body;
         assert_eq!(
@@ -1988,6 +2013,7 @@ mod tests {
             1,
             4,
             2,
+            None,
             start + COLOR_FADE_DURATION
         ));
         assert!(!visual.advance(start + MIN_COLOR_STATE_DURATION - Duration::from_millis(1)));
@@ -1996,11 +2022,48 @@ mod tests {
     }
 
     #[test]
+    fn optimization_color_uses_frozen_state_captured_at_propagation_transition() {
+        let start = Instant::now();
+        let mut visual = CellVisualState::default();
+
+        assert!(visual.observe(SunNodeState::Propagation1, 1, 4, 1, Some(false), start));
+        assert!(visual.observe(
+            SunNodeState::Propagation2,
+            1,
+            4,
+            2,
+            Some(true),
+            start + MIN_COLOR_STATE_DURATION
+        ));
+        assert_eq!(visual.optimization_frozen, Some(true));
+
+        assert!(visual.observe(
+            SunNodeState::Optimization,
+            4,
+            4,
+            3,
+            Some(false),
+            start + MIN_COLOR_STATE_DURATION * 2
+        ));
+
+        let style = visual.style(
+            4,
+            Some(false),
+            start + MIN_COLOR_STATE_DURATION * 2 + COLOR_FADE_DURATION,
+        );
+        assert_eq!(
+            style.body,
+            Color::from_rgb8(94, 122, 214),
+            "optimization style keeps the frozen color captured at propagation1 -> propagation2"
+        );
+    }
+
+    #[test]
     fn queues_intermediate_phases_when_an_appearance_jumps() {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
 
-        assert!(visual.observe(SunNodeState::Propagation2, 1, 4, 2, start));
+        assert!(visual.observe(SunNodeState::Propagation2, 1, 4, 2, None, start));
         assert_eq!(visual.current.state, SunNodeState::Propagation1);
         assert_eq!(
             visual.pending,
@@ -2018,7 +2081,7 @@ mod tests {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
 
-        assert!(visual.observe(SunNodeState::Propagation2, 1, 4, 2, start));
+        assert!(visual.observe(SunNodeState::Propagation2, 1, 4, 2, None, start));
         assert!(visual.advance(start + MIN_COLOR_STATE_DURATION));
         assert_eq!(visual.current.state, SunNodeState::Propagation2);
         assert!(visual.pending.is_empty());
@@ -2028,6 +2091,7 @@ mod tests {
             3,
             4,
             5,
+            None,
             start + MIN_COLOR_STATE_DURATION * 2
         ));
         assert_eq!(visual.current.state, SunNodeState::Optimization);
@@ -2058,7 +2122,7 @@ mod tests {
             (6, SunNodeState::Optimization),
             (7, SunNodeState::Propagation1),
         ] {
-            visual.observe(phase, 1, 4, sequence, start);
+            visual.observe(phase, 1, 4, sequence, None, start);
         }
 
         assert!(visual.pending.len() <= MAX_PENDING_PHASES);
@@ -2068,7 +2132,7 @@ mod tests {
     fn throttles_color_ticks_while_waiting_for_next_transition() {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
-        assert!(visual.observe(SunNodeState::Propagation2, 1, 4, 2, start));
+        assert!(visual.observe(SunNodeState::Propagation2, 1, 4, 2, None, start));
         assert_eq!(visual.current.state, SunNodeState::Propagation1);
 
         let fade_end = start + COLOR_FADE_DURATION;
