@@ -1382,6 +1382,7 @@ impl BeamApp {
             .height(Length::Fill);
 
         let overlay_layer: Element<'_, Message> = if show_subpanel_overlay {
+            let subpanel_styles = self.cell_styles();
             let mut subpanel_column = column![]
                 .spacing(8)
                 .width(Length::Fill)
@@ -1389,6 +1390,10 @@ impl BeamApp {
             subpanel_column = self.subpanels.iter().enumerate().fold(
                 subpanel_column,
                 |column, (index, subpanel)| {
+                    let subpanel_colors = subpanel_styles
+                        .get(&subpanel.node_id)
+                        .copied()
+                        .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None));
                     let phase = self
                         .subpanel_phase(subpanel.node_id)
                         .unwrap_or_else(|| "unknown".to_string());
@@ -1399,7 +1404,7 @@ impl BeamApp {
                     let header = row![
                         text(title)
                             .size(14)
-                            .color(black_hole_text().scale_alpha(0.86))
+                            .color(subpanel_colors.text.scale_alpha(0.9))
                             .width(Length::Fill),
                         button(text("X").size(13))
                             .padding([1, 6])
@@ -1427,7 +1432,7 @@ impl BeamApp {
                         .padding([10, 12])
                         .width(Length::Fill)
                         .height(Length::FillPortion(1))
-                        .style(subpanel_style),
+                        .style(move |_theme| subpanel_style(subpanel_colors)),
                     )
                 },
             );
@@ -1778,15 +1783,21 @@ fn app_background_style(_theme: &Theme) -> iced::widget::container::Style {
     }
 }
 
-fn subpanel_style(_theme: &Theme) -> iced::widget::container::Style {
+fn subpanel_style(colors: NodeStyleColors) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        // Keep each subpanel legible while allowing the graph beneath to bleed through.
-        background: Some(Background::Color(Color::from_rgba8(9, 9, 9, 0.72))),
+        // Mirror each node's phase tint while keeping subpanel content readable.
+        background: Some(Background::Color(Color::from_rgba(
+            colors.body.r,
+            colors.body.g,
+            colors.body.b,
+            0.3,
+        ))),
         border: iced::Border {
-            color: Color::from_rgba8(64, 64, 64, 0.7),
+            color: Color::from_rgba(colors.border.r, colors.border.g, colors.border.b, 0.58),
             width: 1.0,
             ..iced::border::rounded(8)
         },
+        text_color: Some(colors.text),
         ..Default::default()
     }
 }
