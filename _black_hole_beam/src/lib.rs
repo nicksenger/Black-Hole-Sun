@@ -1338,7 +1338,7 @@ impl BeamApp {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        let content: Element<'_, Message> = if show_subpanel_overlay {
+        let overlay_layer: Element<'_, Message> = if show_subpanel_overlay {
             let mut subpanel_column = column![]
                 .spacing(8)
                 .width(Length::Fill)
@@ -1396,13 +1396,18 @@ impl BeamApp {
             .width(Length::Fill)
             .height(Length::Fill);
 
-            stack(vec![main_layer.into(), right_overlay.into()])
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+            right_overlay.into()
         } else {
-            main_layer.into()
+            // Keep a stable stack root even when there is no overlay so
+            // opening/closing subpanels does not remount the graph viewport.
+            container(column![])
+                .width(Length::Shrink)
+                .height(Length::Shrink)
+                .into()
         };
+        let content = stack(vec![main_layer.into(), overlay_layer])
+            .width(Length::Fill)
+            .height(Length::Fill);
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
