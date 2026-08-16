@@ -1283,7 +1283,7 @@ impl ServerBuilder {
                     }
                 };
                 let (stream, remote_addr) = accepted;
-                info!(remote = %remote_addr, "accepting tcp connection");
+                debug!(remote = %remote_addr, "accepting tcp connection");
                 let ctx = Arc::clone(&context);
                 tokio::spawn(handle_tcp_connection(stream, ctx));
             },
@@ -1961,7 +1961,7 @@ async fn handle_update_tunnel_capacity(
 
     propagate_capacity_to_parent(ctx).await?;
 
-    info!(token = %token, ?max_instances, "updated tunnel worker capacity");
+    debug!(token = %token, ?max_instances, "updated tunnel worker capacity");
     Ok(QuarkOut::Ack)
 }
 

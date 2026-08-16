@@ -252,7 +252,7 @@ impl ServerBuilder {
                     .accept()
                     .await
                     .map_err(ServerError::AcceptTcpConnection)?;
-                info!(remote = %remote_addr, "accepting tcp connection");
+                debug!(remote = %remote_addr, "accepting tcp connection");
                 let ctx = Arc::clone(&context);
                 tokio::spawn(handle_tcp_connection(stream, ctx));
             },
