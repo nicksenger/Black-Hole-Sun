@@ -54,3 +54,19 @@ pub struct AtomWithState<
 >(In, QuarkInferWithBackoff<M, S, H>, Out);
 
 pub type Atom<In, Out, M, S = (), H = DefaultConfig> = AtomWithState<In, Out, M, S, H>;
+
+#[derive(Flow)]
+pub struct NoBackoffAtom<
+    In,
+    Out,
+    M: Serialize + DeserializeOwned + Send + 'static,
+    S,
+    H: ModelConfig,
+>(In, QuarkInferWithoutBackoff<M, S, H>, Out);
+
+#[derive(Flow)]
+pub struct QuarkInferWithoutBackoff<
+    M: Serialize + DeserializeOwned + Send + 'static,
+    S,
+    H: ModelConfig,
+>(Step<QuarkInferStep<M, S, H>>);

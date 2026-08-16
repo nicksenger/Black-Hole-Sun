@@ -97,6 +97,7 @@ pub use ops::VoidInferOps;
 pub use ray::Ray;
 
 pub use atom::Atom;
+pub use atom::NoBackoffAtom;
 pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
 pub use twin::action::{LeftStack, RandStack, RightStack};
 pub use twin::Twin;
