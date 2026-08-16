@@ -828,7 +828,7 @@ impl NodeStateVisual for SunNodeState {
             SunNodeState::Idle => "idle",
             SunNodeState::Propagation1 => "propagation 1",
             SunNodeState::Propagation2 => "propagation 2",
-            SunNodeState::Optimization => "optimization",
+            SunNodeState::Optimization => "potentiation",
         }
     }
 }
@@ -1387,9 +1387,12 @@ impl BeamApp {
             subpanel_column = self.subpanels.iter().enumerate().fold(
                 subpanel_column,
                 |column, (index, subpanel)| {
+                    let phase = self
+                        .subpanel_phase(subpanel.node_id)
+                        .unwrap_or_else(|| "unknown".to_string());
                     let title = format!(
-                        "Cell {} · {} · {}",
-                        subpanel.node_id, subpanel.title, subpanel.journey_id
+                        "Cell {} · {} ({phase})",
+                        subpanel.node_id, subpanel.title
                     );
                     let header = row![
                         text(title)
@@ -1689,6 +1692,21 @@ impl BeamApp {
             .find(|config| config.animal_label == lookup_key)
             .cloned()
     }
+
+    fn subpanel_phase(&self, node_id: u32) -> Option<String> {
+        self.model
+            .cells
+            .iter()
+            .find(|cell| cell.id == node_id)
+            .map(|cell| {
+                self.visuals
+                    .get(&node_id)
+                    .map(|visual| visual.current.state)
+                    .unwrap_or(cell.state)
+                    .label()
+                    .to_string()
+            })
+    }
 }
 
 fn appearance_task(live: LiveConfig) -> Task<Message> {
@@ -1752,9 +1770,9 @@ fn app_background_style(_theme: &Theme) -> iced::widget::container::Style {
 fn subpanel_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         // Keep each subpanel legible while allowing the graph beneath to bleed through.
-        background: Some(Background::Color(Color::from_rgba8(9, 9, 9, 0.72))),
+        background: Some(Background::Color(Color::from_rgba8(9, 9, 9, 0.58))),
         border: iced::Border {
-            color: Color::from_rgba8(64, 64, 64, 0.7),
+            color: Color::from_rgba8(64, 64, 64, 0.56),
             width: 1.0,
             ..iced::border::rounded(8)
         },
@@ -1764,9 +1782,9 @@ fn subpanel_style(_theme: &Theme) -> iced::widget::container::Style {
 
 fn subpanel_overlay_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgba8(3, 3, 3, 0.42))),
+        background: Some(Background::Color(Color::from_rgba8(3, 3, 3, 0.3))),
         border: iced::Border {
-            color: Color::from_rgba8(120, 120, 120, 0.25),
+            color: Color::from_rgba8(120, 120, 120, 0.18),
             width: 1.0,
             ..iced::border::rounded(10)
         },
@@ -2321,5 +2339,10 @@ mod tests {
             model.cells[0].animal_name,
             "RootAnimal<Result<String, Vec<u8>>>"
         );
+    }
+
+    #[test]
+    fn labels_optimization_phase_as_potentiation() {
+        assert_eq!(SunNodeState::Optimization.label(), "potentiation");
     }
 }
