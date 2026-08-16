@@ -20,7 +20,7 @@ use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
-use iced::widget::{button, column, container, row, stack, text};
+use iced::widget::{button, column, container, mouse_area, opaque, row, stack, text};
 use iced::{
     Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription, Task, Theme,
     Vector,
@@ -810,6 +810,7 @@ enum Message {
     NodeSelected(u32),
     CloseSubpanel(usize),
     Subpanel(usize, EjectedViewerMessage),
+    SubpanelOverlayPointerEvent,
 }
 
 #[derive(Debug, Clone)]
@@ -1321,6 +1322,7 @@ impl BeamApp {
                         .map(move |message| Message::Subpanel(index, message));
                 }
             }
+            Message::SubpanelOverlayPointerEvent => {}
         }
 
         Task::none()
@@ -1430,13 +1432,21 @@ impl BeamApp {
                 },
             );
 
-            let right_overlay = row![
-                container(column![]).width(Length::FillPortion(2)),
+            let subpanel_stack = mouse_area(opaque(
                 container(subpanel_column)
                     .width(Length::FillPortion(1))
                     .height(Length::Fill)
                     .padding(8)
                     .style(subpanel_overlay_style),
+            ))
+            .on_press(Message::SubpanelOverlayPointerEvent)
+            .on_right_press(Message::SubpanelOverlayPointerEvent)
+            .on_middle_press(Message::SubpanelOverlayPointerEvent)
+            .on_scroll(|_| Message::SubpanelOverlayPointerEvent);
+
+            let right_overlay = row![
+                container(column![]).width(Length::FillPortion(2)),
+                subpanel_stack,
             ]
             .width(Length::Fill)
             .height(Length::Fill);
