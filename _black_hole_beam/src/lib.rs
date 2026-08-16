@@ -1173,10 +1173,16 @@ impl BeamApp {
             visuals.insert(cell.id, visual);
         }
         let appearance_loading = live.is_some();
-        let task = live
+        let mut tasks = vec![live
             .as_ref()
             .map(|live| appearance_task(live.clone()))
-            .unwrap_or_else(Task::none);
+            .unwrap_or_else(Task::none)];
+        if !model.cells.is_empty() {
+            tasks.push(iced_sugiyama::fit_to_view(iced_sugiyama::Id::new(
+                CELL_GRAPH_ID,
+            )));
+        }
+        let task = Task::batch(tasks);
         let subpanels = Vec::new();
 
         (
@@ -1212,6 +1218,7 @@ impl BeamApp {
                         match BeamModel::from_appearance(snapshot.appearance, &snapshot.child_rays)
                         {
                             Ok(model) => {
+                                let had_cells = !self.model.cells.is_empty();
                                 let now = Instant::now();
                                 let mut transitioned = false;
                                 let node_ids = model
@@ -1234,11 +1241,20 @@ impl BeamApp {
                                 let had_error = self.appearance_error.is_some();
                                 self.model = model;
                                 self.appearance_error = None;
+                                let mut tasks = Vec::new();
+                                if !had_cells && !self.model.cells.is_empty() {
+                                    tasks.push(iced_sugiyama::fit_to_view(iced_sugiyama::Id::new(
+                                        CELL_GRAPH_ID,
+                                    )));
+                                }
                                 if display_changed || transitioned || had_error {
                                     self.color_now = now;
-                                    return iced_sugiyama::force_review(iced_sugiyama::Id::new(
-                                        CELL_GRAPH_ID,
+                                    tasks.push(iced_sugiyama::force_review(
+                                        iced_sugiyama::Id::new(CELL_GRAPH_ID),
                                     ));
+                                }
+                                if !tasks.is_empty() {
+                                    return Task::batch(tasks);
                                 }
                             }
                             Err(error) => self.appearance_error = Some(error),
@@ -1559,7 +1575,7 @@ impl BeamApp {
             .stroke_width(EDGE_STROKE_WIDTH)
             .edge_corner_radius(16.0)
             .padding(24)
-            .auto_fit(AutoFit::Initial)
+            .auto_fit(AutoFit::Off)
             .keep_centered(false);
         if let Some(duration) = self.config.animation_duration {
             graph = graph.animation_duration(duration);
