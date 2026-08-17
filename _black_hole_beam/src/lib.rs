@@ -908,13 +908,15 @@ fn node_style_colors(
     let deep_crimson = Color::from_rgb8(195, 24, 41);
     let fire_red = Color::from_rgb8(240, 96, 24);
     let potentiation_blue = Color::from_rgb8(65, 105, 225);
+    let frozen_potentiation_violet = Color::from_rgb8(124, 77, 255);
 
     if state == SunNodeState::Optimization {
         if frozen == Some(true) {
-            // Black on black so the frozen node effectively vanishes.
+            // Black body so the frozen node recedes, but a violet outline keeps
+            // it identifiable during potentiation.
             return NodeStyleColors {
                 body: Color::BLACK,
-                border: Color::BLACK,
+                border: frozen_potentiation_violet,
                 text: Color::BLACK,
             };
         }
@@ -2089,7 +2091,7 @@ mod tests {
 
         let frozen_optimize = node_style_colors(SunNodeState::Optimization, 4, 4, Some(true));
         assert_eq!(frozen_optimize.body, Color::BLACK);
-        assert_eq!(frozen_optimize.border, Color::BLACK);
+        assert_eq!(frozen_optimize.border, Color::from_rgb8(124, 77, 255));
     }
 
     #[test]
