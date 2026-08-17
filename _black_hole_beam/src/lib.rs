@@ -896,6 +896,8 @@ fn node_style_colors(
     let idle_orange = Color::from_rgb8(228, 108, 30);
     let bright_yellow = Color::from_rgb8(255, 233, 68);
     let deep_crimson = Color::from_rgb8(195, 24, 41);
+    let fire_red = Color::from_rgb8(240, 96, 24);
+    let potentiation_blue = Color::from_rgb8(65, 105, 225);
 
     if state == SunNodeState::Optimization {
         if frozen == Some(true) {
@@ -908,26 +910,29 @@ fn node_style_colors(
         }
         return NodeStyleColors {
             body: Color::from_rgb8(255, 255, 255),
-            border: Color::from_rgb8(255, 120, 18),
+            border: potentiation_blue,
             text: Color::from_rgb8(18, 12, 8),
         };
     }
 
-    let body = match state {
-        SunNodeState::Idle => idle_orange,
+    let (body, border) = match state {
+        SunNodeState::Idle => (idle_orange, lighten(idle_orange, 0.18)),
         SunNodeState::Propagation1 => {
             let progress = node_phase_progress(grad_step, grad_steps);
-            lerp_color(idle_orange, bright_yellow, progress)
+            let body = lerp_color(idle_orange, deep_crimson, progress);
+            (body, lighten(body, 0.18))
         }
         SunNodeState::Propagation2 => {
             let progress = node_phase_progress(grad_step, grad_steps);
-            lerp_color(idle_orange, deep_crimson, progress)
+            let body = lerp_color(idle_orange, bright_yellow, progress);
+            // Keep a fixed fire-red outline so the yellow body stays distinct.
+            (body, fire_red)
         }
         SunNodeState::Optimization => unreachable!("optimization is handled above"),
     };
     NodeStyleColors {
         body,
-        border: lighten(body, 0.18),
+        border,
         text: contrasting_text(body),
     }
 }
@@ -2057,17 +2062,17 @@ mod tests {
         ));
         let p1_step1 = node_style_colors(SunNodeState::Propagation1, 1, 4, None).body;
         let p1_step4 = node_style_colors(SunNodeState::Propagation1, 4, 4, None).body;
-        assert!(p1_step4.g > p1_step1.g);
+        assert!(p1_step4.g < p1_step1.g);
+        assert!(p1_step4.r - p1_step4.g > p1_step1.r - p1_step1.g);
 
         let p2_step1 = node_style_colors(SunNodeState::Propagation2, 1, 4, None).body;
         let p2_step4 = node_style_colors(SunNodeState::Propagation2, 4, 4, None).body;
-        assert!(p2_step4.g < p2_step1.g);
-        assert!(p2_step4.r - p2_step4.g > p2_step1.r - p2_step1.g);
+        assert!(p2_step4.g > p2_step1.g);
 
         let optimize = node_style_colors(SunNodeState::Optimization, 4, 4, Some(false));
         assert_eq!(optimize.body, Color::from_rgb8(255, 255, 255));
         assert_eq!(optimize.text, Color::from_rgb8(18, 12, 8));
-        assert_eq!(optimize.border, Color::from_rgb8(255, 120, 18));
+        assert_eq!(optimize.border, Color::from_rgb8(65, 105, 225));
 
         let frozen_optimize = node_style_colors(SunNodeState::Optimization, 4, 4, Some(true));
         assert_eq!(frozen_optimize.body, Color::BLACK);
