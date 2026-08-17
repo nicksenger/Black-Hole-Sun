@@ -28,7 +28,9 @@ use directories_next::BaseDirs;
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
-use iced::widget::{button, column, container, mouse_area, opaque, row, stack, text};
+use iced::widget::{
+    button, column, container, mouse_area, opaque, row, rule, space, stack, text,
+};
 use iced::{
     Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription, Task, Theme,
     Vector,
@@ -897,12 +899,11 @@ fn node_style_colors(
 
     if state == SunNodeState::Optimization {
         if frozen == Some(true) {
-            let body = Color::from_rgb8(94, 122, 214);
-            let border = Color::from_rgb8(154, 92, 232);
+            // Black on black so the frozen node effectively vanishes.
             return NodeStyleColors {
-                body,
-                border,
-                text: contrasting_text(body),
+                body: Color::BLACK,
+                border: Color::BLACK,
+                text: Color::BLACK,
             };
         }
         return NodeStyleColors {
@@ -1410,7 +1411,9 @@ impl BeamApp {
                 .subpanel_phase(subpanel.node_id)
                 .unwrap_or_else(|| "unknown".to_string());
             let title = format!("Cell {} · {} ({phase})", subpanel.node_id, subpanel.title);
+            let header_space = || space::Space::new().width(Length::Fixed(8.0));
             let header = row![
+                header_space(),
                 text(title)
                     .size(14)
                     .color(black_hole_text().scale_alpha(0.86))
@@ -1419,20 +1422,38 @@ impl BeamApp {
                     .padding([1, 6])
                     .style(subpanel_close_button_style)
                     .on_press(Message::CloseSubpanel),
+                header_space(),
             ];
 
+            // Iced borders are uniform on all sides, so the panel's left edge
+            // is drawn as a vertical rule.
             let subpanel_panel = container(
-                column![
-                    header,
-                    container(subpanel.viewer.view().map(Message::Subpanel))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .style(subpanel_child_canvas_style),
+                row![
+                    rule::vertical(1).style(move |_theme| subpanel_left_edge_style(subpanel_colors)),
+                    container(
+                        column![
+                            header,
+                            container(subpanel.viewer.view().map(Message::Subpanel))
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .style(subpanel_child_canvas_style),
+                        ]
+                        .spacing(8)
+                        .height(Length::Fill),
+                    )
+                    // Keep top padding for the header gap but let the child
+                    // canvas sit flush with the panel's right and bottom edges.
+                    .padding(iced::Padding {
+                        top: 10.0,
+                        right: 0.0,
+                        bottom: 0.0,
+                        left: 0.0,
+                    })
+                    .width(Length::Fill)
+                    .height(Length::Fill),
                 ]
-                .spacing(8)
                 .height(Length::Fill),
             )
-            .padding([10, 12])
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_theme| subpanel_style(subpanel_colors));
@@ -1441,7 +1462,6 @@ impl BeamApp {
                 container(subpanel_panel)
                     .width(Length::FillPortion(1))
                     .height(Length::Fill)
-                    .padding(8)
                     .style(subpanel_overlay_style),
             ))
             .on_press(Message::SubpanelOverlayPointerEvent)
@@ -1835,13 +1855,19 @@ fn subpanel_style(colors: NodeStyleColors) -> iced::widget::container::Style {
             colors.body.b,
             0.2,
         ))),
-        border: iced::Border {
-            color: Color::from_rgba(colors.border.r, colors.border.g, colors.border.b, 0.58),
-            width: 1.0,
-            ..iced::border::rounded(8)
-        },
+        // The panel is outlined only on its left edge, which is rendered as a
+        // vertical rule because iced borders apply to all sides.
         text_color: Some(colors.text),
         ..Default::default()
+    }
+}
+
+fn subpanel_left_edge_style(colors: NodeStyleColors) -> iced::widget::rule::Style {
+    iced::widget::rule::Style {
+        color: Color::from_rgba(colors.border.r, colors.border.g, colors.border.b, 0.58),
+        radius: 0.0.into(),
+        fill_mode: iced::widget::rule::FillMode::Full,
+        snap: true,
     }
 }
 
@@ -1851,7 +1877,7 @@ fn subpanel_overlay_style(_theme: &Theme) -> iced::widget::container::Style {
         border: iced::Border {
             color: Color::from_rgba8(120, 120, 120, 0.25),
             width: 1.0,
-            ..iced::border::rounded(10)
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -1861,11 +1887,6 @@ fn subpanel_child_canvas_style(_theme: &Theme) -> iced::widget::container::Style
     iced::widget::container::Style {
         // Child graph canvases should feel translucent without reducing text legibility.
         background: Some(Background::Color(Color::from_rgba8(7, 17, 11, 0.62))),
-        border: iced::Border {
-            color: Color::from_rgba8(104, 140, 121, 0.24),
-            width: 1.0,
-            ..iced::border::rounded(6)
-        },
         ..Default::default()
     }
 }
@@ -1881,13 +1902,9 @@ fn subpanel_close_button_style(
     iced::widget::button::Style {
         background: None,
         text_color,
-        border: iced::Border {
-            color: Color::from_rgba8(176, 176, 176, 0.35),
-            width: 1.0,
-            ..iced::border::rounded(6)
-        },
         shadow: Shadow::default(),
         snap: false,
+        ..Default::default()
     }
 }
 
@@ -2053,8 +2070,8 @@ mod tests {
         assert_eq!(optimize.border, Color::from_rgb8(255, 120, 18));
 
         let frozen_optimize = node_style_colors(SunNodeState::Optimization, 4, 4, Some(true));
-        assert_eq!(frozen_optimize.body, Color::from_rgb8(94, 122, 214));
-        assert_eq!(frozen_optimize.border, Color::from_rgb8(154, 92, 232));
+        assert_eq!(frozen_optimize.body, Color::BLACK);
+        assert_eq!(frozen_optimize.border, Color::BLACK);
     }
 
     #[test]
@@ -2150,7 +2167,7 @@ mod tests {
         );
         assert_eq!(
             style.body,
-            Color::from_rgb8(94, 122, 214),
+            Color::BLACK,
             "optimization style keeps the frozen color captured at propagation1 -> propagation2"
         );
     }
