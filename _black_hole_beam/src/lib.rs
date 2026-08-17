@@ -5,9 +5,15 @@
 //! layout by default. Live views use the parent Sun animal's Jungle
 //! [`Observe`](jungle_sdk::Observe) appearance as the source of graph topology
 //! and node phase.
+//!
+//! With the `av` feature enabled, an AV1/Opus Matroska video at
+//! `~/.black-hole-sun/black-hole-sun.mkv` (if present) plays as a
+//! semi-transparent overlay on top of the Black Hole Sun graph.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(feature = "av")]
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +23,8 @@ use black_hole_flux::sun::{
     UnarySunStep,
 };
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
+#[cfg(feature = "av")]
+use directories_next::BaseDirs;
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
@@ -33,6 +41,8 @@ use jungle_sdk::{Animal, AnimalIdValue, JourneyAstSource, JungleClient, Observe}
 use jungle_vision::{
     AnyAnimal, DefaultTheme, EjectedViewer, EjectedViewerMessage, JungleViewerBuilder,
 };
+#[cfg(feature = "av")]
+use tracing::{info, warn};
 use typenum::Unsigned;
 use uuid::Uuid;
 
@@ -47,6 +57,8 @@ const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
+#[cfg(feature = "av")]
+const AV_OVERLAY_OPACITY: f32 = 0.35;
 type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
 
 #[derive(Clone)]
@@ -811,6 +823,8 @@ enum Message {
     CloseSubpanel(usize),
     Subpanel(usize, EjectedViewerMessage),
     SubpanelOverlayPointerEvent,
+    #[cfg(feature = "av")]
+    Av(iced_av1::widget::Message),
 }
 
 #[derive(Debug, Clone)]
@@ -1170,6 +1184,8 @@ struct BeamApp {
     appearance_error: Option<String>,
     subpanel_notice: Option<String>,
     color_now: Instant,
+    #[cfg(feature = "av")]
+    video_overlay: Option<iced_av1::widget::State>,
 }
 
 impl BeamApp {
@@ -1221,6 +1237,8 @@ impl BeamApp {
                 appearance_error: None,
                 subpanel_notice: None,
                 color_now: now,
+                #[cfg(feature = "av")]
+                video_overlay: load_video_overlay(),
             },
             task,
         )
@@ -1323,6 +1341,12 @@ impl BeamApp {
                 }
             }
             Message::SubpanelOverlayPointerEvent => {}
+            #[cfg(feature = "av")]
+            Message::Av(event) => {
+                if let Some(video_overlay) = self.video_overlay.as_mut() {
+                    video_overlay.update(event);
+                }
+            }
         }
 
         Task::none()
@@ -1356,6 +1380,10 @@ impl BeamApp {
                     .with(index)
                     .map(|(index, message)| Message::Subpanel(index, message)),
             );
+        }
+        #[cfg(feature = "av")]
+        if let Some(video_overlay) = self.video_overlay.as_ref() {
+            subscriptions.push(video_overlay.subscription(map_av_message));
         }
 
         Subscription::batch(subscriptions)
@@ -1465,9 +1493,19 @@ impl BeamApp {
                 .height(Length::Shrink)
                 .into()
         };
-        let content = stack(vec![main_layer.into(), overlay_layer])
-            .width(Length::Fill)
-            .height(Length::Fill);
+        #[cfg(feature = "av")]
+        let video_layer = self
+            .video_overlay
+            .as_ref()
+            .and_then(|video| video.overlay_view(map_av_message));
+        #[cfg(not(feature = "av"))]
+        let video_layer: Option<Element<'_, Message>> = None;
+
+        let mut layers = vec![main_layer.into(), overlay_layer];
+        if let Some(video_layer) = video_layer {
+            layers.push(video_layer);
+        }
+        let content = stack(layers).width(Length::Fill).height(Length::Fill);
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -1765,6 +1803,43 @@ async fn fetch_child_rays(live: &LiveConfig, appearance: &SunAppearance) -> Hash
         rays.insert(node.journey_id, ray);
     }
     rays
+}
+
+#[cfg(feature = "av")]
+fn load_video_overlay() -> Option<iced_av1::widget::State> {
+    let path = video_overlay_path()?;
+    let opacity = iced_av1::OpacityOptions {
+        opacity: AV_OVERLAY_OPACITY,
+        ..Default::default()
+    };
+    match iced_av1::widget::State::new_with_media_source_and_opacity_options(
+        iced_av1::MediaSource::File(path.clone()),
+        iced_av1::PlaybackOptions::default(),
+        opacity,
+    ) {
+        Ok(video) => {
+            info!(path = %path.display(), opacity = AV_OVERLAY_OPACITY, "loaded black hole sun video overlay");
+            Some(video)
+        }
+        Err(error) => {
+            warn!(path = %path.display(), %error, "failed to load black hole sun video overlay");
+            None
+        }
+    }
+}
+
+#[cfg(feature = "av")]
+fn video_overlay_path() -> Option<PathBuf> {
+    let path = BaseDirs::new()?
+        .home_dir()
+        .join(".black-hole-sun")
+        .join("black-hole-sun.mkv");
+    path.is_file().then_some(path)
+}
+
+#[cfg(feature = "av")]
+fn map_av_message(message: iced_av1::widget::Message) -> Message {
+    Message::Av(message)
 }
 
 fn black_hole_text() -> Color {

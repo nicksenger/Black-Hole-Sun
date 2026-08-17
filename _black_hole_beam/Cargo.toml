@@ -3,14 +3,20 @@ name = "black-hole-beam"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+av = ["dep:iced-av1", "dep:directories-next", "dep:tracing"]
+
 [dependencies]
 async-trait = "0.1"
 black-hole-flux = { path = "../_black_hole_flux" }
+directories-next = { version = "2", optional = true }
 iced = { version = "0.14", features = ["advanced", "canvas", "tokio"] }
+iced-av1 = { git = "https://github.com/nicksenger/iced-av1.git", branch = "jungle", features = ["opus"], optional = true }
 iced-sugiyama = { git = "https://github.com/nicksenger/iced-sugiyama.git", branch = "blackholesun", features = ["circo"] }
 jungle-sdk = { workspace = true }
 jungle-vision = { workspace = true }
 postcard = "1"
+tracing = { version = "0.1", optional = true }
 typenum = "1"
 uuid = { version = "1", features = ["serde"] }
 
