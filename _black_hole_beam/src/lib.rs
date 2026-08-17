@@ -41,7 +41,8 @@ use iced_sugiyama::{
 };
 use jungle_sdk::{Animal, AnimalIdValue, JourneyAstSource, JungleClient, Observe};
 use jungle_vision::{
-    AnyAnimal, DefaultTheme, EjectedViewer, EjectedViewerMessage, JungleViewerBuilder,
+    AnyAnimal, ClusterExpansionConfig, ClusterExpansionMode, DefaultTheme, EjectedViewer,
+    EjectedViewerMessage, JungleViewerBuilder,
 };
 #[cfg(feature = "av")]
 use tracing::{info, warn};
@@ -75,7 +76,16 @@ where
     A: Animal + 'static,
     A::Flow: JourneyAstSource,
 {
-    JungleViewerBuilder::new().eject_live_animal::<A, SharedJungleClient>(client, journey_id)
+    let theme = DefaultTheme::default().with_cluster_expansion_config(ClusterExpansionConfig {
+        while_clusters: ClusterExpansionMode::AlwaysExpanded,
+        transparent_clusters: ClusterExpansionMode::AlwaysExpanded,
+    });
+    JungleViewerBuilder::new()
+        .eject_live_animal_with_theme::<A, SharedJungleClient, _, AnyAnimal>(
+            client,
+            journey_id,
+            theme,
+        )
 }
 
 #[derive(Debug, Clone, Copy)]
