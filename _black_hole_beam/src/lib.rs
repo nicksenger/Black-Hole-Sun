@@ -1756,18 +1756,19 @@ impl BeamApp {
     }
 
     fn subpanel_phase(&self, node_id: u32) -> Option<String> {
-        self.model
-            .cells
-            .iter()
-            .find(|cell| cell.id == node_id)
-            .map(|cell| {
-                self.visuals
-                    .get(&node_id)
-                    .map(|visual| visual.current.state)
-                    .unwrap_or(cell.state)
-                    .label()
-                    .to_string()
-            })
+        let cell = self.model.cells.iter().find(|cell| cell.id == node_id)?;
+        let (state, grad_step) = self
+            .visuals
+            .get(&node_id)
+            .map(|visual| (visual.current.state, visual.current.grad_step))
+            .unwrap_or((cell.state, cell.grad_step));
+        match state {
+            // Only propagation phases advance through gradient steps.
+            SunNodeState::Propagation1 | SunNodeState::Propagation2 => {
+                Some(format!("{}, step {grad_step}", state.label()))
+            }
+            _ => Some(state.label().to_string()),
+        }
     }
 }
 
