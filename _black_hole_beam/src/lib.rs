@@ -40,14 +40,17 @@ use iced_sugiyama::{
     circo_layout, AutoFit, Cluster, EdgeEndpointKind, Graph, LayoutInput, Sugiyama,
 };
 use jungle_sdk::{Animal, AnimalIdValue, JourneyAstSource, JungleClient, Observe};
+use jungle_theme::BeamJungleTheme;
 use jungle_vision::{
-    AnyAnimal, ClusterExpansionConfig, ClusterExpansionMode, DefaultTheme, EjectedViewer,
+    AnyAnimal, ClusterExpansionConfig, ClusterExpansionMode, EjectedViewer,
     EjectedViewerMessage, JungleViewerBuilder,
 };
 #[cfg(feature = "av")]
 use tracing::{info, warn};
 use typenum::Unsigned;
 use uuid::Uuid;
+
+mod jungle_theme;
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
@@ -62,7 +65,7 @@ const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
 #[cfg(feature = "av")]
 const AV_OVERLAY_OPACITY: f32 = 0.25;
-type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
+type JungleSubpanelViewer = EjectedViewer<BeamJungleTheme, AnyAnimal>;
 
 #[derive(Clone)]
 struct SubpanelConfig {
@@ -76,7 +79,7 @@ where
     A: Animal + 'static,
     A::Flow: JourneyAstSource,
 {
-    let theme = DefaultTheme::default().with_cluster_expansion_config(ClusterExpansionConfig {
+    let theme = BeamJungleTheme::default().with_cluster_expansion_config(ClusterExpansionConfig {
         while_clusters: ClusterExpansionMode::AlwaysExpanded,
         transparent_clusters: ClusterExpansionMode::AlwaysExpanded,
     });
@@ -1907,7 +1910,8 @@ fn subpanel_overlay_style(_theme: &Theme) -> iced::widget::container::Style {
 fn subpanel_child_canvas_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         // Child graph canvases should feel translucent without reducing text legibility.
-        background: Some(Background::Color(Color::from_rgba8(7, 17, 11, 0.62))),
+        // Near-black with a faint blue tint to match the beam jungle theme.
+        background: Some(Background::Color(Color::from_rgba8(5, 7, 14, 0.7))),
         ..Default::default()
     }
 }

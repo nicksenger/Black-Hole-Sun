@@ -921,6 +921,7 @@ dependencies = [
  "jungle-sdk",
  "jungle-vision",
  "postcard",
+ "tokio",
  "tracing",
  "typenum",
  "uuid",
