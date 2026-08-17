@@ -227,7 +227,9 @@ impl BeamBuilder {
     /// Register an animal type that can be shown in a node-click subpanel.
     ///
     /// In live mode, clicking a node whose animal matches one of these
-    /// registrations opens that node's journey in the subpanel column.
+    /// registrations opens that node's journey in the subpanel overlay,
+    /// replacing any child flow that is currently open. Only one child
+    /// flow is shown at a time.
     pub fn register_subpanel_animal<A>(mut self) -> Self
     where
         A: Animal + 'static,
@@ -820,8 +822,8 @@ enum Message {
     AppearanceLoaded(Result<Option<LiveAppearanceSnapshot>, String>),
     ColorTick(Instant),
     NodeSelected(u32),
-    CloseSubpanel(usize),
-    Subpanel(usize, EjectedViewerMessage),
+    CloseSubpanel,
+    Subpanel(EjectedViewerMessage),
     SubpanelOverlayPointerEvent,
     #[cfg(feature = "av")]
     Av(iced_av1::widget::Message),
@@ -1175,7 +1177,7 @@ struct BeamApp {
     config: BeamConfig,
     model: BeamModel,
     live: Option<LiveConfig>,
-    subpanels: Vec<SubpanelState>,
+    subpanel: Option<SubpanelState>,
     visuals: HashMap<u32, CellVisualState>,
     appearance_loading: bool,
     appearance_error: Option<String>,
@@ -1221,14 +1223,14 @@ impl BeamApp {
             )));
         }
         let task = Task::batch(tasks);
-        let subpanels = Vec::new();
+        let subpanel = None;
 
         (
             Self {
                 config,
                 model,
                 live,
-                subpanels,
+                subpanel,
                 visuals,
                 appearance_loading,
                 appearance_error: None,
@@ -1324,17 +1326,12 @@ impl BeamApp {
             Message::NodeSelected(node_id) => {
                 self.open_subpanel_for_node(node_id);
             }
-            Message::CloseSubpanel(index) => {
-                if index < self.subpanels.len() {
-                    self.subpanels.remove(index);
-                }
+            Message::CloseSubpanel => {
+                self.subpanel = None;
             }
-            Message::Subpanel(index, message) => {
-                if let Some(subpanel) = self.subpanels.get_mut(index) {
-                    return subpanel
-                        .viewer
-                        .update(message)
-                        .map(move |message| Message::Subpanel(index, message));
+            Message::Subpanel(message) => {
+                if let Some(subpanel) = self.subpanel.as_mut() {
+                    return subpanel.viewer.update(message).map(Message::Subpanel);
                 }
             }
             Message::SubpanelOverlayPointerEvent => {}
@@ -1369,14 +1366,8 @@ impl BeamApp {
             subscriptions
                 .push(iced::time::every(COLOR_TRANSITION_POLL_INTERVAL).map(Message::ColorTick));
         }
-        for (index, subpanel) in self.subpanels.iter().enumerate() {
-            subscriptions.push(
-                subpanel
-                    .viewer
-                    .subscription()
-                    .with(index)
-                    .map(|(index, message)| Message::Subpanel(index, message)),
-            );
+        if let Some(subpanel) = self.subpanel.as_ref() {
+            subscriptions.push(subpanel.viewer.subscription().map(Message::Subpanel));
         }
         #[cfg(feature = "av")]
         if let Some(video_overlay) = self.video_overlay.as_ref() {
@@ -1401,66 +1392,53 @@ impl BeamApp {
         };
         let show_subpanel_overlay = self.live.is_some()
             && !self.config.subpanel_animals.is_empty()
-            && !self.subpanels.is_empty();
+            && self.subpanel.is_some();
         let main_layer = container(main_panel)
             .width(Length::Fill)
             .height(Length::Fill);
 
         let overlay_layer: Element<'_, Message> = if show_subpanel_overlay {
             let subpanel_styles = self.cell_styles();
-            let mut subpanel_column = column![]
-                .spacing(8)
-                .width(Length::Fill)
-                .height(Length::Fill);
-            subpanel_column = self.subpanels.iter().enumerate().fold(
-                subpanel_column,
-                |column, (index, subpanel)| {
-                    let subpanel_colors = subpanel_styles
-                        .get(&subpanel.node_id)
-                        .copied()
-                        .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None));
-                    let phase = self
-                        .subpanel_phase(subpanel.node_id)
-                        .unwrap_or_else(|| "unknown".to_string());
-                    let title = format!("Cell {} · {} ({phase})", subpanel.node_id, subpanel.title);
-                    let header = row![
-                        text(title)
-                            .size(14)
-                            .color(black_hole_text().scale_alpha(0.86))
-                            .width(Length::Fill),
-                        button(text("X").size(13))
-                            .padding([1, 6])
-                            .style(subpanel_close_button_style)
-                            .on_press(Message::CloseSubpanel(index)),
-                    ];
+            let Some(subpanel) = &self.subpanel else {
+                unreachable!("the subpanel overlay requires an open subpanel");
+            };
+            let subpanel_colors = subpanel_styles
+                .get(&subpanel.node_id)
+                .copied()
+                .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None));
+            let phase = self
+                .subpanel_phase(subpanel.node_id)
+                .unwrap_or_else(|| "unknown".to_string());
+            let title = format!("Cell {} · {} ({phase})", subpanel.node_id, subpanel.title);
+            let header = row![
+                text(title)
+                    .size(14)
+                    .color(black_hole_text().scale_alpha(0.86))
+                    .width(Length::Fill),
+                button(text("X").size(13))
+                    .padding([1, 6])
+                    .style(subpanel_close_button_style)
+                    .on_press(Message::CloseSubpanel),
+            ];
 
-                    column.push(
-                        container(
-                            column![
-                                header,
-                                container(
-                                    subpanel
-                                        .viewer
-                                        .view()
-                                        .map(move |message| Message::Subpanel(index, message)),
-                                )
-                                .width(Length::Fill)
-                                .height(Length::Fill)
-                                .style(subpanel_child_canvas_style),
-                            ]
-                            .spacing(8)
-                            .height(Length::Fill),
-                        )
-                        .padding([10, 12])
+            let subpanel_panel = container(
+                column![
+                    header,
+                    container(subpanel.viewer.view().map(Message::Subpanel))
                         .width(Length::Fill)
-                        .height(Length::FillPortion(1))
-                        .style(move |_theme| subpanel_style(subpanel_colors)),
-                    )
-                },
-            );
+                        .height(Length::Fill)
+                        .style(subpanel_child_canvas_style),
+                ]
+                .spacing(8)
+                .height(Length::Fill),
+            )
+            .padding([10, 12])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(move |_theme| subpanel_style(subpanel_colors));
 
             let subpanel_stack = mouse_area(opaque(
-                container(subpanel_column)
+                container(subpanel_panel)
                     .width(Length::FillPortion(1))
                     .height(Length::Fill)
                     .padding(8)
@@ -1711,25 +1689,21 @@ impl BeamApp {
         };
 
         self.subpanel_notice = None;
-        if let Some(existing_index) = self
-            .subpanels
-            .iter()
-            .position(|subpanel| subpanel.journey_id == journey_id)
+        if self
+            .subpanel
+            .as_ref()
+            .is_some_and(|subpanel| subpanel.journey_id == journey_id)
         {
-            let existing = self.subpanels.remove(existing_index);
-            self.subpanels.insert(0, existing);
+            // The requested child flow is already on display.
             return;
         }
 
-        self.subpanels.insert(
-            0,
-            SubpanelState {
-                node_id,
-                title: subpanel_config.title,
-                journey_id,
-                viewer: (subpanel_config.build_viewer)(SharedJungleClient::new(client), journey_id),
-            },
-        );
+        self.subpanel = Some(SubpanelState {
+            node_id,
+            title: subpanel_config.title,
+            journey_id,
+            viewer: (subpanel_config.build_viewer)(SharedJungleClient::new(client), journey_id),
+        });
     }
 
     fn resolve_subpanel_config(&self, animal_label: &str) -> Option<SubpanelConfig> {
