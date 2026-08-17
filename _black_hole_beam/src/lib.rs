@@ -1638,7 +1638,10 @@ impl BeamApp {
                     .get(&ctx.edge.1)
                     .map(|style| style.body)
                     .unwrap_or_else(|| node_style_colors(SunNodeState::Idle, 1, 1, None).body);
-                (start, end)
+                // iced-sugiyama paints the first tuple element at the edge's
+                // head and the second at its tail, so pass (end, start) to
+                // gradient from the source color into the target color.
+                (end, start)
             })
             .edge_endpoint(move |_, edge, kind, endpoint| {
                 if matches!(kind, EdgeEndpointKind::Source) {
