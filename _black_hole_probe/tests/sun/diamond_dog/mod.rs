@@ -11,7 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use black_hole_sun::cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, InitRecvId, Potentiation, Transmit,
-    WaitForPotentiationAction, WaitForPropagationAction,
+    WaitForPotentiation, WaitForPropagation,
 };
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
@@ -85,7 +85,7 @@ pub(super) struct FinishEpoch;
 
 #[derive(Flow)]
 pub(super) struct TestCellMicrostep<Transform>(
-    Step<WaitForPropagationAction>,
+    Step<WaitForPropagation>,
     Transform,
     Step<Transmit>,
     Step<AdvanceGradientStep>,
@@ -105,7 +105,7 @@ pub(super) struct TestCellEpoch<Transform>(
     While<PendingGradientStep, TestCellMicrostep<Transform>>,
     Step<BeginGradientAccumulation>,
     While<PendingGradientStep, TestCellMicrostep<Transform>>,
-    Step<WaitForPotentiationAction>,
+    Step<WaitForPotentiation>,
     Step<FinishEpoch>,
 );
 

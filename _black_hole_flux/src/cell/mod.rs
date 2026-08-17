@@ -11,8 +11,8 @@ use action::{
     InitRecvId as InitRecvId_, Optimize as Optimize_, PerturbDown as PerturbDown_,
     PerturbUp as PerturbUp_, Potentiation, PrepareAtomInput as PrepareAtomInput_,
     StartModel as StartModel_, Transmit as Transmit_,
-    WaitForPotentiationAction as WaitForPotentiationAction_,
-    WaitForPropagationAction as WaitForPropagationAction_,
+    WaitForPotentiation as WaitForPotentiation_,
+    WaitForPropagation as WaitForPropagation_,
 };
 use black_hole_spec::EmissionId;
 use jungle_sdk::prelude::*;
@@ -114,14 +114,14 @@ pub struct CytoplasmWithState<N, S>(
     Step<BeginGradientAccumulation_<S>>,
     PerturbDownWithBackoff<S>,
     While<HasPendingGradientStep<S>, CytoplasmPropagationMicrostepWithState<N, S>>,
-    Step<WaitForPotentiationAction_<S>>,
+    Step<WaitForPotentiation_<S>>,
     OptimizeWithBackoff<S>,
 );
 
 /// One propagation/infer/transmit microstep.
 #[derive(Flow)]
 pub struct CytoplasmPropagationMicrostepWithState<N, S>(
-    Step<WaitForPropagationAction_<S>>,
+    Step<WaitForPropagation_<S>>,
     Step<PrepareAtomInput_<S>>,
     N,
     Step<Transmit_<S>>,

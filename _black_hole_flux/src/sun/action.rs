@@ -8,7 +8,7 @@ use crate::{FusionSeed, FusionState};
 
 use super::effect::{
     BroadcastPotentiationEffect, PropagationTarget, RootPropagationSend, SendRootPropagationEffect,
-    SendRootPropagationInput, SendRootTaskPropagationsEffect, WaitForNodeTransmission,
+    SendRootPropagationInput, SendRootTaskPropagationsEffect, WaitForNodeTransmissionEffect,
     WaitForNodeTransmissionInput,
 };
 use black_hole_spec::{ObjectId, Transmission};
@@ -862,7 +862,7 @@ where
 ///
 /// Waits for a [`Transmission::Propagation`] on any of the rx endpoints for
 /// nodes with no unresolved predecessors (using the branch-specific rx map).
-/// The [`WaitForNodeTransmission`] effect forwards the received transmission
+/// The [`WaitForNodeTransmissionEffect`] effect forwards the received transmission
 /// to that node's downstream ports. The completed node is then removed and
 /// its successors' unresolved predecessor counts are decremented, making each
 /// successor eligible immediately when its count reaches zero.
@@ -873,7 +873,7 @@ impl<S> Action for ProcessNextNode<S>
 where
     S: PropagationState,
 {
-    type Effect = WaitForNodeTransmission;
+    type Effect = WaitForNodeTransmissionEffect;
     type Input = Transmission;
     type Output = Transmission;
 
@@ -1306,7 +1306,7 @@ pub struct ProcessReadyPipelineNode<S = (), const GRADIENT_ACCUMULATION_STEPS: u
 impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
     for ProcessReadyPipelineNode<S, GRADIENT_ACCUMULATION_STEPS>
 {
-    type Effect = WaitForNodeTransmission;
+    type Effect = WaitForNodeTransmissionEffect;
     type Input = ();
     type Output = ();
 

@@ -175,17 +175,17 @@ impl<J: VoidInferOps> Effect<J> for QuarkOptimize {
 }
 
 // ---------------------------------------------------------------------------
-// WaitForPropagation — await a Transmission::Propagation from void
+// WaitForPropagationEffect — await a Transmission::Propagation from void
 // ---------------------------------------------------------------------------
 
 /// Effect that waits for a [`Transmission::Propagation`] at the given [`ObjectId`].
 ///
 /// Downloads the transmission from void, extracts the emission ID to process,
 /// the next receive transmission ID for state threading, and the send ID.
-pub struct WaitForPropagation;
+pub struct WaitForPropagationEffect;
 
 #[jungle::effect(id = 65)]
-impl<J: VoidInferOps> Effect<J> for WaitForPropagation {
+impl<J: VoidInferOps> Effect<J> for WaitForPropagationEffect {
     type In = ObjectId;
     type Out = Propagation;
     type Err = AtomError;
@@ -224,17 +224,17 @@ impl<J: VoidInferOps> Effect<J> for WaitForPropagation {
 }
 
 // ---------------------------------------------------------------------------
-// WaitForPotentiation — await a Transmission::Potentiation from void
+// WaitForPotentiationEffect — await a Transmission::Potentiation from void
 // ---------------------------------------------------------------------------
 
 /// Effect that waits for a [`Transmission::Potentiation`] at the given [`ObjectId`].
 ///
 /// Downloads the transmission from void, constructs a [`Potentiation`] payload
 /// and returns it alongside the next transmission ID for state threading.
-pub struct WaitForPotentiation;
+pub struct WaitForPotentiationEffect;
 
 #[jungle::effect(id = 66)]
-impl<J: VoidInferOps> Effect<J> for WaitForPotentiation {
+impl<J: VoidInferOps> Effect<J> for WaitForPotentiationEffect {
     type In = ObjectId;
     type Out = (Potentiation, ObjectId);
     type Err = AtomError;

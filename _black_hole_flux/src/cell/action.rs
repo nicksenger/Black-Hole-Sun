@@ -52,7 +52,7 @@ pub use black_hole_spec::Potentiation;
 
 use super::effect::{
     GenerateModelIdEffect, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, QuarkShutdown,
-    QuarkStart, Transmit as TransmitEffect, WaitForPotentiation, WaitForPropagation,
+    QuarkStart, Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
 
 // ---------------------------------------------------------------------------
@@ -367,7 +367,7 @@ impl<S> Action for Optimize<S> {
 }
 
 // ---------------------------------------------------------------------------
-// WaitForPropagationAction — await a Transmission::Propagation from void
+// WaitForPropagation — await a Transmission::Propagation from void
 // ---------------------------------------------------------------------------
 
 /// Action that waits for a propagation transmission using the recv_id from
@@ -375,11 +375,11 @@ impl<S> Action for Optimize<S> {
 ///
 /// Reads `recv_id` from state, downloads the transmission, stores the new
 /// `recv_id` and `send_id` in state, and emits the [`Propagation`] payload.
-pub struct WaitForPropagationAction<S = ()>(PhantomData<fn() -> S>);
+pub struct WaitForPropagation<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl<S> Action for WaitForPropagationAction<S> {
-    type Effect = WaitForPropagation;
+impl<S> Action for WaitForPropagation<S> {
+    type Effect = WaitForPropagationEffect;
     type Input = ();
     type Output = EmissionId;
     type Carry = ();
@@ -401,7 +401,7 @@ impl<S> Action for WaitForPropagationAction<S> {
 }
 
 // ---------------------------------------------------------------------------
-// WaitForPotentiationAction — await a Transmission::Potentiation from void
+// WaitForPotentiation — await a Transmission::Potentiation from void
 // ---------------------------------------------------------------------------
 
 /// Action that waits for a potentiation transmission using the recv_id from
@@ -409,11 +409,11 @@ impl<S> Action for WaitForPropagationAction<S> {
 ///
 /// Reads `recv_id` from state, downloads the transmission, stores the new
 /// `recv_id` in state, and emits the [`Potentiation`] payload.
-pub struct WaitForPotentiationAction<S = ()>(PhantomData<fn() -> S>);
+pub struct WaitForPotentiation<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl<S> Action for WaitForPotentiationAction<S> {
-    type Effect = WaitForPotentiation;
+impl<S> Action for WaitForPotentiation<S> {
+    type Effect = WaitForPotentiationEffect;
     type Input = ();
     type Output = Potentiation;
     type Carry = ();

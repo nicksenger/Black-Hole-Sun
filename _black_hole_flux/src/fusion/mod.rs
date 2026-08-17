@@ -19,11 +19,11 @@ pub use action::{
     AdvanceFusionGradientStep, BeginFusionGradientAccumulation, FusionOptimize, FusionPerturbDown,
     FusionPerturbUp, FusionQuarkInferStep, FusionSeed, FusionStartModel, FusionState,
     FusionTransmit, GenerateTransformId, InitFusion, PrepareTransformInput,
-    WaitForFusionPotentiationAction, WaitForFusionPotentiationForOptimize,
-    WaitForFusionPropagationAction,
+    WaitForFusionPotentiation, WaitForFusionPotentiationForOptimize,
+    WaitForFusionPropagation,
 };
 
-pub use effect::{GenerateTransformIdEffect, WaitForFusionPotentiation, WaitForFusionPropagation};
+pub use effect::{GenerateTransformIdEffect, WaitForFusionPotentiationEffect, WaitForFusionPropagationEffect};
 
 /// Predicate that keeps running fusion microsteps until `grad_steps` is reached.
 pub struct HasPendingFusionGradientStep;
@@ -37,7 +37,7 @@ impl Predicate<(&FusionState, &())> for HasPendingFusionGradientStep {
 /// One single-pass model-free fusion microstep.
 #[derive(Flow)]
 pub struct FusionPropagationMicrostep<Transform>(
-    Step<WaitForFusionPropagationAction>,
+    Step<WaitForFusionPropagation>,
     Step<PrepareTransformInput>,
     Transform,
     Step<FusionTransmit>,
@@ -51,7 +51,7 @@ pub struct FusionEpoch<Transform>(
     While<HasPendingFusionGradientStep, FusionPropagationMicrostep<Transform>>,
     Step<BeginFusionGradientAccumulation>,
     While<HasPendingFusionGradientStep, FusionPropagationMicrostep<Transform>>,
-    Step<WaitForFusionPotentiationAction>,
+    Step<WaitForFusionPotentiation>,
 );
 
 /// Infinite model-free fusion loop driven by two staged mailbox chains.
@@ -68,7 +68,7 @@ pub struct QuzoFusionPropagationMicrostep<
     Transform,
     M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
 >(
-    Step<WaitForFusionPropagationAction>,
+    Step<WaitForFusionPropagation>,
     Step<PrepareTransformInput>,
     Transform,
     Step<FusionQuarkInferStep<M>>,

@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use black_hole_sun::cell::action::{
-    CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiationAction,
-    WaitForPropagationAction,
+    CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiation,
+    WaitForPropagation,
 };
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
@@ -44,13 +44,13 @@ pub(super) struct FinishDarkStarTestCellEpoch;
 
 #[derive(Flow)]
 pub(super) struct DarkStarTestCellEpoch<Transform>(
-    Step<WaitForPropagationAction>,
+    Step<WaitForPropagation>,
     Transform,
     Step<Transmit>,
-    Step<WaitForPropagationAction>,
+    Step<WaitForPropagation>,
     Transform,
     Step<Transmit>,
-    Step<WaitForPotentiationAction>,
+    Step<WaitForPotentiation>,
     Step<FinishDarkStarTestCellEpoch>,
 );
 

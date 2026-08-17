@@ -10,8 +10,8 @@ use uuid::Uuid;
 use black_hole_spec::{EmissionId, ObjectId};
 
 use super::effect::{
-    FusionPotentiationEnvelope, GenerateTransformIdEffect, WaitForFusionPotentiation,
-    WaitForFusionPropagation,
+    FusionPotentiationEnvelope, GenerateTransformIdEffect, WaitForFusionPotentiationEffect,
+    WaitForFusionPropagationEffect,
 };
 use crate::cell::action::Potentiation;
 use crate::cell::effect::{
@@ -212,11 +212,11 @@ impl Action for FusionPerturbDown {
 }
 
 /// Receives both propagation envelopes and emits their IDs in `P1`, `P2` order.
-pub struct WaitForFusionPropagationAction;
+pub struct WaitForFusionPropagation;
 
 #[jungle::action]
-impl Action for WaitForFusionPropagationAction {
-    type Effect = WaitForFusionPropagation;
+impl Action for WaitForFusionPropagation {
+    type Effect = WaitForFusionPropagationEffect;
     type Input = ();
     type Output = (EmissionId, EmissionId);
 
@@ -316,7 +316,7 @@ where
 }
 
 /// Receives matching potentiation envelopes and advances both port chains.
-pub struct WaitForFusionPotentiationAction;
+pub struct WaitForFusionPotentiation;
 
 fn ensure_matching_fusion_potentiation(
     p1: &FusionPotentiationEnvelope,
@@ -341,8 +341,8 @@ fn ensure_matching_fusion_potentiation(
 }
 
 #[jungle::action]
-impl Action for WaitForFusionPotentiationAction {
-    type Effect = WaitForFusionPotentiation;
+impl Action for WaitForFusionPotentiation {
+    type Effect = WaitForFusionPotentiationEffect;
     type Input = ();
     type Output = ();
 
@@ -372,7 +372,7 @@ pub struct WaitForFusionPotentiationForOptimize;
 
 #[jungle::action]
 impl Action for WaitForFusionPotentiationForOptimize {
-    type Effect = WaitForFusionPotentiation;
+    type Effect = WaitForFusionPotentiationEffect;
     type Input = ();
     type Output = Potentiation;
 

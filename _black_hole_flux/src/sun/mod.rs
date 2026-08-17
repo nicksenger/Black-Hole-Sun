@@ -23,7 +23,7 @@ pub use action::{
     Spawn,
 };
 pub use effect::{
-    SendRootPropagationEffect, SendRootPropagationInput, SpawnAnimal, WaitForNodeTransmission,
+    SendRootPropagationEffect, SendRootPropagationInput, SpawnAnimal, WaitForNodeTransmissionEffect,
     WaitForNodeTransmissionInput,
 };
 

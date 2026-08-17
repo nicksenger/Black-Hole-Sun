@@ -85,7 +85,7 @@ impl<
 }
 
 // ---------------------------------------------------------------------------
-// WaitForNodeTransmission — wait for any currently-ready node
+// WaitForNodeTransmissionEffect — wait for any currently-ready node
 // ---------------------------------------------------------------------------
 
 /// Result of waiting for a transmission from the ready frontier.
@@ -133,7 +133,7 @@ pub struct SendRootPropagationEffect;
 /// Sends many root propagations where each target can use a different payload.
 pub struct SendRootTaskPropagationsEffect;
 
-/// Input for [`WaitForNodeTransmission`]: ready rx endpoints plus
+/// Input for [`WaitForNodeTransmissionEffect`]: ready rx endpoints plus
 /// downstream forwarding targets keyed by source node id.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WaitForNodeTransmissionInput {
@@ -149,7 +149,7 @@ pub struct WaitForNodeTransmissionInput {
 /// the received transmission to the rx endpoints of the downstream nodes
 /// for the specific node that received it, so propagation continues through
 /// the graph.
-pub struct WaitForNodeTransmission;
+pub struct WaitForNodeTransmissionEffect;
 
 async fn send_propagation<J: VoidInferOps>(
     jungle: &J,
@@ -237,7 +237,7 @@ impl<J: VoidInferOps> Effect<J> for SendRootTaskPropagationsEffect {
 }
 
 #[jungle::effect(id = 56)]
-impl<J: VoidInferOps> Effect<J> for WaitForNodeTransmission {
+impl<J: VoidInferOps> Effect<J> for WaitForNodeTransmissionEffect {
     type In = WaitForNodeTransmissionInput;
     type Out = NodeTransmission;
     type Err = AtomError;

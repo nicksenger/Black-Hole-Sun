@@ -79,12 +79,12 @@ pub use atom::effect::QuarkInfer;
 pub use cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
     InitRecvId, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput, Propagation,
-    QuarkInferStep, ShutdownModel, StartModel, Transmit, WaitForPotentiationAction,
-    WaitForPropagationAction,
+    QuarkInferStep, ShutdownModel, StartModel, Transmit, WaitForPotentiation,
+    WaitForPropagation,
 };
 pub use cell::effect::{
     GenerateModelIdEffect, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, QuarkShutdown,
-    QuarkStart, Transmit as TransmitEffect, WaitForPotentiation, WaitForPropagation,
+    QuarkStart, Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
 pub use fusion::action::{FusionSeed, FusionState};
 pub use fusion::{
@@ -110,7 +110,7 @@ pub use sun::{
     },
     effect::{
         BroadcastPotentiationEffect, BroadcastPotentiationResult, NodeTransmission,
-        SendRootPropagationEffect, SendRootPropagationInput, WaitForNodeTransmission,
+        SendRootPropagationEffect, SendRootPropagationInput, WaitForNodeTransmissionEffect,
         WaitForNodeTransmissionInput,
     },
     Binary, BlackHole, Epoch, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,

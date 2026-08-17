@@ -60,10 +60,10 @@ where
 }
 
 /// Waits for one propagation envelope on each fusion input port.
-pub struct WaitForFusionPropagation;
+pub struct WaitForFusionPropagationEffect;
 
 #[jungle::effect(id = 69)]
-impl<J: VoidInferOps> Effect<J> for WaitForFusionPropagation {
+impl<J: VoidInferOps> Effect<J> for WaitForFusionPropagationEffect {
     type In = (ObjectId, ObjectId);
     type Out = (Propagation, Propagation);
     type Err = AtomError;
@@ -115,10 +115,10 @@ impl<J: VoidInferOps> Effect<J> for WaitForFusionPropagation {
 }
 
 /// Waits for one potentiation envelope on each fusion input port.
-pub struct WaitForFusionPotentiation;
+pub struct WaitForFusionPotentiationEffect;
 
 #[jungle::effect(id = 70)]
-impl<J: VoidInferOps> Effect<J> for WaitForFusionPotentiation {
+impl<J: VoidInferOps> Effect<J> for WaitForFusionPotentiationEffect {
     type In = (ObjectId, ObjectId);
     type Out = (FusionPotentiationEnvelope, FusionPotentiationEnvelope);
     type Err = AtomError;
