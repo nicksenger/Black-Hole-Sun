@@ -409,7 +409,7 @@ pub enum Transmission {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Potentiation {
     pub loss_up: f32,
     pub loss_down: f32,
