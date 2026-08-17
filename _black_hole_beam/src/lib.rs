@@ -58,7 +58,7 @@ const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
 #[cfg(feature = "av")]
-const AV_OVERLAY_OPACITY: f32 = 0.35;
+const AV_OVERLAY_OPACITY: f32 = 0.25;
 type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
 
 #[derive(Clone)]
@@ -1108,10 +1108,7 @@ impl CellVisualState {
 
     fn frozen_for_state(&self, state: SunNodeState, fallback: Option<bool>) -> Option<bool> {
         if state == SunNodeState::Optimization {
-            return self
-                .optimization_frozen
-                .or(self.latest_frozen)
-                .or(fallback);
+            return self.optimization_frozen.or(self.latest_frozen).or(fallback);
         }
         fallback
     }
@@ -1425,10 +1422,7 @@ impl BeamApp {
                     let phase = self
                         .subpanel_phase(subpanel.node_id)
                         .unwrap_or_else(|| "unknown".to_string());
-                    let title = format!(
-                        "Cell {} · {} ({phase})",
-                        subpanel.node_id, subpanel.title
-                    );
+                    let title = format!("Cell {} · {} ({phase})", subpanel.node_id, subpanel.title);
                     let header = row![
                         text(title)
                             .size(14)
@@ -1503,7 +1497,7 @@ impl BeamApp {
 
         let mut layers = vec![main_layer.into(), overlay_layer];
         if let Some(video_layer) = video_layer {
-            layers.push(video_layer);
+            layers.insert(0, video_layer);
         }
         let content = stack(layers).width(Length::Fill).height(Length::Fill);
         container(content)
