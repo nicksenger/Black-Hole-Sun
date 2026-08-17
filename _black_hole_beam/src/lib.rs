@@ -9,10 +9,14 @@
 //! With the `av` feature enabled, an AV1/Opus Matroska video at
 //! `~/.black-hole-sun/black-hole-sun.mkv` (if present) plays as a
 //! semi-transparent overlay on top of the Black Hole Sun graph.
+//!
+//! The `piano` feature adds a NanoMoog-styled 88-key piano to the bottom of
+//! the viewer. Use `BeamBuilder::on_piano_event` to capture its expressive,
+//! performance-timed attack and release events.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
-#[cfg(feature = "av")]
+#[cfg(any(feature = "av", feature = "piano"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +30,8 @@ use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
 #[cfg(feature = "av")]
 use directories_next::BaseDirs;
 use iced::mouse;
+#[cfg(feature = "piano")]
+use iced::keyboard;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
 use iced::widget::{
@@ -51,6 +57,21 @@ use typenum::Unsigned;
 use uuid::Uuid;
 
 mod jungle_theme;
+#[cfg(feature = "piano")]
+mod piano;
+#[cfg(feature = "piano")]
+mod piano_audio;
+#[cfg(feature = "piano")]
+mod piano_score;
+
+#[cfg(feature = "piano")]
+pub use piano::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
+#[cfg(feature = "piano")]
+use piano::{PianoKeyAppearance, PianoKeyboard, PianoMessage, PianoPointerSource, PIANO_HEIGHT};
+#[cfg(feature = "piano")]
+use piano_audio::PianoAudioEngine;
+#[cfg(feature = "piano")]
+use piano_score::{PianoScorePlayback, SCORE_TICK_INTERVAL};
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
@@ -174,6 +195,10 @@ pub struct BeamBuilder {
     subpanel_animals: Vec<SubpanelConfig>,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
+    #[cfg(feature = "piano")]
+    piano_event_handler: Option<Arc<dyn Fn(PianoEvent) + Send + Sync>>,
+    #[cfg(feature = "piano")]
+    piano_score_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy)]
@@ -192,6 +217,10 @@ impl Default for BeamBuilder {
             subpanel_animals: Vec::new(),
             animation_duration: None,
             animation_easing: None,
+            #[cfg(feature = "piano")]
+            piano_event_handler: None,
+            #[cfg(feature = "piano")]
+            piano_score_path: None,
         }
     }
 }
@@ -275,6 +304,33 @@ impl BeamBuilder {
         self
     }
 
+    /// Receive expressive attack and release events from the 88-key piano.
+    ///
+    /// Every event contains performance-relative timing, stable ordering, a
+    /// voice ID, note/frequency, velocity, and input source. Computer-keyboard
+    /// input uses [`PianoEvent::BINARY_VELOCITY`]; the event schema retains
+    /// continuous values for velocity-sensitive inputs.
+    #[cfg(feature = "piano")]
+    pub fn on_piano_event(
+        mut self,
+        handler: impl Fn(PianoEvent) + Send + Sync + 'static,
+    ) -> Self {
+        self.piano_event_handler = Some(Arc::new(handler));
+        self
+    }
+
+    /// Continuously loop a JSON-serialized piano performance.
+    ///
+    /// The file may be a JSON array of [`PianoEvent`] values, or an object
+    /// containing `events` and an optional numeric `loop_duration` in seconds.
+    /// Events are ordered by timestamp and sequence and are routed through the
+    /// same audio, visualization, and callback paths as live key presses.
+    #[cfg(feature = "piano")]
+    pub fn score(mut self, path: impl Into<PathBuf>) -> Self {
+        self.piano_score_path = Some(path.into());
+        self
+    }
+
     fn into_config(self) -> BeamConfig {
         BeamConfig {
             title: self.title,
@@ -284,6 +340,10 @@ impl BeamBuilder {
             subpanel_animals: self.subpanel_animals,
             animation_duration: self.animation_duration,
             animation_easing: self.animation_easing,
+            #[cfg(feature = "piano")]
+            piano_event_handler: self.piano_event_handler,
+            #[cfg(feature = "piano")]
+            piano_score_path: self.piano_score_path,
         }
     }
 }
@@ -383,6 +443,10 @@ struct BeamConfig {
     subpanel_animals: Vec<SubpanelConfig>,
     animation_duration: Option<Duration>,
     animation_easing: Option<&'static Easing>,
+    #[cfg(feature = "piano")]
+    piano_event_handler: Option<Arc<dyn Fn(PianoEvent) + Send + Sync>>,
+    #[cfg(feature = "piano")]
+    piano_score_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -831,6 +895,19 @@ fn run_beam(config: BeamConfig, model: BeamModel, live: Option<LiveConfig>) -> i
     .run()
 }
 
+#[cfg(feature = "piano")]
+fn piano_computer_key(key: &keyboard::Key, physical_key: keyboard::key::Physical) -> Option<char> {
+    let key = key.to_latin(physical_key)?.to_ascii_lowercase();
+    Some(match key {
+        '<' => ',',
+        '>' => '.',
+        '?' => '/',
+        '{' => '[',
+        '}' => ']',
+        key => key,
+    })
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     AppearanceTick,
@@ -840,8 +917,90 @@ enum Message {
     CloseSubpanel,
     Subpanel(EjectedViewerMessage),
     SubpanelOverlayPointerEvent,
+    #[cfg(feature = "piano")]
+    Piano(PianoMessage),
+    #[cfg(feature = "piano")]
+    PianoKeyboard(keyboard::Event),
+    #[cfg(feature = "piano")]
+    PianoScoreTick(Instant),
+    #[cfg(feature = "piano")]
+    PianoVisualTick(Instant),
     #[cfg(feature = "av")]
     Av(iced_av1::widget::Message),
+}
+
+#[cfg(feature = "piano")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PianoInputId {
+    ComputerKeyboard(char),
+    Pointer(PianoPointerSource),
+    Score { cycle: u64, voice_id: u64 },
+}
+
+#[cfg(feature = "piano")]
+#[derive(Debug, Clone, Copy)]
+struct ActivePianoNote {
+    note: PianoNote,
+    voice_id: u64,
+    started_at: Instant,
+    source: PianoInputSource,
+}
+
+#[cfg(feature = "piano")]
+#[derive(Debug, Clone, Copy)]
+struct PianoStrikeVisual {
+    midi_note: u8,
+    velocity: f32,
+    pressure: Option<f32>,
+    attacked_at: Instant,
+    released: Option<(Instant, f32)>,
+}
+
+#[cfg(feature = "piano")]
+impl PianoStrikeVisual {
+    fn appearance(self, now: Instant) -> PianoKeyAppearance {
+        let velocity = self.velocity.clamp(0.0, 1.0);
+        let pressure = self.pressure.unwrap_or(velocity * 0.72).clamp(0.0, 1.0);
+        let attack_duration = Duration::from_secs_f32(0.035 - velocity * 0.030);
+        let attack_progress = now
+            .saturating_duration_since(self.attacked_at)
+            .as_secs_f32()
+            / attack_duration.as_secs_f32();
+        let attack_progress = attack_progress.clamp(0.0, 1.0);
+        let attack_curve = attack_progress * attack_progress * (3.0 - 2.0 * attack_progress);
+        let strike = 0.22 + velocity * 0.66 + pressure * 0.12;
+        let sustain = 0.18 + velocity * 0.34 + pressure * 0.28;
+        let settle_progress = (now
+            .saturating_duration_since(self.attacked_at)
+            .as_secs_f32()
+            / 0.16)
+            .clamp(0.0, 1.0);
+        let held_intensity = (strike + (sustain - strike) * settle_progress) * attack_curve;
+
+        let intensity = if let Some((released_at, release_velocity)) = self.released {
+            let release_duration = 0.34 - release_velocity.clamp(0.0, 1.0) * 0.23;
+            let release_progress = (now
+                .saturating_duration_since(released_at)
+                .as_secs_f32()
+                / release_duration)
+                .clamp(0.0, 1.0);
+            held_intensity * (1.0 - release_progress).powi(2)
+        } else {
+            held_intensity
+        };
+        PianoKeyAppearance {
+            intensity: intensity.clamp(0.0, 1.0),
+        }
+    }
+
+    fn needs_frame(self, now: Instant) -> bool {
+        self.released.is_some()
+            || now.saturating_duration_since(self.attacked_at) < Duration::from_millis(160)
+    }
+
+    fn finished(self, now: Instant) -> bool {
+        self.released.is_some() && self.appearance(now).intensity <= 0.001
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1204,6 +1363,28 @@ struct BeamApp {
     appearance_error: Option<String>,
     subpanel_notice: Option<String>,
     color_now: Instant,
+    #[cfg(feature = "piano")]
+    piano_started_at: Instant,
+    #[cfg(feature = "piano")]
+    piano_event_sequence: u64,
+    #[cfg(feature = "piano")]
+    piano_voice_sequence: u64,
+    #[cfg(feature = "piano")]
+    active_piano_notes: HashMap<PianoInputId, ActivePianoNote>,
+    #[cfg(feature = "piano")]
+    piano_strike_visuals: HashMap<u64, PianoStrikeVisual>,
+    #[cfg(feature = "piano")]
+    piano_visual_now: Instant,
+    #[cfg(feature = "piano")]
+    piano_audio: Option<PianoAudioEngine>,
+    #[cfg(feature = "piano")]
+    piano_audio_error: Option<String>,
+    #[cfg(feature = "piano")]
+    piano_score: Option<PianoScorePlayback>,
+    #[cfg(feature = "piano")]
+    piano_score_error: Option<String>,
+    #[cfg(feature = "piano")]
+    piano_score_cycle: u64,
     #[cfg(feature = "av")]
     video_overlay: Option<iced_av1::widget::State>,
 }
@@ -1245,6 +1426,23 @@ impl BeamApp {
         }
         let task = Task::batch(tasks);
         let subpanel = None;
+        #[cfg(feature = "piano")]
+        let (piano_audio, piano_audio_error) = if cfg!(test) {
+            (None, None)
+        } else {
+            match PianoAudioEngine::new() {
+                Ok(audio) => (Some(audio), None),
+                Err(error) => (None, Some(error)),
+            }
+        };
+        #[cfg(feature = "piano")]
+        let (piano_score, piano_score_error) = match config.piano_score_path.as_deref() {
+            Some(path) => match PianoScorePlayback::load(path, Instant::now()) {
+                Ok(score) => (Some(score), None),
+                Err(error) => (None, Some(error)),
+            },
+            None => (None, None),
+        };
 
         (
             Self {
@@ -1257,6 +1455,28 @@ impl BeamApp {
                 appearance_error: None,
                 subpanel_notice: None,
                 color_now: now,
+                #[cfg(feature = "piano")]
+                piano_started_at: now,
+                #[cfg(feature = "piano")]
+                piano_event_sequence: 0,
+                #[cfg(feature = "piano")]
+                piano_voice_sequence: 0,
+                #[cfg(feature = "piano")]
+                active_piano_notes: HashMap::new(),
+                #[cfg(feature = "piano")]
+                piano_strike_visuals: HashMap::new(),
+                #[cfg(feature = "piano")]
+                piano_visual_now: now,
+                #[cfg(feature = "piano")]
+                piano_audio,
+                #[cfg(feature = "piano")]
+                piano_audio_error,
+                #[cfg(feature = "piano")]
+                piano_score,
+                #[cfg(feature = "piano")]
+                piano_score_error,
+                #[cfg(feature = "piano")]
+                piano_score_cycle: 0,
                 #[cfg(feature = "av")]
                 video_overlay: load_video_overlay(),
             },
@@ -1356,6 +1576,14 @@ impl BeamApp {
                 }
             }
             Message::SubpanelOverlayPointerEvent => {}
+            #[cfg(feature = "piano")]
+            Message::Piano(message) => self.update_piano(message),
+            #[cfg(feature = "piano")]
+            Message::PianoKeyboard(event) => self.update_piano_keyboard(event),
+            #[cfg(feature = "piano")]
+            Message::PianoScoreTick(now) => self.update_piano_score(now),
+            #[cfg(feature = "piano")]
+            Message::PianoVisualTick(now) => self.update_piano_visuals(now),
             #[cfg(feature = "av")]
             Message::Av(event) => {
                 if let Some(video_overlay) = self.video_overlay.as_mut() {
@@ -1389,6 +1617,22 @@ impl BeamApp {
         }
         if let Some(subpanel) = self.subpanel.as_ref() {
             subscriptions.push(subpanel.viewer.subscription().map(Message::Subpanel));
+        }
+        #[cfg(feature = "piano")]
+        subscriptions.push(keyboard::listen().map(Message::PianoKeyboard));
+        #[cfg(feature = "piano")]
+        if self.piano_score.is_some() {
+            subscriptions.push(
+                iced::time::every(SCORE_TICK_INTERVAL).map(Message::PianoScoreTick),
+            );
+        } else if self
+            .piano_strike_visuals
+            .values()
+            .any(|visual| visual.needs_frame(self.piano_visual_now))
+        {
+            subscriptions.push(
+                iced::time::every(COLOR_FRAME_INTERVAL).map(Message::PianoVisualTick),
+            );
         }
         #[cfg(feature = "av")]
         if let Some(video_overlay) = self.video_overlay.as_ref() {
@@ -1518,11 +1762,262 @@ impl BeamApp {
             layers.insert(0, video_layer);
         }
         let content = stack(layers).width(Length::Fill).height(Length::Fill);
+        #[cfg(feature = "piano")]
+        let content = column![content, self.piano_keyboard()]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .spacing(0);
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(app_background_style)
             .into()
+    }
+
+    #[cfg(feature = "piano")]
+    fn piano_keyboard(&self) -> Element<'_, Message> {
+        let mut appearances = HashMap::<u8, PianoKeyAppearance>::new();
+        for visual in self.piano_strike_visuals.values() {
+            let appearance = visual.appearance(self.piano_visual_now);
+            appearances
+                .entry(visual.midi_note)
+                .and_modify(|current| current.intensity = current.intensity.max(appearance.intensity))
+                .or_insert(appearance);
+        }
+        let keyboard: Element<'_, PianoMessage> =
+            canvas::Canvas::new(PianoKeyboard::new(appearances))
+                .width(Length::Fill)
+                .height(Length::Fixed(PIANO_HEIGHT))
+                .into();
+        let keyboard: Element<'_, Message> = keyboard.map(Message::Piano);
+        let audio_error = self.piano_audio_error.clone().or_else(|| {
+            self.piano_audio
+                .as_ref()
+                .and_then(PianoAudioEngine::error)
+        });
+        let status_error = [audio_error, self.piano_score_error.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let keyboard = if !status_error.is_empty() {
+            stack![
+                keyboard,
+                container(
+                    text(status_error)
+                        .size(12)
+                        .color(Color::from_rgb8(255, 215, 180))
+                )
+                .padding([4, 8])
+                .style(|_theme| container::Style {
+                    background: Some(Background::Color(Color::from_rgba8(90, 12, 8, 0.88))),
+                    ..container::Style::default()
+                }),
+            ]
+        } else {
+            stack![keyboard]
+        };
+        container(keyboard)
+            .width(Length::Fill)
+            .height(Length::Fixed(PIANO_HEIGHT))
+            .style(|_theme| container::Style {
+                background: Some(Background::Color(Color::BLACK)),
+                shadow: Shadow {
+                    color: Color::BLACK,
+                    offset: Vector::new(0.0, -8.0),
+                    blur_radius: 24.0,
+                },
+                ..container::Style::default()
+            })
+            .into()
+    }
+
+    #[cfg(feature = "piano")]
+    fn update_piano(&mut self, message: PianoMessage) {
+        match message {
+            PianoMessage::Press {
+                midi_note,
+                velocity,
+                source,
+            } => self.attack_piano_note(
+                PianoInputId::Pointer(source),
+                source.public(),
+                midi_note,
+                velocity,
+                None,
+            ),
+            PianoMessage::Release { source, velocity } => {
+                self.release_piano_note(PianoInputId::Pointer(source), velocity)
+            }
+        }
+    }
+
+    #[cfg(feature = "piano")]
+    fn update_piano_keyboard(&mut self, event: keyboard::Event) {
+        match event {
+            keyboard::Event::KeyPressed {
+                key,
+                physical_key,
+                repeat,
+                ..
+            } if !repeat => {
+                let Some(key) = piano_computer_key(&key, physical_key) else {
+                    return;
+                };
+                let Some(midi_note) = piano::computer_key_note(key) else {
+                    return;
+                };
+                self.attack_piano_note(
+                    PianoInputId::ComputerKeyboard(key),
+                    PianoInputSource::ComputerKeyboard { key },
+                    midi_note,
+                    PianoEvent::BINARY_VELOCITY,
+                    None,
+                );
+            }
+            keyboard::Event::KeyReleased {
+                key, physical_key, ..
+            } => {
+                let Some(key) = piano_computer_key(&key, physical_key) else {
+                    return;
+                };
+                self.release_piano_note(PianoInputId::ComputerKeyboard(key), 0.0);
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(feature = "piano")]
+    fn update_piano_score(&mut self, now: Instant) {
+        self.update_piano_visuals(now);
+        let due = self
+            .piano_score
+            .as_mut()
+            .map(|score| score.take_due(now))
+            .unwrap_or_default();
+        for due_event in due {
+            if due_event.cycle > self.piano_score_cycle {
+                let stale = self
+                    .active_piano_notes
+                    .keys()
+                    .filter(|input| {
+                        matches!(
+                            input,
+                            PianoInputId::Score { cycle, .. } if *cycle < due_event.cycle
+                        )
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                for input in stale {
+                    self.release_piano_note(input, 1.0);
+                }
+                self.piano_score_cycle = due_event.cycle;
+            }
+
+            let input = PianoInputId::Score {
+                cycle: due_event.cycle,
+                voice_id: due_event.event.voice_id,
+            };
+            match due_event.event.action {
+                PianoAction::Attack { velocity, pressure } => self.attack_piano_note(
+                    input,
+                    PianoInputSource::Score,
+                    due_event.event.note.midi_note,
+                    velocity,
+                    pressure,
+                ),
+                PianoAction::Release { velocity, .. } => {
+                    self.release_piano_note(input, velocity)
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "piano")]
+    fn update_piano_visuals(&mut self, now: Instant) {
+        self.piano_visual_now = now;
+        self.piano_strike_visuals
+            .retain(|_, visual| !visual.finished(now));
+    }
+
+    #[cfg(feature = "piano")]
+    fn attack_piano_note(
+        &mut self,
+        input: PianoInputId,
+        source: PianoInputSource,
+        midi_note: u8,
+        velocity: f32,
+        pressure: Option<f32>,
+    ) {
+        if self.active_piano_notes.contains_key(&input) {
+            return;
+        }
+        let now = Instant::now();
+        self.piano_voice_sequence = self.piano_voice_sequence.wrapping_add(1);
+        let active = ActivePianoNote {
+            note: PianoNote::from_midi(midi_note),
+            voice_id: self.piano_voice_sequence,
+            started_at: now,
+            source,
+        };
+        self.active_piano_notes.insert(input, active);
+        self.piano_strike_visuals.insert(
+            active.voice_id,
+            PianoStrikeVisual {
+                midi_note,
+                velocity,
+                pressure,
+                attacked_at: now,
+                released: None,
+            },
+        );
+        self.piano_visual_now = now;
+        self.emit_piano_event(PianoEvent {
+            sequence: 0,
+            timestamp: now.saturating_duration_since(self.piano_started_at),
+            voice_id: active.voice_id,
+            note: active.note,
+            action: PianoAction::Attack {
+                velocity: velocity.clamp(0.0, 1.0),
+                pressure: pressure.map(|pressure| pressure.clamp(0.0, 1.0)),
+            },
+            source,
+        });
+    }
+
+    #[cfg(feature = "piano")]
+    fn release_piano_note(&mut self, input: PianoInputId, velocity: f32) {
+        let Some(active) = self.active_piano_notes.remove(&input) else {
+            return;
+        };
+        let now = Instant::now();
+        if let Some(visual) = self.piano_strike_visuals.get_mut(&active.voice_id) {
+            visual.released = Some((now, velocity.clamp(0.0, 1.0)));
+        }
+        self.piano_visual_now = now;
+        self.emit_piano_event(PianoEvent {
+            sequence: 0,
+            timestamp: now.saturating_duration_since(self.piano_started_at),
+            voice_id: active.voice_id,
+            note: active.note,
+            action: PianoAction::Release {
+                velocity: velocity.clamp(0.0, 1.0),
+                held_for: now.saturating_duration_since(active.started_at),
+            },
+            source: active.source,
+        });
+    }
+
+    #[cfg(feature = "piano")]
+    fn emit_piano_event(&mut self, mut event: PianoEvent) {
+        self.piano_event_sequence = self.piano_event_sequence.wrapping_add(1);
+        event.sequence = self.piano_event_sequence;
+        if let Some(audio) = &self.piano_audio {
+            audio.perform(event);
+        }
+        if let Some(handler) = &self.config.piano_event_handler {
+            handler(event);
+        }
     }
 
     fn cell_graph(&self) -> Element<'_, Message> {
@@ -2118,6 +2613,176 @@ mod tests {
         assert_eq!(config.subpanel_animals[1].title, "GenericCell<String>");
         assert_eq!(config.subpanel_animals[2].animal_label, "GenericCell<u8>");
         assert_eq!(config.subpanel_animals[2].title, "GenericCell<u8>");
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn piano_events_preserve_order_timing_and_overlapping_voices() {
+        use std::sync::Mutex;
+
+        let events = Arc::new(Mutex::new(Vec::<PianoEvent>::new()));
+        let captured = Arc::clone(&events);
+        let config = BeamBuilder::new()
+            .on_piano_event(move |event| captured.lock().unwrap().push(event))
+            .into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+
+        app.attack_piano_note(
+            PianoInputId::ComputerKeyboard('z'),
+            PianoInputSource::ComputerKeyboard { key: 'z' },
+            60,
+            PianoEvent::BINARY_VELOCITY,
+            None,
+        );
+        app.attack_piano_note(
+            PianoInputId::Pointer(PianoPointerSource::Mouse),
+            PianoInputSource::Mouse,
+            60,
+            0.42,
+            Some(0.7),
+        );
+        app.release_piano_note(PianoInputId::ComputerKeyboard('z'), 0.0);
+        assert_eq!(app.active_piano_notes.len(), 1);
+        app.release_piano_note(PianoInputId::Pointer(PianoPointerSource::Mouse), 0.31);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(events[0].note.midi_note, 60);
+        assert_eq!(events[0].voice_id, events[2].voice_id);
+        assert_eq!(events[1].voice_id, events[3].voice_id);
+        assert_ne!(events[0].voice_id, events[1].voice_id);
+        assert!(events
+            .windows(2)
+            .all(|events| events[0].timestamp <= events[1].timestamp));
+        assert!(matches!(
+            events[1].action,
+            PianoAction::Attack {
+                velocity,
+                pressure: Some(pressure),
+            } if velocity == 0.42 && pressure == 0.7
+        ));
+        assert!(matches!(
+            events[3].action,
+            PianoAction::Release { velocity, .. } if velocity == 0.31
+        ));
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn piano_strike_opacity_tracks_velocity_pressure_and_release_speed() {
+        let start = Instant::now();
+        let visual = |velocity, pressure| PianoStrikeVisual {
+            midi_note: 60,
+            velocity,
+            pressure,
+            attacked_at: start,
+            released: None,
+        };
+        let settled = start + Duration::from_millis(80);
+        assert!(
+            visual(0.9, Some(0.8)).appearance(settled).intensity
+                > visual(0.3, Some(0.2)).appearance(settled).intensity
+        );
+        assert!(
+            visual(0.6, Some(1.0)).appearance(settled).intensity
+                > visual(0.6, Some(0.0)).appearance(settled).intensity
+        );
+
+        let released_at = start + Duration::from_millis(100);
+        let slow_release = PianoStrikeVisual {
+            released: Some((released_at, 0.0)),
+            ..visual(0.8, Some(0.7))
+        };
+        let fast_release = PianoStrikeVisual {
+            released: Some((released_at, 1.0)),
+            ..visual(0.8, Some(0.7))
+        };
+        let fading = released_at + Duration::from_millis(80);
+        assert!(
+            slow_release.appearance(fading).intensity
+                > fast_release.appearance(fading).intensity
+        );
+        assert!(fast_release.needs_frame(fading));
+        assert!(fast_release.finished(released_at + Duration::from_millis(400)));
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn builder_records_a_score_path() {
+        let config = BeamBuilder::new().score("moonlight.json").into_config();
+        assert_eq!(config.piano_score_path, Some(PathBuf::from("moonlight.json")));
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn score_ticks_loop_through_audio_event_and_visual_paths() {
+        use std::sync::Mutex;
+
+        let start = Instant::now();
+        let events = [
+            PianoEvent {
+                sequence: 1,
+                timestamp: Duration::ZERO,
+                voice_id: 44,
+                note: PianoNote::from_midi(60),
+                action: PianoAction::Attack {
+                    velocity: 0.77,
+                    pressure: Some(0.62),
+                },
+                source: PianoInputSource::Score,
+            },
+            PianoEvent {
+                sequence: 2,
+                timestamp: Duration::from_millis(500),
+                voice_id: 44,
+                note: PianoNote::from_midi(60),
+                action: PianoAction::Release {
+                    velocity: 0.28,
+                    held_for: Duration::from_millis(500),
+                },
+                source: PianoInputSource::Score,
+            },
+        ];
+        let json = serde_json::to_string(&events).unwrap();
+        let score = PianoScorePlayback::from_json(&json, start).unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let callback_events = Arc::clone(&captured);
+        let config = BeamBuilder::new()
+            .on_piano_event(move |event| callback_events.lock().unwrap().push(event))
+            .into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+        app.piano_score = Some(score);
+
+        app.update_piano_score(start);
+        assert_eq!(app.active_piano_notes.len(), 1);
+        assert_eq!(app.piano_strike_visuals.len(), 1);
+
+        app.update_piano_score(start + Duration::from_millis(500));
+        assert_eq!(app.active_piano_notes.len(), 1, "cycle 1 attacks immediately");
+        assert_eq!(app.piano_strike_visuals.len(), 2);
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 3);
+        assert!(matches!(
+            captured[0].action,
+            PianoAction::Attack {
+                velocity,
+                pressure: Some(pressure)
+            } if velocity == 0.77 && pressure == 0.62
+        ));
+        assert!(matches!(
+            captured[1].action,
+            PianoAction::Release { velocity, .. } if velocity == 0.28
+        ));
+        assert_eq!(captured[0].source, PianoInputSource::Score);
+        assert_eq!(captured[2].source, PianoInputSource::Score);
+        assert_ne!(captured[0].voice_id, captured[2].voice_id);
     }
 
     #[test]

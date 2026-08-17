@@ -914,6 +914,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "black-hole-flux",
+ "cpal",
  "directories-next",
  "iced",
  "iced-av1",
@@ -921,6 +922,8 @@ dependencies = [
  "jungle-sdk",
  "jungle-vision",
  "postcard",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "typenum",

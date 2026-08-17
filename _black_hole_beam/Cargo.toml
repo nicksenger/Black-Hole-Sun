@@ -5,10 +5,12 @@ edition = "2021"
 
 [features]
 av = ["dep:iced-av1", "dep:directories-next"]
+piano = ["dep:cpal", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 async-trait = "0.1"
 black-hole-flux = { path = "../_black_hole_flux" }
+cpal = { version = "0.17", optional = true }
 directories-next = { version = "2", optional = true }
 iced = { version = "0.14", features = ["advanced", "canvas", "tokio"] }
 iced-av1 = { git = "https://github.com/nicksenger/iced-av1.git", branch = "jungle", features = ["opus"], optional = true }
@@ -16,6 +18,8 @@ iced-sugiyama = { git = "https://github.com/nicksenger/iced-sugiyama.git", branc
 jungle-sdk = { workspace = true }
 jungle-vision = { workspace = true }
 postcard = "1"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 typenum = "1"
