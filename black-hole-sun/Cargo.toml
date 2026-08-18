@@ -1,6 +1,6 @@
 [package]
 name = "black-hole-sun"
-description = "Blackbox co-optimization of multi-agent systems"
+description = "Blackbox co-optimization of distributed agents"
 version = "0.1.0"
 edition = "2021"
 
