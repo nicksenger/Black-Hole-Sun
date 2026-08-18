@@ -487,7 +487,7 @@ pub struct SunNode<S, U>(S, U);
 /// around the fixed graph propagation machinery. Set `S` when your
 /// generator/policy needs access to `SunState<S>::inner`.
 pub trait BlackHole {
-    type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>;
+    type Sun<M: Manifest, const ACCUM_STEPS: usize>;
 }
 impl<P, A, E, U> BlackHole for List<(Unary<P, A, E>, U)>
 where
@@ -496,9 +496,9 @@ where
     E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> = SunNode<
-        UnarySunStep<P, A, E, S, GRADIENT_ACCUMULATION_STEPS>,
-        <U as BlackHole>::Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>,
+    type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
+        UnarySunStep<P, A, E, <M as Manifest>::State, ACCUM_STEPS>,
+        <U as BlackHole>::Sun<M, ACCUM_STEPS>,
     >;
 }
 impl<P1, P2, A, E, U> BlackHole for List<(Binary<P1, P2, A, E>, U)>
@@ -510,21 +510,29 @@ where
     E: NodeIdsFromList,
     U: BlackHole,
 {
-    type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> = SunNode<
-        BinarySunStep<P1, P2, A, E, S, GRADIENT_ACCUMULATION_STEPS>,
-        <U as BlackHole>::Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>,
+    type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
+        BinarySunStep<P1, P2, A, E, M::State, ACCUM_STEPS>,
+        <U as BlackHole>::Sun<M, ACCUM_STEPS>,
     >;
 }
 impl BlackHole for Empty {
-    type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> =
-        Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>;
+    type Sun<M: Manifest, const ACCUM_STEPS: usize> =
+        Sun<M::Generator, M::Policy, M::State, ACCUM_STEPS>;
 }
 
 pub trait Manifest {
     type Generator;
     type Policy;
     type State;
-    const ACCUM_STEPS: usize;
+}
+pub struct StatelessManifest<Generator, Policy, const ACCUM_STEPS: usize = 1>(
+    PhantomData<Generator>,
+    PhantomData<Policy>,
+);
+impl<G, P, const A: usize> Manifest for StatelessManifest<G, P, A> {
+    type Generator = G;
+    type Policy = P;
+    type State = ();
 }
 
 // ---------------------------------------------------------------------------
