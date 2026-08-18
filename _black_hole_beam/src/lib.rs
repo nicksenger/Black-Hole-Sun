@@ -71,6 +71,8 @@ use piano::{PianoKeyAppearance, PianoKeyboard, PianoMessage, PianoPointerSource,
 #[cfg(feature = "piano")]
 use piano_audio::PianoAudioEngine;
 #[cfg(feature = "piano")]
+pub use piano_audio::{render_piano_score_to_wav, PianoRenderReport};
+#[cfg(feature = "piano")]
 use piano_score::{PianoScorePlayback, SCORE_TICK_INTERVAL};
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;

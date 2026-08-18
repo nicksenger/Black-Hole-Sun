@@ -85,7 +85,7 @@ struct TempoMap {
 impl TempoMap {
     fn new(tempos: Vec<(u64, u32)>, division: u32) -> Self {
         let mut tempos = tempos;
-        tempos.sort_by(|a, b| a.0.cmp(&b.0));
+        tempos.sort_by_key(|tempo| tempo.0);
 
         let mut starts = Vec::new();
         let mut seconds = Vec::new();
@@ -98,8 +98,7 @@ impl TempoMap {
                 starts.push(tick);
                 seconds.push(elapsed);
                 micros_per_quarter.push(micros);
-                elapsed += (tempo_tick - tick) as f64
-                    * f64::from(micros)
+                elapsed += (tempo_tick - tick) as f64 * f64::from(micros)
                     / 1_000_000.0
                     / f64::from(division);
                 tick = tempo_tick;
@@ -124,8 +123,7 @@ impl TempoMap {
             Err(segment) => segment - 1,
         };
         self.seconds[segment]
-            + (tick - self.starts[segment]) as f64
-                * f64::from(self.micros_per_quarter[segment])
+            + (tick - self.starts[segment]) as f64 * f64::from(self.micros_per_quarter[segment])
                 / 1_000_000.0
                 / f64::from(self.division)
     }
@@ -214,7 +212,7 @@ fn parse_midi(bytes: &[u8], wanted_channel: Option<u8>) -> Result<ParsedMidi, St
 /// sustain.
 fn pair_notes(notes: &[RawNote], end_tick: u64) -> Vec<NotePair> {
     let mut ordered = notes.to_vec();
-    ordered.sort_by(|a, b| a.tick.cmp(&b.tick));
+    ordered.sort_by_key(|note| note.tick);
 
     let mut held: HashMap<(u8, u8), (u64, u8)> = HashMap::new();
     let mut pairs = Vec::new();
@@ -313,7 +311,7 @@ fn build_events(pairs: &[NotePair], tempo_map: &TempoMap) -> (Vec<PianoEvent>, u
 }
 
 /// Order events by performance time and assign stable sequence numbers.
-fn finalize_events(events: &mut Vec<PianoEvent>) {
+fn finalize_events(events: &mut [PianoEvent]) {
     events.sort_by(|a, b| {
         a.timestamp
             .as_secs_f64()
@@ -391,7 +389,8 @@ fn main() -> Result<(), String> {
         None => {
             let stdout = io::stdout();
             let mut handle = stdout.lock();
-            writeln!(handle, "{json}").map_err(|error| format!("could not write to stdout: {error}"))?;
+            writeln!(handle, "{json}")
+                .map_err(|error| format!("could not write to stdout: {error}"))?;
         }
     }
 
@@ -504,7 +503,10 @@ mod tests {
 
         // Sequence numbers are dense and follow performance time.
         assert_eq!(
-            events.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+            events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
             (1..=6).collect::<Vec<_>>()
         );
         // Every event is source-tagged for the score playback path.
@@ -515,7 +517,10 @@ mod tests {
         // The serialized form round-trips through the score loader's schema.
         let json = serde_json::to_string(&events).unwrap();
         assert!(json.contains(r#""source":"Score""#));
-        assert_eq!(serde_json::from_str::<Vec<PianoEvent>>(&json).unwrap(), events);
+        assert_eq!(
+            serde_json::from_str::<Vec<PianoEvent>>(&json).unwrap(),
+            events
+        );
     }
 
     #[test]

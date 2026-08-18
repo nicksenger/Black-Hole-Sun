@@ -37,85 +37,36 @@ pub(crate) struct PianoScorePlayback {
     cycle: u64,
 }
 
+pub(crate) struct LoadedPianoScore {
+    pub events: Vec<PianoEvent>,
+    pub loop_duration: Duration,
+}
+
+pub(crate) fn load_score(path: &Path) -> Result<LoadedPianoScore, String> {
+    let json = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    parse_score_json(&json)
+        .map_err(|error| format!("invalid piano score {}: {error}", path.display()))
+}
+
 impl PianoScorePlayback {
     pub(crate) fn load(path: &Path, started_at: Instant) -> Result<Self, String> {
-        let json = fs::read_to_string(path)
-            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-        Self::from_json(&json, started_at)
-            .map_err(|error| format!("invalid piano score {}: {error}", path.display()))
+        Ok(Self::from_loaded(load_score(path)?, started_at))
     }
 
+    #[cfg(test)]
     pub(crate) fn from_json(json: &str, started_at: Instant) -> Result<Self, String> {
-        let document: ScoreDocument =
-            serde_json::from_str(json).map_err(|error| error.to_string())?;
-        let (mut events, explicit_loop_duration) = match document {
-            ScoreDocument::Events(events) => (events, None),
-            ScoreDocument::Wrapped {
-                events,
-                loop_duration,
-            } => (events, loop_duration),
-        };
-        if events.is_empty() {
-            return Err("the event list is empty".to_string());
-        }
+        Ok(Self::from_loaded(parse_score_json(json)?, started_at))
+    }
 
-        for event in &mut events {
-            if !(21..=108).contains(&event.note.midi_note) {
-                return Err(format!(
-                    "MIDI note {} is outside the 88-key range 21..=108",
-                    event.note.midi_note
-                ));
-            }
-            event.note = PianoNote::from_midi(event.note.midi_note);
-            let (velocity, pressure) = match event.action {
-                PianoAction::Attack { velocity, pressure } => (velocity, pressure),
-                PianoAction::Release { velocity, .. } => (velocity, None),
-            };
-            if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
-                return Err(format!(
-                    "event {} has velocity outside 0.0..=1.0",
-                    event.sequence
-                ));
-            }
-            if pressure
-                .is_some_and(|pressure| !pressure.is_finite() || !(0.0..=1.0).contains(&pressure))
-            {
-                return Err(format!(
-                    "event {} has pressure outside 0.0..=1.0",
-                    event.sequence
-                ));
-            }
-        }
-        events.sort_by_key(|event| (event.timestamp, event.sequence));
-
-        let last_timestamp = events.last().expect("events is not empty").timestamp;
-        let loop_duration = if let Some(seconds) = explicit_loop_duration {
-            if !seconds.is_finite() || seconds <= 0.0 {
-                return Err("loop_duration must be a finite number greater than zero".to_string());
-            }
-            Duration::from_secs_f64(seconds)
-        } else {
-            last_timestamp
-        };
-        if loop_duration.is_zero() {
-            return Err(
-                "the inferred loop duration is zero; add a later event or loop_duration"
-                    .to_string(),
-            );
-        }
-        if loop_duration < last_timestamp {
-            return Err(format!(
-                "loop_duration ({loop_duration:?}) precedes the last event ({last_timestamp:?})"
-            ));
-        }
-
-        Ok(Self {
-            events,
-            loop_duration,
+    fn from_loaded(score: LoadedPianoScore, started_at: Instant) -> Self {
+        Self {
+            events: score.events,
+            loop_duration: score.loop_duration,
             started_at,
             event_index: 0,
             cycle: 0,
-        })
+        }
     }
 
     pub(crate) fn take_due(&mut self, now: Instant) -> Vec<DueScoreEvent> {
@@ -142,6 +93,74 @@ impl PianoScorePlayback {
         }
         due
     }
+}
+
+fn parse_score_json(json: &str) -> Result<LoadedPianoScore, String> {
+    let document: ScoreDocument = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let (mut events, explicit_loop_duration) = match document {
+        ScoreDocument::Events(events) => (events, None),
+        ScoreDocument::Wrapped {
+            events,
+            loop_duration,
+        } => (events, loop_duration),
+    };
+    if events.is_empty() {
+        return Err("the event list is empty".to_string());
+    }
+
+    for event in &mut events {
+        if !(21..=108).contains(&event.note.midi_note) {
+            return Err(format!(
+                "MIDI note {} is outside the 88-key range 21..=108",
+                event.note.midi_note
+            ));
+        }
+        event.note = PianoNote::from_midi(event.note.midi_note);
+        let (velocity, pressure) = match event.action {
+            PianoAction::Attack { velocity, pressure } => (velocity, pressure),
+            PianoAction::Release { velocity, .. } => (velocity, None),
+        };
+        if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
+            return Err(format!(
+                "event {} has velocity outside 0.0..=1.0",
+                event.sequence
+            ));
+        }
+        if pressure
+            .is_some_and(|pressure| !pressure.is_finite() || !(0.0..=1.0).contains(&pressure))
+        {
+            return Err(format!(
+                "event {} has pressure outside 0.0..=1.0",
+                event.sequence
+            ));
+        }
+    }
+    events.sort_by_key(|event| (event.timestamp, event.sequence));
+
+    let last_timestamp = events.last().expect("events is not empty").timestamp;
+    let loop_duration = if let Some(seconds) = explicit_loop_duration {
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return Err("loop_duration must be a finite number greater than zero".to_string());
+        }
+        Duration::from_secs_f64(seconds)
+    } else {
+        last_timestamp
+    };
+    if loop_duration.is_zero() {
+        return Err(
+            "the inferred loop duration is zero; add a later event or loop_duration".to_string(),
+        );
+    }
+    if loop_duration < last_timestamp {
+        return Err(format!(
+            "loop_duration ({loop_duration:?}) precedes the last event ({last_timestamp:?})"
+        ));
+    }
+
+    Ok(LoadedPianoScore {
+        events,
+        loop_duration,
+    })
 }
 
 #[cfg(test)]
