@@ -6,17 +6,13 @@
 //! [`Observe`](jungle_sdk::Observe) appearance as the source of graph topology
 //! and node phase.
 //!
-//! With the `av` feature enabled, an AV1/Opus Matroska video at
-//! `~/.black-hole-sun/black-hole-sun.mkv` (if present) plays as a
-//! semi-transparent overlay on top of the Black Hole Sun graph.
-//!
 //! The `piano` feature adds a NanoMoog-styled 88-key piano to the bottom of
 //! the viewer. Use `BeamBuilder::on_piano_event` to capture its expressive,
 //! performance-timed attack and release events.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
-#[cfg(any(feature = "av", feature = "piano"))]
+#[cfg(feature = "piano")]
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,8 +23,6 @@ use black_hole_flux::sun::{
     UnarySunStep,
 };
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
-#[cfg(feature = "av")]
-use directories_next::BaseDirs;
 #[cfg(feature = "piano")]
 use iced::keyboard;
 use iced::mouse;
@@ -48,8 +42,6 @@ use jungle_vision::{
     AnyAnimal, ClusterExpansionConfig, ClusterExpansionMode, DefaultTheme, EjectedViewer,
     EjectedViewerMessage, JungleViewerBuilder,
 };
-#[cfg(feature = "av")]
-use tracing::{info, warn};
 use typenum::Unsigned;
 use uuid::Uuid;
 
@@ -82,8 +74,6 @@ const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
-#[cfg(feature = "av")]
-const AV_OVERLAY_OPACITY: f32 = 0.25;
 type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
 
 #[derive(Clone)]
@@ -919,8 +909,6 @@ enum Message {
     PianoScoreTick(Instant),
     #[cfg(feature = "piano")]
     PianoVisualTick(Instant),
-    #[cfg(feature = "av")]
-    Av(iced_av1::widget::Message),
 }
 
 #[cfg(feature = "piano")]
@@ -1377,8 +1365,6 @@ struct BeamApp {
     piano_score_error: Option<String>,
     #[cfg(feature = "piano")]
     piano_score_cycle: u64,
-    #[cfg(feature = "av")]
-    video_overlay: Option<iced_av1::widget::State>,
 }
 
 impl BeamApp {
@@ -1469,8 +1455,6 @@ impl BeamApp {
                 piano_score_error,
                 #[cfg(feature = "piano")]
                 piano_score_cycle: 0,
-                #[cfg(feature = "av")]
-                video_overlay: load_video_overlay(),
             },
             task,
         )
@@ -1576,12 +1560,6 @@ impl BeamApp {
             Message::PianoScoreTick(now) => self.update_piano_score(now),
             #[cfg(feature = "piano")]
             Message::PianoVisualTick(now) => self.update_piano_visuals(now),
-            #[cfg(feature = "av")]
-            Message::Av(event) => {
-                if let Some(video_overlay) = self.video_overlay.as_mut() {
-                    video_overlay.update(event);
-                }
-            }
         }
 
         Task::none()
@@ -1623,11 +1601,6 @@ impl BeamApp {
             subscriptions
                 .push(iced::time::every(COLOR_FRAME_INTERVAL).map(Message::PianoVisualTick));
         }
-        #[cfg(feature = "av")]
-        if let Some(video_overlay) = self.video_overlay.as_ref() {
-            subscriptions.push(video_overlay.subscription(map_av_message));
-        }
-
         Subscription::batch(subscriptions)
     }
 
@@ -1739,19 +1712,9 @@ impl BeamApp {
                 .height(Length::Shrink)
                 .into()
         };
-        #[cfg(feature = "av")]
-        let video_layer = self
-            .video_overlay
-            .as_ref()
-            .and_then(|video| video.overlay_view(map_av_message));
-        #[cfg(not(feature = "av"))]
-        let video_layer: Option<Element<'_, Message>> = None;
-
-        let mut layers = vec![main_layer.into(), overlay_layer];
-        if let Some(video_layer) = video_layer {
-            layers.insert(0, video_layer);
-        }
-        let content = stack(layers).width(Length::Fill).height(Length::Fill);
+        let content = stack([main_layer.into(), overlay_layer])
+            .width(Length::Fill)
+            .height(Length::Fill);
         #[cfg(feature = "piano")]
         let content = column![content, self.piano_keyboard()]
             .width(Length::Fill)
@@ -2303,43 +2266,6 @@ async fn fetch_child_rays(live: &LiveConfig, appearance: &SunAppearance) -> Hash
         rays.insert(node.journey_id, ray);
     }
     rays
-}
-
-#[cfg(feature = "av")]
-fn load_video_overlay() -> Option<iced_av1::widget::State> {
-    let path = video_overlay_path()?;
-    let opacity = iced_av1::OpacityOptions {
-        opacity: AV_OVERLAY_OPACITY,
-        ..Default::default()
-    };
-    match iced_av1::widget::State::new_with_media_source_and_opacity_options(
-        iced_av1::MediaSource::File(path.clone()),
-        iced_av1::PlaybackOptions::default(),
-        opacity,
-    ) {
-        Ok(video) => {
-            info!(path = %path.display(), opacity = AV_OVERLAY_OPACITY, "loaded black hole sun video overlay");
-            Some(video)
-        }
-        Err(error) => {
-            warn!(path = %path.display(), %error, "failed to load black hole sun video overlay");
-            None
-        }
-    }
-}
-
-#[cfg(feature = "av")]
-fn video_overlay_path() -> Option<PathBuf> {
-    let path = BaseDirs::new()?
-        .home_dir()
-        .join(".black-hole-sun")
-        .join("black-hole-sun.mkv");
-    path.is_file().then_some(path)
-}
-
-#[cfg(feature = "av")]
-fn map_av_message(message: iced_av1::widget::Message) -> Message {
-    Message::Av(message)
 }
 
 fn black_hole_text() -> Color {

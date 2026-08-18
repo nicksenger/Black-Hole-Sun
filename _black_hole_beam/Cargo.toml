@@ -5,7 +5,6 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-av = ["dep:iced-av1", "dep:directories-next"]
 piano = ["dep:clap", "dep:cpal", "dep:hound", "dep:midly", "dep:serde", "dep:serde_json"]
 
 [dependencies]
@@ -15,9 +14,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 cpal = { version = "0.17", optional = true }
 hound = { version = "3.5", optional = true }
 midly = { version = "0.5", default-features = false, features = ["std"], optional = true }
-directories-next = { version = "2", optional = true }
 iced = { version = "0.14", features = ["advanced", "canvas", "tokio"] }
-iced-av1 = { git = "https://github.com/nicksenger/iced-av1.git", branch = "jungle", features = ["opus"], optional = true }
 iced-sugiyama = { git = "https://github.com/nicksenger/iced-sugiyama.git", branch = "blackholesun", features = ["circo"] }
 jungle-sdk = { workspace = true }
 jungle-vision = { workspace = true }
