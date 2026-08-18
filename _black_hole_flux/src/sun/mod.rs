@@ -476,16 +476,18 @@ pub struct SunNode<S, U>(S, U);
 
 /// Maps a type-level graph to its orchestration flow.
 ///
-/// `Generator` is a Jungle flow from `()` to `(Transmission, Transmission)`.
-/// The Sun runs that generator `GRADIENT_ACCUMULATION_STEPS` times, then drives
-/// a dependency-aware per-node scheduler that allows nodes to advance to later
-/// microsteps as soon as their required inputs are available. It finally feeds
-/// `Policy` an array with shape
-/// `[(Transmission, Transmission); GRADIENT_ACCUMULATION_STEPS]`.
-/// `Policy` returns [`black_hole_spec::Potentiation`]. Keeping this as a flow
-/// parameter lets callers compose arbitrary generation and policy pipelines
-/// around the fixed graph propagation machinery. Set `S` when your
-/// generator/policy needs access to `SunState<S>::inner`.
+/// The [`Manifest`] bundles the epoch's flow parameters: a `Generator` (a
+/// Jungle flow from `()` to `(Transmission, Transmission)`), a `Policy` that
+/// receives an array with shape
+/// `[(Transmission, Transmission); ACCUM_STEPS]` and returns
+/// [`black_hole_spec::Potentiation`], and the `State` threaded through
+/// `SunState<S>::inner`. The Sun runs the generator `ACCUM_STEPS` times, then
+/// drives a dependency-aware per-node scheduler that allows nodes to advance
+/// to later microsteps as soon as their required inputs are available. Keeping
+/// these as manifest parameters lets callers compose arbitrary generation and
+/// policy pipelines around the fixed graph propagation machinery. Use
+/// [`StatelessManifest`] when your generator/policy does not need access to
+/// `SunState<S>::inner`.
 pub trait BlackHole {
     type Sun<M: Manifest, const ACCUM_STEPS: usize>;
 }

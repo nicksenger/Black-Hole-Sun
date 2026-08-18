@@ -112,9 +112,9 @@ pub use sun::{
         SendRootPropagationEffect, SendRootPropagationInput, WaitForNodeTransmissionEffect,
         WaitForNodeTransmissionInput,
     },
-    Binary, BlackHole, Epoch, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
-    PropagationFlows, PropagationLoop, SpawnAnimal, SunAppearance, SunEdgeAppearance, SunInner,
-    SunNodeAppearance, SunNodeState, SunState, Unary,
+    Binary, BlackHole, Epoch, Manifest, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
+    PropagationFlows, PropagationLoop, SpawnAnimal, StatelessManifest, SunAppearance,
+    SunEdgeAppearance, SunInner, SunNodeAppearance, SunNodeState, SunState, Unary,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]

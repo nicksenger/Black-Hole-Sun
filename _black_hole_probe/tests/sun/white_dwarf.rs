@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use black_hole_sun::cell::action::Potentiation;
 use black_hole_sun::cell::{CellState, Primordium};
 use black_hole_sun::ops::{InferenceOutputOps, SunOps, TransmissionOps, VoidInferOps};
-use black_hole_sun::sun::{BlackHole, SunAppearance, SunNodeState, SunState, Unary};
+use black_hole_sun::sun::{BlackHole, Manifest, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
     AtomError, CellInit, DarkToken, EmissionId, ErrorFeedbackPolicy, InferenceOutput,
     InferenceRequest, ModelConfig, ObjectId, OscillationSchedule, MassClient,
@@ -259,6 +259,15 @@ impl<J: VoidInferOps> Effect<J> for WhiteDwarfLossPolicyEffect {
     }
 }
 
+/// Manifest for the white dwarf sun — bundles generator, policy, and state.
+struct WhiteDwarfManifest;
+
+impl Manifest for WhiteDwarfManifest {
+    type Generator = WhiteDwarfGenerator;
+    type Policy = WhiteDwarfPolicy;
+    type State = WhiteDwarfStateInner;
+}
+
 struct WhiteDwarfBlackHole;
 
 #[jungle::animal(observe, id = 44, generation = 0)]
@@ -266,9 +275,7 @@ impl Animal for WhiteDwarfBlackHole {
     type State = WhiteDwarfState;
     type Seed = ();
     type Flow = <WhiteDwarfSun as BlackHole>::Sun<
-        WhiteDwarfGenerator,
-        WhiteDwarfPolicy,
-        WhiteDwarfStateInner,
+        WhiteDwarfManifest,
         WHITE_DWARF_GRADIENT_ACCUMULATION_STEPS,
     >;
 }

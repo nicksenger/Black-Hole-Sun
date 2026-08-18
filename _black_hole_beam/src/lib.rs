@@ -388,7 +388,9 @@ mod private {
 }
 
 /// Marker for the structural flow produced by
-/// `<Graph as BlackHole>::Sun<Generator, Policy, S, N>`.
+/// `<Graph as BlackHole>::Sun<M, N>`, where `M` is a
+/// [`Manifest`](black_hole_flux::sun::Manifest) bundling generator, policy,
+/// and state.
 ///
 /// The trait is sealed and is only implemented for the `SunNode<…>` chain
 /// emitted by [`BlackHole`](black_hole_flux::sun::BlackHole).
@@ -2545,7 +2547,10 @@ fn push_shortened_type_token(shortened: &mut String, token: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use black_hole_flux::sun::{Binary, BlackHole, SunEdgeAppearance, SunNodeAppearance, Unary};
+    use black_hole_flux::sun::{
+        Binary, BlackHole, Manifest, StatelessManifest, SunEdgeAppearance, SunNodeAppearance,
+        Unary,
+    };
     use black_hole_flux::{CellState, Fusion, Primordium};
     use jungle_sdk::typosaurus::collections::list::{Empty, List};
     use jungle_sdk::Id;
@@ -2584,11 +2589,19 @@ mod tests {
     type PortOne = List<(U1, Empty)>;
     type Tail = List<(Unary<U1, TestCell, Empty>, Empty)>;
     type TestGraph = List<(Unary<U0, TestCell, PortOne>, Tail)>;
-    type TestSun = <TestGraph as BlackHole>::Sun<Primordium, Primordium, (), 1>;
-    type TestSunWithCustomState =
-        <TestGraph as BlackHole>::Sun<Primordium, Primordium, (String, String), 1>;
+    struct CustomStateManifest;
+
+    impl Manifest for CustomStateManifest {
+        type Generator = Primordium;
+        type Policy = Primordium;
+        type State = (String, String);
+    }
+
+    type TestSun = <TestGraph as BlackHole>::Sun<StatelessManifest<Primordium, Primordium>, 1>;
+    type TestSunWithCustomState = <TestGraph as BlackHole>::Sun<CustomStateManifest, 1>;
     type TestBinaryGraph = List<(Binary<U0, U1, TestFusion, Empty>, Empty)>;
-    type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<Primordium, Primordium, (), 1>;
+    type TestBinarySun =
+        <TestBinaryGraph as BlackHole>::Sun<StatelessManifest<Primordium, Primordium>, 1>;
 
     #[test]
     fn uses_black_hole_sun_title_and_grad_step_palette() {

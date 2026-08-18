@@ -14,7 +14,9 @@ use black_hole_sun::cell::action::{
     WaitForPotentiation, WaitForPropagation,
 };
 use black_hole_sun::ops::{SunOps, VoidInferOps};
-use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
+use black_hole_sun::sun::{
+    Binary, BlackHole, StatelessManifest, SunAppearance, SunNodeState, SunState, Unary,
+};
 use black_hole_sun::{
     AtomError, EmissionId, InferenceRequest, ObjectId, MassModelConfig, MassModelParams, Ray,
     TestVoidServer, Tokenizer, Transmission, VoidClient,
@@ -250,9 +252,7 @@ impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
     type Flow = <DiamondSun as BlackHole>::Sun<
-        Generator,
-        DiamondPolicy,
-        (),
+        StatelessManifest<Generator, DiamondPolicy>,
         DIAMOND_GRADIENT_ACCUMULATION_STEPS,
     >;
 }
@@ -272,7 +272,7 @@ pub(super) struct ExpandedBlackHoleAnimal;
 impl Animal for ExpandedBlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <ExpandedDiamondSun as BlackHole>::Sun<Generator, Policy, (), 1>;
+    type Flow = <ExpandedDiamondSun as BlackHole>::Sun<StatelessManifest<Generator, Policy>, 1>;
 }
 
 impl Observe for ExpandedBlackHoleAnimal {
