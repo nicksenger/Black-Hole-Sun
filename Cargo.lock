@@ -961,6 +961,7 @@ dependencies = [
 name = "black-hole-sun"
 version = "0.1.0"
 dependencies = [
+ "black-hole-beam",
  "black-hole-flux",
  "black-hole-mass",
  "black-hole-spec",

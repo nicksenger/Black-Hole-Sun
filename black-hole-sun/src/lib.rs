@@ -47,3 +47,7 @@ pub use black_hole_void::{
 
 // Convenience re-exports — mass types
 pub use black_hole_mass::ServerBuilder as MassServerBuilder;
+
+// The beam crate; its `piano` feature (score text format, piano event
+// types) is enabled by this crate's `piano` feature.
+pub use black_hole_beam;
