@@ -3,8 +3,8 @@
 mod common;
 
 use black_hole_sun::{
-    DarkToken, InferenceInput, InferenceRequest, LogitEntry, QuarkClient, QuarkModelCapacity,
-    QuarkModelConfig, TestQuarkServer, TestVoidServer, Tokenizer, VoidClient,
+    DarkToken, InferenceInput, InferenceRequest, LogitEntry, MassClient, MassModelCapacity,
+    MassModelConfig, TestMassServer, TestVoidServer, Tokenizer, VoidClient,
 };
 use postcard::{from_bytes, to_allocvec};
 use std::time::Duration;
@@ -16,18 +16,18 @@ use common::*;
 async fn rejects_requests_for_unknown_model_instance() {
     init_tracing();
 
-    let quark_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+    let mass_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .serve()
         .await
-        .expect("failed to start quark server");
-    let quark_local = quark_server.local_addr();
+        .expect("failed to start mass server");
+    let mass_local = mass_server.local_addr();
 
     let client = make_client_endpoint().await;
-    let quark_client = QuarkClient::new(&client, quark_local, "localhost");
+    let mass_client = MassClient::new(&client, mass_local, "localhost");
     let model_id = Uuid::new_v4();
 
     for _ in 0..2 {
-        let error = quark_client
+        let error = mass_client
             .start(model_id, None)
             .await
             .expect_err("invalid model path should fail to start");
@@ -38,42 +38,42 @@ async fn rejects_requests_for_unknown_model_instance() {
     }
 
     for result in [
-        quark_client.infer(model_id, Uuid::nil()).await.map(|_| ()),
-        quark_client.reset(model_id).await,
-        quark_client.perturb_up(model_id, 42).await,
-        quark_client.perturb_down(model_id).await,
-        quark_client.checkpoint(model_id).await.map(|_| ()),
-        quark_client.optimize(model_id, 0.0, 0.0).await,
-        quark_client.shutdown(model_id).await,
-        quark_client.query_model_params(model_id).await.map(|_| ()),
+        mass_client.infer(model_id, Uuid::nil()).await.map(|_| ()),
+        mass_client.reset(model_id).await,
+        mass_client.perturb_up(model_id, 42).await,
+        mass_client.perturb_down(model_id).await,
+        mass_client.checkpoint(model_id).await.map(|_| ()),
+        mass_client.optimize(model_id, 0.0, 0.0).await,
+        mass_client.shutdown(model_id).await,
+        mass_client.query_model_params(model_id).await.map(|_| ()),
     ] {
         let error = result.expect_err("unknown model request should fail");
         assert!(
             error.contains("is not running"),
-            "unexpected quark error: {error}"
+            "unexpected mass error: {error}"
         );
     }
 
-    quark_server.abort();
+    mass_server.abort();
 }
 
 #[tokio::test]
 async fn tunnel_worker_rejects_direct_model_requests() {
     init_tracing();
 
-    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+    let root_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .serve()
         .await
-        .expect("failed to start root quark server");
-    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .expect("failed to start root mass server");
+    let worker_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .tunnel(root_server.local_addr())
         .max_instances(1)
         .serve()
         .await
-        .expect("failed to start worker quark server");
+        .expect("failed to start worker mass server");
 
     let client = make_client_endpoint().await;
-    let worker_client = QuarkClient::new(&client, worker_server.local_addr(), "localhost");
+    let worker_client = MassClient::new(&client, worker_server.local_addr(), "localhost");
     let model_id = Uuid::new_v4();
     let error = worker_client
         .start(model_id, None)
@@ -92,20 +92,20 @@ async fn tunnel_worker_rejects_direct_model_requests() {
 async fn tunnel_root_forwards_start_to_registered_worker() {
     init_tracing();
 
-    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+    let root_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .max_instances(0)
         .serve()
         .await
-        .expect("failed to start root quark server");
-    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .expect("failed to start root mass server");
+    let worker_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .tunnel(root_server.local_addr())
         .max_instances(1)
         .serve()
         .await
-        .expect("failed to start worker quark server");
+        .expect("failed to start worker mass server");
 
     let client = make_client_endpoint().await;
-    let root_client = QuarkClient::new(&client, root_server.local_addr(), "localhost");
+    let root_client = MassClient::new(&client, root_server.local_addr(), "localhost");
     let model_id = Uuid::new_v4();
     let error = root_client
         .start(model_id, None)
@@ -124,21 +124,21 @@ async fn tunnel_root_forwards_start_to_registered_worker() {
 async fn tcp_tunnel_root_forwards_start_to_registered_worker() {
     init_tracing();
 
-    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+    let root_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .tcp()
         .max_instances(0)
         .serve()
         .await
-        .expect("failed to start root quark server");
-    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .expect("failed to start root mass server");
+    let worker_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .tcp()
         .tunnel(root_server.local_addr())
         .max_instances(1)
         .serve()
         .await
-        .expect("failed to start worker quark server");
+        .expect("failed to start worker mass server");
 
-    let root_client = QuarkClient::new_tcp(root_server.local_addr());
+    let root_client = MassClient::new_tcp(root_server.local_addr());
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(capacity) = root_client.query_model_capacity().await {
@@ -182,24 +182,24 @@ async fn tcp_tunnel_root_forwards_model_load_and_inference_to_registered_worker(
         .serve()
         .await
         .expect("failed to start tcp void server");
-    let root_server = TestQuarkServer::new(&model_path)
+    let root_server = TestMassServer::new(&model_path)
         .tcp()
         .void_addr(void_server.local_addr())
         .max_instances(0)
         .serve()
         .await
-        .expect("failed to start tcp root quark server");
-    let worker_server = TestQuarkServer::new(&model_path)
+        .expect("failed to start tcp root mass server");
+    let worker_server = TestMassServer::new(&model_path)
         .tcp()
         .void_addr(void_server.local_addr())
         .tunnel(root_server.local_addr())
         .max_instances(1)
         .serve()
         .await
-        .expect("failed to start tcp worker quark server");
+        .expect("failed to start tcp worker mass server");
 
     let void_client = VoidClient::new_tcp(void_server.local_addr());
-    let root_client = QuarkClient::new_tcp(root_server.local_addr());
+    let root_client = MassClient::new_tcp(root_server.local_addr());
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(capacity) = root_client.query_model_capacity().await {
@@ -217,9 +217,9 @@ async fn tcp_tunnel_root_forwards_model_load_and_inference_to_registered_worker(
     root_client
         .start(
             model_id,
-            Some(QuarkModelConfig {
+            Some(MassModelConfig {
                 inference_limit: Some(1),
-                ..QuarkModelConfig::default()
+                ..MassModelConfig::default()
             }),
         )
         .await
@@ -297,7 +297,7 @@ async fn tunnel_worker_retries_parent_registration_until_root_starts() {
     drop(reserved);
 
     let worker_task = tokio::spawn(async move {
-        TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        TestMassServer::new("model-is-not-loaded-for-this-test")
             .tunnel(root_addr)
             .max_instances(1)
             .tunnel_connect_deadline(Duration::from_secs(3))
@@ -307,12 +307,12 @@ async fn tunnel_worker_retries_parent_registration_until_root_starts() {
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+    let root_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .listen(root_addr)
         .max_instances(0)
         .serve()
         .await
-        .expect("failed to start root quark server");
+        .expect("failed to start root mass server");
 
     let worker_server = tokio::time::timeout(Duration::from_secs(4), worker_task)
         .await
@@ -321,14 +321,14 @@ async fn tunnel_worker_retries_parent_registration_until_root_starts() {
         .expect("worker should keep retrying until root is available");
 
     let client = make_client_endpoint().await;
-    let root_client = QuarkClient::new(&client, root_server.local_addr(), "localhost");
+    let root_client = MassClient::new(&client, root_server.local_addr(), "localhost");
     let capacity = root_client
         .query_model_capacity()
         .await
         .expect("capacity query should succeed");
     assert_eq!(
         capacity,
-        QuarkModelCapacity {
+        MassModelCapacity {
             total: Some(1),
             available: Some(1),
             occupied: 0,
@@ -349,21 +349,21 @@ async fn tunnel_worker_re_registers_after_root_restart() {
         .expect("failed to read reserved root port");
     drop(reserved);
 
-    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+    let root_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .listen(root_addr)
         .max_instances(0)
         .serve()
         .await
-        .expect("failed to start root quark server");
-    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .expect("failed to start root mass server");
+    let worker_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .tunnel(root_addr)
         .max_instances(1)
         .serve()
         .await
-        .expect("failed to start worker quark server");
+        .expect("failed to start worker mass server");
 
     let client = make_client_endpoint().await;
-    let root_client = QuarkClient::new(&client, root_addr, "localhost");
+    let root_client = MassClient::new(&client, root_addr, "localhost");
 
     let initial_capacity = root_client
         .query_model_capacity()
@@ -376,12 +376,12 @@ async fn tunnel_worker_re_registers_after_root_restart() {
     root_server.abort();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let restarted_root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+    let restarted_root_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .listen(root_addr)
         .max_instances(0)
         .serve()
         .await
-        .expect("failed to restart root quark server");
+        .expect("failed to restart root mass server");
 
     tokio::time::timeout(Duration::from_secs(12), async {
         loop {
@@ -407,20 +407,20 @@ async fn tunnel_worker_re_registers_after_root_restart() {
 async fn recursive_capacity_query_reports_total_available_and_occupied() {
     init_tracing();
 
-    let root_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+    let root_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .max_instances(2)
         .serve()
         .await
-        .expect("failed to start root quark server");
-    let worker_server = TestQuarkServer::new("model-is-not-loaded-for-this-test")
+        .expect("failed to start root mass server");
+    let worker_server = TestMassServer::new("model-is-not-loaded-for-this-test")
         .tunnel(root_server.local_addr())
         .max_instances(3)
         .serve()
         .await
-        .expect("failed to start worker quark server");
+        .expect("failed to start worker mass server");
 
     let client = make_client_endpoint().await;
-    let root_client = QuarkClient::new(&client, root_server.local_addr(), "localhost");
+    let root_client = MassClient::new(&client, root_server.local_addr(), "localhost");
     let capacity = root_client
         .query_model_capacity()
         .await
@@ -444,13 +444,13 @@ async fn tunnel_recursive_tree_aggregates_descendant_capacity() {
         };
 
     async fn infer_space_probe_once(
-        quark_client: &QuarkClient,
+        mass_client: &MassClient,
         void_client: &VoidClient,
         tokenizer: &Tokenizer,
         model_id: Uuid,
         input_id: Uuid,
     ) -> Result<(), String> {
-        let output_id = quark_client.infer(model_id, input_id).await?;
+        let output_id = mass_client.infer(model_id, input_id).await?;
         let output_bytes = void_client.download(output_id).await.unwrap();
         let output: black_hole_sun::InferenceOutput =
             from_bytes(&output_bytes).expect("failed to decode inference output");
@@ -467,38 +467,38 @@ async fn tunnel_recursive_tree_aggregates_descendant_capacity() {
         .serve()
         .await
         .expect("failed to start void server");
-    let root_server = TestQuarkServer::new(&model_path)
+    let root_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .max_instances(0)
         .serve()
         .await
-        .expect("failed to start root quark server");
-    let worker_b_server = TestQuarkServer::new(&model_path)
+        .expect("failed to start root mass server");
+    let worker_b_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .tunnel(root_server.local_addr())
         .max_instances(1)
         .serve()
         .await
-        .expect("failed to start worker B quark server");
-    let worker_c_server = TestQuarkServer::new(&model_path)
+        .expect("failed to start worker B mass server");
+    let worker_c_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .tunnel(worker_b_server.local_addr())
         .max_instances(1)
         .serve()
         .await
-        .expect("failed to start worker C quark server");
+        .expect("failed to start worker C mass server");
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_server.local_addr(), "localhost");
-    let quark_endpoint = make_client_endpoint().await;
-    let root_client = QuarkClient::new(&quark_endpoint, root_server.local_addr(), "localhost");
+    let mass_endpoint = make_client_endpoint().await;
+    let root_client = MassClient::new(&mass_endpoint, root_server.local_addr(), "localhost");
     let tokenizer = Tokenizer::init();
 
     let model_a = Uuid::new_v4();
     let model_b = Uuid::new_v4();
-    let model_config = Some(QuarkModelConfig {
+    let model_config = Some(MassModelConfig {
         inference_limit: Some(1),
-        ..QuarkModelConfig::default()
+        ..MassModelConfig::default()
     });
     root_client
         .start(model_a, model_config.clone())
@@ -560,13 +560,13 @@ async fn tcp_tunnel_recursive_tree_aggregates_descendant_capacity() {
         };
 
     async fn infer_space_probe_once(
-        quark_client: &QuarkClient,
+        mass_client: &MassClient,
         void_client: &VoidClient,
         tokenizer: &Tokenizer,
         model_id: Uuid,
         input_id: Uuid,
     ) -> Result<(), String> {
-        let output_id = quark_client.infer(model_id, input_id).await?;
+        let output_id = mass_client.infer(model_id, input_id).await?;
         let output_bytes = void_client.download(output_id).await.unwrap();
         let output: black_hole_sun::InferenceOutput =
             from_bytes(&output_bytes).expect("failed to decode inference output");
@@ -584,32 +584,32 @@ async fn tcp_tunnel_recursive_tree_aggregates_descendant_capacity() {
         .serve()
         .await
         .expect("failed to start tcp void server");
-    let root_server = TestQuarkServer::new(&model_path)
+    let root_server = TestMassServer::new(&model_path)
         .tcp()
         .void_addr(void_server.local_addr())
         .max_instances(0)
         .serve()
         .await
-        .expect("failed to start tcp root quark server");
-    let worker_b_server = TestQuarkServer::new(&model_path)
+        .expect("failed to start tcp root mass server");
+    let worker_b_server = TestMassServer::new(&model_path)
         .tcp()
         .void_addr(void_server.local_addr())
         .tunnel(root_server.local_addr())
         .max_instances(1)
         .serve()
         .await
-        .expect("failed to start tcp worker B quark server");
-    let worker_c_server = TestQuarkServer::new(&model_path)
+        .expect("failed to start tcp worker B mass server");
+    let worker_c_server = TestMassServer::new(&model_path)
         .tcp()
         .void_addr(void_server.local_addr())
         .tunnel(worker_b_server.local_addr())
         .max_instances(1)
         .serve()
         .await
-        .expect("failed to start tcp worker C quark server");
+        .expect("failed to start tcp worker C mass server");
 
     let void_client = VoidClient::new_tcp(void_server.local_addr());
-    let root_client = QuarkClient::new_tcp(root_server.local_addr());
+    let root_client = MassClient::new_tcp(root_server.local_addr());
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(capacity) = root_client.query_model_capacity().await {
@@ -626,9 +626,9 @@ async fn tcp_tunnel_recursive_tree_aggregates_descendant_capacity() {
 
     let model_a = Uuid::new_v4();
     let model_b = Uuid::new_v4();
-    let model_config = Some(QuarkModelConfig {
+    let model_config = Some(MassModelConfig {
         inference_limit: Some(1),
-        ..QuarkModelConfig::default()
+        ..MassModelConfig::default()
     });
     root_client
         .start(model_a, model_config.clone())
@@ -692,20 +692,20 @@ async fn inference() {
         .serve()
         .await
         .expect("failed to start void server");
-    let quark_server = TestQuarkServer::new(&model_path)
+    let mass_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .serve()
         .await
-        .expect("failed to start quark server");
+        .expect("failed to start mass server");
     let void_local = void_server.local_addr();
-    let quark_local = quark_server.local_addr();
+    let mass_local = mass_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
-    let quark_endpoint = make_client_endpoint().await;
-    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
+    let mass_endpoint = make_client_endpoint().await;
+    let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_client.start(model_id, None).await.unwrap();
+    mass_client.start(model_id, None).await.unwrap();
 
     let tokenizer = Tokenizer::init();
 
@@ -723,7 +723,7 @@ async fn inference() {
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
 
-    let output_id = quark_client.infer(model_id, input_id).await.unwrap();
+    let output_id = mass_client.infer(model_id, input_id).await.unwrap();
 
     let output_bytes = void_client.download(output_id).await.unwrap();
     let output: black_hole_sun::InferenceOutput =
@@ -746,18 +746,18 @@ async fn inference() {
         );
     }
 
-    let checkpoint_id = quark_client.checkpoint(model_id).await.unwrap();
+    let checkpoint_id = mass_client.checkpoint(model_id).await.unwrap();
     let checkpoint_bytes = void_client.download(checkpoint_id).await.unwrap();
     assert!(
         !checkpoint_bytes.is_empty(),
         "checkpoint output should upload non-empty model bytes"
     );
 
-    quark_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
-    drop(quark_endpoint);
+    drop(mass_endpoint);
     void_server.abort();
-    quark_server.abort();
+    mass_server.abort();
 }
 
 #[ignore]
@@ -784,26 +784,26 @@ async fn qwen3_8_27b_q3_k_s_initialize_and_single_token_inference() {
         .serve()
         .await
         .expect("failed to start void server");
-    let quark_server = TestQuarkServer::new(model_path)
+    let mass_server = TestMassServer::new(model_path)
         .void_addr(void_server.local_addr())
         .serve()
         .await
-        .expect("failed to start quark server");
+        .expect("failed to start mass server");
     let void_local = void_server.local_addr();
-    let quark_local = quark_server.local_addr();
+    let mass_local = mass_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
-    let quark_endpoint = make_client_endpoint().await;
-    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
+    let mass_endpoint = make_client_endpoint().await;
+    let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
 
     let model_id = Uuid::new_v4();
-    quark_client
+    mass_client
         .start(
             model_id,
-            Some(QuarkModelConfig {
+            Some(MassModelConfig {
                 inference_limit: Some(1),
-                ..QuarkModelConfig::default()
+                ..MassModelConfig::default()
             }),
         )
         .await
@@ -820,12 +820,12 @@ async fn qwen3_8_27b_q3_k_s_initialize_and_single_token_inference() {
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
 
-    quark_client
+    mass_client
         .perturb_up(model_id, 42)
         .await
         .expect("perturb-up should succeed before inference");
 
-    let output_id = quark_client
+    let output_id = mass_client
         .infer(model_id, input_id)
         .await
         .expect("inference with perturbed-up weights should succeed");
@@ -845,11 +845,11 @@ async fn qwen3_8_27b_q3_k_s_initialize_and_single_token_inference() {
     let output_text = tokenizer.decode(&output.results[0].0);
     println!("Output: {output_text}");
 
-    quark_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
-    drop(quark_endpoint);
+    drop(mass_endpoint);
     void_server.abort();
-    quark_server.abort();
+    mass_server.abort();
 }
 
 #[tokio::test]
@@ -865,20 +865,20 @@ async fn dark_inference() {
         .serve()
         .await
         .expect("failed to start void server");
-    let quark_server = TestQuarkServer::new(&model_path)
+    let mass_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .serve()
         .await
-        .expect("failed to start quark server");
+        .expect("failed to start mass server");
     let void_local = void_server.local_addr();
-    let quark_local = quark_server.local_addr();
+    let mass_local = mass_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
-    let quark_endpoint = make_client_endpoint().await;
-    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
+    let mass_endpoint = make_client_endpoint().await;
+    let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_client.start(model_id, None).await.unwrap();
+    mass_client.start(model_id, None).await.unwrap();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -911,7 +911,7 @@ async fn dark_inference() {
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
 
-    let output_id = quark_client.infer(model_id, input_id).await.unwrap();
+    let output_id = mass_client.infer(model_id, input_id).await.unwrap();
 
     let output_bytes = void_client.download(output_id).await.unwrap();
     let output: black_hole_sun::InferenceOutput =
@@ -934,11 +934,11 @@ async fn dark_inference() {
         );
     }
 
-    quark_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
-    drop(quark_endpoint);
+    drop(mass_endpoint);
     void_server.abort();
-    quark_server.abort();
+    mass_server.abort();
 }
 
 #[tokio::test]
@@ -955,26 +955,26 @@ async fn start_model_applies_instance_default_inference_limit_override() {
         .serve()
         .await
         .expect("failed to start void server");
-    let quark_server = TestQuarkServer::new(&model_path)
+    let mass_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .serve()
         .await
-        .expect("failed to start quark server");
+        .expect("failed to start mass server");
     let void_local = void_server.local_addr();
-    let quark_local = quark_server.local_addr();
+    let mass_local = mass_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
-    let quark_endpoint = make_client_endpoint().await;
-    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
+    let mass_endpoint = make_client_endpoint().await;
+    let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
 
     let model_id = Uuid::new_v4();
-    quark_client
+    mass_client
         .start(
             model_id,
-            Some(QuarkModelConfig {
+            Some(MassModelConfig {
                 inference_limit: Some(0),
-                ..QuarkModelConfig::default()
+                ..MassModelConfig::default()
             }),
         )
         .await
@@ -989,7 +989,7 @@ async fn start_model_applies_instance_default_inference_limit_override() {
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
 
-    let output_id = quark_client.infer(model_id, input_id).await.unwrap();
+    let output_id = mass_client.infer(model_id, input_id).await.unwrap();
     let output_bytes = void_client.download(output_id).await.unwrap();
     let output: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes).expect("failed to decode inference output");
@@ -1000,11 +1000,11 @@ async fn start_model_applies_instance_default_inference_limit_override() {
         "instance default inference limit override should produce zero decoded tokens"
     );
 
-    quark_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
-    drop(quark_endpoint);
+    drop(mass_endpoint);
     void_server.abort();
-    quark_server.abort();
+    mass_server.abort();
 }
 
 #[tokio::test]
@@ -1020,20 +1020,20 @@ async fn optimization() {
         .serve()
         .await
         .expect("failed to start void server");
-    let quark_server = TestQuarkServer::new(&model_path)
+    let mass_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .serve()
         .await
-        .expect("failed to start quark server");
+        .expect("failed to start mass server");
     let void_local = void_server.local_addr();
-    let quark_local = quark_server.local_addr();
+    let mass_local = mass_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
-    let quark_endpoint = make_client_endpoint().await;
-    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
+    let mass_endpoint = make_client_endpoint().await;
+    let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_client.start(model_id, None).await.unwrap();
+    mass_client.start(model_id, None).await.unwrap();
 
     let tokenizer = Tokenizer::init();
 
@@ -1057,12 +1057,12 @@ async fn optimization() {
 
     // Step 1: PerturbUp
     println!("\n--- Step 1: PerturbUp (seed=42) ---");
-    quark_client.perturb_up(model_id, 42).await.unwrap();
+    mass_client.perturb_up(model_id, 42).await.unwrap();
 
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
-    let output_id_up = quark_client.infer(model_id, input_id).await.unwrap();
-    quark_client.reset(model_id).await.unwrap();
+    let output_id_up = mass_client.infer(model_id, input_id).await.unwrap();
+    mass_client.reset(model_id).await.unwrap();
     let output_bytes_up = void_client.download(output_id_up).await.unwrap();
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
@@ -1084,12 +1084,12 @@ async fn optimization() {
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
-    quark_client.perturb_down(model_id).await.unwrap();
+    mass_client.perturb_down(model_id).await.unwrap();
 
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
-    let output_id_down = quark_client.infer(model_id, input_id).await.unwrap();
-    quark_client.reset(model_id).await.unwrap();
+    let output_id_down = mass_client.infer(model_id, input_id).await.unwrap();
+    mass_client.reset(model_id).await.unwrap();
     let output_bytes_down = void_client.download(output_id_down).await.unwrap();
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
@@ -1116,15 +1116,15 @@ async fn optimization() {
         "\n--- Step 5: Optimize (loss_up={}, loss_down={}) ---",
         fake_loss_up, fake_loss_down
     );
-    quark_client
+    mass_client
         .optimize(model_id, fake_loss_up, fake_loss_down)
         .await
         .unwrap();
 
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
-    let output_id_final = quark_client.infer(model_id, input_id).await.unwrap();
-    quark_client.reset(model_id).await.unwrap();
+    let output_id_final = mass_client.infer(model_id, input_id).await.unwrap();
+    mass_client.reset(model_id).await.unwrap();
     let output_bytes_final = void_client.download(output_id_final).await.unwrap();
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
@@ -1159,11 +1159,11 @@ async fn optimization() {
         "post-optimize sequence 1 predicted tokens had no decoded text"
     );
 
-    quark_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
-    drop(quark_endpoint);
+    drop(mass_endpoint);
     void_server.abort();
-    quark_server.abort();
+    mass_server.abort();
 }
 
 #[tokio::test]
@@ -1179,20 +1179,20 @@ async fn dark_optimization() {
         .serve()
         .await
         .expect("failed to start void server");
-    let quark_server = TestQuarkServer::new(&model_path)
+    let mass_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .serve()
         .await
-        .expect("failed to start quark server");
+        .expect("failed to start mass server");
     let void_local = void_server.local_addr();
-    let quark_local = quark_server.local_addr();
+    let mass_local = mass_server.local_addr();
 
     let void_endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&void_endpoint, void_local, "localhost");
-    let quark_endpoint = make_client_endpoint().await;
-    let quark_client = QuarkClient::new(&quark_endpoint, quark_local, "localhost");
+    let mass_endpoint = make_client_endpoint().await;
+    let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
     let model_id = Uuid::new_v4();
-    quark_client.start(model_id, None).await.unwrap();
+    mass_client.start(model_id, None).await.unwrap();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -1235,12 +1235,12 @@ async fn dark_optimization() {
 
     // Step 1: PerturbUp
     println!("\n--- Step 1: PerturbUp (seed=42) ---");
-    quark_client.perturb_up(model_id, 42).await.unwrap();
+    mass_client.perturb_up(model_id, 42).await.unwrap();
 
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
-    let output_id_up = quark_client.infer(model_id, input_id).await.unwrap();
-    quark_client.reset(model_id).await.unwrap();
+    let output_id_up = mass_client.infer(model_id, input_id).await.unwrap();
+    mass_client.reset(model_id).await.unwrap();
     let output_bytes_up = void_client.download(output_id_up).await.unwrap();
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
@@ -1262,12 +1262,12 @@ async fn dark_optimization() {
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
-    quark_client.perturb_down(model_id).await.unwrap();
+    mass_client.perturb_down(model_id).await.unwrap();
 
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
-    let output_id_down = quark_client.infer(model_id, input_id).await.unwrap();
-    quark_client.reset(model_id).await.unwrap();
+    let output_id_down = mass_client.infer(model_id, input_id).await.unwrap();
+    mass_client.reset(model_id).await.unwrap();
     let output_bytes_down = void_client.download(output_id_down).await.unwrap();
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
@@ -1294,15 +1294,15 @@ async fn dark_optimization() {
         "\n--- Step 5: Optimize (loss_up={}, loss_down={}) ---",
         fake_loss_up, fake_loss_down
     );
-    quark_client
+    mass_client
         .optimize(model_id, fake_loss_up, fake_loss_down)
         .await
         .unwrap();
 
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
-    let output_id_final = quark_client.infer(model_id, input_id).await.unwrap();
-    quark_client.reset(model_id).await.unwrap();
+    let output_id_final = mass_client.infer(model_id, input_id).await.unwrap();
+    mass_client.reset(model_id).await.unwrap();
     let output_bytes_final = void_client.download(output_id_final).await.unwrap();
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
@@ -1337,9 +1337,9 @@ async fn dark_optimization() {
         "post-optimize sequence 1 predicted tokens had no decoded text"
     );
 
-    quark_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown(model_id).await.unwrap();
     drop(void_endpoint);
-    drop(quark_endpoint);
+    drop(mass_endpoint);
     void_server.abort();
-    quark_server.abort();
+    mass_server.abort();
 }

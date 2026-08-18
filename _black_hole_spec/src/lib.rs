@@ -13,24 +13,24 @@ pub const THINK_CLOSE: u32 = 248069;
 pub type ObjectId = Uuid;
 
 // ---------------------------------------------------------------------------
-// Quark wire protocol (black-hole-quark <-> client)
+// Mass wire protocol (black-hole-mass <-> client)
 // ---------------------------------------------------------------------------
 
-/// Request sent by a client to the quark QUIC server.
+/// Request sent by a client to the mass QUIC server.
 #[derive(Debug, Serialize, Deserialize)]
-pub enum QuarkIn {
+pub enum MassIn {
     /// Start a new model instance with the provided stable ID.
     ///
-    /// When `model_config` is `None`, quark uses server defaults. When present,
+    /// When `model_config` is `None`, mass uses server defaults. When present,
     /// the provided values override defaults for this specific model instance.
     Start {
         model_id: Uuid,
-        model_config: Option<QuarkModelConfig>,
+        model_config: Option<MassModelConfig>,
     },
     /// Perturb model weights in the positive direction.
     PerturbUp { model_id: Uuid, seed: u64 },
     /// Run inference on the input object stored in void.
-    /// Returns QuarkOut::Inferred(output_id).
+    /// Returns MassOut::Inferred(output_id).
     Infer { model_id: Uuid, input_id: ObjectId },
     /// Reset model runtime state (for example KV cache) for the instance.
     Reset { model_id: Uuid },
@@ -48,11 +48,11 @@ pub enum QuarkIn {
     Shutdown { model_id: Uuid },
     /// Query the current runtime parameters for a model instance.
     QueryModelParams { model_id: Uuid },
-    /// Query recursive model instance capacity for this quark subtree.
+    /// Query recursive model instance capacity for this mass subtree.
     QueryModelCapacity,
-    /// Register a one-hop tunnel worker with a root quark.
+    /// Register a one-hop tunnel worker with a root mass.
     RegisterTunnel {
-        /// Stable worker identity used by parent quarks to match reconnects.
+        /// Stable worker identity used by parent masss to match reconnects.
         worker_id: Uuid,
         /// Optional total model capacity advertised by this worker subtree (defaults to 1).
         max_instances: Option<usize>,
@@ -73,9 +73,9 @@ pub enum QuarkIn {
     },
 }
 
-/// Response sent by the quark server to the client.
+/// Response sent by the mass server to the client.
 #[derive(Debug, Serialize, Deserialize)]
-pub enum QuarkOut {
+pub enum MassOut {
     /// Acknowledges a lifecycle, perturb, or optimize step.
     Ack,
     /// Inference complete; contains the void object ID of the output.
@@ -83,18 +83,18 @@ pub enum QuarkOut {
     /// Checkpoint upload complete; contains the void object ID of model weights.
     Checkpointed { checkpoint_id: ObjectId },
     /// Runtime model parameters for a running instance.
-    ModelParams { params: QuarkModelParams },
-    /// Recursive model instance capacity for this quark subtree.
-    ModelCapacity { capacity: QuarkModelCapacity },
+    ModelParams { params: MassModelParams },
+    /// Recursive model instance capacity for this mass subtree.
+    ModelCapacity { capacity: MassModelCapacity },
     /// Tunnel worker registration complete; contains root-issued auth token.
     TunnelRegistered { token: Uuid },
     /// Error from any operation.
     Error { message: String },
 }
 
-/// Runtime model parameters resolved for a running quark model instance.
+/// Runtime model parameters resolved for a running mass model instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QuarkModelParams {
+pub struct MassModelParams {
     pub inference_limit: u32,
     pub top_k: usize,
     pub temperature: f64,
@@ -106,7 +106,7 @@ pub struct QuarkModelParams {
     pub training_z_loss: f64,
     pub training_lb_loss: f64,
     pub training_clip_threshold: f64,
-    pub training_error_feedback: QuarkErrorFeedbackConfig,
+    pub training_error_feedback: MassErrorFeedbackConfig,
     pub is_frozen: bool,
     pub optimize_steps: u32,
     pub oscillation_period_steps: Option<u32>,
@@ -115,9 +115,9 @@ pub struct QuarkModelParams {
     pub oscillation_warmup_steps: Option<u32>,
 }
 
-/// Recursive model-capacity snapshot for a quark server subtree.
+/// Recursive model-capacity snapshot for a mass server subtree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuarkModelCapacity {
+pub struct MassModelCapacity {
     /// Total model-instance capacity (local + descendants). None means unbounded.
     pub total: Option<usize>,
     /// Available model-instance capacity (total minus occupied). None means unbounded.
@@ -128,7 +128,7 @@ pub struct QuarkModelCapacity {
 
 /// Error-feedback mode selector for QuZO optimization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum QuarkErrorFeedbackMode {
+pub enum MassErrorFeedbackMode {
     Off,
     Persistent,
     Replay,
@@ -136,7 +136,7 @@ pub enum QuarkErrorFeedbackMode {
 
 /// Per-model QuZO error-feedback configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum QuarkErrorFeedbackConfig {
+pub enum MassErrorFeedbackConfig {
     Off,
     Persistent { decay: f64, gain: f64 },
     Replay { steps: u32, decay: f64, gain: f64 },
@@ -147,7 +147,7 @@ pub enum QuarkErrorFeedbackConfig {
 pub enum TunnelRequest {
     Start {
         model_id: Uuid,
-        model_config: Option<QuarkModelConfig>,
+        model_config: Option<MassModelConfig>,
     },
     PerturbUp {
         model_id: Uuid,
@@ -179,11 +179,11 @@ pub enum TunnelRequest {
     },
 }
 
-/// Per-model-instance quark configuration overrides.
+/// Per-model-instance mass configuration overrides.
 ///
 /// Each field is optional; omitted values fall back to server defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct QuarkModelConfig {
+pub struct MassModelConfig {
     pub top_k: Option<usize>,
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
@@ -195,11 +195,11 @@ pub struct QuarkModelConfig {
     pub training_z_loss: Option<f64>,
     pub training_lb_loss: Option<f64>,
     pub training_clip_threshold: Option<f64>,
-    pub training_error_feedback: Option<QuarkErrorFeedbackConfig>,
+    pub training_error_feedback: Option<MassErrorFeedbackConfig>,
     pub frozen: Option<bool>,
     /// Optional optimize-step period for train/freeze oscillation scheduling.
     ///
-    /// When set (with `oscillation_train_steps`), quark applies a deterministic
+    /// When set (with `oscillation_train_steps`), mass applies a deterministic
     /// train window each cycle after warmup instead of flipping prior state.
     pub oscillation_period_steps: Option<u32>,
     /// Optional count of trainable optimize steps in each oscillation cycle.
@@ -214,7 +214,7 @@ pub struct QuarkModelConfig {
     pub oscillation_warmup_steps: Option<u32>,
     /// Optional checkpoint object to load model weights from for this instance.
     ///
-    /// When `None`, quark loads weights from its configured server model path.
+    /// When `None`, mass loads weights from its configured server model path.
     pub checkpoint_id: Option<ObjectId>,
 }
 
@@ -252,7 +252,7 @@ impl DarkToken {
 }
 
 /// Serializable inference input, mirroring paramecia-engine's ModelInput.
-/// Stored inside void objects and converted to ModelInput by the quark service.
+/// Stored inside void objects and converted to ModelInput by the mass service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InferenceInput {
     /// Text context (tokenized by the model host).
@@ -273,15 +273,15 @@ pub enum InferenceRequest {
     Sequences {
         /// Each element is one sequence (a list of inputs concatenated in order).
         sequences: Vec<Vec<InferenceInput>>,
-        /// Optional generation cap. If `None`, quark applies its server default.
+        /// Optional generation cap. If `None`, mass applies its server default.
         limit: Option<u32>,
     },
     /// Reference to an existing InferenceOutput in void.
-    /// Quark downloads it, converts the results to dark input, and proceeds.
+    /// Mass downloads it, converts the results to dark input, and proceeds.
     VoidId {
         /// Void object ID of the InferenceOutput to use as input.
         id: InferenceOutputId,
-        /// Optional generation cap. If `None`, quark applies its server default.
+        /// Optional generation cap. If `None`, mass applies its server default.
         limit: Option<u32>,
     },
 }

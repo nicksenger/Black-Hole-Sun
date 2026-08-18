@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::{
     CellInit, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest, ObjectId,
-    Progenitor, QuarkClient, QuarkModelConfig, QuarkModelParams, SequenceOutput, TestQuarkServer,
+    Progenitor, MassClient, MassModelConfig, MassModelParams, SequenceOutput, TestMassServer,
     TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use futures::StreamExt;
@@ -27,18 +27,18 @@ use common::*;
 #[derive(Animals)]
 pub struct SpaceAnimals(Progenitor);
 
-/// A Jungle implementation backed by void + quark servers over QUIC.
+/// A Jungle implementation backed by void + mass servers over QUIC.
 pub struct SpaceJungle {
     void_client: VoidClient,
-    quark_client: QuarkClient,
+    mass_client: MassClient,
     tokenizer: Arc<OnceLock<Result<Tokenizer, String>>>,
 }
 
 impl SpaceJungle {
-    pub fn new(void_client: VoidClient, quark_client: QuarkClient) -> Self {
+    pub fn new(void_client: VoidClient, mass_client: MassClient) -> Self {
         Self {
             void_client,
-            quark_client,
+            mass_client,
             tokenizer: Arc::new(OnceLock::new()),
         }
     }
@@ -96,45 +96,45 @@ impl VoidInferOps for SpaceJungle {
     async fn start_model(
         &self,
         model_id: Uuid,
-        model_config: Option<QuarkModelConfig>,
+        model_config: Option<MassModelConfig>,
     ) -> Result<(), String> {
-        self.quark_client.start(model_id, model_config).await
+        self.mass_client.start(model_id, model_config).await
     }
 
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
         let request_bytes = to_allocvec(&request).map_err(|e| format!("serialize: {e}"))?;
         let request_id = self.void_client.upload(request_bytes).await.unwrap();
-        self.quark_client.infer(model_id, request_id).await
+        self.mass_client.infer(model_id, request_id).await
     }
 
     async fn reset_model(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.reset(model_id).await
+        self.mass_client.reset(model_id).await
     }
 
     async fn checkpoint_model(&self, model_id: Uuid) -> Result<ObjectId, String> {
-        self.quark_client.checkpoint(model_id).await
+        self.mass_client.checkpoint(model_id).await
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
-        self.quark_client.perturb_up(model_id, seed).await
+        self.mass_client.perturb_up(model_id, seed).await
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.perturb_down(model_id).await
+        self.mass_client.perturb_down(model_id).await
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
-        self.quark_client
+        self.mass_client
             .optimize(model_id, loss_up, loss_down)
             .await
     }
 
-    async fn query_model_params(&self, model_id: Uuid) -> Result<QuarkModelParams, String> {
-        self.quark_client.query_model_params(model_id).await
+    async fn query_model_params(&self, model_id: Uuid) -> Result<MassModelParams, String> {
+        self.mass_client.query_model_params(model_id).await
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.shutdown(model_id).await
+        self.mass_client.shutdown(model_id).await
     }
 
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String> {
@@ -205,12 +205,12 @@ async fn connect_client_with_retry(remote: SocketAddr) -> jungle_sdk::Client {
 
 /// End-to-end test of black-hole-flux constructs through a Jungle Worker.
 ///
-/// This test exercises the void + quark higher-order flows from black-hole-flux:
+/// This test exercises the void + mass higher-order flows from black-hole-flux:
 /// perturbation (PerturbUp/Down), transmission waiting (WaitForPropagation),
-/// and quark inference (QuarkInfer).
+/// and mass inference (MassInfer).
 ///
 /// Flow:
-/// 1. Start void + quark servers on random ports.
+/// 1. Start void + mass servers on random ports.
 /// 2. Create a SpaceJungle with VoidInferOps backed by those servers.
 /// 3. Spawn a jungle-server (in-memory backend) and connect a client.
 /// 4. Upload a Propagation transmission to void, then spawn a Progenitor.
@@ -231,24 +231,24 @@ async fn cell() {
         None => return,
     };
 
-    // 1. Start void and quark servers on random ports.
+    // 1. Start void and mass servers on random ports.
     let void_server = TestVoidServer::new()
         .serve()
         .await
         .expect("failed to start void server");
-    let quark_server = TestQuarkServer::new(&model_path)
+    let mass_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .serve()
         .await
-        .expect("failed to start quark server");
+        .expect("failed to start mass server");
     let void_addr = void_server.local_addr();
-    let quark_addr = quark_server.local_addr();
+    let mass_addr = mass_server.local_addr();
 
-    // 2. Build the SpaceJungle with void/quark capabilities.
+    // 2. Build the SpaceJungle with void/mass capabilities.
     let endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
-    let quark_client = QuarkClient::new(&endpoint, quark_addr, "localhost");
-    let jungle = SpaceJungle::new(void_client.clone(), quark_client);
+    let mass_client = MassClient::new(&endpoint, mass_addr, "localhost");
+    let jungle = SpaceJungle::new(void_client.clone(), mass_client);
 
     // 3. Spawn a jungle-server with in-memory backend and connect a client.
     let listen_addr = reserve_local_addr();
@@ -461,5 +461,5 @@ async fn cell() {
     let _ = server_handle.await;
     drop(client);
     void_server.abort();
-    quark_server.abort();
+    mass_server.abort();
 }

@@ -1,4 +1,4 @@
-//! Atom module - quark-inference pipeline components.
+//! Atom module - mass-inference pipeline components.
 
 pub mod action;
 pub mod effect;
@@ -12,15 +12,15 @@ use uuid::Uuid;
 use crate::cell::action::CellState;
 use crate::model_config::{DefaultConfig, ModelConfig};
 use crate::EmissionId;
-use action::QuarkInferStep;
+use action::MassInferStep;
 
-const QUARK_INFER_BACKOFF_INITIAL_DELAY_MS: u64 = 100;
-const QUARK_INFER_BACKOFF_MAX_DELAY_MS: u64 = 10_000;
-const QUARK_INFER_BACKOFF_MULTIPLIER: u8 = 2;
+const MASS_INFER_BACKOFF_INITIAL_DELAY_MS: u64 = 100;
+const MASS_INFER_BACKOFF_MAX_DELAY_MS: u64 = 10_000;
+const MASS_INFER_BACKOFF_MULTIPLIER: u8 = 2;
 
 /// Runs one Atom inference step with automatic retry backoff.
 #[derive(Flow)]
-pub struct QuarkInferWithBackoff<
+pub struct MassInferWithBackoff<
     M: Serialize + DeserializeOwned + Send + 'static,
     S,
     H: ModelConfig,
@@ -29,10 +29,10 @@ pub struct QuarkInferWithBackoff<
         CellState<S>,
         (Uuid, EmissionId),
         EmissionId,
-        Step<QuarkInferStep<M, S, H>>,
-        QUARK_INFER_BACKOFF_INITIAL_DELAY_MS,
-        QUARK_INFER_BACKOFF_MAX_DELAY_MS,
-        QUARK_INFER_BACKOFF_MULTIPLIER,
+        Step<MassInferStep<M, S, H>>,
+        MASS_INFER_BACKOFF_INITIAL_DELAY_MS,
+        MASS_INFER_BACKOFF_MAX_DELAY_MS,
+        MASS_INFER_BACKOFF_MULTIPLIER,
     >,
 );
 
@@ -42,7 +42,7 @@ pub struct QuarkInferWithBackoff<
 /// the model instance owned by the surrounding Cell.
 ///
 /// `H` is the compile-time model configuration type used by the surrounding
-/// [`Cell`](crate::Cell) to configure per-instance quark startup defaults.
+/// [`Cell`](crate::Cell) to configure per-instance mass startup defaults.
 #[derive(Flow)]
 pub struct AtomWithState<
     In,
@@ -50,7 +50,7 @@ pub struct AtomWithState<
     M: Serialize + DeserializeOwned + Send + 'static,
     S,
     H: ModelConfig,
->(In, QuarkInferWithBackoff<M, S, H>, Out);
+>(In, MassInferWithBackoff<M, S, H>, Out);
 
 pub type Atom<In, Out, M, S = (), H = DefaultConfig> = AtomWithState<In, Out, M, S, H>;
 
@@ -61,11 +61,11 @@ pub struct NoBackoffAtom<
     M: Serialize + DeserializeOwned + Send + 'static,
     S,
     H: ModelConfig,
->(In, QuarkInferWithoutBackoff<M, S, H>, Out);
+>(In, MassInferWithoutBackoff<M, S, H>, Out);
 
 #[derive(Flow)]
-pub struct QuarkInferWithoutBackoff<
+pub struct MassInferWithoutBackoff<
     M: Serialize + DeserializeOwned + Send + 'static,
     S,
     H: ModelConfig,
->(Step<QuarkInferStep<M, S, H>>);
+>(Step<MassInferStep<M, S, H>>);

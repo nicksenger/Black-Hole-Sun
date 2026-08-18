@@ -1,4 +1,4 @@
-//! Twin effects — quark inference plus fusion stack transforms.
+//! Twin effects — mass inference plus fusion stack transforms.
 
 use std::future::Future;
 use std::marker::PhantomData;

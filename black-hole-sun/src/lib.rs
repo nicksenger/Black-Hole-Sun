@@ -3,21 +3,21 @@
 //! Use this crate as the single dependency point for black-hole-probe.
 
 mod accumulated_transmissions;
-mod quark_client;
+mod mass_client;
 #[cfg(feature = "test")]
 mod test_utils;
 mod tokenizer;
 mod void_client;
 
 pub use accumulated_transmissions::{AccumulatedTransmissions, Monoid};
-pub use black_hole_quark;
+pub use black_hole_mass;
 pub use black_hole_spec;
 pub use black_hole_void;
-pub use quark_client::QuarkClient;
+pub use mass_client::MassClient;
 #[cfg(feature = "test")]
 pub use test_utils::{
-    make_client_endpoint, NoCertVerifier, RunningTestQuarkServer, RunningTestVoidServer,
-    TestQuarkServer, TestVoidServer,
+    make_client_endpoint, NoCertVerifier, RunningTestMassServer, RunningTestVoidServer,
+    TestMassServer, TestVoidServer,
 };
 pub use tokenizer::{Tokenizer, TokenizerBuilder};
 pub use void_client::VoidClient;
@@ -33,9 +33,9 @@ pub use black_hole_flux::{
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, ObjectId, Potentiation, QuarkErrorFeedbackConfig,
-    QuarkErrorFeedbackMode, QuarkIn, QuarkModelCapacity, QuarkModelConfig, QuarkModelParams,
-    QuarkOut, SequenceOutput, Transmission,
+    InferenceRequest, LogitEntry, ObjectId, Potentiation, MassErrorFeedbackConfig,
+    MassErrorFeedbackMode, MassIn, MassModelCapacity, MassModelConfig, MassModelParams,
+    MassOut, SequenceOutput, Transmission,
 };
 
 // Convenience re-exports — void types
@@ -43,5 +43,5 @@ pub use black_hole_void::{
     init_tracing, object_store, persist, ServerBuilder as VoidServerBuilder, VoidIn, VoidOut,
 };
 
-// Convenience re-exports — quark types
-pub use black_hole_quark::ServerBuilder as QuarkServerBuilder;
+// Convenience re-exports — mass types
+pub use black_hole_mass::ServerBuilder as MassServerBuilder;

@@ -6,7 +6,7 @@ use crate::cell::CellState;
 use crate::Primordium;
 use crate::Ray;
 
-/// The Progenitor: the first and simplest cell — a bare quark-inference loop
+/// The Progenitor: the first and simplest cell — a bare mass-inference loop
 /// with no input/output processing and no metadata.
 #[derive(Clone)]
 pub struct Progenitor;

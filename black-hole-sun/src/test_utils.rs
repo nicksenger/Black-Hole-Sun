@@ -6,7 +6,7 @@ use std::time::Duration;
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
 
-use crate::{object_store, persist, QuarkServerBuilder, VoidServerBuilder};
+use crate::{object_store, persist, MassServerBuilder, VoidServerBuilder};
 
 /// Certificate verifier for local self-signed test certificates.
 #[derive(Debug)]
@@ -168,13 +168,13 @@ impl Default for TestVoidServer {
     }
 }
 
-/// Running test quark server handle.
-pub struct RunningTestQuarkServer {
+/// Running test mass server handle.
+pub struct RunningTestMassServer {
     local_addr: SocketAddr,
     abort_handle: tokio::task::AbortHandle,
 }
 
-impl RunningTestQuarkServer {
+impl RunningTestMassServer {
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
@@ -188,17 +188,17 @@ impl RunningTestQuarkServer {
     }
 }
 
-impl Drop for RunningTestQuarkServer {
+impl Drop for RunningTestMassServer {
     fn drop(&mut self) {
         self.abort_handle.abort();
     }
 }
 
-/// Builder for a local test quark server.
-pub struct TestQuarkServer {
+/// Builder for a local test mass server.
+pub struct TestMassServer {
     model_path: PathBuf,
     listen_addr: SocketAddr,
-    transport_mode: black_hole_quark::TransportMode,
+    transport_mode: black_hole_mass::TransportMode,
     void_addr: Option<SocketAddr>,
     tunnel: Option<SocketAddr>,
     tunnel_connect_deadline: Option<Duration>,
@@ -206,7 +206,7 @@ pub struct TestQuarkServer {
     top_k: Option<usize>,
     temperature: Option<f64>,
     top_p: Option<f64>,
-    kv_cache_quant: black_hole_quark::KvCacheQuantization,
+    kv_cache_quant: black_hole_mass::KvCacheQuantization,
     repeat_penalty: Option<f32>,
     presence_penalty: Option<f32>,
     default_inference_limit: Option<u32>,
@@ -215,12 +215,12 @@ pub struct TestQuarkServer {
     frozen: bool,
 }
 
-impl TestQuarkServer {
+impl TestMassServer {
     pub fn new(model_path: impl Into<PathBuf>) -> Self {
         Self {
             model_path: model_path.into(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
-            transport_mode: black_hole_quark::TransportMode::Quic,
+            transport_mode: black_hole_mass::TransportMode::Quic,
             void_addr: None,
             tunnel: None,
             tunnel_connect_deadline: None,
@@ -228,7 +228,7 @@ impl TestQuarkServer {
             top_k: None,
             temperature: None,
             top_p: None,
-            kv_cache_quant: black_hole_quark::KvCacheQuantization::Q8_0,
+            kv_cache_quant: black_hole_mass::KvCacheQuantization::Q8_0,
             repeat_penalty: None,
             presence_penalty: None,
             default_inference_limit: None,
@@ -255,7 +255,7 @@ impl TestQuarkServer {
     }
 
     pub fn tcp(mut self) -> Self {
-        self.transport_mode = black_hole_quark::TransportMode::Tcp;
+        self.transport_mode = black_hole_mass::TransportMode::Tcp;
         self
     }
 
@@ -294,13 +294,13 @@ impl TestQuarkServer {
         self
     }
 
-    pub fn kv_cache_quant(mut self, quant: black_hole_quark::KvCacheQuantization) -> Self {
+    pub fn kv_cache_quant(mut self, quant: black_hole_mass::KvCacheQuantization) -> Self {
         self.kv_cache_quant = quant;
         self
     }
 
     pub fn disable_kv_cache_quantization(mut self) -> Self {
-        self.kv_cache_quant = black_hole_quark::KvCacheQuantization::F16;
+        self.kv_cache_quant = black_hole_mass::KvCacheQuantization::F16;
         self
     }
 
@@ -334,8 +334,8 @@ impl TestQuarkServer {
         self
     }
 
-    pub async fn serve(self) -> Result<RunningTestQuarkServer, black_hole_quark::ServerError> {
-        let mut builder = QuarkServerBuilder::new(self.model_path)
+    pub async fn serve(self) -> Result<RunningTestMassServer, black_hole_mass::ServerError> {
+        let mut builder = MassServerBuilder::new(self.model_path)
             .transport_mode(self.transport_mode)
             .listen(self.listen_addr)
             .kv_cache_quant(self.kv_cache_quant);
@@ -382,7 +382,7 @@ impl TestQuarkServer {
         let (local_addr, handle) = builder.serve().await?;
         let abort_handle = handle.abort_handle();
         drop(handle);
-        Ok(RunningTestQuarkServer {
+        Ok(RunningTestMassServer {
             local_addr,
             abort_handle,
         })
@@ -391,7 +391,7 @@ impl TestQuarkServer {
 
 #[cfg(test)]
 mod tests {
-    use super::{TestQuarkServer, TestVoidServer};
+    use super::{TestMassServer, TestVoidServer};
     use std::net::SocketAddr;
 
     #[test]
@@ -403,8 +403,8 @@ mod tests {
     }
 
     #[test]
-    fn quark_server_listen_port_works_after_switching_to_all_interfaces() {
-        let server = TestQuarkServer::new("model-does-not-need-to-exist")
+    fn mass_server_listen_port_works_after_switching_to_all_interfaces() {
+        let server = TestMassServer::new("model-does-not-need-to-exist")
             .listen_on_all_interfaces()
             .listen_port(5656);
         assert_eq!(server.listen_addr, SocketAddr::from(([0, 0, 0, 0], 5656)));

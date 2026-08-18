@@ -1,4 +1,4 @@
-//! Twin actions - default `In` transforms plus quark inference step.
+//! Twin actions - default `In` transforms plus mass inference step.
 
 use std::marker::PhantomData;
 
@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::effect::{LeftStackEffect, RandStackEffect, RightStackEffect};
 
-pub use crate::cell::action::QuarkInferStep;
+pub use crate::cell::action::MassInferStep;
 
 /// Default `Twin` input transform that keeps left metadata and appends right
 /// dark tokens onto each corresponding left sequence.

@@ -1,4 +1,4 @@
-//! Atom effects — quark inference.
+//! Atom effects — mass inference.
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -16,15 +16,15 @@ use crate::ops::VoidInferOps;
 use crate::AtomError;
 
 // ---------------------------------------------------------------------------
-// QuarkInfer — download -> infer -> upload in a single effect
+// MassInfer — download -> infer -> upload in a single effect
 // ---------------------------------------------------------------------------
 
-/// Effect that performs one quark-inference step.
-pub struct QuarkInfer<M, H = DefaultConfig>(PhantomData<fn() -> (M, H)>);
+/// Effect that performs one mass-inference step.
+pub struct MassInfer<M, H = DefaultConfig>(PhantomData<fn() -> (M, H)>);
 
 #[jungle::effect(id = 58)]
 impl<M: Serialize + DeserializeOwned + Send + 'static, H, J: VoidInferOps> Effect<J>
-    for QuarkInfer<M, H>
+    for MassInfer<M, H>
 {
     type In = (Uuid, EmissionId);
     type Out = EmissionId;
@@ -52,13 +52,13 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, H, J: VoidInferOps> Effec
                 .infer(model_id, request)
                 .await
                 .map_err(AtomError::Inference)?;
-            debug!(%model_id, output_id = %output_id, "quark inference complete");
+            debug!(%model_id, output_id = %output_id, "mass inference complete");
 
             jungle
                 .reset_model(model_id)
                 .await
                 .map_err(AtomError::ModelReset)?;
-            debug!(%model_id, "quark model reset complete");
+            debug!(%model_id, "mass model reset complete");
 
             let output_emission = Emission {
                 metadata: emission.metadata,

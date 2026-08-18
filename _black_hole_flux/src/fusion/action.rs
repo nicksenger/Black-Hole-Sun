@@ -15,7 +15,7 @@ use super::effect::{
 };
 use crate::cell::action::Potentiation;
 use crate::cell::effect::{
-    QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, QuarkStart, Transmit as TransmitEffect,
+    MassOptimize, MassPerturbDown, MassPerturbUp, MassStart, Transmit as TransmitEffect,
 };
 use crate::model_config::{DefaultConfig, ModelConfig};
 
@@ -143,7 +143,7 @@ impl Action for GenerateTransformId {
     }
 }
 
-/// Starts the quark model instance keyed by this fusion journey's ID.
+/// Starts the mass model instance keyed by this fusion journey's ID.
 pub struct FusionStartModel<H = DefaultConfig>(PhantomData<fn() -> H>);
 
 #[jungle::action]
@@ -151,7 +151,7 @@ impl<H> Action for FusionStartModel<H>
 where
     H: ModelConfig,
 {
-    type Effect = QuarkStart<H>;
+    type Effect = MassStart<H>;
     type Input = ();
     type Output = ();
 
@@ -169,12 +169,12 @@ where
     }
 }
 
-/// Perturbs the quark model instance upward before one propagation pass.
+/// Perturbs the mass model instance upward before one propagation pass.
 pub struct FusionPerturbUp;
 
 #[jungle::action]
 impl Action for FusionPerturbUp {
-    type Effect = QuarkPerturbUp;
+    type Effect = MassPerturbUp;
     type Input = ();
     type Output = ();
 
@@ -190,12 +190,12 @@ impl Action for FusionPerturbUp {
     }
 }
 
-/// Perturbs the quark model instance downward between propagation passes.
+/// Perturbs the mass model instance downward between propagation passes.
 pub struct FusionPerturbDown;
 
 #[jungle::action]
 impl Action for FusionPerturbDown {
-    type Effect = QuarkPerturbDown;
+    type Effect = MassPerturbDown;
     type Input = ();
     type Output = ();
 
@@ -291,15 +291,15 @@ impl Action for FusionTransmit {
     }
 }
 
-/// Runs quark inference for one transformed fusion emission.
-pub struct FusionQuarkInferStep<M>(PhantomData<fn() -> M>);
+/// Runs mass inference for one transformed fusion emission.
+pub struct FusionMassInferStep<M>(PhantomData<fn() -> M>);
 
 #[jungle::action]
-impl<M> Action for FusionQuarkInferStep<M>
+impl<M> Action for FusionMassInferStep<M>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
 {
-    type Effect = crate::atom::effect::QuarkInfer<M>;
+    type Effect = crate::atom::effect::MassInfer<M>;
     type Input = EmissionId;
     type Output = EmissionId;
 
@@ -311,7 +311,7 @@ where
         _state: &mut FusionState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("fusion quark inference failed: {error}")))
+        output.map_err(|error| Failure::Message(format!("fusion mass inference failed: {error}")))
     }
 }
 
@@ -398,12 +398,12 @@ impl Action for WaitForFusionPotentiationForOptimize {
     }
 }
 
-/// Applies quark optimization using the synchronized fusion losses.
+/// Applies mass optimization using the synchronized fusion losses.
 pub struct FusionOptimize;
 
 #[jungle::action]
 impl Action for FusionOptimize {
-    type Effect = QuarkOptimize;
+    type Effect = MassOptimize;
     type Input = Potentiation;
     type Output = ();
 

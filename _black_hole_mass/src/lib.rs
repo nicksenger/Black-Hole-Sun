@@ -29,8 +29,8 @@ use uuid::Uuid;
 
 use black_hole_spec::{
     DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId,
-    QuarkErrorFeedbackConfig, QuarkIn, QuarkModelCapacity, QuarkModelConfig, QuarkModelParams,
-    QuarkOut, SequenceOutput, TunnelRequest,
+    MassErrorFeedbackConfig, MassIn, MassModelCapacity, MassModelConfig, MassModelParams,
+    MassOut, SequenceOutput, TunnelRequest,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -44,7 +44,7 @@ const DEFAULT_INFERENCE_LIMIT: u32 = 256;
 const DEFAULT_MAX_INSTANCES: usize = 1;
 const DEFAULT_CHECKPOINT_TOKENIZER_FILE: &str = "tokenizer.json";
 const DEFAULT_CHECKPOINT_TOKENIZER_DIR: &str = ".black-hole-sun/tokenizers";
-const CHECKPOINT_CACHE_DIR: &str = "black-hole-quark/checkpoints";
+const CHECKPOINT_CACHE_DIR: &str = "black-hole-mass/checkpoints";
 const DEFAULT_TUNNEL_CONNECT_RETRY_MS: u64 = 200;
 const MAX_TUNNEL_CONNECT_RETRY_MS: u64 = 25_600;
 const TUNNEL_REGISTRATION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -285,7 +285,7 @@ impl VoidClient {
     }
 }
 
-enum QuarkRpcClientInner {
+enum MassRpcClientInner {
     Quic {
         endpoint: quinn::Endpoint,
         remote_addr: SocketAddr,
@@ -295,9 +295,9 @@ enum QuarkRpcClientInner {
     },
 }
 
-/// A client connection to another quark server.
-struct QuarkRpcClient {
-    inner: QuarkRpcClientInner,
+/// A client connection to another mass server.
+struct MassRpcClient {
+    inner: MassRpcClientInner,
 }
 
 #[derive(Clone)]
@@ -317,7 +317,7 @@ impl TunnelConnectionHandle {
 
 struct ParentTunnelSession {
     // Holds the client endpoint open for the lifetime of the parent tunnel.
-    _client: QuarkRpcClient,
+    _client: MassRpcClient,
     connection: TunnelConnectionHandle,
 }
 
@@ -328,20 +328,20 @@ enum RpcConnection {
 
 #[derive(Debug, Serialize, Deserialize)]
 enum TunnelTcpEnvelope {
-    Request { request_id: u64, request: QuarkIn },
-    Response { request_id: u64, response: QuarkOut },
+    Request { request_id: u64, request: MassIn },
+    Response { request_id: u64, response: MassOut },
 }
 
 #[derive(Debug)]
 struct TunnelTcpRequest {
     request_id: u64,
-    request: QuarkIn,
+    request: MassIn,
 }
 
 struct TcpTunnelSession {
     outbound: mpsc::Sender<TunnelTcpEnvelope>,
     inbound: Mutex<mpsc::Receiver<TunnelTcpRequest>>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<QuarkOut>>>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<MassOut>>>,
     next_request_id: AtomicU64,
     closed_tx: tokio::sync::watch::Sender<bool>,
     reader_abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
@@ -466,7 +466,7 @@ impl TcpTunnelSession {
 
         let mut pending = self.pending.lock().await;
         for (_, waiter) in pending.drain() {
-            let _ = waiter.send(QuarkOut::Error {
+            let _ = waiter.send(MassOut::Error {
                 message: reason.to_string(),
             });
         }
@@ -486,7 +486,7 @@ impl TcpTunnelSession {
         self.mark_closed(reason).await;
     }
 
-    async fn call(&self, request: QuarkIn) -> Result<QuarkOut> {
+    async fn call(&self, request: MassIn) -> Result<MassOut> {
         if *self.closed_tx.borrow() {
             return Err(ServerError::TunnelTcpSessionClosed);
         }
@@ -513,7 +513,7 @@ impl TcpTunnelSession {
         }
     }
 
-    async fn send_response(&self, request_id: u64, response: QuarkOut) -> Result<()> {
+    async fn send_response(&self, request_id: u64, response: MassOut) -> Result<()> {
         self.outbound
             .send(TunnelTcpEnvelope::Response {
                 request_id,
@@ -528,7 +528,7 @@ impl TcpTunnelSession {
     }
 }
 
-impl QuarkRpcClient {
+impl MassRpcClient {
     async fn connect(addr: SocketAddr, transport_mode: TransportMode) -> Result<Self> {
         let inner = match transport_mode {
             TransportMode::Quic => {
@@ -545,19 +545,19 @@ impl QuarkRpcClient {
                 let mut endpoint =
                     quinn::Endpoint::client(local_addr).map_err(ServerError::BindTunnelClient)?;
                 endpoint.set_default_client_config(client_config);
-                QuarkRpcClientInner::Quic {
+                MassRpcClientInner::Quic {
                     endpoint,
                     remote_addr: addr,
                 }
             }
-            TransportMode::Tcp => QuarkRpcClientInner::Tcp { remote_addr: addr },
+            TransportMode::Tcp => MassRpcClientInner::Tcp { remote_addr: addr },
         };
         Ok(Self { inner })
     }
 
     async fn establish_connection(&self) -> Result<RpcConnection> {
         match &self.inner {
-            QuarkRpcClientInner::Quic {
+            MassRpcClientInner::Quic {
                 endpoint,
                 remote_addr,
             } => {
@@ -569,7 +569,7 @@ impl QuarkRpcClient {
                     .map_err(|e| ServerError::TunnelConnect(e.to_string()))?;
                 Ok(RpcConnection::Quic(connection))
             }
-            QuarkRpcClientInner::Tcp { remote_addr } => {
+            MassRpcClientInner::Tcp { remote_addr } => {
                 let stream = TcpStream::connect(*remote_addr)
                     .await
                     .map_err(|e| ServerError::TunnelTcpConnect(e.to_string()))?;
@@ -581,8 +581,8 @@ impl QuarkRpcClient {
 
 async fn request_over_connection(
     connection: &TunnelConnectionHandle,
-    req: QuarkIn,
-) -> Result<QuarkOut> {
+    req: MassIn,
+) -> Result<MassOut> {
     match connection {
         TunnelConnectionHandle::Quic(connection) => {
             let (mut send, mut recv) = connection
@@ -678,7 +678,7 @@ where
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QuarkState {
+enum MassState {
     /// Initial or post-update: next expected step is PerturbUp.
     Idle,
     /// After PerturbUp: waiting for the first up-inference.
@@ -691,17 +691,17 @@ enum QuarkState {
     AwaitingOptimize,
 }
 
-struct QuarkSession {
-    state: QuarkState,
+struct MassSession {
+    state: MassState,
     running: bool,
     frozen: bool,
     optimize_steps: u32,
 }
 
-impl QuarkSession {
+impl MassSession {
     fn new(frozen: bool) -> Self {
         Self {
-            state: QuarkState::Idle,
+            state: MassState::Idle,
             running: true,
             frozen,
             optimize_steps: 0,
@@ -721,12 +721,12 @@ struct FrozenOscillation {
 // Server context — shared across connections
 // ---------------------------------------------------------------------------
 
-struct QuarkInstance {
+struct MassInstance {
     engine: ModelEngine,
     runtime_config: ModelRuntimeConfig,
     oscillation: Option<FrozenOscillation>,
     checkpoint_path: Option<PathBuf>,
-    session: tokio::sync::Mutex<QuarkSession>,
+    session: tokio::sync::Mutex<MassSession>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -742,7 +742,7 @@ struct ModelRuntimeConfig {
     training_z_loss: f64,
     training_lb_loss: f64,
     training_clip_threshold: f64,
-    training_error_feedback: QuarkErrorFeedbackConfig,
+    training_error_feedback: MassErrorFeedbackConfig,
 }
 
 struct ResolvedModelSource {
@@ -753,11 +753,11 @@ struct ResolvedModelSource {
 
 enum ModelSlot {
     Starting,
-    Running(Arc<QuarkInstance>),
+    Running(Arc<MassInstance>),
     ShuttingDown,
 }
 
-enum QuarkMode {
+enum MassMode {
     Root,
     Worker(Arc<WorkerModeState>),
 }
@@ -784,14 +784,14 @@ struct TunnelWorker {
     max_instances: Option<usize>,
 }
 
-struct QuarkContext {
+struct MassContext {
     model_path: PathBuf,
     transport_mode: TransportMode,
     void_client: Option<Arc<VoidClient>>,
-    defaults: QuarkServerDefaults,
+    defaults: MassServerDefaults,
     frozen: bool,
     max_instances: Option<usize>,
-    mode: QuarkMode,
+    mode: MassMode,
     start_dispatch: tokio::sync::Mutex<()>,
     routes: tokio::sync::RwLock<HashMap<Uuid, RouteTarget>>,
     workers: tokio::sync::RwLock<HashMap<Uuid, TunnelWorker>>,
@@ -800,7 +800,7 @@ struct QuarkContext {
 }
 
 #[derive(Clone)]
-struct QuarkServerDefaults {
+struct MassServerDefaults {
     top_k: usize,
     temperature: f64,
     top_p: Option<f64>,
@@ -809,10 +809,10 @@ struct QuarkServerDefaults {
     presence_penalty: f32,
     inference_limit: u32,
     training_config: TrainingConfig,
-    training_error_feedback: QuarkErrorFeedbackConfig,
+    training_error_feedback: MassErrorFeedbackConfig,
 }
 
-impl Default for QuarkServerDefaults {
+impl Default for MassServerDefaults {
     fn default() -> Self {
         Self {
             top_k: DEFAULT_ENGINE_TOP_K,
@@ -823,13 +823,13 @@ impl Default for QuarkServerDefaults {
             presence_penalty: DEFAULT_ENGINE_PRESENCE_PENALTY,
             inference_limit: DEFAULT_INFERENCE_LIMIT,
             training_config: TrainingConfig::default(),
-            training_error_feedback: QuarkErrorFeedbackConfig::Off,
+            training_error_feedback: MassErrorFeedbackConfig::Off,
         }
     }
 }
 
-impl QuarkServerDefaults {
-    fn with_overrides(&self, model_config: Option<&QuarkModelConfig>) -> Self {
+impl MassServerDefaults {
+    fn with_overrides(&self, model_config: Option<&MassModelConfig>) -> Self {
         let mut resolved = self.clone();
         if let Some(model_config) = model_config {
             if let Some(top_k) = model_config.top_k {
@@ -873,13 +873,13 @@ impl QuarkServerDefaults {
     }
 }
 
-fn to_engine_error_feedback(config: QuarkErrorFeedbackConfig) -> ErrorFeedbackMode {
+fn to_engine_error_feedback(config: MassErrorFeedbackConfig) -> ErrorFeedbackMode {
     match config {
-        QuarkErrorFeedbackConfig::Off => ErrorFeedbackMode::None,
-        QuarkErrorFeedbackConfig::Persistent { decay, gain } => {
+        MassErrorFeedbackConfig::Off => ErrorFeedbackMode::None,
+        MassErrorFeedbackConfig::Persistent { decay, gain } => {
             ErrorFeedbackMode::Persistent(ErrorFeedbackParams { decay, gain })
         }
-        QuarkErrorFeedbackConfig::Replay { steps, decay, gain } => {
+        MassErrorFeedbackConfig::Replay { steps, decay, gain } => {
             ErrorFeedbackMode::Replay(ReplayParams { steps, decay, gain })
         }
     }
@@ -906,7 +906,7 @@ pub struct ServerBuilder {
     tunnel: Option<SocketAddr>,
     tunnel_connect_deadline: Option<Duration>,
     max_instances: Option<usize>,
-    defaults: QuarkServerDefaults,
+    defaults: MassServerDefaults,
 }
 
 impl ServerBuilder {
@@ -926,7 +926,7 @@ impl ServerBuilder {
             tunnel: None,
             tunnel_connect_deadline: None,
             max_instances: Some(DEFAULT_MAX_INSTANCES),
-            defaults: QuarkServerDefaults::default(),
+            defaults: MassServerDefaults::default(),
         }
     }
 
@@ -976,7 +976,7 @@ impl ServerBuilder {
         self
     }
 
-    /// Register this quark as a tunnel worker of the parent at `addr`.
+    /// Register this mass as a tunnel worker of the parent at `addr`.
     pub fn tunnel(mut self, addr: SocketAddr) -> Self {
         self.tunnel = Some(addr);
         self
@@ -988,7 +988,7 @@ impl ServerBuilder {
         self
     }
 
-    /// Limit concurrent model instances handled by this quark.
+    /// Limit concurrent model instances handled by this mass.
     pub fn max_instances(mut self, limit: usize) -> Self {
         self.max_instances = Some(limit);
         self
@@ -1061,7 +1061,7 @@ impl ServerBuilder {
     }
 
     /// Build the void client, endpoint and shared server context.
-    async fn setup(self) -> Result<(QuarkListener, SocketAddr, Arc<QuarkContext>)> {
+    async fn setup(self) -> Result<(MassListener, SocketAddr, Arc<MassContext>)> {
         let configured_model_path = resolve_configured_model_path(&self.model_path);
         let model_path_str = configured_model_path.to_string_lossy().to_string();
         info!(model_path = %model_path_str, "configured model");
@@ -1109,7 +1109,7 @@ impl ServerBuilder {
                     Arc::new(runtime),
                 )
                 .map_err(ServerError::BindEndpoint)?;
-                QuarkListener::Quic(endpoint)
+                MassListener::Quic(endpoint)
             }
             TransportMode::Tcp => {
                 if self.keylog || self.key.is_some() || self.cert.is_some() {
@@ -1123,7 +1123,7 @@ impl ServerBuilder {
                 let listener = TcpListener::bind(self.listen)
                     .await
                     .map_err(ServerError::BindTcpListener)?;
-                QuarkListener::Tcp(listener)
+                MassListener::Tcp(listener)
             }
         };
 
@@ -1162,7 +1162,7 @@ impl ServerBuilder {
                 token = %tunnel_token,
                 "tunnel worker registered"
             );
-            QuarkMode::Worker(Arc::new(WorkerModeState {
+            MassMode::Worker(Arc::new(WorkerModeState {
                 parent_addr,
                 worker_id,
                 transport_mode: self.transport_mode,
@@ -1171,10 +1171,10 @@ impl ServerBuilder {
                 tunnel_connect_deadline: self.tunnel_connect_deadline,
             }))
         } else {
-            QuarkMode::Root
+            MassMode::Root
         };
 
-        let context = Arc::new(QuarkContext {
+        let context = Arc::new(MassContext {
             model_path: configured_model_path,
             transport_mode: self.transport_mode,
             void_client,
@@ -1209,12 +1209,12 @@ impl ServerBuilder {
     }
 
     async fn run_server_loops(
-        listener: QuarkListener,
-        context: Arc<QuarkContext>,
+        listener: MassListener,
+        context: Arc<MassContext>,
         stateless_retry: bool,
     ) -> Result<()> {
         let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        if matches!(&context.mode, QuarkMode::Worker(_)) {
+        if matches!(&context.mode, MassMode::Worker(_)) {
             let transport_mode = context.transport_mode;
             match transport_mode {
                 TransportMode::Quic => {
@@ -1239,13 +1239,13 @@ impl ServerBuilder {
 
     /// Accept-loop shared by both `run()` and `serve()`.
     async fn accept_loop(
-        listener: QuarkListener,
-        context: Arc<QuarkContext>,
+        listener: MassListener,
+        context: Arc<MassContext>,
         stateless_retry: bool,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
         match listener {
-            QuarkListener::Quic(endpoint) => loop {
+            MassListener::Quic(endpoint) => loop {
                 let conn = tokio::select! {
                     incoming = endpoint.accept() => match incoming {
                         Some(c) => c,
@@ -1272,7 +1272,7 @@ impl ServerBuilder {
                 let ctx = Arc::clone(&context);
                 tokio::spawn(handle_connection(conn, ctx, shutdown_rx.clone()));
             },
-            QuarkListener::Tcp(listener) => loop {
+            MassListener::Tcp(listener) => loop {
                 let accepted = tokio::select! {
                     accepted = listener.accept() => accepted.map_err(ServerError::AcceptTcpConnection)?,
                     changed = shutdown_rx.changed() => {
@@ -1299,12 +1299,12 @@ impl Default for ServerBuilder {
     }
 }
 
-enum QuarkListener {
+enum MassListener {
     Quic(quinn::Endpoint),
     Tcp(TcpListener),
 }
 
-impl QuarkListener {
+impl MassListener {
     fn local_addr(&self) -> io::Result<SocketAddr> {
         match self {
             Self::Quic(endpoint) => endpoint.local_addr(),
@@ -1319,7 +1319,7 @@ impl QuarkListener {
 
 async fn handle_connection(
     incoming: quinn::Incoming,
-    context: Arc<QuarkContext>,
+    context: Arc<MassContext>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let connection = match incoming.await {
@@ -1363,10 +1363,10 @@ async fn handle_connection(
     }
 }
 
-async fn parent_tunnel_stream_loop(context: Arc<QuarkContext>) {
+async fn parent_tunnel_stream_loop(context: Arc<MassContext>) {
     let worker_mode = match &context.mode {
-        QuarkMode::Worker(worker_mode) => Arc::clone(worker_mode),
-        QuarkMode::Root => return,
+        MassMode::Worker(worker_mode) => Arc::clone(worker_mode),
+        MassMode::Root => return,
     };
     let mut last_connection_id: Option<usize> = None;
     let mut logged_closed_for_connection = false;
@@ -1428,10 +1428,10 @@ async fn parent_tunnel_stream_loop(context: Arc<QuarkContext>) {
     }
 }
 
-async fn parent_tunnel_tcp_session_loop(context: Arc<QuarkContext>) {
+async fn parent_tunnel_tcp_session_loop(context: Arc<MassContext>) {
     let worker_mode = match &context.mode {
-        QuarkMode::Worker(worker_mode) => Arc::clone(worker_mode),
-        QuarkMode::Root => return,
+        MassMode::Worker(worker_mode) => Arc::clone(worker_mode),
+        MassMode::Root => return,
     };
 
     loop {
@@ -1464,13 +1464,13 @@ async fn parent_tunnel_tcp_session_loop(context: Arc<QuarkContext>) {
 async fn handle_tunnel_tcp_request(
     request: TunnelTcpRequest,
     session: Arc<TcpTunnelSession>,
-    context: Arc<QuarkContext>,
+    context: Arc<MassContext>,
 ) {
     let out = match handle_request(request.request, &context, None).await {
         Ok(out) => out,
         Err(error) => {
             warn!(error = %error, "tunnel tcp request failed");
-            QuarkOut::Error {
+            MassOut::Error {
                 message: error.to_string(),
             }
         }
@@ -1483,7 +1483,7 @@ async fn handle_tunnel_tcp_request(
 async fn set_worker_connection(
     token: Uuid,
     connection: TunnelConnectionHandle,
-    ctx: &QuarkContext,
+    ctx: &MassContext,
 ) {
     let old_connection = ctx
         .worker_connections
@@ -1500,7 +1500,7 @@ async fn set_worker_connection(
 async fn drive_worker_tcp_session(
     token: Uuid,
     session: Arc<TcpTunnelSession>,
-    context: Arc<QuarkContext>,
+    context: Arc<MassContext>,
 ) {
     loop {
         let Some(request) = session.recv_request().await else {
@@ -1525,9 +1525,9 @@ async fn drive_worker_tcp_session(
     }
 }
 
-async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<QuarkContext>) {
+async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<MassContext>) {
     loop {
-        let req: QuarkIn = match read_frame_io(&mut stream).await {
+        let req: MassIn = match read_frame_io(&mut stream).await {
             Ok(req) => req,
             Err(ServerError::UnexpectedEof) => return,
             Err(error) => {
@@ -1537,14 +1537,14 @@ async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<QuarkContext>
         };
 
         match req {
-            QuarkIn::RegisterTunnel {
+            MassIn::RegisterTunnel {
                 worker_id,
                 max_instances,
             } => {
                 let out =
                     match handle_register_tunnel(worker_id, max_instances, None, &context).await {
                         Ok(out) => out,
-                        Err(error) => QuarkOut::Error {
+                        Err(error) => MassOut::Error {
                             message: error.to_string(),
                         },
                     };
@@ -1552,7 +1552,7 @@ async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<QuarkContext>
                     warn!(error = %error, "failed to write tcp tunnel registration response");
                     return;
                 }
-                let QuarkOut::TunnelRegistered { token } = out else {
+                let MassOut::TunnelRegistered { token } = out else {
                     return;
                 };
                 let session = TcpTunnelSession::new(stream);
@@ -1568,7 +1568,7 @@ async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<QuarkContext>
             req => {
                 let out = match handle_request(req, &context, None).await {
                     Ok(out) => out,
-                    Err(error) => QuarkOut::Error {
+                    Err(error) => MassOut::Error {
                         message: error.to_string(),
                     },
                 };
@@ -1596,15 +1596,15 @@ async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<QuarkContext>
 
 async fn handle_stream(
     (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
-    context: Arc<QuarkContext>,
+    context: Arc<MassContext>,
     connection: Option<TunnelConnectionHandle>,
 ) {
-    let req: QuarkIn = match read_frame_quic(&mut recv).await {
+    let req: MassIn = match read_frame_quic(&mut recv).await {
         Ok(r) => r,
         Err(e) => {
             let _ = write_frame_quic(
                 &mut send,
-                &QuarkOut::Error {
+                &MassOut::Error {
                     message: e.to_string(),
                 },
             )
@@ -1619,7 +1619,7 @@ async fn handle_stream(
         Ok(o) => o,
         Err(error) => {
             warn!(error = %error, "request failed");
-            QuarkOut::Error {
+            MassOut::Error {
                 message: error.to_string(),
             }
         }
@@ -1631,50 +1631,50 @@ async fn handle_stream(
 }
 
 async fn handle_request(
-    req: QuarkIn,
-    ctx: &QuarkContext,
+    req: MassIn,
+    ctx: &MassContext,
     connection: Option<TunnelConnectionHandle>,
-) -> Result<QuarkOut> {
+) -> Result<MassOut> {
     match req {
-        QuarkIn::RegisterTunnel {
+        MassIn::RegisterTunnel {
             worker_id,
             max_instances,
         } => handle_register_tunnel(worker_id, max_instances, connection, ctx).await,
-        QuarkIn::UpdateTunnelCapacity {
+        MassIn::UpdateTunnelCapacity {
             token,
             max_instances,
         } => handle_update_tunnel_capacity(token, max_instances, ctx).await,
-        QuarkIn::TunnelForward { token, request } => {
+        MassIn::TunnelForward { token, request } => {
             handle_tunnel_forward(token, request, ctx).await
         }
-        QuarkIn::Start {
+        MassIn::Start {
             model_id,
             model_config,
         } => handle_start_routed(model_id, model_config, ctx).await,
-        QuarkIn::PerturbUp { model_id, seed } => {
+        MassIn::PerturbUp { model_id, seed } => {
             handle_perturb_up_routed(model_id, seed, ctx).await
         }
-        QuarkIn::Infer { model_id, input_id } => handle_infer_routed(model_id, input_id, ctx).await,
-        QuarkIn::Reset { model_id } => handle_reset_routed(model_id, ctx).await,
-        QuarkIn::PerturbDown { model_id } => handle_perturb_down_routed(model_id, ctx).await,
-        QuarkIn::Checkpoint { model_id } => handle_checkpoint_routed(model_id, ctx).await,
-        QuarkIn::Optimize {
+        MassIn::Infer { model_id, input_id } => handle_infer_routed(model_id, input_id, ctx).await,
+        MassIn::Reset { model_id } => handle_reset_routed(model_id, ctx).await,
+        MassIn::PerturbDown { model_id } => handle_perturb_down_routed(model_id, ctx).await,
+        MassIn::Checkpoint { model_id } => handle_checkpoint_routed(model_id, ctx).await,
+        MassIn::Optimize {
             model_id,
             loss_up,
             loss_down,
         } => handle_optimize_routed(model_id, loss_up, loss_down, ctx).await,
-        QuarkIn::Shutdown { model_id } => handle_shutdown_routed(model_id, ctx).await,
-        QuarkIn::QueryModelParams { model_id } => {
+        MassIn::Shutdown { model_id } => handle_shutdown_routed(model_id, ctx).await,
+        MassIn::QueryModelParams { model_id } => {
             handle_query_model_params_routed(model_id, ctx).await
         }
-        QuarkIn::QueryModelCapacity => handle_query_model_capacity(ctx).await,
+        MassIn::QueryModelCapacity => handle_query_model_capacity(ctx).await,
     }
 }
 
-fn ensure_root_mode(ctx: &QuarkContext) -> Result<()> {
+fn ensure_root_mode(ctx: &MassContext) -> Result<()> {
     match &ctx.mode {
-        QuarkMode::Root => Ok(()),
-        QuarkMode::Worker(_) => Err(ServerError::TunnelWorkerRejectsModelRequests),
+        MassMode::Root => Ok(()),
+        MassMode::Worker(_) => Err(ServerError::TunnelWorkerRejectsModelRequests),
     }
 }
 
@@ -1684,27 +1684,27 @@ async fn register_tunnel_worker(
     max_instances: Option<usize>,
     transport_mode: TransportMode,
 ) -> Result<(Uuid, ParentTunnelSession)> {
-    let client = QuarkRpcClient::connect(parent_addr, transport_mode).await?;
+    let client = MassRpcClient::connect(parent_addr, transport_mode).await?;
     let connection = client.establish_connection().await?;
     match connection {
         RpcConnection::Quic(connection) => {
             let out = request_over_connection(
                 &TunnelConnectionHandle::Quic(connection.clone()),
-                QuarkIn::RegisterTunnel {
+                MassIn::RegisterTunnel {
                     worker_id,
                     max_instances,
                 },
             )
             .await?;
             match out {
-                QuarkOut::TunnelRegistered { token } => Ok((
+                MassOut::TunnelRegistered { token } => Ok((
                     token,
                     ParentTunnelSession {
                         _client: client,
                         connection: TunnelConnectionHandle::Quic(connection),
                     },
                 )),
-                QuarkOut::Error { message } => {
+                MassOut::Error { message } => {
                     Err(ServerError::TunnelRegistrationRejected(message))
                 }
                 _ => Err(ServerError::UnexpectedTunnelResponse(
@@ -1715,22 +1715,22 @@ async fn register_tunnel_worker(
         RpcConnection::Tcp(mut stream) => {
             write_frame_io(
                 &mut stream,
-                &QuarkIn::RegisterTunnel {
+                &MassIn::RegisterTunnel {
                     worker_id,
                     max_instances,
                 },
             )
             .await?;
-            let out: QuarkOut = read_frame_io(&mut stream).await?;
+            let out: MassOut = read_frame_io(&mut stream).await?;
             match out {
-                QuarkOut::TunnelRegistered { token } => Ok((
+                MassOut::TunnelRegistered { token } => Ok((
                     token,
                     ParentTunnelSession {
                         _client: client,
                         connection: TunnelConnectionHandle::Tcp(TcpTunnelSession::new(stream)),
                     },
                 )),
-                QuarkOut::Error { message } => {
+                MassOut::Error { message } => {
                     Err(ServerError::TunnelRegistrationRejected(message))
                 }
                 _ => Err(ServerError::UnexpectedTunnelResponse(
@@ -1805,15 +1805,15 @@ async fn update_tunnel_capacity(
 ) -> Result<()> {
     let out = request_over_connection(
         parent_connection,
-        QuarkIn::UpdateTunnelCapacity {
+        MassIn::UpdateTunnelCapacity {
             token: tunnel_token,
             max_instances,
         },
     )
     .await?;
     match out {
-        QuarkOut::Ack => Ok(()),
-        QuarkOut::Error { message } => Err(ServerError::TunnelCapacityUpdateRejected(message)),
+        MassOut::Ack => Ok(()),
+        MassOut::Error { message } => Err(ServerError::TunnelCapacityUpdateRejected(message)),
         _ => Err(ServerError::UnexpectedTunnelResponse(
             "update tunnel capacity response",
         )),
@@ -1827,7 +1827,7 @@ fn sum_capacity(lhs: Option<usize>, rhs: Option<usize>) -> Option<usize> {
     }
 }
 
-async fn advertised_capacity(ctx: &QuarkContext) -> Option<usize> {
+async fn advertised_capacity(ctx: &MassContext) -> Option<usize> {
     let mut total = ctx.max_instances;
     for worker in ctx.workers.read().await.values() {
         total = sum_capacity(total, worker.max_instances);
@@ -1835,10 +1835,10 @@ async fn advertised_capacity(ctx: &QuarkContext) -> Option<usize> {
     total
 }
 
-async fn propagate_capacity_to_parent(ctx: &QuarkContext) -> Result<()> {
+async fn propagate_capacity_to_parent(ctx: &MassContext) -> Result<()> {
     match &ctx.mode {
-        QuarkMode::Root => Ok(()),
-        QuarkMode::Worker(worker_mode) => {
+        MassMode::Root => Ok(()),
+        MassMode::Worker(worker_mode) => {
             let max_instances = advertised_capacity(ctx).await;
             let tunnel_token = *worker_mode.tunnel_token.read().await;
             let parent_connection = {
@@ -1894,7 +1894,7 @@ async fn propagate_capacity_to_parent(ctx: &QuarkContext) -> Result<()> {
     }
 }
 
-async fn maintain_parent_registration_loop(context: Arc<QuarkContext>) {
+async fn maintain_parent_registration_loop(context: Arc<MassContext>) {
     loop {
         tokio::time::sleep(TUNNEL_REGISTRATION_REFRESH_INTERVAL).await;
         if let Err(error) = propagate_capacity_to_parent(context.as_ref()).await {
@@ -1910,8 +1910,8 @@ async fn handle_register_tunnel(
     worker_id: Uuid,
     max_instances: Option<usize>,
     connection: Option<TunnelConnectionHandle>,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     let max_instances = resolve_max_instances(max_instances);
 
     let token = {
@@ -1943,14 +1943,14 @@ async fn handle_register_tunnel(
     propagate_capacity_to_parent(ctx).await?;
 
     info!(%worker_id, ?max_instances, token = %token, "registered tunnel worker");
-    Ok(QuarkOut::TunnelRegistered { token })
+    Ok(MassOut::TunnelRegistered { token })
 }
 
 async fn handle_update_tunnel_capacity(
     token: Uuid,
     max_instances: Option<usize>,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     let max_instances = resolve_max_instances(max_instances);
     let mut workers = ctx.workers.write().await;
     let worker = workers
@@ -1962,16 +1962,16 @@ async fn handle_update_tunnel_capacity(
     propagate_capacity_to_parent(ctx).await?;
 
     debug!(token = %token, ?max_instances, "updated tunnel worker capacity");
-    Ok(QuarkOut::Ack)
+    Ok(MassOut::Ack)
 }
 
 async fn handle_tunnel_forward(
     token: Uuid,
     request: TunnelRequest,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     match &ctx.mode {
-        QuarkMode::Worker(worker_mode) => {
+        MassMode::Worker(worker_mode) => {
             let tunnel_token = *worker_mode.tunnel_token.read().await;
             if tunnel_token == token {
                 handle_tunnel_request_local(request, ctx).await
@@ -1979,14 +1979,14 @@ async fn handle_tunnel_forward(
                 Err(ServerError::TunnelUnauthorizedForward)
             }
         }
-        QuarkMode::Root => Err(ServerError::TunnelForwardUnsupportedOnRoot),
+        MassMode::Root => Err(ServerError::TunnelForwardUnsupportedOnRoot),
     }
 }
 
 async fn handle_tunnel_request_local(
     request: TunnelRequest,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     match request {
         TunnelRequest::Start {
             model_id,
@@ -2017,7 +2017,7 @@ async fn handle_tunnel_request_local(
     }
 }
 
-async fn route_for_model(model_id: Uuid, ctx: &QuarkContext) -> Result<RouteTarget> {
+async fn route_for_model(model_id: Uuid, ctx: &MassContext) -> Result<RouteTarget> {
     ctx.routes
         .read()
         .await
@@ -2030,7 +2030,7 @@ fn has_capacity(limit: Option<usize>, current: usize) -> bool {
     limit.is_none_or(|max| current < max)
 }
 
-async fn select_start_target(ctx: &QuarkContext) -> Result<RouteTarget> {
+async fn select_start_target(ctx: &MassContext) -> Result<RouteTarget> {
     let routes = ctx.routes.read().await;
     let local_count = ctx.instances.read().await.len();
     let mut worker_counts: HashMap<Uuid, usize> = HashMap::new();
@@ -2069,7 +2069,7 @@ async fn select_start_target(ctx: &QuarkContext) -> Result<RouteTarget> {
         .ok_or(ServerError::NoTunnelCapacity)
 }
 
-async fn get_worker(token: Uuid, ctx: &QuarkContext) -> Result<TunnelWorker> {
+async fn get_worker(token: Uuid, ctx: &MassContext) -> Result<TunnelWorker> {
     ctx.workers
         .read()
         .await
@@ -2078,7 +2078,7 @@ async fn get_worker(token: Uuid, ctx: &QuarkContext) -> Result<TunnelWorker> {
         .ok_or(ServerError::TunnelWorkerUnavailable(token))
 }
 
-async fn get_worker_connection(token: Uuid, ctx: &QuarkContext) -> Result<TunnelConnectionHandle> {
+async fn get_worker_connection(token: Uuid, ctx: &MassContext) -> Result<TunnelConnectionHandle> {
     ctx.worker_connections
         .read()
         .await
@@ -2090,13 +2090,13 @@ async fn get_worker_connection(token: Uuid, ctx: &QuarkContext) -> Result<Tunnel
 async fn forward_tunnel_request(
     worker_token: Uuid,
     request: TunnelRequest,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     let _worker = get_worker(worker_token, ctx).await?;
     let connection = get_worker_connection(worker_token, ctx).await?;
     let out = request_over_connection(
         &connection,
-        QuarkIn::TunnelForward {
+        MassIn::TunnelForward {
             token: worker_token,
             request,
         },
@@ -2104,27 +2104,27 @@ async fn forward_tunnel_request(
     .await
     .map_err(|error| ServerError::TunnelWorkerError(error.to_string()))?;
     match out {
-        QuarkOut::Error { message } => Err(ServerError::TunnelWorkerError(message)),
+        MassOut::Error { message } => Err(ServerError::TunnelWorkerError(message)),
         _ => Ok(out),
     }
 }
 
 async fn handle_start_routed(
     model_id: Uuid,
-    model_config: Option<QuarkModelConfig>,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    model_config: Option<MassModelConfig>,
+    ctx: &MassContext,
+) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_start_distributed(model_id, model_config, ctx).await
 }
 
 async fn handle_start_distributed(
     model_id: Uuid,
-    model_config: Option<QuarkModelConfig>,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    model_config: Option<MassModelConfig>,
+    ctx: &MassContext,
+) -> Result<MassOut> {
     // Keep distributed starts serialized so routed and local model initialization
-    // cannot overlap on the same quark context.
+    // cannot overlap on the same mass context.
     let _start_dispatch_guard = ctx.start_dispatch.lock().await;
 
     if ctx.routes.read().await.contains_key(&model_id)
@@ -2149,19 +2149,19 @@ async fn handle_start_distributed(
         }
     };
 
-    if !matches!(out, QuarkOut::Ack) {
+    if !matches!(out, MassOut::Ack) {
         return Err(ServerError::UnexpectedTunnelResponse("start response"));
     }
 
     ctx.routes.write().await.insert(model_id, target);
-    Ok(QuarkOut::Ack)
+    Ok(MassOut::Ack)
 }
 
 async fn handle_perturb_up_routed(
     model_id: Uuid,
     seed: u64,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_perturb_up_distributed(model_id, seed, ctx).await
 }
@@ -2169,8 +2169,8 @@ async fn handle_perturb_up_routed(
 async fn handle_perturb_up_distributed(
     model_id: Uuid,
     seed: u64,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_perturb_up(model_id, seed, ctx).await,
         RouteTarget::Worker(token) => {
@@ -2182,8 +2182,8 @@ async fn handle_perturb_up_distributed(
 async fn handle_infer_routed(
     model_id: Uuid,
     input_id: ObjectId,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_infer_distributed(model_id, input_id, ctx).await
 }
@@ -2191,8 +2191,8 @@ async fn handle_infer_routed(
 async fn handle_infer_distributed(
     model_id: Uuid,
     input_id: ObjectId,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_infer(model_id, input_id, ctx).await,
         RouteTarget::Worker(token) => {
@@ -2201,12 +2201,12 @@ async fn handle_infer_distributed(
     }
 }
 
-async fn handle_reset_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_reset_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_reset_distributed(model_id, ctx).await
 }
 
-async fn handle_reset_distributed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_reset_distributed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_reset(model_id, ctx).await,
         RouteTarget::Worker(token) => {
@@ -2215,12 +2215,12 @@ async fn handle_reset_distributed(model_id: Uuid, ctx: &QuarkContext) -> Result<
     }
 }
 
-async fn handle_perturb_down_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_perturb_down_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_perturb_down_distributed(model_id, ctx).await
 }
 
-async fn handle_perturb_down_distributed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_perturb_down_distributed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_perturb_down(model_id, ctx).await,
         RouteTarget::Worker(token) => {
@@ -2229,12 +2229,12 @@ async fn handle_perturb_down_distributed(model_id: Uuid, ctx: &QuarkContext) -> 
     }
 }
 
-async fn handle_checkpoint_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_checkpoint_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_checkpoint_distributed(model_id, ctx).await
 }
 
-async fn handle_checkpoint_distributed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_checkpoint_distributed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_checkpoint(model_id, ctx).await,
         RouteTarget::Worker(token) => {
@@ -2247,8 +2247,8 @@ async fn handle_optimize_routed(
     model_id: Uuid,
     loss_up: f32,
     loss_down: f32,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_optimize_distributed(model_id, loss_up, loss_down, ctx).await
 }
@@ -2257,8 +2257,8 @@ async fn handle_optimize_distributed(
     model_id: Uuid,
     loss_up: f32,
     loss_down: f32,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_optimize(model_id, loss_up, loss_down, ctx).await,
         RouteTarget::Worker(token) => {
@@ -2276,12 +2276,12 @@ async fn handle_optimize_distributed(
     }
 }
 
-async fn handle_shutdown_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_shutdown_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_shutdown_distributed(model_id, ctx).await
 }
 
-async fn handle_shutdown_distributed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_shutdown_distributed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     let target = route_for_model(model_id, ctx).await?;
     let out = match target {
         RouteTarget::Local => handle_shutdown(model_id, ctx).await?,
@@ -2289,21 +2289,21 @@ async fn handle_shutdown_distributed(model_id: Uuid, ctx: &QuarkContext) -> Resu
             forward_tunnel_request(token, TunnelRequest::Shutdown { model_id }, ctx).await?
         }
     };
-    if matches!(out, QuarkOut::Ack) {
+    if matches!(out, MassOut::Ack) {
         ctx.routes.write().await.remove(&model_id);
     }
     Ok(out)
 }
 
-async fn handle_query_model_params_routed(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_query_model_params_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_query_model_params_distributed(model_id, ctx).await
 }
 
 async fn handle_query_model_params_distributed(
     model_id: Uuid,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     match route_for_model(model_id, ctx).await? {
         RouteTarget::Local => handle_query_model_params(model_id, ctx).await,
         RouteTarget::Worker(token) => {
@@ -2318,9 +2318,9 @@ async fn handle_query_model_params_distributed(
 
 async fn handle_start(
     model_id: Uuid,
-    model_config: Option<QuarkModelConfig>,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    model_config: Option<MassModelConfig>,
+    ctx: &MassContext,
+) -> Result<MassOut> {
     {
         let mut instances = ctx.instances.write().await;
         if let Some(limit) = ctx.max_instances {
@@ -2461,9 +2461,9 @@ async fn handle_start(
         )));
     }
 
-    let mut session = QuarkSession::new(frozen);
+    let mut session = MassSession::new(frozen);
     apply_initial_frozen_oscillation(model_id, &mut session, oscillation);
-    let instance = Arc::new(QuarkInstance {
+    let instance = Arc::new(MassInstance {
         engine,
         runtime_config,
         oscillation,
@@ -2476,10 +2476,10 @@ async fn handle_start(
         .insert(model_id, ModelSlot::Running(instance));
 
     info!(%model_id, "model instance started");
-    Ok(QuarkOut::Ack)
+    Ok(MassOut::Ack)
 }
 
-async fn handle_shutdown(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_shutdown(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     let instance = {
         let mut instances = ctx.instances.write().await;
         let slot = instances
@@ -2511,10 +2511,10 @@ async fn handle_shutdown(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut>
     unload_result?;
 
     info!(%model_id, "model instance shut down");
-    Ok(QuarkOut::Ack)
+    Ok(MassOut::Ack)
 }
 
-async fn get_instance(model_id: Uuid, ctx: &QuarkContext) -> Result<Arc<QuarkInstance>> {
+async fn get_instance(model_id: Uuid, ctx: &MassContext) -> Result<Arc<MassInstance>> {
     match ctx.instances.read().await.get(&model_id) {
         Some(ModelSlot::Running(instance)) => Ok(Arc::clone(instance)),
         Some(ModelSlot::Starting | ModelSlot::ShuttingDown) | None => {
@@ -2523,7 +2523,7 @@ async fn get_instance(model_id: Uuid, ctx: &QuarkContext) -> Result<Arc<QuarkIns
     }
 }
 
-fn ensure_running(session: &QuarkSession, model_id: Uuid) -> Result<()> {
+fn ensure_running(session: &MassSession, model_id: Uuid) -> Result<()> {
     if session.running {
         Ok(())
     } else {
@@ -2534,9 +2534,9 @@ fn ensure_running(session: &QuarkSession, model_id: Uuid) -> Result<()> {
 fn build_model_params(
     runtime_config: ModelRuntimeConfig,
     oscillation: Option<FrozenOscillation>,
-    session: &QuarkSession,
-) -> QuarkModelParams {
-    QuarkModelParams {
+    session: &MassSession,
+) -> MassModelParams {
+    MassModelParams {
         inference_limit: runtime_config.inference_limit,
         top_k: runtime_config.top_k,
         temperature: runtime_config.temperature,
@@ -2558,21 +2558,21 @@ fn build_model_params(
     }
 }
 
-async fn handle_query_model_params(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_query_model_params(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     let instance = get_instance(model_id, ctx).await?;
     let session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
-    Ok(QuarkOut::ModelParams {
+    Ok(MassOut::ModelParams {
         params: build_model_params(instance.runtime_config, instance.oscillation, &session),
     })
 }
 
-async fn handle_query_model_capacity(ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_query_model_capacity(ctx: &MassContext) -> Result<MassOut> {
     let occupied = ctx.routes.read().await.len();
     let total = advertised_capacity(ctx).await;
     let available = total.map(|total| total.saturating_sub(occupied));
-    Ok(QuarkOut::ModelCapacity {
-        capacity: QuarkModelCapacity {
+    Ok(MassOut::ModelCapacity {
+        capacity: MassModelCapacity {
             total,
             available,
             occupied,
@@ -2580,14 +2580,14 @@ async fn handle_query_model_capacity(ctx: &QuarkContext) -> Result<QuarkOut> {
     })
 }
 
-fn resolve_model_frozen(server_frozen: bool, model_config: Option<&QuarkModelConfig>) -> bool {
+fn resolve_model_frozen(server_frozen: bool, model_config: Option<&MassModelConfig>) -> bool {
     model_config
         .and_then(|model_config| model_config.frozen)
         .unwrap_or(server_frozen)
 }
 
 fn resolve_model_oscillation(
-    model_config: Option<&QuarkModelConfig>,
+    model_config: Option<&MassModelConfig>,
 ) -> Result<Option<FrozenOscillation>> {
     let Some(config) = model_config else {
         return Ok(None);
@@ -2631,7 +2631,7 @@ fn frozen_state_for_optimize_step(
 
 fn apply_initial_frozen_oscillation(
     model_id: Uuid,
-    session: &mut QuarkSession,
+    session: &mut MassSession,
     oscillation: Option<FrozenOscillation>,
 ) {
     let Some(oscillation) = oscillation else {
@@ -2655,7 +2655,7 @@ fn apply_initial_frozen_oscillation(
 
 fn apply_frozen_oscillation(
     model_id: Uuid,
-    session: &mut QuarkSession,
+    session: &mut MassSession,
     oscillation: Option<FrozenOscillation>,
 ) {
     let Some(oscillation) = oscillation else {
@@ -2724,8 +2724,8 @@ fn cleanup_checkpoint_file(path: &PathBuf) {
 
 async fn resolve_model_source(
     model_id: Uuid,
-    model_config: Option<&QuarkModelConfig>,
-    ctx: &QuarkContext,
+    model_config: Option<&MassModelConfig>,
+    ctx: &MassContext,
 ) -> Result<ResolvedModelSource> {
     let Some(checkpoint_id) = model_config.and_then(|config| config.checkpoint_id) else {
         return Ok(ResolvedModelSource {
@@ -2750,7 +2750,7 @@ async fn resolve_model_source(
 }
 
 fn require_void_client<'a>(
-    ctx: &'a QuarkContext,
+    ctx: &'a MassContext,
     operation: &'static str,
 ) -> Result<&'a Arc<VoidClient>> {
     ctx.void_client
@@ -2758,10 +2758,10 @@ fn require_void_client<'a>(
         .ok_or_else(|| void_not_configured_error(ctx, operation))
 }
 
-fn void_not_configured_error(ctx: &QuarkContext, operation: &'static str) -> ServerError {
+fn void_not_configured_error(ctx: &MassContext, operation: &'static str) -> ServerError {
     match &ctx.mode {
-        QuarkMode::Root => ServerError::VoidNotConfigured,
-        QuarkMode::Worker(_) => ServerError::TunnelWorkerVoidNotConfigured(operation),
+        MassMode::Root => ServerError::VoidNotConfigured,
+        MassMode::Worker(_) => ServerError::TunnelWorkerVoidNotConfigured(operation),
     }
 }
 
@@ -2783,16 +2783,16 @@ fn unsupported_residual_update_dtype(error_message: &str) -> Option<String> {
     }
 }
 
-fn error_feedback_mode_name(config: QuarkErrorFeedbackConfig) -> Option<&'static str> {
+fn error_feedback_mode_name(config: MassErrorFeedbackConfig) -> Option<&'static str> {
     match config {
-        QuarkErrorFeedbackConfig::Off => None,
-        QuarkErrorFeedbackConfig::Persistent { .. } => Some("persistent"),
-        QuarkErrorFeedbackConfig::Replay { .. } => Some("replay"),
+        MassErrorFeedbackConfig::Off => None,
+        MassErrorFeedbackConfig::Persistent { .. } => Some("persistent"),
+        MassErrorFeedbackConfig::Replay { .. } => Some("replay"),
     }
 }
 
 fn error_feedback_support_hint(
-    training_error_feedback: QuarkErrorFeedbackConfig,
+    training_error_feedback: MassErrorFeedbackConfig,
     unsupported_dtype: Option<&str>,
 ) -> Option<String> {
     let mode = error_feedback_mode_name(training_error_feedback)?;
@@ -2836,14 +2836,14 @@ async fn checkpoint_model(engine: &ModelEngine) -> Result<Vec<u8>> {
 // QuZO step handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &MassContext) -> Result<MassOut> {
     debug!(%model_id, "received perturb up request");
     let instance = get_instance(model_id, ctx).await?;
     let mut session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
-    if session.state != QuarkState::Idle {
+    if session.state != MassState::Idle {
         warn!("expected Idle, got {:?}", session.state);
-        return Err(ServerError::InvalidQuarkState(format!(
+        return Err(ServerError::InvalidMassState(format!(
             "expected Idle, got {:?}",
             session.state
         )));
@@ -2859,37 +2859,37 @@ async fn handle_perturb_up(model_id: Uuid, seed: u64, ctx: &QuarkContext) -> Res
             .map_err(|e| ServerError::ModelError(e.to_string()))?;
     }
 
-    session.state = QuarkState::PostPerturbUp;
-    Ok(QuarkOut::Ack)
+    session.state = MassState::PostPerturbUp;
+    Ok(MassOut::Ack)
 }
 
-async fn handle_reset(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_reset(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     debug!(%model_id, "received reset request");
     let instance = get_instance(model_id, ctx).await?;
     let session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
     reset_model(&instance.engine).await?;
-    Ok(QuarkOut::Ack)
+    Ok(MassOut::Ack)
 }
 
-async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &MassContext) -> Result<MassOut> {
     debug!(%model_id, "received inference request");
     let instance = get_instance(model_id, ctx).await?;
     let mut session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
     if !matches!(
         session.state,
-        QuarkState::Idle
-            | QuarkState::PostPerturbUp
-            | QuarkState::AwaitingPerturbDown
-            | QuarkState::PostPerturbDown
-            | QuarkState::AwaitingOptimize
+        MassState::Idle
+            | MassState::PostPerturbUp
+            | MassState::AwaitingPerturbDown
+            | MassState::PostPerturbDown
+            | MassState::AwaitingOptimize
     ) {
         warn!(
             "inference requires Idle or an active perturbation phase, got {:?}",
             session.state
         );
-        return Err(ServerError::InvalidQuarkState(format!(
+        return Err(ServerError::InvalidMassState(format!(
             "inference requires Idle or an active perturbation phase, got {:?}",
             session.state
         )));
@@ -3009,26 +3009,26 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &QuarkContext) ->
 
     // Advance state.
     session.state = match state {
-        QuarkState::PostPerturbUp | QuarkState::AwaitingPerturbDown => {
-            QuarkState::AwaitingPerturbDown
+        MassState::PostPerturbUp | MassState::AwaitingPerturbDown => {
+            MassState::AwaitingPerturbDown
         }
-        QuarkState::Idle | QuarkState::PostPerturbDown | QuarkState::AwaitingOptimize => {
-            QuarkState::AwaitingOptimize
+        MassState::Idle | MassState::PostPerturbDown | MassState::AwaitingOptimize => {
+            MassState::AwaitingOptimize
         }
     };
 
     debug!(%model_id, "finished processing inference request");
-    Ok(QuarkOut::Inferred { output_id })
+    Ok(MassOut::Inferred { output_id })
 }
 
-async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_perturb_down(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     debug!(%model_id, "received perturb down request");
     let instance = get_instance(model_id, ctx).await?;
     let mut session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
-    if session.state != QuarkState::AwaitingPerturbDown {
+    if session.state != MassState::AwaitingPerturbDown {
         warn!("expected AwaitingPerturbDown, got {:?}", session.state);
-        return Err(ServerError::InvalidQuarkState(format!(
+        return Err(ServerError::InvalidMassState(format!(
             "expected AwaitingPerturbDown, got {:?}",
             session.state
         )));
@@ -3044,11 +3044,11 @@ async fn handle_perturb_down(model_id: Uuid, ctx: &QuarkContext) -> Result<Quark
             .map_err(|e| ServerError::ModelError(e.to_string()))?;
     }
 
-    session.state = QuarkState::PostPerturbDown;
-    Ok(QuarkOut::Ack)
+    session.state = MassState::PostPerturbDown;
+    Ok(MassOut::Ack)
 }
 
-async fn handle_checkpoint(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOut> {
+async fn handle_checkpoint(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     debug!(%model_id, "received checkpoint request");
     let instance = get_instance(model_id, ctx).await?;
     let session = instance.session.lock().await;
@@ -3058,22 +3058,22 @@ async fn handle_checkpoint(model_id: Uuid, ctx: &QuarkContext) -> Result<QuarkOu
     let checkpoint_bytes = checkpoint_model(&instance.engine).await?;
     let checkpoint_id = void.upload(checkpoint_bytes).await?;
 
-    Ok(QuarkOut::Checkpointed { checkpoint_id })
+    Ok(MassOut::Checkpointed { checkpoint_id })
 }
 
 async fn handle_optimize(
     model_id: Uuid,
     loss_up: f32,
     loss_down: f32,
-    ctx: &QuarkContext,
-) -> Result<QuarkOut> {
+    ctx: &MassContext,
+) -> Result<MassOut> {
     debug!(%model_id, "received optimization request");
     let instance = get_instance(model_id, ctx).await?;
     let mut session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
-    if session.state != QuarkState::AwaitingOptimize {
+    if session.state != MassState::AwaitingOptimize {
         warn!("expected AwaitingOptimize, got {:?}", session.state);
-        return Err(ServerError::InvalidQuarkState(format!(
+        return Err(ServerError::InvalidMassState(format!(
             "expected AwaitingOptimize, got {:?}",
             session.state
         )));
@@ -3114,10 +3114,10 @@ async fn handle_optimize(
             })?;
     }
 
-    session.state = QuarkState::Idle;
+    session.state = MassState::Idle;
     apply_frozen_oscillation(model_id, &mut session, instance.oscillation);
     debug!(%model_id, "finished optimization update");
-    Ok(QuarkOut::Ack)
+    Ok(MassOut::Ack)
 }
 
 // ---------------------------------------------------------------------------
@@ -3201,7 +3201,7 @@ fn load_user_cert_chain_and_key(
 
 fn load_or_generate_self_signed_cert(
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
-    let dirs = directories_next::ProjectDirs::from("org", "blackhole", "quark").unwrap();
+    let dirs = directories_next::ProjectDirs::from("org", "blackhole", "mass").unwrap();
     let path = dirs.data_local_dir();
     let cert_path = path.join("cert.der");
     let key_path = path.join("key.der");
@@ -3273,8 +3273,8 @@ pub enum ServerError {
     ModelInstanceAlreadyRunning(Uuid),
     #[error("model instance {0} is not running")]
     ModelInstanceNotRunning(Uuid),
-    #[error("invalid Quark state machine transition: {0}")]
-    InvalidQuarkState(String),
+    #[error("invalid Mass state machine transition: {0}")]
+    InvalidMassState(String),
     #[error("oscillation_period_steps must be greater than zero, got {0}")]
     InvalidOscillationPeriodSteps(u32),
     #[error("oscillation_train_steps must be provided when oscillation_period_steps is set")]
@@ -3286,7 +3286,7 @@ pub enum ServerError {
     #[error("void service not configured")]
     VoidNotConfigured,
     #[error(
-        "void service not configured on tunnel worker (required for {0}); set --void-addr to the same void service as the root quark"
+        "void service not configured on tunnel worker (required for {0}); set --void-addr to the same void service as the root mass"
     )]
     TunnelWorkerVoidNotConfigured(&'static str),
     #[error("failed to resolve home directory for checkpoint tokenizer")]
@@ -3347,11 +3347,11 @@ pub enum ServerError {
     TunnelWorkerRejectsModelRequests,
     #[error("unauthorized tunnel forward request")]
     TunnelUnauthorizedForward,
-    #[error("tunnel forward request is only valid on worker quarks")]
+    #[error("tunnel forward request is only valid on worker masss")]
     TunnelForwardUnsupportedOnRoot,
-    #[error("no quark capacity available across local and registered workers")]
+    #[error("no mass capacity available across local and registered workers")]
     NoTunnelCapacity,
-    #[error("local quark reached max_instances capacity ({0})")]
+    #[error("local mass reached max_instances capacity ({0})")]
     NoLocalCapacity(usize),
     #[error("tunnel worker {0} is unavailable")]
     TunnelWorkerUnavailable(Uuid),
@@ -3389,17 +3389,17 @@ mod tests {
         client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
         repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
         resolve_model_oscillation, select_start_target, to_engine_error_feedback,
-        FrozenOscillation, ModelRuntimeConfig, ModelSlot, QuarkContext, QuarkMode,
-        QuarkServerDefaults, QuarkSession, QuarkState, RouteTarget, ServerBuilder, TransportMode,
+        FrozenOscillation, ModelRuntimeConfig, ModelSlot, MassContext, MassMode,
+        MassServerDefaults, MassSession, MassState, RouteTarget, ServerBuilder, TransportMode,
         TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
-    use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkModelCapacity, QuarkModelConfig};
+    use black_hole_spec::{MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig};
     use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
     use tokio::sync::{Mutex, RwLock};
 
     #[test]
     fn model_config_none_passes_through_server_defaults() {
-        let defaults = QuarkServerDefaults::default();
+        let defaults = MassServerDefaults::default();
         let resolved = defaults.with_overrides(None);
 
         assert_eq!(resolved.top_k, defaults.top_k);
@@ -3421,8 +3421,8 @@ mod tests {
 
     #[test]
     fn model_config_overrides_selected_fields() {
-        let defaults = QuarkServerDefaults::default();
-        let resolved = defaults.with_overrides(Some(&QuarkModelConfig {
+        let defaults = MassServerDefaults::default();
+        let resolved = defaults.with_overrides(Some(&MassModelConfig {
             top_k: Some(64),
             temperature: Some(0.2),
             top_p: Some(0.9),
@@ -3434,7 +3434,7 @@ mod tests {
             training_z_loss: Some(0.12),
             training_lb_loss: Some(0.24),
             training_clip_threshold: Some(0.5),
-            training_error_feedback: Some(QuarkErrorFeedbackConfig::Persistent {
+            training_error_feedback: Some(MassErrorFeedbackConfig::Persistent {
                 decay: 0.8,
                 gain: 0.6,
             }),
@@ -3459,7 +3459,7 @@ mod tests {
         assert_eq!(resolved.training_config.clip_threshold, 0.5);
         assert_eq!(
             resolved.training_error_feedback,
-            QuarkErrorFeedbackConfig::Persistent {
+            MassErrorFeedbackConfig::Persistent {
                 decay: 0.8,
                 gain: 0.6,
             }
@@ -3477,16 +3477,16 @@ mod tests {
     fn model_config_frozen_override_can_freeze_or_unfreeze_instance() {
         assert!(resolve_model_frozen(
             false,
-            Some(&QuarkModelConfig {
+            Some(&MassModelConfig {
                 frozen: Some(true),
-                ..QuarkModelConfig::default()
+                ..MassModelConfig::default()
             })
         ));
         assert!(!resolve_model_frozen(
             true,
-            Some(&QuarkModelConfig {
+            Some(&MassModelConfig {
                 frozen: Some(false),
-                ..QuarkModelConfig::default()
+                ..MassModelConfig::default()
             })
         ));
     }
@@ -3495,9 +3495,9 @@ mod tests {
     fn model_config_oscillation_defaults_to_none() {
         assert_eq!(resolve_model_oscillation(None).unwrap(), None);
         assert_eq!(
-            resolve_model_oscillation(Some(&QuarkModelConfig {
+            resolve_model_oscillation(Some(&MassModelConfig {
                 oscillation_warmup_steps: Some(7),
-                ..QuarkModelConfig::default()
+                ..MassModelConfig::default()
             }))
             .unwrap(),
             None
@@ -3506,12 +3506,12 @@ mod tests {
 
     #[test]
     fn model_config_oscillation_resolves_period_train_phase_and_warmup() {
-        let resolved = resolve_model_oscillation(Some(&QuarkModelConfig {
+        let resolved = resolve_model_oscillation(Some(&MassModelConfig {
             oscillation_period_steps: Some(10),
             oscillation_train_steps: Some(3),
             oscillation_phase_steps: Some(4),
             oscillation_warmup_steps: Some(20),
-            ..QuarkModelConfig::default()
+            ..MassModelConfig::default()
         }))
         .expect("oscillation config should resolve")
         .expect("oscillation config should be present");
@@ -3528,10 +3528,10 @@ mod tests {
 
     #[test]
     fn model_config_oscillation_rejects_zero_period() {
-        let err = resolve_model_oscillation(Some(&QuarkModelConfig {
+        let err = resolve_model_oscillation(Some(&MassModelConfig {
             oscillation_period_steps: Some(0),
             oscillation_train_steps: Some(1),
-            ..QuarkModelConfig::default()
+            ..MassModelConfig::default()
         }))
         .expect_err("zero oscillation period should be rejected");
         assert!(matches!(
@@ -3542,9 +3542,9 @@ mod tests {
 
     #[test]
     fn model_config_oscillation_requires_train_steps_when_period_is_set() {
-        let err = resolve_model_oscillation(Some(&QuarkModelConfig {
+        let err = resolve_model_oscillation(Some(&MassModelConfig {
             oscillation_period_steps: Some(8),
-            ..QuarkModelConfig::default()
+            ..MassModelConfig::default()
         }))
         .expect_err("missing train steps should be rejected");
         assert!(matches!(
@@ -3555,10 +3555,10 @@ mod tests {
 
     #[test]
     fn model_config_oscillation_rejects_train_steps_greater_than_period() {
-        let err = resolve_model_oscillation(Some(&QuarkModelConfig {
+        let err = resolve_model_oscillation(Some(&MassModelConfig {
             oscillation_period_steps: Some(8),
             oscillation_train_steps: Some(9),
-            ..QuarkModelConfig::default()
+            ..MassModelConfig::default()
         }))
         .expect_err("train steps above period should be rejected");
         assert!(matches!(
@@ -3572,8 +3572,8 @@ mod tests {
 
     #[test]
     fn oscillation_applies_windowed_schedule_after_warmup() {
-        let mut session = QuarkSession {
-            state: QuarkState::AwaitingOptimize,
+        let mut session = MassSession {
+            state: MassState::AwaitingOptimize,
             running: true,
             frozen: true,
             optimize_steps: 0,
@@ -3610,7 +3610,7 @@ mod tests {
             training_z_loss: 0.005,
             training_lb_loss: 0.015,
             training_clip_threshold: 1.25,
-            training_error_feedback: QuarkErrorFeedbackConfig::Replay {
+            training_error_feedback: MassErrorFeedbackConfig::Replay {
                 steps: 64,
                 decay: 0.88,
                 gain: 0.42,
@@ -3622,8 +3622,8 @@ mod tests {
             phase_steps: 0,
             warmup_steps: 0,
         });
-        let mut session = QuarkSession {
-            state: QuarkState::AwaitingOptimize,
+        let mut session = MassSession {
+            state: MassState::AwaitingOptimize,
             running: true,
             frozen: true,
             optimize_steps: 0,
@@ -3643,7 +3643,7 @@ mod tests {
         assert_eq!(first.training_clip_threshold, 1.25);
         assert_eq!(
             first.training_error_feedback,
-            QuarkErrorFeedbackConfig::Replay {
+            MassErrorFeedbackConfig::Replay {
                 steps: 64,
                 decay: 0.88,
                 gain: 0.42,
@@ -3660,20 +3660,20 @@ mod tests {
     }
 
     #[test]
-    fn quark_error_feedback_maps_to_engine_modes() {
+    fn mass_error_feedback_maps_to_engine_modes() {
         assert!(matches!(
-            to_engine_error_feedback(QuarkErrorFeedbackConfig::Off),
+            to_engine_error_feedback(MassErrorFeedbackConfig::Off),
             paramecia_engine::ErrorFeedbackMode::None
         ));
         assert!(matches!(
-            to_engine_error_feedback(QuarkErrorFeedbackConfig::Persistent {
+            to_engine_error_feedback(MassErrorFeedbackConfig::Persistent {
                 decay: 0.9,
                 gain: 1.0
             }),
             paramecia_engine::ErrorFeedbackMode::Persistent(_)
         ));
         assert!(matches!(
-            to_engine_error_feedback(QuarkErrorFeedbackConfig::Replay {
+            to_engine_error_feedback(MassErrorFeedbackConfig::Replay {
                 steps: 8,
                 decay: 0.7,
                 gain: 0.5
@@ -3684,14 +3684,14 @@ mod tests {
 
     #[test]
     fn oscillation_phase_can_initialize_frozen_state_before_first_optimize() {
-        let mut up = QuarkSession {
-            state: QuarkState::Idle,
+        let mut up = MassSession {
+            state: MassState::Idle,
             running: true,
             frozen: false,
             optimize_steps: 0,
         };
-        let mut down = QuarkSession {
-            state: QuarkState::Idle,
+        let mut down = MassSession {
+            state: MassState::Idle,
             running: true,
             frozen: false,
             optimize_steps: 0,
@@ -3721,14 +3721,14 @@ mod tests {
 
     #[test]
     fn half_up_and_half_down_oscillations_report_opposite_runtime_frozen_states() {
-        let mut half_up = QuarkSession {
-            state: QuarkState::AwaitingOptimize,
+        let mut half_up = MassSession {
+            state: MassState::AwaitingOptimize,
             running: true,
             frozen: false,
             optimize_steps: 0,
         };
-        let mut half_down = QuarkSession {
-            state: QuarkState::AwaitingOptimize,
+        let mut half_down = MassSession {
+            state: MassState::AwaitingOptimize,
             running: true,
             frozen: false,
             optimize_steps: 0,
@@ -3783,7 +3783,7 @@ mod tests {
         assert_eq!(unsupported_dtype.as_deref(), Some("F32"));
 
         let hint = super::error_feedback_support_hint(
-            QuarkErrorFeedbackConfig::Persistent {
+            MassErrorFeedbackConfig::Persistent {
                 decay: 0.9,
                 gain: 1.0,
             },
@@ -3822,7 +3822,7 @@ mod tests {
     #[test]
     fn repair_duplicated_absolute_model_path_recovers_existing_original_path() {
         let root = std::env::temp_dir().join(format!(
-            "black-hole-quark-path-repair-{}",
+            "black-hole-mass-path-repair-{}",
             uuid::Uuid::new_v4()
         ));
         let cwd = root.join("sandbox/current");
@@ -3855,7 +3855,7 @@ mod tests {
     #[test]
     fn repair_duplicated_absolute_model_path_returns_none_when_repaired_path_missing() {
         let root = std::env::temp_dir().join(format!(
-            "black-hole-quark-path-repair-missing-{}",
+            "black-hole-mass-path-repair-missing-{}",
             uuid::Uuid::new_v4()
         ));
         let cwd = root.join("sandbox/current");
@@ -3924,14 +3924,14 @@ mod tests {
         routes.insert(model_b, RouteTarget::Local);
         routes.insert(model_c, RouteTarget::Worker(worker_a));
         routes.insert(model_d, RouteTarget::Worker(worker_b));
-        let ctx = QuarkContext {
+        let ctx = MassContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             transport_mode: TransportMode::Quic,
             void_client: None,
-            defaults: QuarkServerDefaults::default(),
+            defaults: MassServerDefaults::default(),
             frozen: false,
             max_instances: Some(2),
-            mode: QuarkMode::Root,
+            mode: MassMode::Root,
             start_dispatch: Mutex::new(()),
             routes: RwLock::new(routes),
             workers: RwLock::new(workers),
@@ -3942,12 +3942,12 @@ mod tests {
         let out = handle_query_model_capacity(&ctx)
             .await
             .expect("capacity query should succeed");
-        let black_hole_spec::QuarkOut::ModelCapacity { capacity } = out else {
+        let black_hole_spec::MassOut::ModelCapacity { capacity } = out else {
             panic!("unexpected query response");
         };
         assert_eq!(
             capacity,
-            QuarkModelCapacity {
+            MassModelCapacity {
                 total: Some(7),
                 available: Some(3),
                 occupied: 4,
@@ -3960,14 +3960,14 @@ mod tests {
         let mut routes = HashMap::new();
         routes.insert(uuid::Uuid::new_v4(), RouteTarget::Local);
         routes.insert(uuid::Uuid::new_v4(), RouteTarget::Local);
-        let ctx = QuarkContext {
+        let ctx = MassContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             transport_mode: TransportMode::Quic,
             void_client: None,
-            defaults: QuarkServerDefaults::default(),
+            defaults: MassServerDefaults::default(),
             frozen: false,
             max_instances: Some(1),
-            mode: QuarkMode::Root,
+            mode: MassMode::Root,
             start_dispatch: Mutex::new(()),
             routes: RwLock::new(routes),
             workers: RwLock::new(HashMap::new()),
@@ -3978,12 +3978,12 @@ mod tests {
         let out = handle_query_model_capacity(&ctx)
             .await
             .expect("capacity query should succeed");
-        let black_hole_spec::QuarkOut::ModelCapacity { capacity } = out else {
+        let black_hole_spec::MassOut::ModelCapacity { capacity } = out else {
             panic!("unexpected query response");
         };
         assert_eq!(
             capacity,
-            QuarkModelCapacity {
+            MassModelCapacity {
                 total: Some(1),
                 available: Some(0),
                 occupied: 2,
@@ -3993,14 +3993,14 @@ mod tests {
 
     #[tokio::test]
     async fn tunnel_registration_defaults_capacity_to_one_when_omitted() {
-        let ctx = QuarkContext {
+        let ctx = MassContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             transport_mode: TransportMode::Quic,
             void_client: None,
-            defaults: QuarkServerDefaults::default(),
+            defaults: MassServerDefaults::default(),
             frozen: false,
             max_instances: Some(DEFAULT_MAX_INSTANCES),
-            mode: QuarkMode::Root,
+            mode: MassMode::Root,
             start_dispatch: Mutex::new(()),
             routes: RwLock::new(HashMap::new()),
             workers: RwLock::new(HashMap::new()),
@@ -4013,7 +4013,7 @@ mod tests {
             .await
             .expect("registration should succeed");
         let token = match out {
-            black_hole_spec::QuarkOut::TunnelRegistered { token } => token,
+            black_hole_spec::MassOut::TunnelRegistered { token } => token,
             other => panic!("unexpected registration response: {other:?}"),
         };
         let worker = ctx
@@ -4029,14 +4029,14 @@ mod tests {
 
     #[tokio::test]
     async fn tunnel_registration_preserves_explicit_capacity() {
-        let ctx = QuarkContext {
+        let ctx = MassContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             transport_mode: TransportMode::Quic,
             void_client: None,
-            defaults: QuarkServerDefaults::default(),
+            defaults: MassServerDefaults::default(),
             frozen: false,
             max_instances: Some(DEFAULT_MAX_INSTANCES),
-            mode: QuarkMode::Root,
+            mode: MassMode::Root,
             start_dispatch: Mutex::new(()),
             routes: RwLock::new(HashMap::new()),
             workers: RwLock::new(HashMap::new()),
@@ -4050,7 +4050,7 @@ mod tests {
             .await
             .expect("registration should succeed");
         let token = match out {
-            black_hole_spec::QuarkOut::TunnelRegistered { token } => token,
+            black_hole_spec::MassOut::TunnelRegistered { token } => token,
             other => panic!("unexpected registration response: {other:?}"),
         };
         let worker = ctx
@@ -4078,14 +4078,14 @@ mod tests {
         );
         let mut instances = HashMap::new();
         instances.insert(uuid::Uuid::new_v4(), ModelSlot::Starting);
-        let ctx = QuarkContext {
+        let ctx = MassContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             transport_mode: TransportMode::Tcp,
             void_client: None,
-            defaults: QuarkServerDefaults::default(),
+            defaults: MassServerDefaults::default(),
             frozen: false,
             max_instances: Some(1),
-            mode: QuarkMode::Root,
+            mode: MassMode::Root,
             start_dispatch: Mutex::new(()),
             routes: RwLock::new(HashMap::new()),
             workers: RwLock::new(workers),

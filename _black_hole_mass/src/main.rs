@@ -3,7 +3,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Once, time::Duration};
 use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
-#[clap(name = "black-hole-quark")]
+#[clap(name = "black-hole-mass")]
 struct Opt {
     /// File to log TLS keys to for debugging
     #[clap(long = "keylog")]
@@ -56,20 +56,20 @@ struct Opt {
     /// Default QuZO epsilon for model instances
     #[clap(long = "training-epsilon")]
     training_epsilon: Option<f64>,
-    /// Optional root quark endpoint to register with as a tunnel worker
+    /// Optional root mass endpoint to register with as a tunnel worker
     #[clap(long = "tunnel")]
     tunnel: Option<SocketAddr>,
     /// Max seconds to keep retrying tunnel registration before exiting (default: no deadline)
     #[clap(long = "tunnel-connect-deadline-seconds")]
     tunnel_connect_deadline_seconds: Option<u64>,
-    /// Optional max concurrent model instances handled by this quark (defaults to 1)
+    /// Optional max concurrent model instances handled by this mass (defaults to 1)
     #[clap(long = "max-instances")]
     max_instances: Option<usize>,
 }
 
-impl From<Opt> for black_hole_quark::ServerBuilder {
+impl From<Opt> for black_hole_mass::ServerBuilder {
     fn from(opt: Opt) -> Self {
-        let mut builder = black_hole_quark::ServerBuilder::new(&opt.model)
+        let mut builder = black_hole_mass::ServerBuilder::new(&opt.model)
             .keylog(opt.keylog)
             .stateless_retry(opt.stateless_retry)
             .listen(opt.listen);
@@ -139,12 +139,12 @@ fn install_rustls_crypto_provider() {
 fn main() {
     install_rustls_crypto_provider();
 
-    if black_hole_quark::init_tracing().is_err() {
+    if black_hole_mass::init_tracing().is_err() {
         eprintln!("ERROR: failed to initialize tracing subscriber");
         std::process::exit(1);
     }
 
-    let builder = black_hole_quark::ServerBuilder::from(Opt::parse());
+    let builder = black_hole_mass::ServerBuilder::from(Opt::parse());
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let code = if let Err(e) = rt.block_on(builder.run()) {
         eprintln!("ERROR: {e}");

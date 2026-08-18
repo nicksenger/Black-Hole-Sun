@@ -954,26 +954,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "black-hole-probe"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "black-hole-beam",
- "black-hole-sun",
- "futures",
- "jungle-sdk",
- "postcard",
- "quinn",
- "rustls 0.23.43",
- "serde",
- "tokio",
- "tracing",
- "typosaurus",
- "uuid",
-]
-
-[[package]]
-name = "black-hole-quark"
+name = "black-hole-mass"
 version = "0.1.0"
 dependencies = [
  "black-hole-spec",
@@ -993,6 +974,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "black-hole-probe"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "black-hole-beam",
+ "black-hole-sun",
+ "futures",
+ "jungle-sdk",
+ "postcard",
+ "quinn",
+ "rustls 0.23.43",
+ "serde",
+ "tokio",
+ "tracing",
+ "typosaurus",
+ "uuid",
+]
+
+[[package]]
 name = "black-hole-spec"
 version = "0.1.0"
 dependencies = [
@@ -1005,7 +1005,7 @@ name = "black-hole-sun"
 version = "0.1.0"
 dependencies = [
  "black-hole-flux",
- "black-hole-quark",
+ "black-hole-mass",
  "black-hole-spec",
  "black-hole-void",
  "hf-hub",

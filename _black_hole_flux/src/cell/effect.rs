@@ -34,10 +34,10 @@ impl<J> Effect<J> for GenerateModelIdEffect {
     }
 }
 
-pub struct QuarkStart<H = DefaultConfig>(PhantomData<fn() -> H>);
+pub struct MassStart<H = DefaultConfig>(PhantomData<fn() -> H>);
 
 #[jungle::effect(id = 60)]
-impl<H: ModelConfig, J: VoidInferOps> Effect<J> for QuarkStart<H> {
+impl<H: ModelConfig, J: VoidInferOps> Effect<J> for MassStart<H> {
     type In = Uuid;
     type Out = bool;
     type Err = AtomError;
@@ -47,9 +47,9 @@ impl<H: ModelConfig, J: VoidInferOps> Effect<J> for QuarkStart<H> {
         model_id: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(%model_id, "starting quark model instance");
+            debug!(%model_id, "starting mass model instance");
             jungle
-                .start_model(model_id, H::quark_model_config())
+                .start_model(model_id, H::mass_model_config())
                 .await
                 .map_err(AtomError::ModelStart)?;
             let params = jungle
@@ -61,10 +61,10 @@ impl<H: ModelConfig, J: VoidInferOps> Effect<J> for QuarkStart<H> {
     }
 }
 
-pub struct QuarkShutdown;
+pub struct MassShutdown;
 
 #[jungle::effect(id = 61)]
-impl<J: VoidInferOps> Effect<J> for QuarkShutdown {
+impl<J: VoidInferOps> Effect<J> for MassShutdown {
     type In = Uuid;
     type Out = ();
     type Err = AtomError;
@@ -74,7 +74,7 @@ impl<J: VoidInferOps> Effect<J> for QuarkShutdown {
         model_id: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(%model_id, "shutting down quark model instance");
+            debug!(%model_id, "shutting down mass model instance");
             jungle
                 .shutdown_model(model_id)
                 .await
@@ -84,13 +84,13 @@ impl<J: VoidInferOps> Effect<J> for QuarkShutdown {
 }
 
 // ---------------------------------------------------------------------------
-// QuarkPerturbUp — perturb quark weights in the positive direction
+// MassPerturbUp — perturb mass weights in the positive direction
 // ---------------------------------------------------------------------------
 
-pub struct QuarkPerturbUp;
+pub struct MassPerturbUp;
 
 #[jungle::effect(id = 62)]
-impl<J: VoidInferOps> Effect<J> for QuarkPerturbUp {
+impl<J: VoidInferOps> Effect<J> for MassPerturbUp {
     type In = (Uuid, u64);
     type Out = ();
     type Err = AtomError;
@@ -100,7 +100,7 @@ impl<J: VoidInferOps> Effect<J> for QuarkPerturbUp {
         (model_id, seed): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(%model_id, seed, "perturbing quark weights up");
+            debug!(%model_id, seed, "perturbing mass weights up");
             jungle
                 .perturb_up(model_id, seed)
                 .await
@@ -111,13 +111,13 @@ impl<J: VoidInferOps> Effect<J> for QuarkPerturbUp {
 }
 
 // ---------------------------------------------------------------------------
-// QuarkPerturbDown — perturb quark weights in the negative direction
+// MassPerturbDown — perturb mass weights in the negative direction
 // ---------------------------------------------------------------------------
 
-pub struct QuarkPerturbDown;
+pub struct MassPerturbDown;
 
 #[jungle::effect(id = 63)]
-impl<J: VoidInferOps> Effect<J> for QuarkPerturbDown {
+impl<J: VoidInferOps> Effect<J> for MassPerturbDown {
     type In = Uuid;
     type Out = ();
     type Err = AtomError;
@@ -127,7 +127,7 @@ impl<J: VoidInferOps> Effect<J> for QuarkPerturbDown {
         model_id: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            debug!(%model_id, "perturbing quark weights down");
+            debug!(%model_id, "perturbing mass weights down");
             jungle
                 .perturb_down(model_id)
                 .await
@@ -138,13 +138,13 @@ impl<J: VoidInferOps> Effect<J> for QuarkPerturbDown {
 }
 
 // ---------------------------------------------------------------------------
-// QuarkOptimize — apply QuZO optimization update
+// MassOptimize — apply QuZO optimization update
 // ---------------------------------------------------------------------------
 
-pub struct QuarkOptimize;
+pub struct MassOptimize;
 
 #[jungle::effect(id = 64)]
-impl<J: VoidInferOps> Effect<J> for QuarkOptimize {
+impl<J: VoidInferOps> Effect<J> for MassOptimize {
     type In = (Uuid, Potentiation);
     type Out = bool;
     type Err = AtomError;
@@ -159,7 +159,7 @@ impl<J: VoidInferOps> Effect<J> for QuarkOptimize {
                 loss_up = potentiation.loss_up,
                 loss_down = potentiation.loss_down,
                 seed = potentiation.seed,
-                "applying quark optimization"
+                "applying mass optimization"
             );
             jungle
                 .optimize(model_id, potentiation.loss_up, potentiation.loss_down)

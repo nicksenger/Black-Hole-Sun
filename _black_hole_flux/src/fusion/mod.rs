@@ -17,7 +17,7 @@ use jungle_zoo::predicate::Always;
 
 pub use action::{
     AdvanceFusionGradientStep, BeginFusionGradientAccumulation, FusionOptimize, FusionPerturbDown,
-    FusionPerturbUp, FusionQuarkInferStep, FusionSeed, FusionStartModel, FusionState,
+    FusionPerturbUp, FusionMassInferStep, FusionSeed, FusionStartModel, FusionState,
     FusionTransmit, GenerateTransformId, InitFusion, PrepareTransformInput,
     WaitForFusionPotentiation, WaitForFusionPotentiationForOptimize,
     WaitForFusionPropagation,
@@ -71,7 +71,7 @@ pub struct QuzoFusionPropagationMicrostep<
     Step<WaitForFusionPropagation>,
     Step<PrepareTransformInput>,
     Transform,
-    Step<FusionQuarkInferStep<M>>,
+    Step<FusionMassInferStep<M>>,
     Step<FusionTransmit>,
     Step<AdvanceFusionGradientStep>,
 );

@@ -7,8 +7,8 @@ use black_hole_sun::cell::{CellState, Primordium};
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, QuarkClient, QuarkModelConfig, QuarkModelParams, Ray,
-    TestQuarkServer, TestVoidServer, Transmission, VoidClient,
+    EmissionId, InferenceRequest, ObjectId, MassClient, MassModelConfig, MassModelParams, Ray,
+    TestMassServer, TestVoidServer, Transmission, VoidClient,
 };
 use black_hole_sun::{ModelConfig, NoErrorFeedback, OscillationSchedule};
 use jungle_sdk::core::JungleWorker;
@@ -84,15 +84,15 @@ struct RedDwarfAnimals(OscillatingCellAnimal, RedDwarfBlackHoleAnimal);
 #[derive(Clone)]
 struct RedDwarfJungle {
     void_client: VoidClient,
-    quark_client: QuarkClient,
+    mass_client: MassClient,
     client: Option<FusedClient>,
 }
 
 impl RedDwarfJungle {
-    fn new(void_client: VoidClient, quark_client: QuarkClient) -> Self {
+    fn new(void_client: VoidClient, mass_client: MassClient) -> Self {
         Self {
             void_client,
-            quark_client,
+            mass_client,
             client: None,
         }
     }
@@ -132,23 +132,23 @@ impl VoidInferOps for RedDwarfJungle {
     async fn start_model(
         &self,
         model_id: Uuid,
-        model_config: Option<QuarkModelConfig>,
+        model_config: Option<MassModelConfig>,
     ) -> Result<(), String> {
-        self.quark_client.start(model_id, model_config).await
+        self.mass_client.start(model_id, model_config).await
     }
 
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
         let request_bytes = to_allocvec(&request).map_err(|error| format!("serialize: {error}"))?;
         let request_id = self.void_client.upload(request_bytes).await?;
-        self.quark_client.infer(model_id, request_id).await
+        self.mass_client.infer(model_id, request_id).await
     }
 
     async fn reset_model(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.reset(model_id).await
+        self.mass_client.reset(model_id).await
     }
 
     async fn checkpoint_model(&self, model_id: Uuid) -> Result<ObjectId, String> {
-        self.quark_client.checkpoint(model_id).await
+        self.mass_client.checkpoint(model_id).await
     }
 
     fn darken(&self, _prompt: &str) -> Result<Vec<black_hole_sun::DarkToken>, String> {
@@ -164,25 +164,25 @@ impl VoidInferOps for RedDwarfJungle {
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
-        self.quark_client.perturb_up(model_id, seed).await
+        self.mass_client.perturb_up(model_id, seed).await
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.perturb_down(model_id).await
+        self.mass_client.perturb_down(model_id).await
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
-        self.quark_client
+        self.mass_client
             .optimize(model_id, loss_up, loss_down)
             .await
     }
 
-    async fn query_model_params(&self, model_id: Uuid) -> Result<QuarkModelParams, String> {
-        self.quark_client.query_model_params(model_id).await
+    async fn query_model_params(&self, model_id: Uuid) -> Result<MassModelParams, String> {
+        self.mass_client.query_model_params(model_id).await
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.shutdown(model_id).await
+        self.mass_client.shutdown(model_id).await
     }
 
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String> {
@@ -228,16 +228,16 @@ async fn red_dwarf_child_ray_frozen_state_oscillates() {
         .serve()
         .await
         .expect("failed to start void server");
-    let quark_server = TestQuarkServer::new(&model_path)
+    let mass_server = TestMassServer::new(&model_path)
         .void_addr(void_server.local_addr())
         .serve()
         .await
-        .expect("failed to start quark server");
+        .expect("failed to start mass server");
 
     let endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&endpoint, void_server.local_addr(), "localhost");
-    let quark_client = QuarkClient::new(&endpoint, quark_server.local_addr(), "localhost");
-    let mut jungle = RedDwarfJungle::new(void_client, quark_client);
+    let mass_client = MassClient::new(&endpoint, mass_server.local_addr(), "localhost");
+    let mut jungle = RedDwarfJungle::new(void_client, mass_client);
 
     let client = FusedClient::builder()
         .build()
@@ -388,5 +388,5 @@ async fn red_dwarf_child_ray_frozen_state_oscillates() {
     }
     drop(client);
     void_server.abort();
-    quark_server.abort();
+    mass_server.abort();
 }

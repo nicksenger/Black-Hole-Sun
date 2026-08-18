@@ -1,11 +1,11 @@
-//! Higher-order Jungle flows for quark-inference nuclei and cells.
+//! Higher-order Jungle flows for mass-inference nuclei and cells.
 //!
-//! A **Atom** composes an input flow, a single quark-inference step, and an
+//! A **Atom** composes an input flow, a single mass-inference step, and an
 //! output flow into one sequential pipeline.  Given an [`EmissionId`] pointing
 //! to an [`Emission<M>`] stored in void, the Atom:
 //!
 //! 1. Runs the **In** flow to produce a (possibly transformed) `EmissionId`.
-//! 2. Downloads that emission from void, performs quark inference on the
+//! 2. Downloads that emission from void, performs mass inference on the
 //!    contained output ID, uploads the result emission, and yields the new `EmissionId`.
 //! 3. Passes the resulting `EmissionId` through the **Out** flow.
 //!
@@ -18,13 +18,13 @@
 //! [`Transmission`] messages from void:
 //!
 //! Each Cell first generates a stable model UUID and starts that model instance
-//! on quark. Every Atom and QuZO request is routed to that UUID.
+//! on mass. Every Atom and QuZO request is routed to that UUID.
 //!
-//! 1. **PerturbUp** - perturbs the associated quark model's weights upward.
+//! 1. **PerturbUp** - perturbs the associated mass model's weights upward.
 //! 2. **N × (WaitForPropagation -> Atom -> Transmit)** - runs the first
 //!    propagation phase `N` times, resetting model runtime state after each
 //!    inference.
-//! 3. **PerturbDown** - perturbs the quark's weights downward.
+//! 3. **PerturbDown** - perturbs the mass's weights downward.
 //! 4. **N × (WaitForPropagation -> Atom -> Transmit)** - runs the second
 //!    propagation phase `N` times.
 //! 5. **WaitForPotentiation** - reads `recv_id` from state, downloads a
@@ -51,8 +51,8 @@
 //! # Trait requirement
 //!
 //! The Jungle instance supplied at runtime must implement [`VoidInferOps`],
-//! which guarantees access to void (upload / download), quark inference, and
-//! quark perturbation / optimization.
+//! which guarantees access to void (upload / download), mass inference, and
+//! mass perturbation / optimization.
 #![allow(clippy::manual_async_fn)]
 
 use serde::{Deserialize, Serialize};
@@ -70,21 +70,21 @@ pub mod twin;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, ObjectId, QuarkErrorFeedbackConfig, QuarkErrorFeedbackMode,
-    QuarkIn, QuarkModelConfig, QuarkModelParams, QuarkOut, SequenceOutput, Transmission,
+    InferenceRequest, LogitEntry, ObjectId, MassErrorFeedbackConfig, MassErrorFeedbackMode,
+    MassIn, MassModelConfig, MassModelParams, MassOut, SequenceOutput, Transmission,
 };
 
 pub use animal::Progenitor;
-pub use atom::effect::QuarkInfer;
+pub use atom::effect::MassInfer;
 pub use cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
     InitRecvId, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput, Propagation,
-    QuarkInferStep, ShutdownModel, StartModel, Transmit, WaitForPotentiation,
+    MassInferStep, ShutdownModel, StartModel, Transmit, WaitForPotentiation,
     WaitForPropagation,
 };
 pub use cell::effect::{
-    GenerateModelIdEffect, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, QuarkShutdown,
-    QuarkStart, Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
+    GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown,
+    MassStart, Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
 pub use fusion::action::{FusionSeed, FusionState};
 pub use fusion::{
@@ -120,19 +120,19 @@ pub use sun::{
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum AtomError {
-    #[error("quark model start failed: {0}")]
+    #[error("mass model start failed: {0}")]
     ModelStart(String),
 
-    #[error("quark model shutdown failed: {0}")]
+    #[error("mass model shutdown failed: {0}")]
     ModelShutdown(String),
 
     #[error("void download failed: {0}")]
     Download(String),
 
-    #[error("quark inference failed: {0}")]
+    #[error("mass inference failed: {0}")]
     Inference(String),
 
-    #[error("quark model reset failed: {0}")]
+    #[error("mass model reset failed: {0}")]
     ModelReset(String),
 
     #[error("void upload failed: {0}")]
@@ -141,13 +141,13 @@ pub enum AtomError {
     #[error("serialization error: {0}")]
     Serialization(#[from] postcard::Error),
 
-    #[error("quark perturb up failed: {0}")]
+    #[error("mass perturb up failed: {0}")]
     PerturbUp(String),
 
-    #[error("quark perturb down failed: {0}")]
+    #[error("mass perturb down failed: {0}")]
     PerturbDown(String),
 
-    #[error("quark optimize failed: {0}")]
+    #[error("mass optimize failed: {0}")]
     Optimize(String),
 
     #[error("transmission error: {0}")]

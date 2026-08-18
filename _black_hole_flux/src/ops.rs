@@ -11,14 +11,14 @@ const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    ObjectId, QuarkModelConfig, QuarkModelParams, Transmission,
+    ObjectId, MassModelConfig, MassModelParams, Transmission,
 };
 
 use crate::AtomError;
 
-/// Capability trait that guarantees a Jungle can talk to void and quark.
+/// Capability trait that guarantees a Jungle can talk to void and mass.
 ///
-/// Implement this for your Jungle wrapper so the [`QuarkInfer`] effect can
+/// Implement this for your Jungle wrapper so the [`MassInfer`] effect can
 /// download emissions, run inference, and upload results.
 #[async_trait::async_trait]
 pub trait VoidInferOps: Send + Sync {
@@ -80,14 +80,14 @@ pub trait VoidInferOps: Send + Sync {
     /// spawned cells, so these writes must preserve the requested id.
     async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String>;
 
-    /// Start a quark model instance with a stable ID and optional per-instance config overrides.
+    /// Start a mass model instance with a stable ID and optional per-instance config overrides.
     async fn start_model(
         &self,
         model_id: uuid::Uuid,
-        model_config: Option<QuarkModelConfig>,
+        model_config: Option<MassModelConfig>,
     ) -> Result<(), String>;
 
-    /// Run quark inference on an emission stored at `input_id` in void.
+    /// Run mass inference on an emission stored at `input_id` in void.
     /// Returns the void id of the resulting `InferenceOutput`.
     async fn infer(
         &self,
@@ -109,17 +109,17 @@ pub trait VoidInferOps: Send + Sync {
     /// Implementors that manage a tokenizer should delegate to tokenizer decode.
     fn decode(&self, tokens: &[DarkToken]) -> String;
 
-    /// Perturb the associated quark's weights in the positive direction.
+    /// Perturb the associated mass's weights in the positive direction.
     ///
     /// The `seed` parameter controls the random perturbation for reproducibility.
     async fn perturb_up(&self, model_id: uuid::Uuid, seed: u64) -> Result<(), String>;
 
-    /// Perturb the associated quark's weights in the negative direction.
+    /// Perturb the associated mass's weights in the negative direction.
     async fn perturb_down(&self, model_id: uuid::Uuid) -> Result<(), String>;
 
     /// Apply the QuZO optimization update using the up and down loss values.
     ///
-    /// The quark uses the difference between `loss_up` and `loss_down` to
+    /// The mass uses the difference between `loss_up` and `loss_down` to
     /// estimate a gradient and update its weights.
     async fn optimize(
         &self,
@@ -128,10 +128,10 @@ pub trait VoidInferOps: Send + Sync {
         loss_down: f32,
     ) -> Result<(), String>;
 
-    /// Query the current runtime parameters for a running quark model instance.
-    async fn query_model_params(&self, model_id: uuid::Uuid) -> Result<QuarkModelParams, String>;
+    /// Query the current runtime parameters for a running mass model instance.
+    async fn query_model_params(&self, model_id: uuid::Uuid) -> Result<MassModelParams, String>;
 
-    /// Shut down a quark model instance.
+    /// Shut down a mass model instance.
     async fn shutdown_model(&self, model_id: uuid::Uuid) -> Result<(), String>;
 
     /// Wait for a [`Transmission`] from the void by object id.
@@ -383,7 +383,7 @@ mod tests {
         async fn start_model(
             &self,
             _model_id: uuid::Uuid,
-            _model_config: Option<QuarkModelConfig>,
+            _model_config: Option<MassModelConfig>,
         ) -> Result<(), String> {
             Ok(())
         }
@@ -436,7 +436,7 @@ mod tests {
         async fn query_model_params(
             &self,
             _model_id: uuid::Uuid,
-        ) -> Result<QuarkModelParams, String> {
+        ) -> Result<MassModelParams, String> {
             Err("unsupported in tests".to_string())
         }
 

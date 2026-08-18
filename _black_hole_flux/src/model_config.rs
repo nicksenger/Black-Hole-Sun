@@ -1,7 +1,7 @@
-//! Model configuration traits for per-instance quark start settings.
+//! Model configuration traits for per-instance mass start settings.
 
 use black_hole_spec::{
-    ObjectId, QuarkErrorFeedbackConfig, QuarkErrorFeedbackMode, QuarkModelConfig,
+    ObjectId, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassModelConfig,
 };
 
 /// Compile-time oscillation schedule for train/freeze windows.
@@ -25,24 +25,24 @@ impl OscillationSchedule for NoOscillation {}
 ///
 /// Implementors can leave `MODE` as `None` to emit no per-instance override.
 /// When set to a mode variant, decay/gain and replay steps are encoded into
-/// `QuarkModelConfig::training_error_feedback`.
+/// `MassModelConfig::training_error_feedback`.
 pub trait ErrorFeedbackPolicy {
-    const MODE: Option<QuarkErrorFeedbackMode> = None;
+    const MODE: Option<MassErrorFeedbackMode> = None;
     const DECAY: f64 = 0.9;
     const GAIN: f64 = 1.0;
     const REPLAY_STEPS: u32 = 50;
 
-    fn quark_error_feedback() -> Option<QuarkErrorFeedbackConfig> {
+    fn mass_error_feedback() -> Option<MassErrorFeedbackConfig> {
         match Self::MODE {
             None => None,
-            Some(QuarkErrorFeedbackMode::Off) => Some(QuarkErrorFeedbackConfig::Off),
-            Some(QuarkErrorFeedbackMode::Persistent) => {
-                Some(QuarkErrorFeedbackConfig::Persistent {
+            Some(MassErrorFeedbackMode::Off) => Some(MassErrorFeedbackConfig::Off),
+            Some(MassErrorFeedbackMode::Persistent) => {
+                Some(MassErrorFeedbackConfig::Persistent {
                     decay: Self::DECAY,
                     gain: Self::GAIN,
                 })
             }
-            Some(QuarkErrorFeedbackMode::Replay) => Some(QuarkErrorFeedbackConfig::Replay {
+            Some(MassErrorFeedbackMode::Replay) => Some(MassErrorFeedbackConfig::Replay {
                 steps: Self::REPLAY_STEPS,
                 decay: Self::DECAY,
                 gain: Self::GAIN,
@@ -57,10 +57,10 @@ pub struct NoErrorFeedback;
 
 impl ErrorFeedbackPolicy for NoErrorFeedback {}
 
-/// Compile-time model configuration for a cell-owned quark instance.
+/// Compile-time model configuration for a cell-owned mass instance.
 ///
 /// Implementors expose optional overrides as associated constants. Any constant
-/// left as `None` falls back to the quark server default for that field.
+/// left as `None` falls back to the mass server default for that field.
 pub trait ModelConfig {
     type Oscillation: OscillationSchedule;
     type ErrorFeedback: ErrorFeedbackPolicy;
@@ -79,8 +79,8 @@ pub trait ModelConfig {
     const FROZEN: Option<bool> = None;
     const CHECKPOINT: Option<u128> = None;
 
-    fn quark_model_config() -> Option<QuarkModelConfig> {
-        let config = QuarkModelConfig {
+    fn mass_model_config() -> Option<MassModelConfig> {
+        let config = MassModelConfig {
             top_k: Self::TOP_K,
             temperature: Self::TEMPERATURE,
             top_p: Self::TOP_P,
@@ -93,7 +93,7 @@ pub trait ModelConfig {
             training_lb_loss: Self::TRAINING_LB_LOSS,
             training_clip_threshold: Self::TRAINING_CLIP_THRESHOLD,
             training_error_feedback:
-                <Self::ErrorFeedback as ErrorFeedbackPolicy>::quark_error_feedback(),
+                <Self::ErrorFeedback as ErrorFeedbackPolicy>::mass_error_feedback(),
             frozen: Self::FROZEN,
             oscillation_period_steps: <Self::Oscillation as OscillationSchedule>::PERIOD_STEPS,
             oscillation_train_steps: <Self::Oscillation as OscillationSchedule>::TRAIN_STEPS,
@@ -128,7 +128,7 @@ pub trait ModelConfig {
     }
 }
 
-/// Default model configuration that passes through all quark server defaults.
+/// Default model configuration that passes through all mass server defaults.
 pub struct DefaultConfig;
 
 impl ModelConfig for DefaultConfig {
@@ -139,7 +139,7 @@ impl ModelConfig for DefaultConfig {
 #[cfg(test)]
 mod tests {
     use super::{ErrorFeedbackPolicy, ModelConfig, OscillationSchedule};
-    use black_hole_spec::{QuarkErrorFeedbackConfig, QuarkErrorFeedbackMode};
+    use black_hole_spec::{MassErrorFeedbackConfig, MassErrorFeedbackMode};
 
     struct FrozenConfig;
     impl ModelConfig for FrozenConfig {
@@ -180,7 +180,7 @@ mod tests {
 
     struct ReplayErrorFeedback;
     impl ErrorFeedbackPolicy for ReplayErrorFeedback {
-        const MODE: Option<QuarkErrorFeedbackMode> = Some(QuarkErrorFeedbackMode::Replay);
+        const MODE: Option<MassErrorFeedbackMode> = Some(MassErrorFeedbackMode::Replay);
         const DECAY: f64 = 0.85;
         const GAIN: f64 = 0.7;
         const REPLAY_STEPS: u32 = 64;
@@ -194,18 +194,18 @@ mod tests {
 
     #[test]
     fn default_config_emits_no_overrides() {
-        assert!(super::DefaultConfig::quark_model_config().is_none());
+        assert!(super::DefaultConfig::mass_model_config().is_none());
     }
 
     #[test]
     fn frozen_override_emits_model_config() {
-        let config = FrozenConfig::quark_model_config().expect("expected override config");
+        let config = FrozenConfig::mass_model_config().expect("expected override config");
         assert_eq!(config.frozen, Some(true));
     }
 
     #[test]
     fn checkpoint_override_emits_model_config() {
-        let config = CheckpointConfig::quark_model_config().expect("expected override config");
+        let config = CheckpointConfig::mass_model_config().expect("expected override config");
         assert_eq!(
             config.checkpoint_id,
             Some(black_hole_spec::ObjectId::from_u128(42))
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn training_overrides_emit_model_config() {
         let config =
-            TrainingOverridesConfig::quark_model_config().expect("expected override config");
+            TrainingOverridesConfig::mass_model_config().expect("expected override config");
         assert_eq!(config.training_z_loss, Some(0.02));
         assert_eq!(config.training_lb_loss, Some(0.03));
         assert_eq!(config.training_clip_threshold, Some(1.5));
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn oscillation_overrides_emit_model_config() {
-        let config = OscillationConfig::quark_model_config().expect("expected override config");
+        let config = OscillationConfig::mass_model_config().expect("expected override config");
         assert_eq!(config.oscillation_period_steps, Some(10));
         assert_eq!(config.oscillation_train_steps, Some(3));
         assert_eq!(config.oscillation_phase_steps, Some(2));
@@ -232,10 +232,10 @@ mod tests {
 
     #[test]
     fn error_feedback_overrides_emit_model_config() {
-        let config = ErrorFeedbackConfig::quark_model_config().expect("expected override config");
+        let config = ErrorFeedbackConfig::mass_model_config().expect("expected override config");
         assert_eq!(
             config.training_error_feedback,
-            Some(QuarkErrorFeedbackConfig::Replay {
+            Some(MassErrorFeedbackConfig::Replay {
                 steps: 64,
                 decay: 0.85,
                 gain: 0.7,

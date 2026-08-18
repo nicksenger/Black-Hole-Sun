@@ -21,7 +21,7 @@ use crate::model_config::{DefaultConfig, ModelConfig};
 /// [`CellState::inner`] and defaults to `()`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CellState<S = ()> {
-    /// Stable ID of the quark model instance owned by this cell.
+    /// Stable ID of the mass model instance owned by this cell.
     pub model_id: Uuid,
     /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
     pub recv_id: black_hole_spec::ObjectId,
@@ -51,8 +51,8 @@ pub use black_hole_spec::EmissionId;
 pub use black_hole_spec::Potentiation;
 
 use super::effect::{
-    GenerateModelIdEffect, QuarkOptimize, QuarkPerturbDown, QuarkPerturbUp, QuarkShutdown,
-    QuarkStart, Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
+    GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown,
+    MassStart, Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
 
 // ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ impl<S> Action for GenerateModelId<S> {
     }
 }
 
-/// Starts the generated quark model instance and stores its ID in cell state.
+/// Starts the generated mass model instance and stores its ID in cell state.
 pub struct StartModel<S = (), H = DefaultConfig>(PhantomData<fn() -> (S, H)>);
 
 #[jungle::action(carry = Uuid)]
@@ -184,7 +184,7 @@ impl<S, H> Action for StartModel<S, H>
 where
     H: ModelConfig,
 {
-    type Effect = QuarkStart<H>;
+    type Effect = MassStart<H>;
     type Input = Uuid;
     type Output = ();
 
@@ -204,12 +204,12 @@ where
     }
 }
 
-/// Shuts down the quark model instance owned by this cell.
+/// Shuts down the mass model instance owned by this cell.
 pub struct ShutdownModel<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
 impl<S> Action for ShutdownModel<S> {
-    type Effect = QuarkShutdown;
+    type Effect = MassShutdown;
     type Input = ();
     type Output = ();
 
@@ -265,19 +265,19 @@ pub struct Propagation {
 }
 
 // ---------------------------------------------------------------------------
-// QuarkInferStep — action wrapper for use inside Atom flows
+// MassInferStep — action wrapper for use inside Atom flows
 // ---------------------------------------------------------------------------
 
-/// Action that performs quark inference for one model instance.
-pub struct QuarkInferStep<M, S = (), H = DefaultConfig>(PhantomData<fn() -> (M, S, H)>);
+/// Action that performs mass inference for one model instance.
+pub struct MassInferStep<M, S = (), H = DefaultConfig>(PhantomData<fn() -> (M, S, H)>);
 
 #[jungle::action]
-impl<M, S, H> Action for QuarkInferStep<M, S, H>
+impl<M, S, H> Action for MassInferStep<M, S, H>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
     H: ModelConfig,
 {
-    type Effect = super::super::atom::effect::QuarkInfer<M, H>;
+    type Effect = super::super::atom::effect::MassInfer<M, H>;
     type Input = (Uuid, EmissionId);
     type Output = EmissionId;
 
@@ -289,19 +289,19 @@ where
         _state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|e| Failure::Message(format!("quark inference failed: {e}")))
+        output.map_err(|e| Failure::Message(format!("mass inference failed: {e}")))
     }
 }
 
 // ---------------------------------------------------------------------------
-// PerturbUp — perturb quark weights upward (no carry)
+// PerturbUp — perturb mass weights upward (no carry)
 // ---------------------------------------------------------------------------
 
 pub struct PerturbUp<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
 impl<S> Action for PerturbUp<S> {
-    type Effect = QuarkPerturbUp;
+    type Effect = MassPerturbUp;
     type Input = ();
     type Output = ();
 
@@ -318,14 +318,14 @@ impl<S> Action for PerturbUp<S> {
 }
 
 // ---------------------------------------------------------------------------
-// PerturbDown — perturb quark weights downward (no carry)
+// PerturbDown — perturb mass weights downward (no carry)
 // ---------------------------------------------------------------------------
 
 pub struct PerturbDown<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
 impl<S> Action for PerturbDown<S> {
-    type Effect = QuarkPerturbDown;
+    type Effect = MassPerturbDown;
     type Input = ();
     type Output = ();
 
@@ -349,7 +349,7 @@ pub struct Optimize<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
 impl<S> Action for Optimize<S> {
-    type Effect = QuarkOptimize;
+    type Effect = MassOptimize;
     type Input = Potentiation;
     type Output = ();
 

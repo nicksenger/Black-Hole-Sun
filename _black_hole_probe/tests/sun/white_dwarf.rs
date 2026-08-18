@@ -13,9 +13,9 @@ use black_hole_sun::ops::{InferenceOutputOps, SunOps, TransmissionOps, VoidInfer
 use black_hole_sun::sun::{BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
     AtomError, CellInit, DarkToken, EmissionId, ErrorFeedbackPolicy, InferenceOutput,
-    InferenceRequest, ModelConfig, ObjectId, OscillationSchedule, QuarkClient,
-    QuarkErrorFeedbackMode, QuarkModelConfig, QuarkModelParams, Ray, RunningTestQuarkServer,
-    RunningTestVoidServer, SequenceOutput, TestQuarkServer, TestVoidServer, Tokenizer,
+    InferenceRequest, ModelConfig, ObjectId, OscillationSchedule, MassClient,
+    MassErrorFeedbackMode, MassModelConfig, MassModelParams, Ray, RunningTestMassServer,
+    RunningTestVoidServer, SequenceOutput, TestMassServer, TestVoidServer, Tokenizer,
     Transmission, VoidClient,
 };
 use jungle_sdk::core::JungleWorker;
@@ -76,7 +76,7 @@ impl OscillationSchedule for WhiteDwarfOscillationB {
 struct WhiteDwarfPersistentResiduals;
 
 impl ErrorFeedbackPolicy for WhiteDwarfPersistentResiduals {
-    const MODE: Option<QuarkErrorFeedbackMode> = Some(QuarkErrorFeedbackMode::Persistent);
+    const MODE: Option<MassErrorFeedbackMode> = Some(MassErrorFeedbackMode::Persistent);
 }
 
 struct WhiteDwarfModelConfigA;
@@ -98,7 +98,7 @@ impl ModelConfig for WhiteDwarfModelConfigB {
 }
 
 // Primordium expands to Cell<Atom<...>> and keeps inference on Atom's
-// QuarkInferWithBackoff retry path.
+// MassInferWithBackoff retry path.
 type WhiteDwarfBackoffPrimordium<H> = Primordium<(), H>;
 
 struct WhiteDwarfCell0Animal;
@@ -291,16 +291,16 @@ struct WhiteDwarfAnimals(
 #[derive(Clone)]
 struct WhiteDwarfJungle {
     void_client: VoidClient,
-    quark_client: QuarkClient,
+    mass_client: MassClient,
     tokenizer: Arc<OnceLock<Result<Tokenizer, String>>>,
     client: Option<jungle_sdk::Client>,
 }
 
 impl WhiteDwarfJungle {
-    fn new(void_client: VoidClient, quark_client: QuarkClient) -> Self {
+    fn new(void_client: VoidClient, mass_client: MassClient) -> Self {
         Self {
             void_client,
-            quark_client,
+            mass_client,
             tokenizer: Arc::new(OnceLock::new()),
             client: None,
         }
@@ -341,23 +341,23 @@ impl VoidInferOps for WhiteDwarfJungle {
     async fn start_model(
         &self,
         model_id: Uuid,
-        model_config: Option<QuarkModelConfig>,
+        model_config: Option<MassModelConfig>,
     ) -> Result<(), String> {
-        self.quark_client.start(model_id, model_config).await
+        self.mass_client.start(model_id, model_config).await
     }
 
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
         let request_bytes = postcard::to_allocvec(&request).map_err(|error| error.to_string())?;
         let request_id = self.void_client.upload(request_bytes).await?;
-        self.quark_client.infer(model_id, request_id).await
+        self.mass_client.infer(model_id, request_id).await
     }
 
     async fn reset_model(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.reset(model_id).await
+        self.mass_client.reset(model_id).await
     }
 
     async fn checkpoint_model(&self, model_id: Uuid) -> Result<ObjectId, String> {
-        self.quark_client.checkpoint(model_id).await
+        self.mass_client.checkpoint(model_id).await
     }
 
     fn darken(&self, prompt: &str) -> Result<Vec<DarkToken>, String> {
@@ -382,25 +382,25 @@ impl VoidInferOps for WhiteDwarfJungle {
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
-        self.quark_client.perturb_up(model_id, seed).await
+        self.mass_client.perturb_up(model_id, seed).await
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.perturb_down(model_id).await
+        self.mass_client.perturb_down(model_id).await
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
-        self.quark_client
+        self.mass_client
             .optimize(model_id, loss_up, loss_down)
             .await
     }
 
-    async fn query_model_params(&self, model_id: Uuid) -> Result<QuarkModelParams, String> {
-        self.quark_client.query_model_params(model_id).await
+    async fn query_model_params(&self, model_id: Uuid) -> Result<MassModelParams, String> {
+        self.mass_client.query_model_params(model_id).await
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
-        self.quark_client.shutdown(model_id).await
+        self.mass_client.shutdown(model_id).await
     }
 
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String> {
@@ -525,7 +525,7 @@ struct Launched {
     /// The local jungle QUIC server; stopped when dropped with `Launched`.
     jungle_server: RunningJungleServer,
     void_server: RunningTestVoidServer,
-    quark_server: RunningTestQuarkServer,
+    mass_server: RunningTestMassServer,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -553,7 +553,7 @@ fn white_dwarf() {
             .serve()
             .await
             .expect("failed to start void server");
-        let quark_server = TestQuarkServer::new(&model_path)
+        let mass_server = TestMassServer::new(&model_path)
             .tcp()
             .listen_on_all_interfaces()
             .listen_port(8888)
@@ -561,13 +561,13 @@ fn white_dwarf() {
             .default_inference_limit(WHITE_DWARF_DEFAULT_INFERENCE_LIMIT)
             .serve()
             .await
-            .expect("failed to start quark server");
+            .expect("failed to start mass server");
         let void_addr = void_server.local_addr();
-        let quark_addr = quark_server.local_addr();
+        let mass_addr = mass_server.local_addr();
 
         let void_client = VoidClient::new_tcp(void_addr);
-        let quark_client = QuarkClient::new_tcp(quark_addr);
-        let mut jungle = WhiteDwarfJungle::new(void_client, quark_client);
+        let mass_client = MassClient::new_tcp(mass_addr);
+        let mut jungle = WhiteDwarfJungle::new(void_client, mass_client);
 
         // Start the local jungle QUIC server on an ephemeral port. The spawn
         // phase keeps its own client for the journey and worker pool; callers
@@ -613,7 +613,7 @@ fn white_dwarf() {
             },
             jungle_server,
             void_server,
-            quark_server,
+            mass_server,
             workers,
         }
     });
@@ -770,5 +770,5 @@ fn white_dwarf() {
     });
     drop(launched.jungle_server);
     launched.void_server.abort();
-    launched.quark_server.abort();
+    launched.mass_server.abort();
 }

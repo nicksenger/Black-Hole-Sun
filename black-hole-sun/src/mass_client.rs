@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use black_hole_spec::{
-    ObjectId, QuarkIn, QuarkModelCapacity, QuarkModelConfig, QuarkModelParams, QuarkOut,
+    ObjectId, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut,
 };
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use tokio::{
 };
 
 #[derive(Clone, Debug)]
-enum QuarkTransport {
+enum MassTransport {
     Quic {
         endpoint: quinn::Endpoint,
         addr: SocketAddr,
@@ -22,20 +22,20 @@ enum QuarkTransport {
     },
 }
 
-/// Client for interacting with the Quark service.
+/// Client for interacting with the Mass service.
 #[derive(Clone, Debug)]
-pub struct QuarkClient {
-    transport: QuarkTransport,
+pub struct MassClient {
+    transport: MassTransport,
 }
 
-impl QuarkClient {
+impl MassClient {
     pub fn new(
         endpoint: &quinn::Endpoint,
         addr: SocketAddr,
         server_name: impl Into<String>,
     ) -> Self {
         Self {
-            transport: QuarkTransport::Quic {
+            transport: MassTransport::Quic {
                 endpoint: endpoint.clone(),
                 addr,
                 server_name: server_name.into(),
@@ -45,70 +45,70 @@ impl QuarkClient {
 
     pub fn new_tcp(addr: SocketAddr) -> Self {
         Self {
-            transport: QuarkTransport::Tcp { addr },
+            transport: MassTransport::Tcp { addr },
         }
     }
 
     pub async fn start(
         &self,
         model_id: ObjectId,
-        model_config: Option<QuarkModelConfig>,
+        model_config: Option<MassModelConfig>,
     ) -> Result<(), String> {
         let resp = self
-            .request(&QuarkIn::Start {
+            .request(&MassIn::Start {
                 model_id,
                 model_config,
             })
             .await?;
         match resp {
-            QuarkOut::Ack => Ok(()),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for start".to_string()),
+            MassOut::Ack => Ok(()),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for start".to_string()),
         }
     }
 
     pub async fn infer(&self, model_id: ObjectId, input_id: ObjectId) -> Result<ObjectId, String> {
-        let resp = self.request(&QuarkIn::Infer { model_id, input_id }).await?;
+        let resp = self.request(&MassIn::Infer { model_id, input_id }).await?;
         match resp {
-            QuarkOut::Inferred { output_id } => Ok(output_id),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for infer".to_string()),
+            MassOut::Inferred { output_id } => Ok(output_id),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for infer".to_string()),
         }
     }
 
     pub async fn reset(&self, model_id: ObjectId) -> Result<(), String> {
-        let resp = self.request(&QuarkIn::Reset { model_id }).await?;
+        let resp = self.request(&MassIn::Reset { model_id }).await?;
         match resp {
-            QuarkOut::Ack => Ok(()),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for reset".to_string()),
+            MassOut::Ack => Ok(()),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for reset".to_string()),
         }
     }
 
     pub async fn perturb_up(&self, model_id: ObjectId, seed: u64) -> Result<(), String> {
-        let resp = self.request(&QuarkIn::PerturbUp { model_id, seed }).await?;
+        let resp = self.request(&MassIn::PerturbUp { model_id, seed }).await?;
         match resp {
-            QuarkOut::Ack => Ok(()),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for perturb_up".to_string()),
+            MassOut::Ack => Ok(()),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for perturb_up".to_string()),
         }
     }
 
     pub async fn perturb_down(&self, model_id: ObjectId) -> Result<(), String> {
-        let resp = self.request(&QuarkIn::PerturbDown { model_id }).await?;
+        let resp = self.request(&MassIn::PerturbDown { model_id }).await?;
         match resp {
-            QuarkOut::Ack => Ok(()),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for perturb_down".to_string()),
+            MassOut::Ack => Ok(()),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for perturb_down".to_string()),
         }
     }
 
     pub async fn checkpoint(&self, model_id: ObjectId) -> Result<ObjectId, String> {
-        let resp = self.request(&QuarkIn::Checkpoint { model_id }).await?;
+        let resp = self.request(&MassIn::Checkpoint { model_id }).await?;
         match resp {
-            QuarkOut::Checkpointed { checkpoint_id } => Ok(checkpoint_id),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for checkpoint".to_string()),
+            MassOut::Checkpointed { checkpoint_id } => Ok(checkpoint_id),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for checkpoint".to_string()),
         }
     }
 
@@ -119,51 +119,51 @@ impl QuarkClient {
         loss_down: f32,
     ) -> Result<(), String> {
         let resp = self
-            .request(&QuarkIn::Optimize {
+            .request(&MassIn::Optimize {
                 model_id,
                 loss_up,
                 loss_down,
             })
             .await?;
         match resp {
-            QuarkOut::Ack => Ok(()),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for optimize".to_string()),
+            MassOut::Ack => Ok(()),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for optimize".to_string()),
         }
     }
 
     pub async fn shutdown(&self, model_id: ObjectId) -> Result<(), String> {
-        let resp = self.request(&QuarkIn::Shutdown { model_id }).await?;
+        let resp = self.request(&MassIn::Shutdown { model_id }).await?;
         match resp {
-            QuarkOut::Ack => Ok(()),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for shutdown".to_string()),
+            MassOut::Ack => Ok(()),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for shutdown".to_string()),
         }
     }
 
-    pub async fn query_model_params(&self, model_id: ObjectId) -> Result<QuarkModelParams, String> {
+    pub async fn query_model_params(&self, model_id: ObjectId) -> Result<MassModelParams, String> {
         let resp = self
-            .request(&QuarkIn::QueryModelParams { model_id })
+            .request(&MassIn::QueryModelParams { model_id })
             .await?;
         match resp {
-            QuarkOut::ModelParams { params } => Ok(params),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for query_model_params".to_string()),
+            MassOut::ModelParams { params } => Ok(params),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for query_model_params".to_string()),
         }
     }
 
-    pub async fn query_model_capacity(&self) -> Result<QuarkModelCapacity, String> {
-        let resp = self.request(&QuarkIn::QueryModelCapacity).await?;
+    pub async fn query_model_capacity(&self) -> Result<MassModelCapacity, String> {
+        let resp = self.request(&MassIn::QueryModelCapacity).await?;
         match resp {
-            QuarkOut::ModelCapacity { capacity } => Ok(capacity),
-            QuarkOut::Error { message } => Err(message),
-            _ => Err("unexpected quark response for query_model_capacity".to_string()),
+            MassOut::ModelCapacity { capacity } => Ok(capacity),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for query_model_capacity".to_string()),
         }
     }
 
-    async fn request(&self, request: &QuarkIn) -> Result<QuarkOut, String> {
+    async fn request(&self, request: &MassIn) -> Result<MassOut, String> {
         match &self.transport {
-            QuarkTransport::Quic {
+            MassTransport::Quic {
                 endpoint,
                 addr,
                 server_name,
@@ -182,7 +182,7 @@ impl QuarkClient {
                 send_frame_quic(&mut send, request).await?;
                 read_frame_quic(&mut recv).await
             }
-            QuarkTransport::Tcp { addr } => {
+            MassTransport::Tcp { addr } => {
                 let mut stream = TcpStream::connect(*addr)
                     .await
                     .map_err(|e| format!("tcp connect failed: {e}"))?;

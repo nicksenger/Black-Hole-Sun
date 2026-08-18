@@ -1,4 +1,4 @@
-//! Twin module - two-input quark-inference pipeline components.
+//! Twin module - two-input mass-inference pipeline components.
 
 pub mod action;
 pub mod effect;
@@ -7,7 +7,7 @@ use jungle_sdk::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use action::QuarkInferStep;
+use action::MassInferStep;
 
 pub use action::{LeftStack, RandStack, RightStack};
 
@@ -15,14 +15,14 @@ pub use action::{LeftStack, RandStack, RightStack};
 ///
 /// Its input flow is expected to transform a two-input fusion payload from
 /// `(Uuid, (EmissionId, EmissionId))` into `(Uuid, EmissionId)` so one
-/// quark-inference step can run before handing off to the output flow.
+/// mass-inference step can run before handing off to the output flow.
 ///
 /// Use [`LeftStack`], [`RightStack`], or [`RandStack`] for default
 /// "stack and infer" behavior.
 #[derive(Flow)]
 pub struct TwinWithState<In, Out, M: Serialize + DeserializeOwned + Send + 'static, S>(
     In,
-    Step<QuarkInferStep<M, S>>,
+    Step<MassInferStep<M, S>>,
     Out,
 );
 

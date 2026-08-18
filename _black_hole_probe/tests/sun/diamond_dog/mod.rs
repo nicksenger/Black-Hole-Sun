@@ -16,7 +16,7 @@ use black_hole_sun::cell::action::{
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunNodeState, SunState, Unary};
 use black_hole_sun::{
-    AtomError, EmissionId, InferenceRequest, ObjectId, QuarkModelConfig, QuarkModelParams, Ray,
+    AtomError, EmissionId, InferenceRequest, ObjectId, MassModelConfig, MassModelParams, Ray,
     TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState};
@@ -390,7 +390,7 @@ impl VoidInferOps for ProbeSpaceJungle {
     async fn start_model(
         &self,
         _model_id: Uuid,
-        _model_config: Option<QuarkModelConfig>,
+        _model_config: Option<MassModelConfig>,
     ) -> Result<(), String> {
         Err("model lifecycle is not used by TestCell".to_string())
     }
@@ -424,7 +424,7 @@ impl VoidInferOps for ProbeSpaceJungle {
         Err("optimization is not used by TestCell".to_string())
     }
 
-    async fn query_model_params(&self, _model_id: Uuid) -> Result<QuarkModelParams, String> {
+    async fn query_model_params(&self, _model_id: Uuid) -> Result<MassModelParams, String> {
         Err("query model params is not used by TestCell".to_string())
     }
 

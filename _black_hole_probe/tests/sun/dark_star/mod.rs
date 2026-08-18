@@ -15,8 +15,8 @@ use black_hole_sun::cell::action::{
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, ObjectId, QuarkClient, QuarkModelConfig, QuarkModelParams,
-    TestQuarkServer, TestVoidServer, Tokenizer, Transmission, VoidClient,
+    EmissionId, InferenceRequest, ObjectId, MassClient, MassModelConfig, MassModelParams,
+    TestMassServer, TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{FusionSeed, FusionState, Progenitor, QuzoFusion};
 use jungle_sdk::core::JungleWorker;
@@ -284,7 +284,7 @@ pub(super) struct SpaceAnimals(
 #[derive(Clone)]
 pub(super) struct SpaceJungle {
     void_client: VoidClient,
-    quark_client: QuarkClient,
+    mass_client: MassClient,
     tokenizer: Arc<OnceLock<Result<Tokenizer, String>>>,
     client: Option<FusedClient>,
     pub(super) potentiation_writes: Arc<AtomicUsize>,
@@ -299,12 +299,12 @@ pub(super) struct SpaceJungle {
 impl SpaceJungle {
     pub(super) fn new(
         void_client: VoidClient,
-        quark_client: QuarkClient,
+        mass_client: MassClient,
         _model_cell_count: usize,
     ) -> Self {
         Self {
             void_client,
-            quark_client,
+            mass_client,
             tokenizer: Arc::new(OnceLock::new()),
             client: None,
             potentiation_writes: Arc::new(AtomicUsize::new(0)),
@@ -375,9 +375,9 @@ impl VoidInferOps for SpaceJungle {
     async fn start_model(
         &self,
         model_id: Uuid,
-        model_config: Option<QuarkModelConfig>,
+        model_config: Option<MassModelConfig>,
     ) -> Result<(), String> {
-        let result = self.quark_client.start(model_id, model_config).await;
+        let result = self.mass_client.start(model_id, model_config).await;
         self.record_model_error("start model", &result);
         result
     }
@@ -385,7 +385,7 @@ impl VoidInferOps for SpaceJungle {
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
         let request_bytes = postcard::to_allocvec(&request).map_err(|error| error.to_string())?;
         let request_id = self.void_client.upload(request_bytes).await.unwrap();
-        let result = self.quark_client.infer(model_id, request_id).await;
+        let result = self.mass_client.infer(model_id, request_id).await;
         self.record_model_error("infer", &result);
         if result.is_ok() {
             self.inference_calls.fetch_add(1, Ordering::SeqCst);
@@ -394,13 +394,13 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn reset_model(&self, model_id: Uuid) -> Result<(), String> {
-        let result = self.quark_client.reset(model_id).await;
+        let result = self.mass_client.reset(model_id).await;
         self.record_model_error("reset model", &result);
         result
     }
 
     async fn checkpoint_model(&self, model_id: Uuid) -> Result<ObjectId, String> {
-        let result = self.quark_client.checkpoint(model_id).await;
+        let result = self.mass_client.checkpoint(model_id).await;
         self.record_model_error("checkpoint model", &result);
         result
     }
@@ -427,7 +427,7 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
-        let result = self.quark_client.perturb_up(model_id, seed).await;
+        let result = self.mass_client.perturb_up(model_id, seed).await;
         self.record_model_error("perturb up", &result);
         if result.is_ok() {
             self.perturb_up_calls.fetch_add(1, Ordering::SeqCst);
@@ -436,7 +436,7 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
-        let result = self.quark_client.perturb_down(model_id).await;
+        let result = self.mass_client.perturb_down(model_id).await;
         self.record_model_error("perturb down", &result);
         if result.is_ok() {
             self.perturb_down_calls.fetch_add(1, Ordering::SeqCst);
@@ -446,7 +446,7 @@ impl VoidInferOps for SpaceJungle {
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
         let result = self
-            .quark_client
+            .mass_client
             .optimize(model_id, loss_up, loss_down)
             .await;
         self.record_model_error("optimize", &result);
@@ -456,14 +456,14 @@ impl VoidInferOps for SpaceJungle {
         result
     }
 
-    async fn query_model_params(&self, model_id: Uuid) -> Result<QuarkModelParams, String> {
-        let result = self.quark_client.query_model_params(model_id).await;
+    async fn query_model_params(&self, model_id: Uuid) -> Result<MassModelParams, String> {
+        let result = self.mass_client.query_model_params(model_id).await;
         self.record_model_error("query model params", &result);
         result
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
-        let result = self.quark_client.shutdown(model_id).await;
+        let result = self.mass_client.shutdown(model_id).await;
         self.record_model_error("shutdown model", &result);
         result
     }
@@ -505,7 +505,7 @@ pub(super) async fn exercise_epoch<A>(
     vertex_count: usize,
     expected_potentiation_writes: usize,
     expected_fusion_concats: usize,
-    quark_default_inference_limit: Option<u32>,
+    mass_default_inference_limit: Option<u32>,
 ) where
     A: Animal<Seed = ()>,
     A::Id: AnimalIdValue,
@@ -515,16 +515,16 @@ pub(super) async fn exercise_epoch<A>(
         .serve()
         .await
         .expect("failed to start void server");
-    let mut quark_builder = TestQuarkServer::new(model_path).void_addr(void_server.local_addr());
-    if let Some(limit) = quark_default_inference_limit {
-        quark_builder = quark_builder.default_inference_limit(limit);
+    let mut mass_builder = TestMassServer::new(model_path).void_addr(void_server.local_addr());
+    if let Some(limit) = mass_default_inference_limit {
+        mass_builder = mass_builder.default_inference_limit(limit);
     }
-    let quark_server = quark_builder
+    let mass_server = mass_builder
         .serve()
         .await
-        .expect("failed to start quark server");
+        .expect("failed to start mass server");
     let void_addr = void_server.local_addr();
-    let quark_addr = quark_server.local_addr();
+    let mass_addr = mass_server.local_addr();
 
     let client = FusedClient::builder()
         .build()
@@ -532,8 +532,8 @@ pub(super) async fn exercise_epoch<A>(
         .expect("fused client should build");
     let endpoint = make_client_endpoint().await;
     let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
-    let quark_client = QuarkClient::new(&endpoint, quark_addr, "localhost");
-    let mut jungle = SpaceJungle::new(void_client, quark_client, model_cell_count);
+    let mass_client = MassClient::new(&endpoint, mass_addr, "localhost");
+    let mut jungle = SpaceJungle::new(void_client, mass_client, model_cell_count);
     jungle.set_client(client.clone());
 
     let potentiation_writes = Arc::clone(&jungle.potentiation_writes);
@@ -648,7 +648,7 @@ pub(super) async fn exercise_epoch<A>(
     }
     drop(client);
     void_server.abort();
-    quark_server.abort();
+    mass_server.abort();
 }
 
 /// Runs an expanded diamond with Fusion nodes using Twin stack transforms.
@@ -688,23 +688,23 @@ pub(crate) fn run_beam_dark_star() {
         .enable_all()
         .build()
         .expect("Tokio runtime should build");
-    let (client, journey_id, _void_server, _quark_server) = runtime.block_on(async {
+    let (client, journey_id, _void_server, _mass_server) = runtime.block_on(async {
         let void_server = TestVoidServer::new()
             .serve()
             .await
             .expect("failed to start void server");
-        let quark_server = TestQuarkServer::new(&model_path)
+        let mass_server = TestMassServer::new(&model_path)
             .void_addr(void_server.local_addr())
             .serve()
             .await
-            .expect("failed to start quark server");
+            .expect("failed to start mass server");
         let void_addr = void_server.local_addr();
-        let quark_addr = quark_server.local_addr();
+        let mass_addr = mass_server.local_addr();
 
         let endpoint = make_client_endpoint().await;
         let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
-        let quark_client = QuarkClient::new(&endpoint, quark_addr, "localhost");
-        let mut jungle = SpaceJungle::new(void_client, quark_client, DARK_STAR_MODEL_NODE_COUNT);
+        let mass_client = MassClient::new(&endpoint, mass_addr, "localhost");
+        let mut jungle = SpaceJungle::new(void_client, mass_client, DARK_STAR_MODEL_NODE_COUNT);
         let client = FusedClient::builder()
             .build()
             .await
@@ -728,7 +728,7 @@ pub(crate) fn run_beam_dark_star() {
             })
             .collect();
 
-        (client, journey_id, void_server, quark_server)
+        (client, journey_id, void_server, mass_server)
     });
 
     black_hole_beam::BeamBuilder::new()
