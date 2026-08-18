@@ -77,7 +77,7 @@ pub struct BhsScore {
     pub measure_ticks: Option<u64>,
     /// An explicit loop length in ticks; `None` loops at the last release.
     pub loop_ticks: Option<u64>,
-    pairs: Vec<AnnotatedPair>,
+    pub pairs: Vec<AnnotatedPair>,
     leading_comments: Vec<String>,
     trailing_comments: Vec<String>,
     anchors: Vec<(usize, u64)>,
@@ -85,7 +85,7 @@ pub struct BhsScore {
 
 /// A pair plus the user comments that precede it in the source file.
 #[derive(Debug, Clone)]
-struct AnnotatedPair {
+pub struct AnnotatedPair {
     pair: ScoreNotePair,
     comments: Vec<String>,
 }
@@ -218,9 +218,9 @@ impl BhsScore {
             saw_structural_line = true;
         }
 
-        let ticks_per_second = ticks_per_second.filter(|&tps| tps > 0).ok_or_else(|| {
-            "the score is missing a positive ticks_per_second header".to_string()
-        })?;
+        let ticks_per_second = ticks_per_second
+            .filter(|&tps| tps > 0)
+            .ok_or_else(|| "the score is missing a positive ticks_per_second header".to_string())?;
         if pairs.is_empty() {
             return Err("the score has no notes".to_string());
         }
@@ -306,9 +306,8 @@ impl BhsScore {
             let voice_id = index as u64 + 1;
             let note = PianoNote::from_midi(pair.midi_note);
             let attack_velocity = f32::from(pair.velocity) / f32::from(MAX_VELOCITY);
-            let release_velocity = f32::from(
-                pair.release_velocity.unwrap_or(pair.velocity),
-            ) / f32::from(MAX_VELOCITY);
+            let release_velocity =
+                f32::from(pair.release_velocity.unwrap_or(pair.velocity)) / f32::from(MAX_VELOCITY);
             events.push(PianoEvent {
                 sequence: 0,
                 timestamp: ticks_to_duration(pair.start_tick, ticks_per_second),
@@ -501,11 +500,8 @@ impl BhsScore {
 
     /// Sorted pairs carrying their attached comments, in canonical order.
     fn sorted_pairs_with_comments(&self) -> Vec<(&ScoreNotePair, &Vec<String>)> {
-        let mut annotated: Vec<(&ScoreNotePair, &Vec<String>)> = self
-            .pairs
-            .iter()
-            .map(|a| (&a.pair, &a.comments))
-            .collect();
+        let mut annotated: Vec<(&ScoreNotePair, &Vec<String>)> =
+            self.pairs.iter().map(|a| (&a.pair, &a.comments)).collect();
         annotated.sort_by(|(a, _), (b, _)| canonical_pair_order(a, b));
         annotated
     }
@@ -591,7 +587,9 @@ fn parse_pair_fields<'a>(
         .transpose()?
         .ok_or_else(|| format!("line {line}: the note pair needs a duration"))?;
     if duration_ticks == 0 {
-        return Err(format!("line {line}: the duration must be at least one tick"));
+        return Err(format!(
+            "line {line}: the duration must be at least one tick"
+        ));
     }
     let note_text = fields
         .next()
@@ -708,8 +706,8 @@ pub fn note_name(midi_note: u8) -> String {
 /// Convert integer ticks on a ticks-per-second grid to an exact duration.
 pub fn ticks_to_duration(ticks: u64, ticks_per_second: u64) -> Duration {
     let seconds = ticks / ticks_per_second;
-    let remainder_nanos = (u128::from(ticks % ticks_per_second) * 1_000_000_000)
-        / u128::from(ticks_per_second);
+    let remainder_nanos =
+        (u128::from(ticks % ticks_per_second) * 1_000_000_000) / u128::from(ticks_per_second);
     Duration::new(seconds, remainder_nanos as u32)
 }
 
@@ -770,7 +768,10 @@ loop_ticks 7680
         // Enharmonic spellings parse to the same pitch.
         assert_eq!(pairs[4].midi_note, 66);
         assert_eq!(pairs[3].release_velocity, Some(30));
-        assert_eq!(score.leading_comments, vec!["; written by hand".to_string()]);
+        assert_eq!(
+            score.leading_comments,
+            vec!["; written by hand".to_string()]
+        );
     }
 
     #[test]
@@ -826,8 +827,7 @@ loop_ticks 7680
         let c4_attack = events
             .iter()
             .find(|event| {
-                event.note.midi_note == 60
-                    && matches!(event.action, PianoAction::Attack { .. })
+                event.note.midi_note == 60 && matches!(event.action, PianoAction::Attack { .. })
             })
             .expect("the C4 attack should exist");
         assert_eq!(c4_attack.voice_id, 2);
@@ -843,8 +843,7 @@ loop_ticks 7680
         let c4_release = events
             .iter()
             .find(|event| {
-                event.note.midi_note == 60
-                    && matches!(event.action, PianoAction::Release { .. })
+                event.note.midi_note == 60 && matches!(event.action, PianoAction::Release { .. })
             })
             .expect("the C4 release should exist");
         assert_eq!(c4_release.voice_id, 2);
@@ -862,22 +861,23 @@ loop_ticks 7680
         let e4_attack = events
             .iter()
             .position(|event| {
-                event.note.midi_note == 64
-                    && matches!(event.action, PianoAction::Attack { .. })
+                event.note.midi_note == 64 && matches!(event.action, PianoAction::Attack { .. })
             })
             .expect("the E4 attack should exist");
         let a2_release = events
             .iter()
             .position(|event| {
-                event.note.midi_note == 45
-                    && matches!(event.action, PianoAction::Release { .. })
+                event.note.midi_note == 45 && matches!(event.action, PianoAction::Release { .. })
             })
             .expect("the A2 release should exist");
         assert!(e4_attack < a2_release);
 
         // Sequence numbers are dense and timestamps non-decreasing.
         assert_eq!(
-            events.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+            events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
             (1..=10).collect::<Vec<_>>()
         );
         assert!(events
@@ -914,8 +914,14 @@ ticks_per_second 960
         let score = BhsScore::parse(shuffled).expect("order is not required to parse");
         let emitted = score.format();
         let lines: Vec<&str> = emitted.lines().collect();
-        let c4 = lines.iter().position(|line| line.starts_with("0 960 C4")).unwrap();
-        let e4 = lines.iter().position(|line| line.starts_with("960 480 E4")).unwrap();
+        let c4 = lines
+            .iter()
+            .position(|line| line.starts_with("0 960 C4"))
+            .unwrap();
+        let e4 = lines
+            .iter()
+            .position(|line| line.starts_with("960 480 E4"))
+            .unwrap();
         assert!(c4 < e4, "canonical order sorts by start tick:\n{emitted}");
 
         let findings = score.diagnostics();
