@@ -23,8 +23,8 @@ pub use action::{
     Spawn,
 };
 pub use effect::{
-    SendRootPropagationEffect, SendRootPropagationInput, SpawnAnimal, WaitForNodeTransmissionEffect,
-    WaitForNodeTransmissionInput,
+    SendRootPropagationEffect, SendRootPropagationInput, SpawnAnimal,
+    WaitForNodeTransmissionEffect, WaitForNodeTransmissionInput,
 };
 
 // ---------------------------------------------------------------------------
@@ -518,6 +518,13 @@ where
 impl BlackHole for Empty {
     type Sun<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> =
         Sun<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>;
+}
+
+pub trait Manifest {
+    type Generator;
+    type Policy;
+    type State;
+    const ACCUM_STEPS: usize;
 }
 
 // ---------------------------------------------------------------------------

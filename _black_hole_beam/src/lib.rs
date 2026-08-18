@@ -2279,6 +2279,15 @@ impl BeamApp {
             SunNodeState::Propagation1 | SunNodeState::Propagation2 => {
                 Some(format!("{}, step {grad_step}", state.label()))
             }
+            SunNodeState::Optimization => {
+                let frozen = self
+                    .visuals
+                    .get(&node_id)
+                    .map(|visual| visual.frozen_for_state(state, cell.frozen))
+                    .unwrap_or(cell.frozen);
+                let status = if frozen == Some(true) { "frozen" } else { "optimizing" };
+                Some(format!("{} [{status}]", state.label()))
+            }
             _ => Some(state.label().to_string()),
         }
     }
@@ -3149,5 +3158,68 @@ mod tests {
     #[test]
     fn labels_optimization_phase_as_potentiation() {
         assert_eq!(SunNodeState::Optimization.label(), "potentiation");
+    }
+
+    #[test]
+    fn subpanel_phase_reports_potentiation_frozen_status() {
+        let config = BeamBuilder::new().into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+
+        let mut frozen_cell = CellDefinition::new::<TestCell>(1, vec![0], vec![]);
+        frozen_cell.state = SunNodeState::Optimization;
+        frozen_cell.frozen = Some(true);
+        app.model.cells.push(frozen_cell);
+
+        let mut open_cell = CellDefinition::new::<TestCell>(2, vec![0], vec![]);
+        open_cell.state = SunNodeState::Optimization;
+        open_cell.frozen = Some(false);
+        app.model.cells.push(open_cell);
+
+        assert_eq!(
+            app.subpanel_phase(1).as_deref(),
+            Some("potentiation [frozen]")
+        );
+        assert_eq!(
+            app.subpanel_phase(2).as_deref(),
+            Some("potentiation [optimizing]")
+        );
+    }
+
+    #[test]
+    fn subpanel_phase_uses_frozen_state_captured_at_propagation_transition() {
+        let config = BeamBuilder::new().into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+
+        let mut cell = CellDefinition::new::<TestCell>(1, vec![0], vec![]);
+        cell.state = SunNodeState::Optimization;
+        cell.frozen = Some(false);
+        app.model.cells.push(cell);
+
+        let start = Instant::now();
+        let mut visual = CellVisualState::default();
+        assert!(visual.observe(SunNodeState::Propagation1, 1, 4, 1, Some(true), start));
+        assert!(visual.observe(
+            SunNodeState::Propagation2,
+            1,
+            4,
+            2,
+            Some(true),
+            start + MIN_COLOR_STATE_DURATION
+        ));
+        assert!(visual.observe(
+            SunNodeState::Optimization,
+            4,
+            4,
+            3,
+            Some(false),
+            start + MIN_COLOR_STATE_DURATION * 2
+        ));
+        app.visuals.insert(1, visual);
+
+        assert_eq!(
+            app.subpanel_phase(1).as_deref(),
+            Some("potentiation [frozen]"),
+            "the subpanel matches the violet frozen style captured at propagation1 -> propagation2"
+        );
     }
 }
