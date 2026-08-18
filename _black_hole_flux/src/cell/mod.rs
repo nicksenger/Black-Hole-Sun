@@ -10,8 +10,7 @@ use action::{
     BeginGradientAccumulation as BeginGradientAccumulation_, GenerateModelId as GenerateModelId_,
     InitRecvId as InitRecvId_, Optimize as Optimize_, PerturbDown as PerturbDown_,
     PerturbUp as PerturbUp_, Potentiation, PrepareAtomInput as PrepareAtomInput_,
-    StartModel as StartModel_, Transmit as Transmit_,
-    WaitForPotentiation as WaitForPotentiation_,
+    StartModel as StartModel_, Transmit as Transmit_, WaitForPotentiation as WaitForPotentiation_,
     WaitForPropagation as WaitForPropagation_,
 };
 use black_hole_spec::EmissionId;
@@ -100,27 +99,27 @@ pub struct CellWithState<N, S, H: ModelConfig>(
     Step<InitRecvId_<S>>,
     Step<GenerateModelId_<S>>,
     StartModelWithBackoff<S, H>,
-    While<Always<CellState<S>, ()>, CytoplasmWithState<N, S>>,
+    While<Always<CellState<S>, ()>, InnerWithState<N, S>>,
 );
 
 pub type Cell<N, S = (), H = DefaultConfig> = CellWithState<N, S, H>;
 
 /// The body of one iteration of a [`Cell`] loop.
 #[derive(Flow)]
-pub struct CytoplasmWithState<N, S>(
+pub struct InnerWithState<N, S>(
     Step<BeginGradientAccumulation_<S>>,
     PerturbUpWithBackoff<S>,
-    While<HasPendingGradientStep<S>, CytoplasmPropagationMicrostepWithState<N, S>>,
+    While<HasPendingGradientStep<S>, InnerPropagationMicrostepWithState<N, S>>,
     Step<BeginGradientAccumulation_<S>>,
     PerturbDownWithBackoff<S>,
-    While<HasPendingGradientStep<S>, CytoplasmPropagationMicrostepWithState<N, S>>,
+    While<HasPendingGradientStep<S>, InnerPropagationMicrostepWithState<N, S>>,
     Step<WaitForPotentiation_<S>>,
     OptimizeWithBackoff<S>,
 );
 
 /// One propagation/infer/transmit microstep.
 #[derive(Flow)]
-pub struct CytoplasmPropagationMicrostepWithState<N, S>(
+pub struct InnerPropagationMicrostepWithState<N, S>(
     Step<WaitForPropagation_<S>>,
     Step<PrepareAtomInput_<S>>,
     N,
@@ -128,26 +127,8 @@ pub struct CytoplasmPropagationMicrostepWithState<N, S>(
     Step<AdvanceGradientStep_<S>>,
 );
 
-pub type Cytoplasm<N, S = ()> = CytoplasmWithState<N, S>;
+pub type Inner<N, S = ()> = InnerWithState<N, S>;
 
-/// A eukaryotic cell: a [`Cell`] with an arbitrarily complex atom.
-pub type Eukaryote<In, Out, M, S = (), H = DefaultConfig> = Cell<Atom<In, Out, M, S, H>, S, H>;
-
-/// A prokaryotic cell: a [`Cell`] whose atom has no input/output processing.
-pub type Prokaryote<M, S = (), H = DefaultConfig> = Cell<
-    Atom<
-        Step<Noop<CellState<S>, (Uuid, EmissionId)>>,
-        Step<Noop<CellState<S>, EmissionId>>,
-        M,
-        S,
-        H,
-    >,
-    S,
-    H,
->;
-
-/// A primordial cell: the simplest possible [`Cell`] with no input/output
-/// processing and no metadata.
 pub type Primordium<S = (), H = DefaultConfig> = Cell<
     Atom<
         Step<Noop<CellState<S>, (Uuid, EmissionId)>>,

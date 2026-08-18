@@ -70,21 +70,20 @@ pub mod twin;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, ObjectId, MassErrorFeedbackConfig, MassErrorFeedbackMode,
-    MassIn, MassModelConfig, MassModelParams, MassOut, SequenceOutput, Transmission,
+    InferenceRequest, LogitEntry, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn,
+    MassModelConfig, MassModelParams, MassOut, ObjectId, SequenceOutput, Transmission,
 };
 
 pub use animal::Progenitor;
 pub use atom::effect::MassInfer;
 pub use cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
-    InitRecvId, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput, Propagation,
-    MassInferStep, ShutdownModel, StartModel, Transmit, WaitForPotentiation,
-    WaitForPropagation,
+    InitRecvId, MassInferStep, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput,
+    Propagation, ShutdownModel, StartModel, Transmit, WaitForPotentiation, WaitForPropagation,
 };
 pub use cell::effect::{
-    GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown,
-    MassStart, Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
+    GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown, MassStart,
+    Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
 pub use fusion::action::{FusionSeed, FusionState};
 pub use fusion::{
@@ -99,7 +98,7 @@ pub use ray::Ray;
 
 pub use atom::Atom;
 pub use atom::NoBackoffAtom;
-pub use cell::{Cell, Cytoplasm, Eukaryote, Primordium, Prokaryote};
+pub use cell::{Cell, Primordium, Prokaryote};
 pub use twin::action::{LeftStack, RandStack, RightStack};
 pub use twin::Twin;
 
