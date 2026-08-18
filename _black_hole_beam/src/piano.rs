@@ -25,7 +25,9 @@ pub struct PianoNote {
 }
 
 impl PianoNote {
-    pub(crate) fn from_midi(midi_note: u8) -> Self {
+    /// Build a note from its MIDI number, computing the equal-temperament
+    /// frequency with A4 tuned to 440 Hz.
+    pub fn from_midi(midi_note: u8) -> Self {
         Self {
             midi_note,
             frequency_hz: 440.0 * 2.0_f32.powf((f32::from(midi_note) - 69.0) / 12.0),

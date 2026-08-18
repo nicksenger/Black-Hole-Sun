@@ -5,12 +5,14 @@ edition = "2021"
 
 [features]
 av = ["dep:iced-av1", "dep:directories-next"]
-piano = ["dep:cpal", "dep:serde", "dep:serde_json"]
+piano = ["dep:clap", "dep:cpal", "dep:midly", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 async-trait = "0.1"
 black-hole-flux = { path = "../_black_hole_flux" }
+clap = { version = "4", features = ["derive"], optional = true }
 cpal = { version = "0.17", optional = true }
+midly = { version = "0.5", default-features = false, features = ["std"], optional = true }
 directories-next = { version = "2", optional = true }
 iced = { version = "0.14", features = ["advanced", "canvas", "tokio"] }
 iced-av1 = { git = "https://github.com/nicksenger/iced-av1.git", branch = "jungle", features = ["opus"], optional = true }
@@ -24,6 +26,10 @@ tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 typenum = "1"
 uuid = { version = "1", features = ["serde"] }
+
+[[bin]]
+name = "black-hole-score"
+required-features = ["piano"]
 
 [lints]
 workspace = true
