@@ -2304,7 +2304,6 @@ async fn handle_start(
     model_config: Option<MassModelConfig>,
     ctx: &MassContext,
 ) -> Result<MassOut> {
-    println!("STARTING A MODEL!");
     {
         let mut instances = ctx.instances.write().await;
         if let Some(limit) = ctx.max_instances {
