@@ -1,50 +1,102 @@
-//! Convert Standard MIDI files into JSON piano scores for `black-hole-beam`.
+//! Convert Standard MIDI files into piano scores for `black-hole-beam`, and
+//! inspect or re-emit existing scores.
 //!
-//! The output is accepted by [`BeamBuilder::score`](black_hole_beam::BeamBuilder::score):
-//! a JSON array of `PianoEvent` values, or — when `--loop-duration` is given — an
-//! object with `events` and a numeric `loop_duration` in seconds.
+//! `convert` writes the compact hand-editable `bhb-score-2` text format by
+//! default; `--format json` keeps the legacy JSON serialization accepted by
+//! [`BeamBuilder::score`](black_hole_beam::BeamBuilder::score). MIDI
+//! note-on/note-off pairs become note pairs on a uniform tick grid:
+//! velocities stay integers in `0..=127`, and a note-off with velocity zero
+//! releases at the note's attack velocity. Notes still held at the end of the
+//! file are released there so the score loops cleanly.
 //!
-//! MIDI note-on/note-off pairs become `Attack`/`Release` events sharing a
-//! `voice_id`. Velocities are normalized to `0.0..=1.0`; a note-off with
-//! velocity zero releases at the note's attack velocity. Notes still held at
-//! the end of the file are released there so the score loops cleanly.
+//! Scores conventionally use the `.bhs` extension.
+//!
+//! `check` validates a `bhb-score-2` score (range errors, duplicate pairs,
+//! canonical order, stale measure anchors, loop length). `pretty` re-emits a
+//! score in canonical form, preserving user comments.
 
-use std::collections::HashMap;
+use std::fs;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use black_hole_beam::score_text::{
+    BhbScore, ScoreNotePair, FIRST_MIDI_NOTE, LAST_MIDI_NOTE,
+};
 use black_hole_beam::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
-use clap::Parser;
+use clap::{Parser, Subcommand, ValueEnum};
 use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use serde::Serialize;
 
-const FIRST_MIDI_NOTE: u8 = 21; // A0
-const LAST_MIDI_NOTE: u8 = 108; // C8
 /// The MIDI default tempo when a file carries no tempo meta events: 120 BPM.
 const DEFAULT_MICROS_PER_QUARTER: u32 = 500_000;
+/// Fallback grid (ticks per second) for scores whose tempo map has no single
+/// exact integer grid: one tick per microsecond.
+const FALLBACK_TICKS_PER_SECOND: u64 = 1_000_000;
 
 #[derive(Parser)]
 #[command(
     name = "black-hole-score",
     version,
-    about = "Convert a Standard MIDI file into a JSON piano score for black-hole-beam"
+    about = "Convert Standard MIDI files into piano scores for black-hole-beam"
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Convert a Standard MIDI file into a piano score
+    Convert(ConvertArgs),
+    /// Validate a bhb-score-2 piano score file
+    Check(CheckArgs),
+    /// Re-emit a bhb-score-2 score in canonical form, preserving comments
+    Pretty(PrettyArgs),
+}
+
+#[derive(clap::Args)]
+struct ConvertArgs {
     /// MIDI file to convert (`-` reads from standard input)
     input: String,
 
-    /// Write the JSON score to this file instead of standard output
+    /// Write the score to this file instead of standard output
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Explicit loop length in seconds; emits the wrapped score form with `loop_duration`
+    /// Explicit loop length in seconds; extends the loop with tail silence
     #[arg(long, value_name = "SECONDS")]
     loop_duration: Option<f64>,
 
     /// Only include notes from this MIDI channel (0-15)
     #[arg(long, value_name = "CHANNEL")]
     channel: Option<u8>,
+
+    /// Output format: the bhb-score-2 text table (default) or legacy JSON
+    #[arg(long, value_enum, default_value_t = ScoreFormat::Bhb)]
+    format: ScoreFormat,
+}
+
+#[derive(clap::Args)]
+struct CheckArgs {
+    /// Score file to validate
+    score: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct PrettyArgs {
+    /// Score file to re-emit
+    score: PathBuf,
+
+    /// Write the canonical form to this file instead of standard output
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(ValueEnum, Clone, Copy, PartialEq, Eq)]
+enum ScoreFormat {
+    Bhb,
+    Json,
 }
 
 #[derive(Clone, Copy)]
@@ -129,11 +181,14 @@ impl TempoMap {
     }
 }
 
-/// The note and tempo events of a parsed MIDI file, in file ticks.
+/// The note, tempo, and time-signature events of a parsed MIDI file, in file
+/// ticks.
 struct ParsedMidi {
     division: u32,
     notes: Vec<RawNote>,
     tempos: Vec<(u64, u32)>,
+    /// The first time signature meta event, if any: (numerator, denominator).
+    time_signature: Option<(u8, u8)>,
     end_tick: u64,
 }
 
@@ -158,6 +213,7 @@ fn parse_midi(bytes: &[u8], wanted_channel: Option<u8>) -> Result<ParsedMidi, St
 
     let mut notes = Vec::new();
     let mut tempos = Vec::new();
+    let mut time_signature = None;
     let mut end_tick: u64 = 0;
     for track in &tracks {
         let mut tick: u64 = 0;
@@ -191,6 +247,15 @@ fn parse_midi(bytes: &[u8], wanted_channel: Option<u8>) -> Result<ParsedMidi, St
                 TrackEventKind::Meta(MetaMessage::Tempo(micros_per_quarter)) => {
                     tempos.push((tick, u32::from(*micros_per_quarter)));
                 }
+                TrackEventKind::Meta(MetaMessage::TimeSignature(
+                    numerator,
+                    denominator,
+                    _,
+                    _,
+                )) if time_signature.is_none() =>
+                {
+                    time_signature = Some((*numerator, *denominator));
+                }
                 _ => {}
             }
         }
@@ -201,6 +266,7 @@ fn parse_midi(bytes: &[u8], wanted_channel: Option<u8>) -> Result<ParsedMidi, St
         division,
         notes,
         tempos,
+        time_signature,
         end_tick,
     })
 }
@@ -214,7 +280,7 @@ fn pair_notes(notes: &[RawNote], end_tick: u64) -> Vec<NotePair> {
     let mut ordered = notes.to_vec();
     ordered.sort_by_key(|note| note.tick);
 
-    let mut held: HashMap<(u8, u8), (u64, u8)> = HashMap::new();
+    let mut held: std::collections::HashMap<(u8, u8), (u64, u8)> = std::collections::HashMap::new();
     let mut pairs = Vec::new();
     for note in &ordered {
         match held.entry((note.channel, note.key)) {
@@ -258,6 +324,107 @@ fn pair_notes(notes: &[RawNote], end_tick: u64) -> Vec<NotePair> {
         });
     }
     pairs
+}
+
+/// Choose the uniform output grid. When every note time falls under a single
+/// tempo and the file's ticks per second are integral, use that exact grid so
+/// no timestamp is rounded; otherwise fall back to one tick per microsecond.
+fn choose_ticks_per_second(tempos: &[(u64, u32)], division: u32) -> u64 {
+    let initial_micros = tempos
+        .iter()
+        .rev()
+        .find(|&&(tempo_tick, _)| tempo_tick == 0)
+        .map(|&(_, micros)| micros)
+        .unwrap_or(DEFAULT_MICROS_PER_QUARTER);
+    let has_later_tempo = tempos.iter().any(|&(tempo_tick, _)| tempo_tick > 0);
+    if !has_later_tempo {
+        let numerator = u64::from(division) * 1_000_000;
+        if numerator % u64::from(initial_micros) == 0 {
+            return numerator / u64::from(initial_micros);
+        }
+    }
+    FALLBACK_TICKS_PER_SECOND
+}
+
+/// The measure length in output ticks from the first time signature, when it
+/// is an integral number of ticks.
+fn measure_ticks(division: u32, time_signature: Option<(u8, u8)>) -> Option<u64> {
+    let (numerator, denominator) = time_signature?;
+    if numerator == 0 || denominator == 0 {
+        return None;
+    }
+    // A measure holds `numerator` beats of `1/denominator` notes; in quarters
+    // that is numerator * 4 / denominator.
+    u64::from(division)
+        .checked_mul(u64::from(numerator))
+        .and_then(|ticks| ticks.checked_mul(4))
+        .and_then(|ticks| ticks.checked_div(u64::from(denominator)))
+}
+
+/// Build a bhb-score-2 document from note pairs on the given grid.
+fn build_bhb_score(
+    pairs: &[NotePair],
+    tempo_map: &TempoMap,
+    ticks_per_second: u64,
+    measure_ticks: Option<u64>,
+    loop_duration: Option<f64>,
+) -> Result<BhbScore, String> {
+    let mut score_pairs: Vec<ScoreNotePair> = Vec::new();
+    let mut skipped_notes = 0;
+    for pair in pairs {
+        if !(FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(&pair.key) {
+            skipped_notes += 1;
+            continue;
+        }
+        let start_tick =
+            (tempo_map.at(pair.on_tick) * ticks_per_second as f64).round() as u64;
+        // Rounding can collapse a pair to zero length; keep at least one tick.
+        let end_tick = (tempo_map.at(pair.off_tick) * ticks_per_second as f64)
+            .round()
+            .max((start_tick + 1) as f64) as u64;
+        score_pairs.push(ScoreNotePair {
+            start_tick,
+            duration_ticks: end_tick - start_tick,
+            midi_note: pair.key,
+            velocity: pair.on_velocity,
+            // Note-offs without velocity information release at the attack
+            // velocity, preserving the phrase's dynamics.
+            release_velocity: (pair.off_velocity != 0).then_some(pair.off_velocity),
+        });
+    }
+    if skipped_notes > 0 {
+        eprintln!(
+            "warning: skipped {skipped_notes} notes outside the 88-key range \
+             {FIRST_MIDI_NOTE}..={LAST_MIDI_NOTE}"
+        );
+    }
+    if score_pairs.is_empty() {
+        return Err(format!(
+            "the MIDI file contains no notes in the 88-key range {FIRST_MIDI_NOTE}..={LAST_MIDI_NOTE}"
+        ));
+    }
+
+    let loop_ticks = match loop_duration {
+        Some(seconds) => {
+            let ticks = (seconds * ticks_per_second as f64).round() as u64;
+            let last_release = score_pairs.iter().map(|pair| pair.end_tick()).max().expect("at least one pair");
+            if ticks < last_release {
+                return Err(format!(
+                    "loop duration ({seconds}s) precedes the last note ({}s)",
+                    last_release as f64 / ticks_per_second as f64
+                ));
+            }
+            Some(ticks)
+        }
+        None => None,
+    };
+
+    Ok(BhbScore::new(
+        ticks_per_second,
+        measure_ticks,
+        loop_ticks,
+        score_pairs,
+    ))
 }
 
 /// Build score events from note pairs. Returns the events (unsorted, with
@@ -334,6 +501,14 @@ fn action_rank(action: &PianoAction) -> u8 {
 
 fn main() -> Result<(), String> {
     let args = Args::parse();
+    match args.command {
+        Command::Convert(args) => run_convert(&args),
+        Command::Check(args) => run_check(&args.score),
+        Command::Pretty(args) => run_pretty(&args.score, args.output.as_deref()),
+    }
+}
+
+fn run_convert(args: &ConvertArgs) -> Result<(), String> {
     if let Some(channel) = args.channel {
         if channel > 15 {
             return Err(format!("MIDI channel {channel} is out of range (0-15)"));
@@ -349,52 +524,110 @@ fn main() -> Result<(), String> {
 
     let bytes = read_input(&args.input)?;
     let midi = parse_midi(&bytes, args.channel)?;
-    let tempo_map = TempoMap::new(midi.tempos, midi.division);
+    let tempo_map = TempoMap::new(midi.tempos.clone(), midi.division);
     let pairs = pair_notes(&midi.notes, midi.end_tick);
-    let (mut events, skipped_notes) = build_events(&pairs, &tempo_map);
-    if skipped_notes > 0 {
-        eprintln!(
-            "warning: skipped {skipped_notes} notes outside the 88-key range \
-             {FIRST_MIDI_NOTE}..={LAST_MIDI_NOTE}"
-        );
-    }
-    if events.is_empty() {
-        return Err(format!(
-            "the MIDI file contains no notes in the 88-key range {FIRST_MIDI_NOTE}..={LAST_MIDI_NOTE}"
-        ));
-    }
-    finalize_events(&mut events);
 
-    let last_timestamp = events.last().expect("events is not empty").timestamp;
-    let json = if let Some(loop_duration) = args.loop_duration {
-        if Duration::from_secs_f64(loop_duration) < last_timestamp {
-            return Err(format!(
-                "loop duration ({loop_duration}s) precedes the last event ({}s)",
-                last_timestamp.as_secs_f64()
-            ));
+    let text = match args.format {
+        ScoreFormat::Bhb => {
+            let ticks_per_second = choose_ticks_per_second(&midi.tempos, midi.division);
+            let measure_length = measure_ticks(midi.division, midi.time_signature);
+            build_bhb_score(
+                &pairs,
+                &tempo_map,
+                ticks_per_second,
+                measure_length,
+                args.loop_duration,
+            )?
+            .format()
         }
-        serde_json::to_string_pretty(&ScoreDocument {
-            events: &events,
-            loop_duration,
-        })
-        .map_err(|error| format!("could not serialize the score: {error}"))?
-    } else {
-        serde_json::to_string_pretty(&events)
-            .map_err(|error| format!("could not serialize the score: {error}"))?
+        ScoreFormat::Json => {
+            let (mut events, skipped_notes) = build_events(&pairs, &tempo_map);
+            if skipped_notes > 0 {
+                eprintln!(
+                    "warning: skipped {skipped_notes} notes outside the 88-key range \
+                     {FIRST_MIDI_NOTE}..={LAST_MIDI_NOTE}"
+                );
+            }
+            if events.is_empty() {
+                return Err(format!(
+                    "the MIDI file contains no notes in the 88-key range {FIRST_MIDI_NOTE}..={LAST_MIDI_NOTE}"
+                ));
+            }
+            finalize_events(&mut events);
+
+            let last_timestamp = events.last().expect("events is not empty").timestamp;
+            let json = match args.loop_duration {
+                Some(loop_duration) => {
+                    if Duration::from_secs_f64(loop_duration) < last_timestamp {
+                        return Err(format!(
+                            "loop duration ({loop_duration}s) precedes the last event ({}s)",
+                            last_timestamp.as_secs_f64()
+                        ));
+                    }
+                    serde_json::to_string_pretty(&ScoreDocument {
+                        events: &events,
+                        loop_duration,
+                    })
+                }
+                None => serde_json::to_string_pretty(&events),
+            }
+            .map_err(|error| format!("could not serialize the score: {error}"))?;
+            format!("{json}\n")
+        }
     };
 
-    match &args.output {
-        Some(path) => std::fs::write(path, format!("{json}\n"))
-            .map_err(|error| format!("could not write {}: {error}", path.display()))?,
+    write_output(args.output.as_deref(), &text)
+}
+
+fn run_check(path: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let score = BhbScore::parse(&text)
+        .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
+    let findings = score.diagnostics();
+    if findings.is_empty() {
+        println!("{}: ok", path.display());
+        return Ok(());
+    }
+    for finding in &findings {
+        let level = match finding.level {
+            black_hole_beam::score_text::DiagnosticLevel::Error => "error",
+            black_hole_beam::score_text::DiagnosticLevel::Warning => "warning",
+        };
+        match finding.line {
+            Some(line) => println!("{}: line {line}: {level}: {}", path.display(), finding.message),
+            None => println!("{}: {level}: {}", path.display(), finding.message),
+        }
+    }
+    if findings
+        .iter()
+        .any(|finding| finding.level == black_hole_beam::score_text::DiagnosticLevel::Error)
+    {
+        return Err(format!("{}: the score has errors", path.display()));
+    }
+    Ok(())
+}
+
+fn run_pretty(path: &Path, output: Option<&Path>) -> Result<(), String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let score = BhbScore::parse(&text)
+        .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
+    write_output(output, &score.format())
+}
+
+fn write_output(output: Option<&Path>, text: &str) -> Result<(), String> {
+    match output {
+        Some(path) => fs::write(path, text)
+            .map_err(|error| format!("could not write {}: {error}", path.display())),
         None => {
             let stdout = io::stdout();
             let mut handle = stdout.lock();
-            writeln!(handle, "{json}")
-                .map_err(|error| format!("could not write to stdout: {error}"))?;
+            handle
+                .write_all(text.as_bytes())
+                .map_err(|error| format!("could not write to stdout: {error}"))
         }
     }
-
-    Ok(())
 }
 
 fn read_input(input: &str) -> Result<Vec<u8>, String> {
@@ -630,5 +863,55 @@ mod tests {
         let (events, skipped) = build_events(&pairs, &tempo_map);
         assert_eq!(skipped, 2);
         assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn chooses_exact_grids_for_uniform_tempos() {
+        // 960 ticks/quarter at the default 120 BPM: 1920 ticks/second.
+        assert_eq!(choose_ticks_per_second(&[], 960), 1920);
+        // An explicit tempo at tick 0 replaces the default.
+        assert_eq!(choose_ticks_per_second(&[(0, 250_000)], 960), 3840);
+        // A tempo change later in the file defeats the exact grid.
+        assert_eq!(
+            choose_ticks_per_second(&[(0, 500_000), (480, 250_000)], 960),
+            FALLBACK_TICKS_PER_SECOND
+        );
+        // Non-integral ticks/second falls back to microseconds.
+        assert_eq!(choose_ticks_per_second(&[(0, 504_375)], 960), FALLBACK_TICKS_PER_SECOND);
+    }
+
+    #[test]
+    fn measure_length_comes_from_the_first_time_signature() {
+        // 4/2 at division 960: eight quarters per measure.
+        assert_eq!(measure_ticks(960, Some((4, 2))), Some(7680));
+        // 3/4 at division 480: three quarters per measure.
+        assert_eq!(measure_ticks(480, Some((3, 4))), Some(1440));
+        // No time signature means no anchors.
+        assert_eq!(measure_ticks(960, None), None);
+    }
+
+    #[test]
+    fn converts_to_the_text_format() {
+        let midi = parse_midi(&c_major_smf(), None).unwrap();
+        let tempo_map = TempoMap::new(midi.tempos, midi.division);
+        let pairs = pair_notes(&midi.notes, midi.end_tick);
+        let score = build_bhb_score(&pairs, &tempo_map, 960, None, None).unwrap();
+
+        // Division 480 at the default 120 BPM is exactly 960 ticks/second.
+        assert_eq!(choose_ticks_per_second(&[], 480), 960);
+        let text = score.format();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[1], "; loop 1.0s | 3 notes | range C4..G4");
+        assert_eq!(lines[2], "format bhb-score-2");
+        assert_eq!(lines[3], "ticks_per_second 960");
+        assert_eq!(lines[4], "loop_ticks 960");
+        assert_eq!(lines[5], "; start duration note velocity [release_velocity]");
+        assert_eq!(lines[6], "0 480 C4 80");
+        assert_eq!(lines[7], "480 240 E4 80");
+        assert_eq!(lines[8], "720 240 G4 80");
+
+        // The re-emitted text parses back to the same pairs.
+        let reparsed = BhbScore::parse(&text).unwrap();
+        assert_eq!(reparsed.format(), text);
     }
 }

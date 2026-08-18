@@ -51,6 +51,8 @@ mod piano;
 mod piano_audio;
 #[cfg(feature = "piano")]
 mod piano_score;
+#[cfg(feature = "piano")]
+pub mod score_text;
 
 #[cfg(feature = "piano")]
 pub use piano::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
@@ -301,12 +303,14 @@ impl BeamBuilder {
         self
     }
 
-    /// Continuously loop a JSON-serialized piano performance.
+    /// Continuously loop a serialized piano performance.
     ///
-    /// The file may be a JSON array of [`PianoEvent`] values, or an object
-    /// containing `events` and an optional numeric `loop_duration` in seconds.
-    /// Events are ordered by timestamp and sequence and are routed through the
-    /// same audio, visualization, and callback paths as live key presses.
+    /// The file may be a JSON array of [`PianoEvent`] values (or an object
+    /// containing `events` and an optional numeric `loop_duration` in
+    /// seconds), or the compact hand-editable `bhb-score-2` text format
+    /// described in [`score_text`]. Events are ordered by timestamp and
+    /// sequence and are routed through the same audio, visualization, and
+    /// callback paths as live key presses.
     #[cfg(feature = "piano")]
     pub fn score(mut self, path: impl Into<PathBuf>) -> Self {
         self.piano_score_path = Some(path.into());

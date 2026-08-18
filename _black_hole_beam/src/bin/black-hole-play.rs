@@ -1,4 +1,5 @@
-//! Render a black-hole-beam JSON piano score to a 16-bit PCM WAV file.
+//! Render a black-hole-beam piano score (JSON or bhb-score-2 text) to a
+//! 16-bit PCM WAV file.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,10 +11,10 @@ use clap::Parser;
 #[command(
     name = "black-hole-play",
     version,
-    about = "Render a black-hole-beam JSON piano score to stereo pcm_s16le WAV"
+    about = "Render a black-hole-beam piano score to stereo pcm_s16le WAV"
 )]
 struct Args {
-    /// JSON piano score to render
+    /// Piano score to render (JSON or bhb-score-2 text)
     input: PathBuf,
 
     /// WAV file to create

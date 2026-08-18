@@ -1,4 +1,9 @@
-//! Loading and clocking looping JSON piano scores.
+//! Loading and clocking looping piano scores.
+//!
+//! Scores load from two interchangeable encodings of the same events: the
+//! legacy JSON serialization (an array of [`PianoEvent`] values, optionally
+//! wrapped with a `loop_duration`) and the compact hand-editable
+//! `bhb-score-2` text format (see [`crate::score_text`]).
 
 use std::fs;
 use std::path::Path;
@@ -7,6 +12,7 @@ use std::time::Duration;
 use iced::time::Instant;
 use serde::Deserialize;
 
+use crate::score_text::{self, BhbScore};
 use crate::{PianoAction, PianoEvent, PianoNote};
 
 pub(crate) const SCORE_TICK_INTERVAL: Duration = Duration::from_millis(5);
@@ -43,10 +49,31 @@ pub(crate) struct LoadedPianoScore {
 }
 
 pub(crate) fn load_score(path: &Path) -> Result<LoadedPianoScore, String> {
-    let json = fs::read_to_string(path)
+    let text = fs::read_to_string(path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    parse_score_json(&json)
-        .map_err(|error| format!("invalid piano score {}: {error}", path.display()))
+    let parsed = if is_json_document(&text) {
+        parse_score_json(&text)
+    } else {
+        parse_score_text(&text)
+    };
+    parsed.map_err(|error| format!("invalid piano score {}: {error}", path.display()))
+}
+
+/// JSON documents start with `{` or `[`; everything else is a text score.
+fn is_json_document(text: &str) -> bool {
+    matches!(text.trim_start().chars().next(), Some('{') | Some('['))
+}
+
+fn parse_score_text(text: &str) -> Result<LoadedPianoScore, String> {
+    let document: BhbScore = score_text::BhbScore::parse(text)?;
+    let events = document.to_events()?;
+    let loop_duration =
+        score_text::ticks_to_duration(document.effective_loop_ticks(), document.ticks_per_second);
+    if loop_duration.is_zero() {
+        return Err("the inferred loop duration is zero; add a later event or loop_duration"
+            .to_string());
+    }
+    Ok(LoadedPianoScore { events, loop_duration })
 }
 
 impl PianoScorePlayback {
@@ -57,6 +84,11 @@ impl PianoScorePlayback {
     #[cfg(test)]
     pub(crate) fn from_json(json: &str, started_at: Instant) -> Result<Self, String> {
         Ok(Self::from_loaded(parse_score_json(json)?, started_at))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_text(text: &str, started_at: Instant) -> Result<Self, String> {
+        Ok(Self::from_loaded(parse_score_text(text)?, started_at))
     }
 
     fn from_loaded(score: LoadedPianoScore, started_at: Instant) -> Self {
@@ -204,5 +236,50 @@ mod tests {
             score.take_due(start + Duration::from_millis(1_250)).len(),
             1
         );
+    }
+
+    const TEXT_SCORE: &str = "\
+format bhb-score-2
+ticks_per_second 960
+loop_ticks 1200
+0 600 C4 80
+";
+
+    #[test]
+    fn loads_and_loops_text_scores() {
+        let start = Instant::now();
+        let mut score = PianoScorePlayback::from_text(TEXT_SCORE, start).unwrap();
+
+        // The attack is due immediately; the release lands at tick 600,
+        // 0.625s into a 960 ticks/second grid.
+        let first = score.take_due(start);
+        assert_eq!(first.len(), 1);
+        match &first[0].event.action {
+            PianoAction::Attack { velocity, .. } => {
+                assert!((velocity - f32::from(80u8) / 127.0).abs() < 1e-6);
+            }
+            other => panic!("expected an attack, got {other:?}"),
+        }
+        assert_eq!(score.take_due(start + Duration::from_millis(500)).len(), 0);
+        let release = score.take_due(start + Duration::from_millis(625));
+        assert_eq!(release.len(), 1);
+        assert!(matches!(release[0].event.action, PianoAction::Release { .. }));
+
+        // The loop_ticks header (1200 ticks = 1.25s) closes the cycle.
+        let wrapped = score.take_due(start + Duration::from_millis(1_250));
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(wrapped[0].cycle, 1);
+    }
+
+    #[test]
+    fn text_scores_reject_bad_documents() {
+        let start = Instant::now();
+        let error = PianoScorePlayback::from_text(
+            "format bhb-score-2\nticks_per_second 960\n0 960 5 80\n",
+            start,
+        )
+        .err()
+        .expect("the out-of-range note should be rejected");
+        assert!(error.contains("outside the 88-key range"), "{error}");
     }
 }
