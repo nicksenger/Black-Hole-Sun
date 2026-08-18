@@ -13,9 +13,12 @@ use tracing::warn;
 use crate::piano_score::load_score;
 use crate::{PianoAction, PianoEvent};
 
-const PARTIAL_COUNT: usize = 16;
+const PARTIAL_COUNT: usize = 48;
 const MAX_POLYPHONY: usize = 128;
 const MASTER_GAIN: f32 = 0.19;
+/// Hammer noise is kept well below the string body; the reference piano's
+/// attack transient is mostly hammer knock, not broadband hiss.
+const NOISE_SCALE: f32 = 0.25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PianoRenderReport {
@@ -239,6 +242,7 @@ struct PianoSynth {
     sample_rate: f32,
     voices: Vec<PianoVoice>,
     soundboard: StereoSoundboard,
+    eq: StereoEq,
 }
 
 impl PianoSynth {
@@ -247,6 +251,7 @@ impl PianoSynth {
             sample_rate,
             voices: Vec::with_capacity(MAX_POLYPHONY),
             soundboard: StereoSoundboard::new(sample_rate),
+            eq: StereoEq::new(sample_rate),
         }
     }
 
@@ -301,7 +306,10 @@ impl PianoSynth {
         let (body_left, body_right) = self.soundboard.process(left, right);
         let left = soft_limit((left + body_left) * MASTER_GAIN);
         let right = soft_limit((right + body_right) * MASTER_GAIN);
-        (left, right)
+        let (left, right) = self.eq.process(left, right);
+        // The midrange lift can push rare peaks just past unity; keep the
+        // output contract of bounded samples.
+        (left.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0))
     }
 }
 
@@ -352,10 +360,10 @@ impl PianoVoice {
         let pan = key_position * 1.5 - 0.75;
         let pan_left = ((1.0 - pan) * 0.5).sqrt();
         let pan_right = ((1.0 + pan) * 0.5).sqrt();
-        let inharmonicity = 0.000_04 * 2.0_f32.powf(key_position * 6.4);
+        let inharmonicity = 0.000_3 * 2.0_f32.powf(key_position * 6.4);
         let hammer_position = 0.115 + 0.035 * key_position;
-        let spectral_rolloff = 0.68 + 1.25 * (1.0 - velocity) + 0.28 * (1.0 - pressure);
-        let base_decay_seconds = 21.0 - 16.5 * key_position.powf(0.72);
+        let spectral_rolloff = 0.35 + 0.58 * (1.0 - velocity) + 0.28 * (1.0 - pressure);
+        let base_decay_seconds = 3.4 - 2.7 * key_position.powf(0.72);
         let velocity_gain = velocity.powf(0.72) * (0.88 + pressure * 0.12);
 
         let mut partial_sine = [0.0; PARTIAL_COUNT];
@@ -391,8 +399,14 @@ impl PianoVoice {
             let hammer_node = (std::f32::consts::PI * harmonic * hammer_position)
                 .sin()
                 .abs()
-                .powf(0.45);
+                .powf(0.2);
             amplitude[partial] = velocity_gain * hammer_node / harmonic.powf(spectral_rolloff);
+            if partial == 0 {
+                // Damp the lowest fundamentals so the soundboard body, rather
+                // than raw bass strings, carries the low end.
+                let ramp = ((key_position - 0.126) / (0.15 - 0.126)).clamp(0.4, 1.0);
+                amplitude[partial] *= ramp;
+            }
             if partial_frequency > sample_rate * 0.47 {
                 amplitude[partial] = 0.0;
             }
@@ -444,7 +458,7 @@ impl PianoVoice {
         // Fast releases damp harder; bass strings still take longer to settle.
         let key_position = (f32::from(self.midi_note) - 21.0) / 87.0;
         let release_seconds =
-            (1.25 - 0.82 * key_position) * (1.12 - 0.52 * release_velocity.clamp(0.0, 1.0));
+            (0.55 - 0.2 * key_position) * (1.0 - 0.4 * release_velocity.clamp(0.0, 1.0));
         self.release_decay = (-1.0 / (release_seconds * self.sample_rate)).exp();
     }
 
@@ -475,7 +489,7 @@ impl PianoVoice {
         }
 
         let noise = self.next_noise();
-        let hammer_noise = (noise - self.previous_noise) * self.hammer_envelope;
+        let hammer_noise = (noise - self.previous_noise) * self.hammer_envelope * NOISE_SCALE;
         self.previous_noise = noise;
         let hammer_knock = self.hammer_sine as f32 * self.hammer_envelope * 0.55;
         rotate(
@@ -595,6 +609,156 @@ impl DampedComb {
     }
 }
 
+/// RBJ (Audio EQ Cookbook) biquad with running state.
+struct Biquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
+}
+
+impl Biquad {
+    fn unity() -> Self {
+        Self {
+            b0: 1.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    fn low_shelf(cutoff_hz: f32, gain_db: f32, sample_rate: f32) -> Self {
+        let a = 10_f32.powf(gain_db / 40.0);
+        let w = std::f32::consts::TAU * cutoff_hz / sample_rate;
+        let cw = w.cos();
+        let sw = w.sin();
+        let s_a = a.sqrt();
+        let alpha = sw / (2.0 * s_a);
+        let b0 = a * ((a + 1.0) - (a - 1.0) * cw + 2.0 * s_a * alpha);
+        let b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cw);
+        let b2 = a * ((a + 1.0) - (a - 1.0) * cw - 2.0 * s_a * alpha);
+        let a0 = (a + 1.0) + (a - 1.0) * cw + 2.0 * s_a * alpha;
+        let a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cw);
+        let a2 = (a + 1.0) + (a - 1.0) * cw - 2.0 * s_a * alpha;
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    fn high_shelf(cutoff_hz: f32, gain_db: f32, sample_rate: f32) -> Self {
+        let a = 10_f32.powf(gain_db / 40.0);
+        let w = std::f32::consts::TAU * cutoff_hz / sample_rate;
+        let cw = w.cos();
+        let sw = w.sin();
+        let s_a = a.sqrt();
+        let alpha = sw / (2.0 * s_a);
+        let b0 = a * ((a + 1.0) + (a - 1.0) * cw + 2.0 * s_a * alpha);
+        let b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cw);
+        let b2 = a * ((a + 1.0) + (a - 1.0) * cw - 2.0 * s_a * alpha);
+        let a0 = (a + 1.0) - (a - 1.0) * cw + 2.0 * s_a * alpha;
+        let a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cw);
+        let a2 = (a + 1.0) - (a - 1.0) * cw - 2.0 * s_a * alpha;
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    fn peaking(cutoff_hz: f32, gain_db: f32, q: f32, sample_rate: f32) -> Self {
+        let a = 10_f32.powf(gain_db / 40.0);
+        let w = std::f32::consts::TAU * cutoff_hz / sample_rate;
+        let cw = w.cos();
+        let sw = w.sin();
+        let alpha = sw / (2.0 * q);
+        let b0 = 1.0 + alpha * a;
+        let b1 = -2.0 * cw;
+        let b2 = 1.0 - alpha * a;
+        let a0 = 1.0 + alpha / a;
+        let a1 = -2.0 * cw;
+        let a2 = 1.0 - alpha / a;
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    fn process(&mut self, x: f32) -> f32 {
+        let w = x - self.a1 * self.z1 - self.a2 * self.z2;
+        let y = self.b0 * w + self.b1 * self.z1 + self.b2 * self.z2;
+        self.z2 = self.z1;
+        self.z1 = w;
+        y
+    }
+}
+
+/// Tone-matching chain applied to the final stereo output: tames the low end,
+/// lifts the midrange, and rolls off the top so the band balance follows the
+/// reference piano rather than a raw partial stack.
+struct StereoEq {
+    left: [Biquad; 5],
+    right: [Biquad; 5],
+}
+
+impl StereoEq {
+    fn new(sample_rate: f32) -> Self {
+        // Filters whose corner sits above ~0.48 * sample rate would be
+        // meaningless at low render rates, so they collapse to unity there.
+        let make = |cutoff_hz: f32, build: fn(f32, f32) -> Biquad| -> Biquad {
+            if cutoff_hz < sample_rate * 0.48 {
+                build(cutoff_hz, sample_rate)
+            } else {
+                Biquad::unity()
+            }
+        };
+        let specs: [fn(f32, f32) -> Biquad; 5] = [
+            |fc, sr| Biquad::low_shelf(fc, -12.0, sr),
+            |fc, sr| Biquad::peaking(fc, 4.0, 1.1, sr),
+            |fc, sr| Biquad::peaking(fc, 5.0, 1.2, sr),
+            |fc, sr| Biquad::peaking(fc, -16.0, 0.6, sr),
+            |fc, sr| Biquad::high_shelf(fc, -14.0, sr),
+        ];
+        let cutoffs = [55.0_f32, 700.0, 1800.0, 13_000.0, 6000.0];
+        Self {
+            left: std::array::from_fn(|index| make(cutoffs[index], specs[index])),
+            right: std::array::from_fn(|index| make(cutoffs[index], specs[index])),
+        }
+    }
+
+    fn process(&mut self, left: f32, right: f32) -> (f32, f32) {
+        let mut out_left = left;
+        for biquad in &mut self.left {
+            out_left = biquad.process(out_left);
+        }
+        let mut out_right = right;
+        for biquad in &mut self.right {
+            out_right = biquad.process(out_right);
+        }
+        (out_left, out_right)
+    }
+}
+
 fn soft_limit(sample: f32) -> f32 {
     sample / (1.0 + sample.abs() * 0.72)
 }
@@ -675,6 +839,34 @@ mod tests {
             });
         }
         assert_eq!(synth.voices.len(), 96);
+    }
+
+    #[test]
+    fn eq_chain_boosts_the_midrange_and_tames_the_top() {
+        let sample_rate = 48_000.0;
+
+        let drive = |frequency_hz: f32| -> f32 {
+            let mut eq = StereoEq::new(sample_rate);
+            let settle_samples = (sample_rate / 100.0) as usize;
+            let mut peak = 0.0f32;
+            for sample in 0..(sample_rate * 2.0) as usize {
+                let x = (std::f32::consts::TAU * frequency_hz * sample as f32 / sample_rate)
+                    .sin()
+                    * 0.5;
+                let (out, _) = eq.process(x, 0.0);
+                // Ignore the first 10 ms while the biquad states settle.
+                if sample >= settle_samples {
+                    peak = peak.max(out.abs());
+                }
+            }
+            peak
+        };
+
+        let midrange = drive(700.0);
+        let top = drive(13_000.0);
+
+        assert!(midrange > 0.5 * 1.4, "700 Hz should be boosted, got {midrange}");
+        assert!(top < 0.5 * 0.12, "13 kHz should be heavily attenuated, got {top}");
     }
 
     #[test]
@@ -766,5 +958,165 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(700));
         assert_eq!(engine.error(), None);
+    }
+
+    /// Pure-math full-score verification (no audio output): renders the whole
+    /// `score.json` through [`PianoSynth`] at 48 kHz and checks that the band
+    /// balance matches the reference-piano target calibrated in the offline
+    /// simulator. The expected values are the tuned pipeline's aggregates on
+    /// the 0.499 s / 23952-sample window convention; this test uses a
+    /// 16384-sample hop (power of two for the radix-2 FFT) and shifts each
+    /// window's band level by `10*log10(23952/16384)` to stay on that scale.
+    #[test]
+    #[ignore = "runs the full score through the synth; needs /home/chip/Desktop/score.json"]
+    fn full_score_sim_band_balance() {
+        use crate::piano_score::load_score;
+
+        const SR: f32 = 48_000.0;
+        const N: usize = 13_532_880; // same length as the reference render
+        const HOP: usize = 16_384;
+        let scale_shift = (23_952.0_f64 / 16_384.0_f64).log10() * 10.0;
+
+        let score = load_score(std::path::Path::new("/home/chip/Desktop/score.json"))
+            .expect("score.json must exist for this test");
+
+        // Pre-schedule every command at its render frame.
+        let mut pending: Vec<(usize, Command)> = score
+            .events
+            .iter()
+            .map(|event| {
+                let frame = (event.timestamp.as_secs_f64() * SR as f64).round() as usize;
+                (frame, command_from_event(*event))
+            })
+            .collect();
+        pending.sort_by_key(|(frame, _)| *frame);
+
+        fn fft(x: &mut [f64], y: &mut [f64]) {
+            let n = x.len();
+            debug_assert_eq!(n & (n - 1), 0);
+            let mut j = 0usize;
+            for i in 1..n {
+                let mut bit = n >> 1;
+                while j & bit != 0 {
+                    j ^= bit;
+                    bit >>= 1;
+                }
+                j ^= bit;
+                if i < j {
+                    x.swap(i, j);
+                    y.swap(i, j);
+                }
+            }
+            let mut len = 2;
+            while len <= n {
+                let ang = -2.0 * std::f64::consts::PI / len as f64;
+                let (wr, wi) = (ang.cos(), ang.sin());
+                let mut i = 0;
+                while i < n {
+                    let (mut cr, mut ci) = (1.0, 0.0);
+                    for k in 0..len / 2 {
+                        let (ur, ui) = (x[i + k], y[i + k]);
+                        let vr = x[i + k + len / 2] * cr - y[i + k + len / 2] * ci;
+                        let vi = x[i + k + len / 2] * ci + y[i + k + len / 2] * cr;
+                        x[i + k] = ur + vr;
+                        y[i + k] = ui + vi;
+                        x[i + k + len / 2] = ur - vr;
+                        y[i + k + len / 2] = ui - vi;
+                        let nr = cr * wr - ci * wi;
+                        ci = cr * wi + ci * wr;
+                        cr = nr;
+                    }
+                    i += len;
+                }
+                len <<= 1;
+            }
+        }
+
+        // Symmetric Hann, matching numpy's `np.hanning`.
+        let win: Vec<f64> = (0..HOP)
+            .map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / (HOP as f64 - 1.0)).cos())
+            .collect();
+        let bands: [(f64, f64); 7] = [
+            (20.0, 54.0),
+            (54.0, 148.0),
+            (148.0, 403.0),
+            (403.0, 1100.0),
+            (1100.0, 3000.0),
+            (3000.0, 8100.0),
+            (8100.0, 22_000.0),
+        ];
+
+        let mut synth = PianoSynth::new(SR);
+        let mut ev_idx = 0usize;
+        let mut band_sum = [0.0f64; 7];
+        let mut band_cnt = [0u32; 7];
+        let mut cent_sum = 0.0f64;
+        let mut cent_cnt = 0u32;
+
+        for window in 0..N / HOP {
+            let mut xl = vec![0.0f64; HOP];
+            let mut xr = vec![0.0f64; HOP];
+            for k in 0..HOP {
+                let frame = window * HOP + k;
+                while ev_idx < pending.len() && pending[ev_idx].0 <= frame {
+                    synth.command(pending[ev_idx].1);
+                    ev_idx += 1;
+                }
+                let (left, right) = synth.next_sample();
+                xl[k] = ((left.clamp(-1.0, 1.0) * 32_767.0).round() as i16) as f64 * win[k];
+                xr[k] = ((right.clamp(-1.0, 1.0) * 32_767.0).round() as i16) as f64 * win[k];
+            }
+            let mut yl = vec![0.0f64; HOP];
+            fft(&mut xl, &mut yl);
+            let mut yr = vec![0.0f64; HOP];
+            fft(&mut xr, &mut yr);
+
+            let df = SR as f64 / HOP as f64;
+            let mut total = 0.0f64;
+            let mut centroid_num = 0.0f64;
+            for k in 0..=HOP / 2 {
+                let p = (xl[k] * xl[k] + yl[k] * yl[k] + xr[k] * xr[k] + yr[k] * yr[k]) * 0.25;
+                total += p;
+                centroid_num += p * (k as f64 * df);
+            }
+            for (band, &(lo, hi)) in bands.iter().enumerate() {
+                let k0 = (lo / df).ceil() as usize;
+                let k1 = (((hi - 1e-9) / df).floor() as usize + 1).min(HOP / 2 + 1);
+                let mut power = 0.0f64;
+                for k in k0..k1 {
+                    power += xl[k] * xl[k] + yl[k] * yl[k] + xr[k] * xr[k] + yr[k] * yr[k];
+                }
+                power *= 0.25;
+                let db = (if power > 0.0 { 10.0 * power.log10() } else { -120.0 }) + scale_shift;
+                if db > -50.0 {
+                    band_sum[band] += db;
+                    band_cnt[band] += 1;
+                }
+            }
+            if total > 0.0 {
+                cent_sum += centroid_num / total;
+                cent_cnt += 1;
+            }
+        }
+
+        let expected: [f64; 7] = [107.0, 139.7, 144.7, 145.7, 140.9, 125.8, 101.6];
+        let centroid = cent_sum / cent_cnt as f64;
+        eprintln!("full-score sim: centroid {centroid:.1} Hz");
+        for band in 0..7 {
+            let got = band_sum[band] / band_cnt[band] as f64;
+            eprintln!("  band{}: {got:.1} dB (expected ~{} +/- 5)", band + 1, expected[band]);
+        }
+        for band in 0..7 {
+            let got = band_sum[band] / band_cnt[band] as f64;
+            assert!
+                ((got - expected[band]).abs() < 5.0,
+                 "band {} drifted: got {got:.1} dB, expected ~{} dB",
+                 band + 1,
+                 expected[band]);
+        }
+        assert!(
+            (centroid - 599.6).abs() < 80.0,
+            "centroid drifted: got {centroid:.1} Hz, expected ~600 Hz"
+        );
     }
 }
