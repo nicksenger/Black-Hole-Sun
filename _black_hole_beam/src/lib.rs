@@ -59,8 +59,6 @@ mod piano;
 mod piano_audio;
 #[cfg(feature = "piano")]
 mod piano_score;
-#[cfg(feature = "piano")]
-mod shadow_box;
 
 #[cfg(feature = "piano")]
 pub use piano::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
@@ -72,8 +70,6 @@ use piano_audio::PianoAudioEngine;
 pub use piano_audio::{render_piano_score_to_wav, PianoRenderReport};
 #[cfg(feature = "piano")]
 use piano_score::{PianoScorePlayback, SCORE_TICK_INTERVAL};
-#[cfg(feature = "piano")]
-use shadow_box::{Cutoff, ShadowBox};
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
@@ -86,18 +82,6 @@ const COLOR_TRANSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COLOR_FADE_DURATION: Duration = Duration::from_millis(400);
 const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
-/// The shadow the piano casts upward over whatever sits above it.
-#[cfg(feature = "piano")]
-const PIANO_SHADOW: Shadow = Shadow {
-    color: Color::BLACK,
-    offset: Vector::new(0.0, -24.0),
-    blur_radius: 8.0,
-};
-/// The subpanel overlay occupies the right third of the view, so the piano's
-/// shadow is cut off at two-thirds of its width: it shades the subpanel area
-/// but never the main graph.
-#[cfg(feature = "piano")]
-const PIANO_SHADOW_CUTOFF_X: f32 = 2.0 / 3.0;
 #[cfg(feature = "av")]
 const AV_OVERLAY_OPACITY: f32 = 0.25;
 type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
@@ -1824,30 +1808,14 @@ impl BeamApp {
         } else {
             stack![keyboard]
         };
-        // The shadow only falls on the subpanel area when it is open; the
-        // main graph stays unshaded (see `PIANO_SHADOW_CUTOFF_X`).
-        let show_subpanel = self.live.is_some()
-            && !self.config.subpanel_animals.is_empty()
-            && self.subpanel.is_some();
-        ShadowBox::new(
-            container(keyboard)
-                .width(Length::Fill)
-                .height(Length::Fixed(PIANO_HEIGHT))
-                .style(|_theme| container::Style {
-                    background: Some(Background::Color(Color::BLACK)),
-                    ..container::Style::default()
-                }),
-        )
-        .shadow(if show_subpanel {
-            PIANO_SHADOW
-        } else {
-            Shadow::default()
-        })
-        .cutoff(Cutoff {
-            x: PIANO_SHADOW_CUTOFF_X,
-            shadow: Shadow::default(),
-        })
-        .into()
+        container(keyboard)
+            .width(Length::Fill)
+            .height(Length::Fixed(PIANO_HEIGHT))
+            .style(|_theme| container::Style {
+                background: Some(Background::Color(Color::BLACK)),
+                ..container::Style::default()
+            })
+            .into()
     }
 
     #[cfg(feature = "piano")]
