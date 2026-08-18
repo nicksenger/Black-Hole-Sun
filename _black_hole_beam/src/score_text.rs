@@ -241,6 +241,29 @@ impl BhsScore {
         self.pairs.iter().map(|annotated| &annotated.pair)
     }
 
+    /// Mutable access to the note pair at `index`, in file order.
+    pub fn pair_mut_at(&mut self, index: usize) -> &mut ScoreNotePair {
+        &mut self.pairs[index].pair
+    }
+
+    /// Remove the note pair at `index`, in file order.
+    pub fn remove_pair_at(&mut self, index: usize) {
+        self.pairs.remove(index);
+    }
+
+    /// Insert a new pair immediately after the pair at `index`, in file order.
+    /// The new pair carries no comments; [`BhsScore::format`] re-sorts pairs
+    /// canonically on re-emit.
+    pub fn insert_pair_after(&mut self, index: usize, pair: ScoreNotePair) {
+        self.pairs.insert(
+            index + 1,
+            AnnotatedPair {
+                pair,
+                comments: Vec::new(),
+            },
+        );
+    }
+
     /// The note pairs in canonical order: start tick, then note, then velocity.
     pub fn sorted_pairs(&self) -> Vec<&ScoreNotePair> {
         let mut sorted: Vec<&ScoreNotePair> = self.pairs.iter().map(|a| &a.pair).collect();
