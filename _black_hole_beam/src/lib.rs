@@ -29,14 +29,12 @@ use black_hole_flux::sun::{
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
 #[cfg(feature = "av")]
 use directories_next::BaseDirs;
-use iced::mouse;
 #[cfg(feature = "piano")]
 use iced::keyboard;
+use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Path};
-use iced::widget::{
-    button, column, container, mouse_area, opaque, row, rule, space, stack, text,
-};
+use iced::widget::{button, column, container, mouse_area, opaque, row, rule, space, stack, text};
 use iced::{
     Background, Color, Element, Font, Length, Point, Rectangle, Shadow, Subscription, Task, Theme,
     Vector,
@@ -46,9 +44,8 @@ use iced_sugiyama::{
     circo_layout, AutoFit, Cluster, EdgeEndpointKind, Graph, LayoutInput, Sugiyama,
 };
 use jungle_sdk::{Animal, AnimalIdValue, JourneyAstSource, JungleClient, Observe};
-use jungle_theme::BeamJungleTheme;
 use jungle_vision::{
-    AnyAnimal, ClusterExpansionConfig, ClusterExpansionMode, EjectedViewer,
+    AnyAnimal, ClusterExpansionConfig, ClusterExpansionMode, DefaultTheme, EjectedViewer,
     EjectedViewerMessage, JungleViewerBuilder,
 };
 #[cfg(feature = "av")]
@@ -56,7 +53,6 @@ use tracing::{info, warn};
 use typenum::Unsigned;
 use uuid::Uuid;
 
-mod jungle_theme;
 #[cfg(feature = "piano")]
 mod piano;
 #[cfg(feature = "piano")]
@@ -88,7 +84,7 @@ const MIN_COLOR_STATE_DURATION: Duration = Duration::from_secs(1);
 const MAX_PENDING_PHASES: usize = 4;
 #[cfg(feature = "av")]
 const AV_OVERLAY_OPACITY: f32 = 0.25;
-type JungleSubpanelViewer = EjectedViewer<BeamJungleTheme, AnyAnimal>;
+type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
 
 #[derive(Clone)]
 struct SubpanelConfig {
@@ -102,16 +98,13 @@ where
     A: Animal + 'static,
     A::Flow: JourneyAstSource,
 {
-    let theme = BeamJungleTheme::default().with_cluster_expansion_config(ClusterExpansionConfig {
+    let theme = DefaultTheme::default().with_cluster_expansion_config(ClusterExpansionConfig {
         while_clusters: ClusterExpansionMode::AlwaysExpanded,
         transparent_clusters: ClusterExpansionMode::AlwaysExpanded,
     });
-    JungleViewerBuilder::new()
-        .eject_live_animal_with_theme::<A, SharedJungleClient, _, AnyAnimal>(
-            client,
-            journey_id,
-            theme,
-        )
+    JungleViewerBuilder::new().eject_live_animal_with_theme::<A, SharedJungleClient, _, AnyAnimal>(
+        client, journey_id, theme,
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -313,10 +306,7 @@ impl BeamBuilder {
     /// input uses [`PianoEvent::BINARY_VELOCITY`]; the event schema retains
     /// continuous values for velocity-sensitive inputs.
     #[cfg(feature = "piano")]
-    pub fn on_piano_event(
-        mut self,
-        handler: impl Fn(PianoEvent) + Send + Sync + 'static,
-    ) -> Self {
+    pub fn on_piano_event(mut self, handler: impl Fn(PianoEvent) + Send + Sync + 'static) -> Self {
         self.piano_event_handler = Some(Arc::new(handler));
         self
     }
@@ -981,9 +971,7 @@ impl PianoStrikeVisual {
 
         let intensity = if let Some((released_at, release_velocity)) = self.released {
             let release_duration = 0.34 - release_velocity.clamp(0.0, 1.0) * 0.23;
-            let release_progress = (now
-                .saturating_duration_since(released_at)
-                .as_secs_f32()
+            let release_progress = (now.saturating_duration_since(released_at).as_secs_f32()
                 / release_duration)
                 .clamp(0.0, 1.0);
             held_intensity * (1.0 - release_progress).powi(2)
@@ -1624,17 +1612,14 @@ impl BeamApp {
         subscriptions.push(keyboard::listen().map(Message::PianoKeyboard));
         #[cfg(feature = "piano")]
         if self.piano_score.is_some() {
-            subscriptions.push(
-                iced::time::every(SCORE_TICK_INTERVAL).map(Message::PianoScoreTick),
-            );
+            subscriptions.push(iced::time::every(SCORE_TICK_INTERVAL).map(Message::PianoScoreTick));
         } else if self
             .piano_strike_visuals
             .values()
             .any(|visual| visual.needs_frame(self.piano_visual_now))
         {
-            subscriptions.push(
-                iced::time::every(COLOR_FRAME_INTERVAL).map(Message::PianoVisualTick),
-            );
+            subscriptions
+                .push(iced::time::every(COLOR_FRAME_INTERVAL).map(Message::PianoVisualTick));
         }
         #[cfg(feature = "av")]
         if let Some(video_overlay) = self.video_overlay.as_ref() {
@@ -1695,7 +1680,8 @@ impl BeamApp {
             // is drawn as a vertical rule.
             let subpanel_panel = container(
                 row![
-                    rule::vertical(1).style(move |_theme| subpanel_left_edge_style(subpanel_colors)),
+                    rule::vertical(1)
+                        .style(move |_theme| subpanel_left_edge_style(subpanel_colors)),
                     container(
                         column![
                             header,
@@ -1783,7 +1769,9 @@ impl BeamApp {
             let appearance = visual.appearance(self.piano_visual_now);
             appearances
                 .entry(visual.midi_note)
-                .and_modify(|current| current.intensity = current.intensity.max(appearance.intensity))
+                .and_modify(|current| {
+                    current.intensity = current.intensity.max(appearance.intensity)
+                })
                 .or_insert(appearance);
         }
         let keyboard: Element<'_, PianoMessage> =
@@ -1792,11 +1780,10 @@ impl BeamApp {
                 .height(Length::Fixed(PIANO_HEIGHT))
                 .into();
         let keyboard: Element<'_, Message> = keyboard.map(Message::Piano);
-        let audio_error = self.piano_audio_error.clone().or_else(|| {
-            self.piano_audio
-                .as_ref()
-                .and_then(PianoAudioEngine::error)
-        });
+        let audio_error = self
+            .piano_audio_error
+            .clone()
+            .or_else(|| self.piano_audio.as_ref().and_then(PianoAudioEngine::error));
         let status_error = [audio_error, self.piano_score_error.clone()]
             .into_iter()
             .flatten()
@@ -1928,9 +1915,7 @@ impl BeamApp {
                     velocity,
                     pressure,
                 ),
-                PianoAction::Release { velocity, .. } => {
-                    self.release_piano_note(input, velocity)
-                }
+                PianoAction::Release { velocity, .. } => self.release_piano_note(input, velocity),
             }
         }
     }
@@ -2708,8 +2693,7 @@ mod tests {
         };
         let fading = released_at + Duration::from_millis(80);
         assert!(
-            slow_release.appearance(fading).intensity
-                > fast_release.appearance(fading).intensity
+            slow_release.appearance(fading).intensity > fast_release.appearance(fading).intensity
         );
         assert!(fast_release.needs_frame(fading));
         assert!(fast_release.finished(released_at + Duration::from_millis(400)));
@@ -2719,7 +2703,10 @@ mod tests {
     #[test]
     fn builder_records_a_score_path() {
         let config = BeamBuilder::new().score("moonlight.json").into_config();
-        assert_eq!(config.piano_score_path, Some(PathBuf::from("moonlight.json")));
+        assert_eq!(
+            config.piano_score_path,
+            Some(PathBuf::from("moonlight.json"))
+        );
     }
 
     #[cfg(feature = "piano")]
@@ -2767,7 +2754,11 @@ mod tests {
         assert_eq!(app.piano_strike_visuals.len(), 1);
 
         app.update_piano_score(start + Duration::from_millis(500));
-        assert_eq!(app.active_piano_notes.len(), 1, "cycle 1 attacks immediately");
+        assert_eq!(
+            app.active_piano_notes.len(),
+            1,
+            "cycle 1 attacks immediately"
+        );
         assert_eq!(app.piano_strike_visuals.len(), 2);
         let captured = captured.lock().unwrap();
         assert_eq!(captured.len(), 3);

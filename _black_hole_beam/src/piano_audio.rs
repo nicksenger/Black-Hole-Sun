@@ -490,7 +490,10 @@ impl PianoVoice {
         }
         self.age_samples += 1;
 
-        let sample = (string * attack + hammer_noise + hammer_knock) * self.release_gain;
+        // Fade the whole strike in from silence. The hammer's differentiated
+        // noise can otherwise begin at an arbitrary non-zero value, producing
+        // a click that becomes especially noticeable across dense chords.
+        let sample = (string + hammer_noise + hammer_knock) * attack * self.release_gain;
         (sample * self.pan_left, sample * self.pan_right)
     }
 
@@ -622,6 +625,16 @@ mod tests {
         }
         assert!(energy > 0.01);
         assert_eq!(synth.voices.len(), 1);
+    }
+
+    #[test]
+    fn attack_fades_the_hammer_transient_in_from_silence() {
+        let mut voice = PianoVoice::new(1, 60, 261.625_55, 1.0, None, 48_000.0);
+
+        let (left, right) = voice.next_sample();
+
+        assert_eq!((left, right), (0.0, 0.0));
+        assert_ne!(voice.previous_noise, 0.0, "the hammer noise path ran");
     }
 
     #[test]
