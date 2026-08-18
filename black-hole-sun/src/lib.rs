@@ -4,6 +4,7 @@
 
 mod accumulated_transmissions;
 mod mass_client;
+mod prompt_ops;
 #[cfg(feature = "test")]
 mod test_utils;
 mod tokenizer;
@@ -14,6 +15,7 @@ pub use black_hole_mass;
 pub use black_hole_spec;
 pub use black_hole_void;
 pub use mass_client::MassClient;
+pub use prompt_ops::{InferPromptOps, SeqPromptOps, TokenOps};
 #[cfg(feature = "test")]
 pub use test_utils::{
     make_client_endpoint, NoCertVerifier, RunningTestMassServer, RunningTestVoidServer,

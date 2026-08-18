@@ -342,7 +342,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use black_hole_spec::SequenceOutput;
+    use black_hole_spec::{LogitEntry, SequenceOutput};
     use futures::executor::block_on;
 
     use super::*;
@@ -455,7 +455,13 @@ mod tests {
 
     fn sample_output(token_id: u32) -> InferenceOutput {
         InferenceOutput {
-            results: vec![SequenceOutput(vec![DarkToken::one_hot(token_id)])],
+            results: vec![SequenceOutput(vec![DarkToken {
+                predicted: token_id,
+                dark_knowledge: vec![LogitEntry {
+                    token_id,
+                    log_prob: 0.0,
+                }],
+            }])],
         }
     }
 
