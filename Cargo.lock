@@ -884,8 +884,6 @@ dependencies = [
  "jungle-vision",
  "midly",
  "postcard",
- "serde",
- "serde_json",
  "tokio",
  "tracing",
  "typenum",

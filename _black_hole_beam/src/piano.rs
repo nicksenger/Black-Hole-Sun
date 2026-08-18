@@ -7,7 +7,6 @@ use iced::mouse;
 use iced::touch;
 use iced::widget::canvas::{self, Path};
 use iced::{Color, Point, Rectangle, Size, Theme};
-use serde::{Deserialize, Serialize};
 
 pub(crate) const PIANO_HEIGHT: f32 = 185.0;
 const FIRST_MIDI_NOTE: u8 = 21; // A0
@@ -16,7 +15,7 @@ const WHITE_KEY_COUNT: f32 = 52.0;
 const BLACK_KEY_HEIGHT: f32 = PIANO_HEIGHT * 0.63;
 
 /// A piano note in equal temperament with A4 tuned to 440 Hz.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PianoNote {
     /// The MIDI note number (`21..=108` for the on-screen keyboard).
     pub midi_note: u8,
@@ -49,7 +48,7 @@ impl PianoNote {
 }
 
 /// The device surface that originated a piano event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PianoInputSource {
     /// A mapped key on a conventional computer keyboard.
     ComputerKeyboard { key: char },
@@ -57,12 +56,12 @@ pub enum PianoInputSource {
     Mouse,
     /// A touch contact on an on-screen key.
     Touch { finger: u64 },
-    /// An event loaded from a looping JSON score.
+    /// An event loaded from a looping score.
     Score,
 }
 
 /// The expressive phase of a performed note.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PianoAction {
     /// A key began sounding. Velocity and pressure are normalized to `0.0..=1.0`.
     Attack {
@@ -72,7 +71,6 @@ pub enum PianoAction {
     /// A key stopped being held. Velocity is normalized to `0.0..=1.0`.
     Release {
         velocity: f32,
-        #[serde(with = "duration_seconds")]
         held_for: Duration,
     },
 }
@@ -81,42 +79,15 @@ pub enum PianoAction {
 ///
 /// `voice_id` pairs an attack with its release even when the same note is
 /// played concurrently by multiple inputs. `sequence` provides stable event
-/// ordering when timestamps are equal. JSON serialization represents
-/// `timestamp` and release `held_for` durations as numeric seconds.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// ordering when timestamps are equal.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PianoEvent {
     pub sequence: u64,
-    #[serde(with = "duration_seconds")]
     pub timestamp: Duration,
     pub voice_id: u64,
     pub note: PianoNote,
     pub action: PianoAction,
     pub source: PianoInputSource,
-}
-
-mod duration_seconds {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::time::Duration;
-
-    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_f64(duration.as_secs_f64())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let seconds = f64::deserialize(deserializer)?;
-        if !seconds.is_finite() || seconds < 0.0 {
-            return Err(serde::de::Error::custom(
-                "duration must be a finite, non-negative number of seconds",
-            ));
-        }
-        Ok(Duration::from_secs_f64(seconds))
-    }
 }
 
 impl PianoEvent {
@@ -582,22 +553,4 @@ mod tests {
         assert_eq!(computer_key_note('!'), None);
     }
 
-    #[test]
-    fn piano_events_round_trip_as_human_readable_json_seconds() {
-        let event = PianoEvent {
-            sequence: 12,
-            timestamp: Duration::from_millis(1_250),
-            voice_id: 7,
-            note: PianoNote::from_midi(60),
-            action: PianoAction::Release {
-                velocity: 0.4,
-                held_for: Duration::from_millis(750),
-            },
-            source: PianoInputSource::Score,
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"timestamp\":1.25"));
-        assert!(json.contains("\"held_for\":0.75"));
-        assert_eq!(serde_json::from_str::<PianoEvent>(&json).unwrap(), event);
-    }
 }

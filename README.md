@@ -8,7 +8,7 @@ The appeal of this distributed training approach is that it requires very little
 
 To compensate for this I've added a piano to the UI as shown in this video:
 
-[vid]
+https://github.com/user-attachments/assets/9c399800-04bb-4bc7-93fc-d2fa1a400b53
 
 Nodes in a `BlackHole::Sun` graph (`Cell`s) are agents implemented in terms of `jungle::Flow` that is expected to combine some neural network with arbitrary symbolic pre/post processing steps and support progression through the following 3 phases:
 

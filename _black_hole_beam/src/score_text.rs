@@ -1,11 +1,11 @@
-//! The `bhb-score-2` text format for piano scores.
+//! The `bhs-score-v1` text format for piano scores.
 //!
 //! A score is a table of note pairs in integer tick space, one pair per line:
 //!
 //! ```text
 //! ; black-hole-beam piano score
 //! ; loop 279.8s | 3037 notes | range Eb1..Ab6
-//! format bhb-score-2
+//! format bhs-score-v1
 //! ticks_per_second 1920
 //! measure_ticks 7680
 //! loop_ticks 537150
@@ -21,7 +21,7 @@
 //! at its attack velocity. Lines may carry trailing comments, and full-line
 //! comments are free-form; measure anchor lines such as
 //! `; --- measure 12 (tick 84480, t=44.00s) ---` are generated from
-//! `measure_ticks` when present. Re-emitting a score ([`BhbScore::format`])
+//! `measure_ticks` when present. Re-emitting a score ([`BhsScore::format`])
 //! is canonical: pairs sort by start tick, then note, then velocity, and user
 //! comments are preserved attached to the pair that follows them.
 //!
@@ -33,7 +33,7 @@ use std::time::Duration;
 use crate::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
 
 /// The format name expected on the first structural line of a score file.
-pub const FORMAT_NAME: &str = "bhb-score-2";
+pub const FORMAT_NAME: &str = "bhs-score-v1";
 
 /// The lowest MIDI note a score may contain (A0).
 pub const FIRST_MIDI_NOTE: u8 = 21;
@@ -68,9 +68,9 @@ impl ScoreNotePair {
     }
 }
 
-/// A parsed `bhb-score-2` score document.
+/// A parsed `bhs-score-v1` score document.
 #[derive(Debug, Clone)]
-pub struct BhbScore {
+pub struct BhsScore {
     /// The time grid: ticks per second.
     pub ticks_per_second: u64,
     /// Presentational measure length used to emit anchor comments.
@@ -90,7 +90,7 @@ struct AnnotatedPair {
     comments: Vec<String>,
 }
 
-/// The severity of a [`BhbScore::diagnostics`] finding.
+/// The severity of a [`BhsScore::diagnostics`] finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticLevel {
     /// The score will not load.
@@ -108,9 +108,9 @@ pub struct Diagnostic {
     pub message: String,
 }
 
-impl BhbScore {
+impl BhsScore {
     /// Build a document from scratch for writers. No anchors or comments are
-    /// remembered; [`BhbScore::format`] regenerates them.
+    /// remembered; [`BhsScore::format`] regenerates them.
     pub fn new(
         ticks_per_second: u64,
         measure_ticks: Option<u64>,
@@ -134,7 +134,7 @@ impl BhbScore {
         }
     }
 
-    /// Parse a `bhb-score-2` document from text.
+    /// Parse a `bhs-score-v1` document from text.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut ticks_per_second = None;
         let mut measure_ticks = None;
@@ -711,7 +711,7 @@ mod tests {
 
     const SCORE: &str = "\
 ; written by hand
-format bhb-score-2
+format bhs-score-v1
 ticks_per_second 960
 measure_ticks 3840
 loop_ticks 7680
@@ -727,7 +727,7 @@ loop_ticks 7680
 
     #[test]
     fn parses_names_numbers_and_comments() {
-        let score = BhbScore::parse(SCORE).expect("the fixture should parse");
+        let score = BhsScore::parse(SCORE).expect("the fixture should parse");
         assert_eq!(score.ticks_per_second, 960);
         assert_eq!(score.measure_ticks, Some(3840));
         assert_eq!(score.loop_ticks, Some(7680));
@@ -755,36 +755,36 @@ loop_ticks 7680
         let cases = [
             ("garbage", "note pair before the ticks_per_second header"),
             (
-                "format bhb-score-1\nticks_per_second 960\n0 960 C4 80\n",
+                "format bhs-score-v2\nticks_per_second 960\n0 960 C4 80\n",
                 "unknown format",
             ),
             (
-                "format bhb-score-2\n0 960 C4 80\n",
+                "format bhs-score-v1\n0 960 C4 80\n",
                 "note pair before the ticks_per_second header",
             ),
             (
-                "format bhb-score-2\nticks_per_second 960\n",
+                "format bhs-score-v1\nticks_per_second 960\n",
                 "the score has no notes",
             ),
             (
-                "format bhb-score-2\nticks_per_second 960\n0 0 C4 80\n",
+                "format bhs-score-v1\nticks_per_second 960\n0 0 C4 80\n",
                 "at least one tick",
             ),
             (
-                "format bhb-score-2\nticks_per_second 960\n0 960 5 80\n",
+                "format bhs-score-v1\nticks_per_second 960\n0 960 5 80\n",
                 "outside the 88-key range",
             ),
             (
-                "format bhb-score-2\nticks_per_second 960\n0 960 C4 128\n",
+                "format bhs-score-v1\nticks_per_second 960\n0 960 C4 128\n",
                 "outside 0..=127",
             ),
             (
-                "format bhb-score-2\nticks_per_second 960\n0 960 C4 80 10 7\n",
+                "format bhs-score-v1\nticks_per_second 960\n0 960 C4 80 10 7\n",
                 "the note pair has extra fields",
             ),
         ];
         for (text, expected) in cases {
-            let error = BhbScore::parse(text).expect_err("should reject");
+            let error = BhsScore::parse(text).expect_err("should reject");
             assert!(
                 error.contains(expected),
                 "for {text:?}: {error} does not mention {expected:?}"
@@ -794,7 +794,7 @@ loop_ticks 7680
 
     #[test]
     fn expands_pairs_into_ordered_events() {
-        let score = BhbScore::parse(SCORE).expect("the fixture should parse");
+        let score = BhsScore::parse(SCORE).expect("the fixture should parse");
         let events = score.to_events().expect("valid score");
         assert_eq!(events.len(), 10);
 
@@ -864,9 +864,9 @@ loop_ticks 7680
 
     #[test]
     fn format_is_canonical_and_idempotent() {
-        let score = BhbScore::parse(SCORE).expect("the fixture should parse");
+        let score = BhsScore::parse(SCORE).expect("the fixture should parse");
         let once = score.format();
-        let twice = BhbScore::parse(&once)
+        let twice = BhsScore::parse(&once)
             .expect("canonical form should re-parse")
             .format();
         assert_eq!(once, twice);
@@ -883,12 +883,12 @@ loop_ticks 7680
     #[test]
     fn unsorted_input_normalizes_on_reemit() {
         let shuffled = "\
-format bhb-score-2
+format bhs-score-v1
 ticks_per_second 960
 960 480 E4 64
 0 960 C4 80
 ";
-        let score = BhbScore::parse(shuffled).expect("order is not required to parse");
+        let score = BhsScore::parse(shuffled).expect("order is not required to parse");
         let emitted = score.format();
         let lines: Vec<&str> = emitted.lines().collect();
         let c4 = lines.iter().position(|line| line.starts_with("0 960 C4")).unwrap();
@@ -904,13 +904,13 @@ ticks_per_second 960
     #[test]
     fn diagnostics_flag_duplicates_and_stale_anchors() {
         let duplicated = "\
-format bhb-score-2
+format bhs-score-v1
 ticks_per_second 960
 measure_ticks 3840
 0 960 C4 80
 0 960 C4 80
 ";
-        let score = BhbScore::parse(duplicated).expect("duplicates parse");
+        let score = BhsScore::parse(duplicated).expect("duplicates parse");
         let findings = score.diagnostics();
         assert!(findings
             .iter()
@@ -921,12 +921,12 @@ measure_ticks 3840
             .any(|finding| finding.message.contains("anchors are stale")));
 
         let truncated_loop = "\
-format bhb-score-2
+format bhs-score-v1
 ticks_per_second 960
 loop_ticks 500
 0 960 C4 80
 ";
-        let score = BhbScore::parse(truncated_loop).expect("parses; loading should fail");
+        let score = BhsScore::parse(truncated_loop).expect("parses; loading should fail");
         assert!(score.to_events().is_err());
         assert!(score
             .diagnostics()

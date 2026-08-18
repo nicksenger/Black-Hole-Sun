@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-piano = ["dep:clap", "dep:cpal", "dep:hound", "dep:midly", "dep:serde", "dep:serde_json"]
+piano = ["dep:clap", "dep:cpal", "dep:hound", "dep:midly"]
 
 [dependencies]
 async-trait = "0.1"
@@ -19,8 +19,6 @@ iced-sugiyama = { git = "https://github.com/nicksenger/iced-sugiyama.git", branc
 jungle-sdk = { workspace = true }
 jungle-vision = { workspace = true }
 postcard = "1"
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 typenum = "1"

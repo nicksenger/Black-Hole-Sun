@@ -303,14 +303,12 @@ impl BeamBuilder {
         self
     }
 
-    /// Continuously loop a serialized piano performance.
+    /// Continuously loop a recorded piano performance.
     ///
-    /// The file may be a JSON array of [`PianoEvent`] values (or an object
-    /// containing `events` and an optional numeric `loop_duration` in
-    /// seconds), or the compact hand-editable `bhb-score-2` text format
-    /// described in [`score_text`]. Events are ordered by timestamp and
-    /// sequence and are routed through the same audio, visualization, and
-    /// callback paths as live key presses.
+    /// The file is a `bhs-score-v1` text score (conventionally with a `.bhs`
+    /// extension) described in [`score_text`]. Events are ordered by
+    /// timestamp and sequence and are routed through the same audio,
+    /// visualization, and callback paths as live key presses.
     #[cfg(feature = "piano")]
     pub fn score(mut self, path: impl Into<PathBuf>) -> Self {
         self.piano_score_path = Some(path.into());
@@ -2649,10 +2647,10 @@ mod tests {
     #[cfg(feature = "piano")]
     #[test]
     fn builder_records_a_score_path() {
-        let config = BeamBuilder::new().score("moonlight.json").into_config();
+        let config = BeamBuilder::new().score("moonlight.bhs").into_config();
         assert_eq!(
             config.piano_score_path,
-            Some(PathBuf::from("moonlight.json"))
+            Some(PathBuf::from("moonlight.bhs"))
         );
     }
 
@@ -2662,32 +2660,15 @@ mod tests {
         use std::sync::Mutex;
 
         let start = Instant::now();
-        let events = [
-            PianoEvent {
-                sequence: 1,
-                timestamp: Duration::ZERO,
-                voice_id: 44,
-                note: PianoNote::from_midi(60),
-                action: PianoAction::Attack {
-                    velocity: 0.77,
-                    pressure: Some(0.62),
-                },
-                source: PianoInputSource::Score,
-            },
-            PianoEvent {
-                sequence: 2,
-                timestamp: Duration::from_millis(500),
-                voice_id: 44,
-                note: PianoNote::from_midi(60),
-                action: PianoAction::Release {
-                    velocity: 0.28,
-                    held_for: Duration::from_millis(500),
-                },
-                source: PianoInputSource::Score,
-            },
-        ];
-        let json = serde_json::to_string(&events).unwrap();
-        let score = PianoScorePlayback::from_json(&json, start).unwrap();
+        // A 0.5s C4 at 2000 ticks/second, looping every 0.5s: the release
+        // lands exactly when the next cycle's attack is due.
+        let score_text = "\
+format bhs-score-v1
+ticks_per_second 2000
+loop_ticks 1000
+0 1000 C4 98 36
+";
+        let score = PianoScorePlayback::from_text(score_text, start).unwrap();
         let captured = Arc::new(Mutex::new(Vec::new()));
         let callback_events = Arc::clone(&captured);
         let config = BeamBuilder::new()
@@ -2709,16 +2690,19 @@ mod tests {
         assert_eq!(app.piano_strike_visuals.len(), 2);
         let captured = captured.lock().unwrap();
         assert_eq!(captured.len(), 3);
+        let attack_velocity = f32::from(98u8) / 127.0;
+        let release_velocity = f32::from(36u8) / 127.0;
         assert!(matches!(
             captured[0].action,
             PianoAction::Attack {
                 velocity,
-                pressure: Some(pressure)
-            } if velocity == 0.77 && pressure == 0.62
+                pressure: None
+            } if (velocity - attack_velocity).abs() < 1e-6
         ));
         assert!(matches!(
             captured[1].action,
-            PianoAction::Release { velocity, .. } if velocity == 0.28
+            PianoAction::Release { velocity, .. }
+                if (velocity - release_velocity).abs() < 1e-6
         ));
         assert_eq!(captured[0].source, PianoInputSource::Score);
         assert_eq!(captured[2].source, PianoInputSource::Score);

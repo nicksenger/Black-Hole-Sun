@@ -1,32 +1,27 @@
 //! Convert Standard MIDI files into piano scores for `black-hole-beam`, and
 //! inspect or re-emit existing scores.
 //!
-//! `convert` writes the compact hand-editable `bhb-score-2` text format by
-//! default; `--format json` keeps the legacy JSON serialization accepted by
+//! `convert` writes the compact hand-editable `bhs-score-v1` text format
+//! (conventionally with a `.bhs` extension) accepted by
 //! [`BeamBuilder::score`](black_hole_beam::BeamBuilder::score). MIDI
 //! note-on/note-off pairs become note pairs on a uniform tick grid:
 //! velocities stay integers in `0..=127`, and a note-off with velocity zero
 //! releases at the note's attack velocity. Notes still held at the end of the
 //! file are released there so the score loops cleanly.
 //!
-//! Scores conventionally use the `.bhs` extension.
-//!
-//! `check` validates a `bhb-score-2` score (range errors, duplicate pairs,
+//! `check` validates a `bhs-score-v1` score (range errors, duplicate pairs,
 //! canonical order, stale measure anchors, loop length). `pretty` re-emits a
 //! score in canonical form, preserving user comments.
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use black_hole_beam::score_text::{
-    BhbScore, ScoreNotePair, FIRST_MIDI_NOTE, LAST_MIDI_NOTE,
+    BhsScore, ScoreNotePair, FIRST_MIDI_NOTE, LAST_MIDI_NOTE,
 };
-use black_hole_beam::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
-use serde::Serialize;
 
 /// The MIDI default tempo when a file carries no tempo meta events: 120 BPM.
 const DEFAULT_MICROS_PER_QUARTER: u32 = 500_000;
@@ -49,9 +44,9 @@ struct Args {
 enum Command {
     /// Convert a Standard MIDI file into a piano score
     Convert(ConvertArgs),
-    /// Validate a bhb-score-2 piano score file
+    /// Validate a bhs-score-v1 piano score file
     Check(CheckArgs),
-    /// Re-emit a bhb-score-2 score in canonical form, preserving comments
+    /// Re-emit a bhs-score-v1 score in canonical form, preserving comments
     Pretty(PrettyArgs),
 }
 
@@ -71,10 +66,6 @@ struct ConvertArgs {
     /// Only include notes from this MIDI channel (0-15)
     #[arg(long, value_name = "CHANNEL")]
     channel: Option<u8>,
-
-    /// Output format: the bhb-score-2 text table (default) or legacy JSON
-    #[arg(long, value_enum, default_value_t = ScoreFormat::Bhb)]
-    format: ScoreFormat,
 }
 
 #[derive(clap::Args)]
@@ -91,12 +82,6 @@ struct PrettyArgs {
     /// Write the canonical form to this file instead of standard output
     #[arg(short, long)]
     output: Option<PathBuf>,
-}
-
-#[derive(ValueEnum, Clone, Copy, PartialEq, Eq)]
-enum ScoreFormat {
-    Bhb,
-    Json,
 }
 
 #[derive(Clone, Copy)]
@@ -118,12 +103,6 @@ struct NotePair {
     off_tick: u64,
     on_velocity: u8,
     off_velocity: u8,
-}
-
-#[derive(Serialize)]
-struct ScoreDocument<'a> {
-    events: &'a [PianoEvent],
-    loop_duration: f64,
 }
 
 /// A piecewise tempo map converting file ticks to seconds.
@@ -361,14 +340,14 @@ fn measure_ticks(division: u32, time_signature: Option<(u8, u8)>) -> Option<u64>
         .and_then(|ticks| ticks.checked_div(u64::from(denominator)))
 }
 
-/// Build a bhb-score-2 document from note pairs on the given grid.
-fn build_bhb_score(
+/// Build a bhs-score-v1 document from note pairs on the given grid.
+fn build_score(
     pairs: &[NotePair],
     tempo_map: &TempoMap,
     ticks_per_second: u64,
     measure_ticks: Option<u64>,
     loop_duration: Option<f64>,
-) -> Result<BhbScore, String> {
+) -> Result<BhsScore, String> {
     let mut score_pairs: Vec<ScoreNotePair> = Vec::new();
     let mut skipped_notes = 0;
     for pair in pairs {
@@ -419,84 +398,12 @@ fn build_bhb_score(
         None => None,
     };
 
-    Ok(BhbScore::new(
+    Ok(BhsScore::new(
         ticks_per_second,
         measure_ticks,
         loop_ticks,
         score_pairs,
     ))
-}
-
-/// Build score events from note pairs. Returns the events (unsorted, with
-/// `sequence` unset) and the number of notes skipped for falling outside the
-/// 88-key range.
-fn build_events(pairs: &[NotePair], tempo_map: &TempoMap) -> (Vec<PianoEvent>, usize) {
-    let mut events = Vec::new();
-    let mut skipped_notes = 0;
-    let mut voice_id = 0u64;
-    for pair in pairs {
-        if !(FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(&pair.key) {
-            skipped_notes += 1;
-            continue;
-        }
-        let note = PianoNote::from_midi(pair.key);
-        let attack_velocity = f32::from(pair.on_velocity) / 127.0;
-        // Note-offs without velocity information release at the attack
-        // velocity, preserving the phrase's dynamics.
-        let release_velocity = if pair.off_velocity == 0 {
-            attack_velocity
-        } else {
-            f32::from(pair.off_velocity) / 127.0
-        };
-        let on_seconds = tempo_map.at(pair.on_tick);
-        let off_seconds = tempo_map.at(pair.off_tick);
-        voice_id += 1;
-        events.push(PianoEvent {
-            sequence: 0,
-            timestamp: Duration::from_secs_f64(on_seconds),
-            voice_id,
-            note,
-            action: PianoAction::Attack {
-                velocity: attack_velocity,
-                pressure: None,
-            },
-            source: PianoInputSource::Score,
-        });
-        events.push(PianoEvent {
-            sequence: 0,
-            timestamp: Duration::from_secs_f64(off_seconds),
-            voice_id,
-            note,
-            action: PianoAction::Release {
-                velocity: release_velocity,
-                held_for: Duration::from_secs_f64((off_seconds - on_seconds).max(0.0)),
-            },
-            source: PianoInputSource::Score,
-        });
-    }
-    (events, skipped_notes)
-}
-
-/// Order events by performance time and assign stable sequence numbers.
-fn finalize_events(events: &mut [PianoEvent]) {
-    events.sort_by(|a, b| {
-        a.timestamp
-            .as_secs_f64()
-            .partial_cmp(&b.timestamp.as_secs_f64())
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| action_rank(&a.action).cmp(&action_rank(&b.action)))
-            .then_with(|| a.note.midi_note.cmp(&b.note.midi_note))
-    });
-    for (index, event) in events.iter_mut().enumerate() {
-        event.sequence = index as u64 + 1;
-    }
-}
-
-fn action_rank(action: &PianoAction) -> u8 {
-    match action {
-        PianoAction::Attack { .. } => 0,
-        PianoAction::Release { .. } => 1,
-    }
 }
 
 fn main() -> Result<(), String> {
@@ -527,54 +434,16 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
     let tempo_map = TempoMap::new(midi.tempos.clone(), midi.division);
     let pairs = pair_notes(&midi.notes, midi.end_tick);
 
-    let text = match args.format {
-        ScoreFormat::Bhb => {
-            let ticks_per_second = choose_ticks_per_second(&midi.tempos, midi.division);
-            let measure_length = measure_ticks(midi.division, midi.time_signature);
-            build_bhb_score(
-                &pairs,
-                &tempo_map,
-                ticks_per_second,
-                measure_length,
-                args.loop_duration,
-            )?
-            .format()
-        }
-        ScoreFormat::Json => {
-            let (mut events, skipped_notes) = build_events(&pairs, &tempo_map);
-            if skipped_notes > 0 {
-                eprintln!(
-                    "warning: skipped {skipped_notes} notes outside the 88-key range \
-                     {FIRST_MIDI_NOTE}..={LAST_MIDI_NOTE}"
-                );
-            }
-            if events.is_empty() {
-                return Err(format!(
-                    "the MIDI file contains no notes in the 88-key range {FIRST_MIDI_NOTE}..={LAST_MIDI_NOTE}"
-                ));
-            }
-            finalize_events(&mut events);
-
-            let last_timestamp = events.last().expect("events is not empty").timestamp;
-            let json = match args.loop_duration {
-                Some(loop_duration) => {
-                    if Duration::from_secs_f64(loop_duration) < last_timestamp {
-                        return Err(format!(
-                            "loop duration ({loop_duration}s) precedes the last event ({}s)",
-                            last_timestamp.as_secs_f64()
-                        ));
-                    }
-                    serde_json::to_string_pretty(&ScoreDocument {
-                        events: &events,
-                        loop_duration,
-                    })
-                }
-                None => serde_json::to_string_pretty(&events),
-            }
-            .map_err(|error| format!("could not serialize the score: {error}"))?;
-            format!("{json}\n")
-        }
-    };
+    let ticks_per_second = choose_ticks_per_second(&midi.tempos, midi.division);
+    let measure_length = measure_ticks(midi.division, midi.time_signature);
+    let text = build_score(
+        &pairs,
+        &tempo_map,
+        ticks_per_second,
+        measure_length,
+        args.loop_duration,
+    )?
+    .format();
 
     write_output(args.output.as_deref(), &text)
 }
@@ -582,7 +451,7 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
 fn run_check(path: &Path) -> Result<(), String> {
     let text = fs::read_to_string(path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    let score = BhbScore::parse(&text)
+    let score = BhsScore::parse(&text)
         .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
     let findings = score.diagnostics();
     if findings.is_empty() {
@@ -611,7 +480,7 @@ fn run_check(path: &Path) -> Result<(), String> {
 fn run_pretty(path: &Path, output: Option<&Path>) -> Result<(), String> {
     let text = fs::read_to_string(path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    let score = BhbScore::parse(&text)
+    let score = BhsScore::parse(&text)
         .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
     write_output(output, &score.format())
 }
@@ -644,6 +513,9 @@ fn read_input(input: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use black_hole_beam::{PianoAction, PianoEvent, PianoInputSource};
 
     /// A one-measure C-major file at 120 BPM (division 480): a whole-note C4
     /// followed by two quarter notes, built as raw SMF bytes.
@@ -676,14 +548,16 @@ mod tests {
         file
     }
 
+    /// Run the full conversion pipeline and return the expanded events.
     fn convert(bytes: &[u8]) -> Vec<PianoEvent> {
         let midi = parse_midi(bytes, None).expect("hand-built SMF should parse");
-        let tempo_map = TempoMap::new(midi.tempos, midi.division);
+        let tempo_map = TempoMap::new(midi.tempos.clone(), midi.division);
         let pairs = pair_notes(&midi.notes, midi.end_tick);
-        let (mut events, skipped) = build_events(&pairs, &tempo_map);
-        assert_eq!(skipped, 0);
-        finalize_events(&mut events);
-        events
+        let ticks_per_second = choose_ticks_per_second(&midi.tempos, midi.division);
+        build_score(&pairs, &tempo_map, ticks_per_second, None, None)
+            .expect("hand-built SMF should convert")
+            .to_events()
+            .expect("valid score")
     }
 
     #[test]
@@ -747,13 +621,6 @@ mod tests {
             .iter()
             .all(|event| event.source == PianoInputSource::Score));
 
-        // The serialized form round-trips through the score loader's schema.
-        let json = serde_json::to_string(&events).unwrap();
-        assert!(json.contains(r#""source":"Score""#));
-        assert_eq!(
-            serde_json::from_str::<Vec<PianoEvent>>(&json).unwrap(),
-            events
-        );
     }
 
     #[test]
@@ -860,9 +727,11 @@ mod tests {
         let midi = parse_midi(&file, None).unwrap();
         let tempo_map = TempoMap::new(midi.tempos, midi.division);
         let pairs = pair_notes(&midi.notes, midi.end_tick);
-        let (events, skipped) = build_events(&pairs, &tempo_map);
-        assert_eq!(skipped, 2);
-        assert_eq!(events.len(), 2);
+        // The two out-of-range notes are skipped; only the in-range C4
+        // survives as a single pair.
+        let score = build_score(&pairs, &tempo_map, 960, None, None).unwrap();
+        assert_eq!(score.pairs().count(), 1);
+        assert_eq!(score.to_events().unwrap().len(), 2);
     }
 
     #[test]
@@ -895,14 +764,14 @@ mod tests {
         let midi = parse_midi(&c_major_smf(), None).unwrap();
         let tempo_map = TempoMap::new(midi.tempos, midi.division);
         let pairs = pair_notes(&midi.notes, midi.end_tick);
-        let score = build_bhb_score(&pairs, &tempo_map, 960, None, None).unwrap();
+        let score = build_score(&pairs, &tempo_map, 960, None, None).unwrap();
 
         // Division 480 at the default 120 BPM is exactly 960 ticks/second.
         assert_eq!(choose_ticks_per_second(&[], 480), 960);
         let text = score.format();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1], "; loop 1.0s | 3 notes | range C4..G4");
-        assert_eq!(lines[2], "format bhb-score-2");
+        assert_eq!(lines[2], "format bhs-score-v1");
         assert_eq!(lines[3], "ticks_per_second 960");
         assert_eq!(lines[4], "loop_ticks 960");
         assert_eq!(lines[5], "; start duration note velocity [release_velocity]");
@@ -911,7 +780,7 @@ mod tests {
         assert_eq!(lines[8], "720 240 G4 80");
 
         // The re-emitted text parses back to the same pairs.
-        let reparsed = BhbScore::parse(&text).unwrap();
+        let reparsed = BhsScore::parse(&text).unwrap();
         assert_eq!(reparsed.format(), text);
     }
 }

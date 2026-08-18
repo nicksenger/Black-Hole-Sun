@@ -893,19 +893,15 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        let input = std::env::temp_dir().join(format!("black-hole-play-{nonce}.json"));
+        let input = std::env::temp_dir().join(format!("black-hole-play-{nonce}.bhs"));
         let output = std::env::temp_dir().join(format!("black-hole-play-{nonce}.wav"));
-        let score = r#"{
-          "events": [
-            {"sequence":1,"timestamp":0.0,"voice_id":1,
-             "note":{"midi_note":60,"frequency_hz":261.62555},
-             "action":{"Attack":{"velocity":0.8,"pressure":0.6}},"source":"Score"},
-            {"sequence":2,"timestamp":0.01,"voice_id":1,
-             "note":{"midi_note":60,"frequency_hz":261.62555},
-             "action":{"Release":{"velocity":0.4,"held_for":0.01}},"source":"Score"}
-          ],
-          "loop_duration": 0.02
-        }"#;
+        // A C4 struck at t=0, released 10 ms later, looping every 20 ms.
+        let score = "\
+format bhs-score-v1
+ticks_per_second 1000
+loop_ticks 20
+0 10 C4 102 51
+";
         fs::write(&input, score).unwrap();
 
         let report =
@@ -961,14 +957,14 @@ mod tests {
     }
 
     /// Pure-math full-score verification (no audio output): renders the whole
-    /// `score.json` through [`PianoSynth`] at 48 kHz and checks that the band
+    /// `score.bhs` through [`PianoSynth`] at 48 kHz and checks that the band
     /// balance matches the reference-piano target calibrated in the offline
     /// simulator. The expected values are the tuned pipeline's aggregates on
     /// the 0.499 s / 23952-sample window convention; this test uses a
     /// 16384-sample hop (power of two for the radix-2 FFT) and shifts each
     /// window's band level by `10*log10(23952/16384)` to stay on that scale.
     #[test]
-    #[ignore = "runs the full score through the synth; needs /home/chip/Desktop/score.json"]
+    #[ignore = "runs the full score through the synth; needs /home/chip/Desktop/score.bhs"]
     fn full_score_sim_band_balance() {
         use crate::piano_score::load_score;
 
@@ -977,8 +973,8 @@ mod tests {
         const HOP: usize = 16_384;
         let scale_shift = (23_952.0_f64 / 16_384.0_f64).log10() * 10.0;
 
-        let score = load_score(std::path::Path::new("/home/chip/Desktop/score.json"))
-            .expect("score.json must exist for this test");
+        let score = load_score(std::path::Path::new("/home/chip/Desktop/score.bhs"))
+            .expect("score.bhs must exist for this test");
 
         // Pre-schedule every command at its render frame.
         let mut pending: Vec<(usize, Command)> = score
