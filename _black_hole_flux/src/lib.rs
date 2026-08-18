@@ -98,7 +98,7 @@ pub use ray::Ray;
 
 pub use atom::Atom;
 pub use atom::NoBackoffAtom;
-pub use cell::{Cell, Primordium, Prokaryote};
+pub use cell::{Cell, Primordium};
 pub use twin::action::{LeftStack, RandStack, RightStack};
 pub use twin::Twin;
 
