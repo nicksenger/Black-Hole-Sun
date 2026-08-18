@@ -90,8 +90,8 @@ const MAX_PENDING_PHASES: usize = 4;
 #[cfg(feature = "piano")]
 const PIANO_SHADOW: Shadow = Shadow {
     color: Color::BLACK,
-    offset: Vector::new(0.0, -8.0),
-    blur_radius: 24.0,
+    offset: Vector::new(0.0, -24.0),
+    blur_radius: 8.0,
 };
 /// The subpanel overlay occupies the right third of the view, so the piano's
 /// shadow is cut off at two-thirds of its width: it shades the subpanel area
