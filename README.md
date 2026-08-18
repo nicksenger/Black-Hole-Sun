@@ -14,25 +14,5 @@ Each node in a `BlackHole::Sun` graph proceeds through 3 phases:
 2. Propagation 2: models' weights are again perturbed in the opposite direction
 3. Potentiation: the direction of the gradient is predicted from the prop1 and prop2 predictions and used to optimize the weights
 
-The process then starts over again from propagation 1. `black-hole-sun` orchestrates this across N models, so they can learn together to achieve a common goal.
-
-## Commands
-
-## Test
-
-NVIDIA:
-
-```bash
-cargo test -p black-hole-probe --features cuda,qwen35_0p8b --release -- --nocapture
-```
-
-Apple Silicon:
-
-```bash
-cargo test -p black-hole-probe --features metal,qwen35_0p8b --release -- --nocapture
-```
-
-```bash
-cargo test -p black-hole-probe beam_test --features metal,qwen35_0p8b --release -- --nocapture --ignored
-```
+The process then starts over again from propagation 1. `black-hole-sun` orchestrates this across N models, so they can work together to achieve their goals.
 
