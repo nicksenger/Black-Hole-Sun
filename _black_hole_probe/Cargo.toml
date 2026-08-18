@@ -1,5 +1,6 @@
 [package]
 name = "black-hole-probe"
+description = "Tests for black-hole-sun"
 version = "0.1.0"
 edition = "2021"
 
