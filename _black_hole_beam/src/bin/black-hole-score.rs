@@ -3,7 +3,7 @@
 //!
 //! `convert` writes the compact hand-editable `bhs-score-v1` text format
 //! (conventionally with a `.bhs` extension) accepted by
-//! [`BeamBuilder::score`](black_hole_beam::BeamBuilder::score). MIDI
+//! [`BeamBuilder::score_path`](black_hole_beam::BeamBuilder::score_path). MIDI
 //! note-on/note-off pairs become note pairs on a uniform tick grid:
 //! velocities stay integers in `0..=127`, and a note-off with velocity zero
 //! releases at the note's attack velocity. Notes still held at the end of the

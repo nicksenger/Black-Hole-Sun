@@ -186,6 +186,8 @@ pub struct BeamBuilder {
     piano_event_handler: Option<Arc<dyn Fn(PianoEvent) + Send + Sync>>,
     #[cfg(feature = "piano")]
     piano_score_path: Option<PathBuf>,
+    #[cfg(feature = "piano")]
+    piano_score_data: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy)]
@@ -208,6 +210,8 @@ impl Default for BeamBuilder {
             piano_event_handler: None,
             #[cfg(feature = "piano")]
             piano_score_path: None,
+            #[cfg(feature = "piano")]
+            piano_score_data: None,
         }
     }
 }
@@ -303,15 +307,27 @@ impl BeamBuilder {
         self
     }
 
-    /// Continuously loop a recorded piano performance.
+    /// Continuously loop a recorded piano performance from a file.
     ///
     /// The file is a `bhs-score-v1` text score (conventionally with a `.bhs`
     /// extension) described in [`score_text`]. Events are ordered by
     /// timestamp and sequence and are routed through the same audio,
+    /// visualization, and callback paths as live key presses. If both a path
+    /// and data are set via [`Self::score_data`], the path wins.
+    #[cfg(feature = "piano")]
+    pub fn score_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.piano_score_path = Some(path.into());
+        self
+    }
+
+    /// Continuously loop a recorded piano performance from in-memory bytes.
+    ///
+    /// `data` is a `bhs-score-v1` text score described in [`score_text`],
+    /// encoded as UTF-8. Events are routed through the same audio,
     /// visualization, and callback paths as live key presses.
     #[cfg(feature = "piano")]
-    pub fn score(mut self, path: impl Into<PathBuf>) -> Self {
-        self.piano_score_path = Some(path.into());
+    pub fn score_data(mut self, data: &[u8]) -> Self {
+        self.piano_score_data = Some(data.to_vec());
         self
     }
 
@@ -328,6 +344,8 @@ impl BeamBuilder {
             piano_event_handler: self.piano_event_handler,
             #[cfg(feature = "piano")]
             piano_score_path: self.piano_score_path,
+            #[cfg(feature = "piano")]
+            piano_score_data: self.piano_score_data,
         }
     }
 }
@@ -433,6 +451,8 @@ struct BeamConfig {
     piano_event_handler: Option<Arc<dyn Fn(PianoEvent) + Send + Sync>>,
     #[cfg(feature = "piano")]
     piano_score_path: Option<PathBuf>,
+    #[cfg(feature = "piano")]
+    piano_score_data: Option<Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -1416,12 +1436,19 @@ impl BeamApp {
             }
         };
         #[cfg(feature = "piano")]
-        let (piano_score, piano_score_error) = match config.piano_score_path.as_deref() {
-            Some(path) => match PianoScorePlayback::load(path, Instant::now()) {
+        let (piano_score, piano_score_error) = if let Some(path) = config.piano_score_path.as_deref()
+        {
+            match PianoScorePlayback::load(path, Instant::now()) {
                 Ok(score) => (Some(score), None),
                 Err(error) => (None, Some(error)),
-            },
-            None => (None, None),
+            }
+        } else if let Some(data) = config.piano_score_data.as_deref() {
+            match PianoScorePlayback::from_bytes(data, Instant::now()) {
+                Ok(score) => (Some(score), None),
+                Err(error) => (None, Some(error)),
+            }
+        } else {
+            (None, None)
         };
 
         (
@@ -2647,11 +2674,19 @@ mod tests {
     #[cfg(feature = "piano")]
     #[test]
     fn builder_records_a_score_path() {
-        let config = BeamBuilder::new().score("moonlight.bhs").into_config();
+        let config = BeamBuilder::new().score_path("moonlight.bhs").into_config();
         assert_eq!(
             config.piano_score_path,
             Some(PathBuf::from("moonlight.bhs"))
         );
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn builder_records_score_data() {
+        let data = b"format bhs-score-v1";
+        let config = BeamBuilder::new().score_data(data).into_config();
+        assert_eq!(config.piano_score_data.as_deref(), Some(data.as_slice()));
     }
 
     #[cfg(feature = "piano")]

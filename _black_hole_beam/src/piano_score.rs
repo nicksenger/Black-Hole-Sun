@@ -57,6 +57,12 @@ impl PianoScorePlayback {
         Ok(Self::from_loaded(load_score(path)?, started_at))
     }
 
+    pub(crate) fn from_bytes(bytes: &[u8], started_at: Instant) -> Result<Self, String> {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| format!("piano score is not valid UTF-8: {error}"))?;
+        Ok(Self::from_loaded(parse_score_text(text)?, started_at))
+    }
+
     #[cfg(test)]
     pub(crate) fn from_text(text: &str, started_at: Instant) -> Result<Self, String> {
         Ok(Self::from_loaded(parse_score_text(text)?, started_at))
