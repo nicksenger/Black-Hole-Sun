@@ -167,6 +167,11 @@ where
     ) -> layout::Node {
         // No padding is reserved for the shadow: it may spill outside the box
         // (upward over whatever sits above it), like a styled container's.
+        //
+        // The returned node *is* the content container's node. `draw`,
+        // `update`, `operate`, `overlay`, and `mouse_interaction` must
+        // therefore forward `layout` to the content as-is, never descending
+        // into it (the content descends one level itself).
         self.content.layout(&mut tree.children[0], renderer, limits)
     }
 
@@ -177,9 +182,11 @@ where
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
+        // `layout` is the content container's own node (see `layout`), so it
+        // is forwarded as-is rather than descended into.
         self.content.operate(
             &mut tree.children[0],
-            layout.children().next().unwrap(),
+            layout,
             renderer,
             operation,
         );
@@ -199,7 +206,7 @@ where
         self.content.update(
             &mut tree.children[0],
             event,
-            layout.children().next().unwrap(),
+            layout,
             cursor_position,
             renderer,
             clipboard,
@@ -218,7 +225,8 @@ where
         cursor_position: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let layout = layout.children().next().unwrap();
+        // `layout` is the content container's own node (see `layout`), so its
+        // bounds are the box's bounds and it is forwarded as-is.
         let bounds = layout.bounds();
 
         match self.cutoff {
@@ -275,7 +283,7 @@ where
     ) -> mouse::Interaction {
         self.content.mouse_interaction(
             &tree.children[0],
-            layout.children().next().unwrap(),
+            layout,
             cursor_position,
             viewport,
             renderer,
@@ -292,7 +300,7 @@ where
     ) -> Option<iced::advanced::overlay::Element<'b, Message, Theme, Renderer>> {
         self.content.overlay(
             &mut tree.children[0],
-            layout.children().next().unwrap(),
+            layout,
             renderer,
             viewport,
             translation,
