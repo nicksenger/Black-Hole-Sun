@@ -28,9 +28,9 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use black_hole_spec::{
-    DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, ObjectId,
-    MassErrorFeedbackConfig, MassIn, MassModelCapacity, MassModelConfig, MassModelParams,
-    MassOut, SequenceOutput, TunnelRequest,
+    DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry,
+    MassErrorFeedbackConfig, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut,
+    ObjectId, SequenceOutput, TunnelRequest,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -1480,11 +1480,7 @@ async fn handle_tunnel_tcp_request(
     }
 }
 
-async fn set_worker_connection(
-    token: Uuid,
-    connection: TunnelConnectionHandle,
-    ctx: &MassContext,
-) {
+async fn set_worker_connection(token: Uuid, connection: TunnelConnectionHandle, ctx: &MassContext) {
     let old_connection = ctx
         .worker_connections
         .write()
@@ -1651,9 +1647,7 @@ async fn handle_request(
             model_id,
             model_config,
         } => handle_start_routed(model_id, model_config, ctx).await,
-        MassIn::PerturbUp { model_id, seed } => {
-            handle_perturb_up_routed(model_id, seed, ctx).await
-        }
+        MassIn::PerturbUp { model_id, seed } => handle_perturb_up_routed(model_id, seed, ctx).await,
         MassIn::Infer { model_id, input_id } => handle_infer_routed(model_id, input_id, ctx).await,
         MassIn::Reset { model_id } => handle_reset_routed(model_id, ctx).await,
         MassIn::PerturbDown { model_id } => handle_perturb_down_routed(model_id, ctx).await,
@@ -1704,9 +1698,7 @@ async fn register_tunnel_worker(
                         connection: TunnelConnectionHandle::Quic(connection),
                     },
                 )),
-                MassOut::Error { message } => {
-                    Err(ServerError::TunnelRegistrationRejected(message))
-                }
+                MassOut::Error { message } => Err(ServerError::TunnelRegistrationRejected(message)),
                 _ => Err(ServerError::UnexpectedTunnelResponse(
                     "register tunnel response",
                 )),
@@ -1730,9 +1722,7 @@ async fn register_tunnel_worker(
                         connection: TunnelConnectionHandle::Tcp(TcpTunnelSession::new(stream)),
                     },
                 )),
-                MassOut::Error { message } => {
-                    Err(ServerError::TunnelRegistrationRejected(message))
-                }
+                MassOut::Error { message } => Err(ServerError::TunnelRegistrationRejected(message)),
                 _ => Err(ServerError::UnexpectedTunnelResponse(
                     "register tunnel response",
                 )),
@@ -1983,10 +1973,7 @@ async fn handle_tunnel_forward(
     }
 }
 
-async fn handle_tunnel_request_local(
-    request: TunnelRequest,
-    ctx: &MassContext,
-) -> Result<MassOut> {
+async fn handle_tunnel_request_local(request: TunnelRequest, ctx: &MassContext) -> Result<MassOut> {
     match request {
         TunnelRequest::Start {
             model_id,
@@ -2157,11 +2144,7 @@ async fn handle_start_distributed(
     Ok(MassOut::Ack)
 }
 
-async fn handle_perturb_up_routed(
-    model_id: Uuid,
-    seed: u64,
-    ctx: &MassContext,
-) -> Result<MassOut> {
+async fn handle_perturb_up_routed(model_id: Uuid, seed: u64, ctx: &MassContext) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
     handle_perturb_up_distributed(model_id, seed, ctx).await
 }
@@ -2321,6 +2304,7 @@ async fn handle_start(
     model_config: Option<MassModelConfig>,
     ctx: &MassContext,
 ) -> Result<MassOut> {
+    println!("STARTING A MODEL!");
     {
         let mut instances = ctx.instances.write().await;
         if let Some(limit) = ctx.max_instances {
@@ -3009,9 +2993,7 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &MassContext) -> 
 
     // Advance state.
     session.state = match state {
-        MassState::PostPerturbUp | MassState::AwaitingPerturbDown => {
-            MassState::AwaitingPerturbDown
-        }
+        MassState::PostPerturbUp | MassState::AwaitingPerturbDown => MassState::AwaitingPerturbDown,
         MassState::Idle | MassState::PostPerturbDown | MassState::AwaitingOptimize => {
             MassState::AwaitingOptimize
         }
@@ -3389,9 +3371,9 @@ mod tests {
         client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
         repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
         resolve_model_oscillation, select_start_target, to_engine_error_feedback,
-        FrozenOscillation, ModelRuntimeConfig, ModelSlot, MassContext, MassMode,
-        MassServerDefaults, MassSession, MassState, RouteTarget, ServerBuilder, TransportMode,
-        TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        FrozenOscillation, MassContext, MassMode, MassServerDefaults, MassSession, MassState,
+        ModelRuntimeConfig, ModelSlot, RouteTarget, ServerBuilder, TransportMode, TunnelWorker,
+        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig};
     use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};

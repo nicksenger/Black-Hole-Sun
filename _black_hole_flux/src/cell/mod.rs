@@ -114,7 +114,7 @@ pub struct InnerWithState<N, S>(
     PerturbDownWithBackoff<S>,
     While<HasPendingGradientStep<S>, InnerPropagationMicrostepWithState<N, S>>,
     Step<WaitForPotentiation_<S>>,
-    OptimizeWithBackoff<S>,
+    Step<Optimize_<S>>,
 );
 
 /// One propagation/infer/transmit microstep.
