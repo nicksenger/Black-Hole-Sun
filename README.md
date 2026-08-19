@@ -1,8 +1,8 @@
 # Black Hole Sun
 
-`black-hole-sun` is an extension of the [Jungle](https://github.com/nicksenger/Jungle) "workflow-as-type" (WAT) event-replay orchestration system that conducts blackbox co-optimization of interconnected artificial intelligence agents.
+`black-hole-sun` is an extension of the [Jungle](https://github.com/nicksenger/Jungle) "workflow-as-type" (WAT) orchestration system that conducts blackbox co-optimization of networked AI agents.
 
-It runs on a custom inference engine which supports several forward-only optimization methods for GGUF quantizations of the Qwen3.* architecture (e.g. Qwen3.8 27b, Qwen3-Next, etc).
+It runs on a custom inference engine which supports several forward-only optimization methods for GGUF quantizations of the Qwen3.* architecture (e.g. Qwen3.8 27b, Qwen3-Next, etc). It also has a UI with a piano that the [Man in the Box](https://github.com/nicksenger/Man-in-the-Box) ported over from one of my [first github projects](https://github.com/nicksenger/NanoMoog):
 
 https://github.com/user-attachments/assets/9c399800-04bb-4bc7-93fc-d2fa1a400b53
 
