@@ -2,7 +2,7 @@
 
 `black-hole-sun` is an extension of the [Jungle](https://github.com/nicksenger/Jungle) "workflow-as-type" (WAT) orchestration system that conducts blackbox co-optimization of networked AI agents.
 
-It runs on a custom inference engine which supports several forward-only optimization methods for GGUF quantizations of the Qwen3.* architecture (e.g. Qwen3.8 27b, Qwen3-Next, etc), and has a GUI monitoring tool with an optional piano ported over from one of my [first github projects](https://github.com/nicksenger/NanoMoog):
+It runs on a custom inference engine which supports several forward-only optimization methods for GGUF quantizations of the Qwen3.* architecture (e.g. Qwen3.8 27b, Qwen3-Next, etc), and has a GUI monitoring tool with an optional piano ported over from one of my [first programming projects](https://github.com/nicksenger/NanoMoog):
 
 https://github.com/user-attachments/assets/9c399800-04bb-4bc7-93fc-d2fa1a400b53
 
