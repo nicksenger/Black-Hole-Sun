@@ -11,8 +11,8 @@ use std::{
 };
 
 use paramecia_engine::{
-    ErrorFeedbackMode, ErrorFeedbackParams, HyperParameterUpdate, ModelEngine, ReplayParams,
-    TrainingConfig,
+    ErrorFeedbackMode, ErrorFeedbackParams, HyperParameterUpdate, ModelEngine, PerturbationMode,
+    ReplayParams, TrainingConfig,
 };
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
@@ -30,7 +30,7 @@ use uuid::Uuid;
 use black_hole_spec::{
     DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry,
     MassErrorFeedbackConfig, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut,
-    ObjectId, SequenceOutput, TunnelRequest,
+    MassPerturbationMode, ObjectId, SequenceOutput, TunnelRequest,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -742,6 +742,7 @@ struct ModelRuntimeConfig {
     training_z_loss: f64,
     training_lb_loss: f64,
     training_clip_threshold: f64,
+    training_perturbation_mode: MassPerturbationMode,
     training_error_feedback: MassErrorFeedbackConfig,
 }
 
@@ -865,6 +866,10 @@ impl MassServerDefaults {
             if let Some(training_clip_threshold) = model_config.training_clip_threshold {
                 resolved.training_config.clip_threshold = training_clip_threshold;
             }
+            if let Some(training_perturbation_mode) = model_config.training_perturbation_mode {
+                resolved.training_config.perturbation_mode =
+                    to_engine_perturbation_mode(training_perturbation_mode);
+            }
             if let Some(training_error_feedback) = model_config.training_error_feedback {
                 resolved.training_error_feedback = training_error_feedback;
             }
@@ -882,6 +887,20 @@ fn to_engine_error_feedback(config: MassErrorFeedbackConfig) -> ErrorFeedbackMod
         MassErrorFeedbackConfig::Replay { steps, decay, gain } => {
             ErrorFeedbackMode::Replay(ReplayParams { steps, decay, gain })
         }
+    }
+}
+
+fn to_engine_perturbation_mode(mode: MassPerturbationMode) -> PerturbationMode {
+    match mode {
+        MassPerturbationMode::Weight => PerturbationMode::Weight,
+        MassPerturbationMode::Activation => PerturbationMode::Activation,
+    }
+}
+
+fn to_mass_perturbation_mode(mode: PerturbationMode) -> MassPerturbationMode {
+    match mode {
+        PerturbationMode::Weight => MassPerturbationMode::Weight,
+        PerturbationMode::Activation => MassPerturbationMode::Activation,
     }
 }
 
@@ -1051,6 +1070,12 @@ impl ServerBuilder {
     /// Configure the default QuZO epsilon.
     pub fn training_epsilon(mut self, epsilon: f64) -> Self {
         self.defaults.training_config.epsilon = epsilon;
+        self
+    }
+
+    /// Configure the default QuZO perturbation direction mode.
+    pub fn training_perturbation_mode(mut self, mode: MassPerturbationMode) -> Self {
+        self.defaults.training_config.perturbation_mode = to_engine_perturbation_mode(mode);
         self
     }
 
@@ -2345,6 +2370,9 @@ async fn handle_start(
         training_z_loss: defaults.training_config.z_loss,
         training_lb_loss: defaults.training_config.lb_loss,
         training_clip_threshold: defaults.training_config.clip_threshold,
+        training_perturbation_mode: to_mass_perturbation_mode(
+            defaults.training_config.perturbation_mode,
+        ),
         training_error_feedback: defaults.training_error_feedback,
     };
     let error_feedback = defaults.training_error_feedback;
@@ -2372,6 +2400,7 @@ async fn handle_start(
         training_z_loss = runtime_config.training_z_loss,
         training_lb_loss = runtime_config.training_lb_loss,
         training_clip_threshold = runtime_config.training_clip_threshold,
+        training_perturbation_mode = ?runtime_config.training_perturbation_mode,
         training_error_feedback = ?runtime_config.training_error_feedback,
         frozen,
         has_tokenizer_override = tokenizer_path.is_some(),
@@ -2531,6 +2560,7 @@ fn build_model_params(
         training_z_loss: runtime_config.training_z_loss,
         training_lb_loss: runtime_config.training_lb_loss,
         training_clip_threshold: runtime_config.training_clip_threshold,
+        training_perturbation_mode: runtime_config.training_perturbation_mode,
         training_error_feedback: runtime_config.training_error_feedback,
         is_frozen: session.frozen,
         optimize_steps: session.optimize_steps,
@@ -3370,11 +3400,14 @@ mod tests {
         client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
         repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
         resolve_model_oscillation, select_start_target, to_engine_error_feedback,
+        to_engine_perturbation_mode, to_mass_perturbation_mode,
         FrozenOscillation, MassContext, MassMode, MassServerDefaults, MassSession, MassState,
         ModelRuntimeConfig, ModelSlot, RouteTarget, ServerBuilder, TransportMode, TunnelWorker,
         DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
-    use black_hole_spec::{MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig};
+    use black_hole_spec::{
+        MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig, MassPerturbationMode,
+    };
     use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
     use tokio::sync::{Mutex, RwLock};
 
@@ -3393,6 +3426,10 @@ mod tests {
         assert_eq!(
             resolved.training_config.epsilon,
             defaults.training_config.epsilon
+        );
+        assert_eq!(
+            resolved.training_config.perturbation_mode,
+            defaults.training_config.perturbation_mode
         );
         assert_eq!(
             resolved.training_error_feedback,
@@ -3415,6 +3452,7 @@ mod tests {
             training_z_loss: Some(0.12),
             training_lb_loss: Some(0.24),
             training_clip_threshold: Some(0.5),
+            training_perturbation_mode: Some(MassPerturbationMode::Activation),
             training_error_feedback: Some(MassErrorFeedbackConfig::Persistent {
                 decay: 0.8,
                 gain: 0.6,
@@ -3438,6 +3476,10 @@ mod tests {
         assert_eq!(resolved.training_config.z_loss, 0.12);
         assert_eq!(resolved.training_config.lb_loss, 0.24);
         assert_eq!(resolved.training_config.clip_threshold, 0.5);
+        assert_eq!(
+            resolved.training_config.perturbation_mode,
+            paramecia_engine::PerturbationMode::Activation
+        );
         assert_eq!(
             resolved.training_error_feedback,
             MassErrorFeedbackConfig::Persistent {
@@ -3591,6 +3633,7 @@ mod tests {
             training_z_loss: 0.005,
             training_lb_loss: 0.015,
             training_clip_threshold: 1.25,
+            training_perturbation_mode: MassPerturbationMode::Activation,
             training_error_feedback: MassErrorFeedbackConfig::Replay {
                 steps: 64,
                 decay: 0.88,
@@ -3622,6 +3665,7 @@ mod tests {
         assert_eq!(first.training_z_loss, 0.005);
         assert_eq!(first.training_lb_loss, 0.015);
         assert_eq!(first.training_clip_threshold, 1.25);
+        assert_eq!(first.training_perturbation_mode, MassPerturbationMode::Activation);
         assert_eq!(
             first.training_error_feedback,
             MassErrorFeedbackConfig::Replay {
@@ -3661,6 +3705,26 @@ mod tests {
             }),
             paramecia_engine::ErrorFeedbackMode::Replay(_)
         ));
+    }
+
+    #[test]
+    fn mass_perturbation_mode_maps_to_engine_modes() {
+        assert_eq!(
+            to_engine_perturbation_mode(MassPerturbationMode::Weight),
+            paramecia_engine::PerturbationMode::Weight
+        );
+        assert_eq!(
+            to_engine_perturbation_mode(MassPerturbationMode::Activation),
+            paramecia_engine::PerturbationMode::Activation
+        );
+        assert_eq!(
+            to_mass_perturbation_mode(paramecia_engine::PerturbationMode::Weight),
+            MassPerturbationMode::Weight
+        );
+        assert_eq!(
+            to_mass_perturbation_mode(paramecia_engine::PerturbationMode::Activation),
+            MassPerturbationMode::Activation
+        );
     }
 
     #[test]

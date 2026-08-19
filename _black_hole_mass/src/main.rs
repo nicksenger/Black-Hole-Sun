@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Once, time::Duration};
 
+use black_hole_spec::MassPerturbationMode;
 use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
@@ -56,6 +57,9 @@ struct Opt {
     /// Default QuZO epsilon for model instances
     #[clap(long = "training-epsilon")]
     training_epsilon: Option<f64>,
+    /// Default QuZO perturbation direction mode for model instances
+    #[clap(long = "training-perturbation-mode", value_parser = ["weight", "activation"])]
+    training_perturbation_mode: Option<String>,
     /// Optional root mass endpoint to register with as a tunnel worker
     #[clap(long = "tunnel")]
     tunnel: Option<SocketAddr>,
@@ -112,6 +116,14 @@ impl From<Opt> for black_hole_mass::ServerBuilder {
         }
         if let Some(epsilon) = opt.training_epsilon {
             builder = builder.training_epsilon(epsilon);
+        }
+        if let Some(mode) = opt.training_perturbation_mode {
+            let mode = match mode.as_str() {
+                "weight" => MassPerturbationMode::Weight,
+                "activation" => MassPerturbationMode::Activation,
+                _ => unreachable!("clap validates perturbation mode values"),
+            };
+            builder = builder.training_perturbation_mode(mode);
         }
         if let Some(tunnel) = opt.tunnel {
             builder = builder.tunnel(tunnel);

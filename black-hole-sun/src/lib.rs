@@ -37,7 +37,7 @@ pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
     InferenceRequest, LogitEntry, ObjectId, Potentiation, MassErrorFeedbackConfig,
     MassErrorFeedbackMode, MassIn, MassModelCapacity, MassModelConfig, MassModelParams,
-    MassOut, SequenceOutput, Transmission,
+    MassOut, MassPerturbationMode, SequenceOutput, Transmission,
 };
 
 // Convenience re-exports — void types

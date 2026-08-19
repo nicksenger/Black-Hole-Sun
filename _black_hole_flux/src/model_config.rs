@@ -1,7 +1,8 @@
 //! Model configuration traits for per-instance mass start settings.
 
 use black_hole_spec::{
-    ObjectId, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassModelConfig,
+    MassErrorFeedbackConfig, MassErrorFeedbackMode, MassModelConfig, MassPerturbationMode,
+    ObjectId,
 };
 
 /// Compile-time oscillation schedule for train/freeze windows.
@@ -76,6 +77,10 @@ pub trait ModelConfig {
     const TRAINING_Z_LOSS: Option<f64> = None;
     const TRAINING_LB_LOSS: Option<f64> = None;
     const TRAINING_CLIP_THRESHOLD: Option<f64> = None;
+    /// Optional QuZO perturbation direction mode (`Weight` or `Activation`).
+    ///
+    /// Leave as `None` to fall back to the mass server default.
+    const TRAINING_PERTURBATION_MODE: Option<MassPerturbationMode> = None;
     const FROZEN: Option<bool> = None;
     const CHECKPOINT: Option<u128> = None;
 
@@ -92,6 +97,7 @@ pub trait ModelConfig {
             training_z_loss: Self::TRAINING_Z_LOSS,
             training_lb_loss: Self::TRAINING_LB_LOSS,
             training_clip_threshold: Self::TRAINING_CLIP_THRESHOLD,
+            training_perturbation_mode: Self::TRAINING_PERTURBATION_MODE,
             training_error_feedback:
                 <Self::ErrorFeedback as ErrorFeedbackPolicy>::mass_error_feedback(),
             frozen: Self::FROZEN,
@@ -113,6 +119,7 @@ pub trait ModelConfig {
             || config.training_z_loss.is_some()
             || config.training_lb_loss.is_some()
             || config.training_clip_threshold.is_some()
+            || config.training_perturbation_mode.is_some()
             || config.training_error_feedback.is_some()
             || config.frozen.is_some()
             || config.oscillation_period_steps.is_some()
@@ -139,7 +146,9 @@ impl ModelConfig for DefaultConfig {
 #[cfg(test)]
 mod tests {
     use super::{ErrorFeedbackPolicy, ModelConfig, OscillationSchedule};
-    use black_hole_spec::{MassErrorFeedbackConfig, MassErrorFeedbackMode};
+    use black_hole_spec::{
+        MassErrorFeedbackConfig, MassErrorFeedbackMode, MassPerturbationMode,
+    };
 
     struct FrozenConfig;
     impl ModelConfig for FrozenConfig {
@@ -162,6 +171,14 @@ mod tests {
         const TRAINING_Z_LOSS: Option<f64> = Some(0.02);
         const TRAINING_LB_LOSS: Option<f64> = Some(0.03);
         const TRAINING_CLIP_THRESHOLD: Option<f64> = Some(1.5);
+    }
+
+    struct PerturbationModeConfig;
+    impl ModelConfig for PerturbationModeConfig {
+        type Oscillation = super::NoOscillation;
+        type ErrorFeedback = super::NoErrorFeedback;
+        const TRAINING_PERTURBATION_MODE: Option<MassPerturbationMode> =
+            Some(MassPerturbationMode::Activation);
     }
 
     struct WindowedOscillation;
@@ -219,6 +236,12 @@ mod tests {
         assert_eq!(config.training_z_loss, Some(0.02));
         assert_eq!(config.training_lb_loss, Some(0.03));
         assert_eq!(config.training_clip_threshold, Some(1.5));
+    }
+
+    #[test]
+    fn perturbation_mode_override_emits_model_config() {
+        let config = PerturbationModeConfig::mass_model_config().expect("expected override config");
+        assert_eq!(config.training_perturbation_mode, Some(MassPerturbationMode::Activation));
     }
 
     #[test]

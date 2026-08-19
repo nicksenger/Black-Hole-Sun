@@ -106,6 +106,7 @@ pub struct MassModelParams {
     pub training_z_loss: f64,
     pub training_lb_loss: f64,
     pub training_clip_threshold: f64,
+    pub training_perturbation_mode: MassPerturbationMode,
     pub training_error_feedback: MassErrorFeedbackConfig,
     pub is_frozen: bool,
     pub optimize_steps: u32,
@@ -140,6 +141,16 @@ pub enum MassErrorFeedbackConfig {
     Off,
     Persistent { decay: f64, gain: f64 },
     Replay { steps: u32, decay: f64, gain: f64 },
+}
+
+/// QuZO perturbation direction mode selector.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MassPerturbationMode {
+    /// Sample perturbations in the full weight space (default).
+    #[default]
+    Weight,
+    /// Sample factored activation-space directions for linear weights.
+    Activation,
 }
 
 /// Forwardable model operation used for root->worker tunnel requests.
@@ -195,6 +206,10 @@ pub struct MassModelConfig {
     pub training_z_loss: Option<f64>,
     pub training_lb_loss: Option<f64>,
     pub training_clip_threshold: Option<f64>,
+    /// Optional QuZO perturbation direction mode for this instance.
+    ///
+    /// When `None`, mass uses its configured server default.
+    pub training_perturbation_mode: Option<MassPerturbationMode>,
     pub training_error_feedback: Option<MassErrorFeedbackConfig>,
     pub frozen: Option<bool>,
     /// Optional optimize-step period for train/freeze oscillation scheduling.
