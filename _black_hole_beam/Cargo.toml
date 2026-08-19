@@ -19,6 +19,7 @@ iced-sugiyama = { git = "https://github.com/nicksenger/iced-sugiyama.git", branc
 jungle-sdk = { workspace = true }
 jungle-vision = { workspace = true }
 postcard = "1"
+rand = "0.10"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 typenum = "1"

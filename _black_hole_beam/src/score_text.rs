@@ -30,6 +30,9 @@
 
 use std::time::Duration;
 
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
+
 use crate::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
 
 /// The format name expected on the first structural line of a score file.
@@ -41,6 +44,8 @@ pub const FIRST_MIDI_NOTE: u8 = 21;
 pub const LAST_MIDI_NOTE: u8 = 108;
 /// The highest velocity a score may contain.
 pub const MAX_VELOCITY: u8 = 127;
+/// The longest a mutated or inserted note may be held, in seconds.
+pub const MAX_MUTATED_DURATION_SECS: u64 = 5;
 
 const TITLE_COMMENT: &str = "; black-hole-beam piano score";
 const LEGEND_COMMENT: &str = "; start duration note velocity [release_velocity]";
@@ -264,6 +269,15 @@ impl BhsScore {
         );
     }
 
+    /// Consume the score and wrap it with a fresh entropy-seeded RNG for
+    /// random mutation; see [`MutantScore`].
+    pub fn into_mutant(self) -> MutantScore {
+        MutantScore {
+            inner: self,
+            rng: StdRng::seed_from_u64(rand::random()),
+        }
+    }
+
     /// The note pairs in canonical order: start tick, then note, then velocity.
     pub fn sorted_pairs(&self) -> Vec<&ScoreNotePair> {
         let mut sorted: Vec<&ScoreNotePair> = self.pairs.iter().map(|a| &a.pair).collect();
@@ -284,6 +298,22 @@ impl BhsScore {
     /// release tick when the header is absent.
     pub fn effective_loop_ticks(&self) -> u64 {
         self.loop_ticks.unwrap_or_else(|| self.last_release_tick())
+    }
+
+    /// Transpose the score by `semitones`, moving it into a new key: every
+    /// note shifts by that many semitones (positive up, negative down).
+    /// Notes that would leave the 88-key range are clamped to
+    /// [`FIRST_MIDI_NOTE`] or [`LAST_MIDI_NOTE`]; timing, durations, and
+    /// velocities are untouched.
+    pub fn transpose(&mut self, semitones: i32) {
+        if semitones == 0 {
+            return;
+        }
+        for annotated in &mut self.pairs {
+            let shifted = i32::from(annotated.pair.midi_note).saturating_add(semitones);
+            annotated.pair.midi_note =
+                shifted.clamp(i32::from(FIRST_MIDI_NOTE), i32::from(LAST_MIDI_NOTE)) as u8;
+        }
     }
 
     /// Expand the pairs into score events, ready for playback: attacks and
@@ -505,6 +535,148 @@ impl BhsScore {
         annotated.sort_by(|(a, _), (b, _)| canonical_pair_order(a, b));
         annotated
     }
+}
+
+/// A score paired with the RNG that draws its mutations.
+///
+/// Obtain one by consuming a [`BhsScore`] via [`BhsScore::into_mutant`], or
+/// construct it directly with a seeded generator (any [`RngExt`]) for
+/// deterministic mutations. Pairs may no longer be in canonical order after
+/// mutation; re-emitting via [`BhsScore::format`] normalizes them.
+pub struct MutantScore<R = StdRng> {
+    /// The score being mutated.
+    pub inner: BhsScore,
+    /// The generator drawing the mutations.
+    pub rng: R,
+}
+
+impl<R: RngExt> MutantScore<R> {
+    /// Keep at most the first `len` pairs in file order, dropping the rest,
+    /// and clear any explicit loop length so the score loops at the last
+    /// release of what remains.
+    pub fn truncate_pairs(&mut self, len: usize) {
+        self.inner.pairs.truncate(len);
+        self.inner.loop_ticks = None;
+    }
+
+    /// Mutate the score in place by an amount proportional to `noise`, a
+    /// normalized scalar in `0.0..=1.0`.
+    ///
+    /// Applies `M = (pairs.len() as f32 * noise) as usize` mutations, each a
+    /// uniform draw from [`MutantScore::delete_random_pair`],
+    /// [`MutantScore::substitute_random_pair`], and
+    /// [`MutantScore::insert_after_random_pair`]. Mutation stops early once
+    /// the score is empty; returns the number of mutations applied.
+    pub fn mutate(&mut self, noise: f32) -> usize {
+        let mutations = (self.inner.pairs.len() as f32 * noise.clamp(0.0, 1.0)) as usize;
+        let mut applied = 0;
+        for _ in 0..mutations {
+            if self.inner.pairs.is_empty() {
+                // Nothing left to mutate (an empty score is not a valid
+                // bhs-score-v1 document anyway).
+                break;
+            }
+            match self.rng.random_range(0..3) {
+                0 => {
+                    self.delete_random_pair();
+                }
+                1 => {
+                    self.substitute_random_pair();
+                }
+                _ => {
+                    self.insert_after_random_pair();
+                }
+            };
+            applied += 1;
+        }
+        applied
+    }
+
+    /// Remove a random pair from the score and return it. Returns `None`
+    /// without mutating if the score has no pairs.
+    pub fn delete_random_pair(&mut self) -> Option<ScoreNotePair> {
+        if self.inner.pairs.is_empty() {
+            return None;
+        }
+        let index = self.rng.random_range(0..self.inner.pairs.len());
+        Some(self.inner.pairs.remove(index).pair)
+    }
+
+    /// Give a random pair a new random 88-key note, a random duration between
+    /// 0 and [`MAX_MUTATED_DURATION_SECS`] seconds, and a random velocity,
+    /// keeping its start tick and release velocity. Returns the previous
+    /// values; `None` without mutating if the score has no pairs.
+    pub fn substitute_random_pair(&mut self) -> Option<ScoreNotePair> {
+        if self.inner.pairs.is_empty() {
+            return None;
+        }
+        let index = self.rng.random_range(0..self.inner.pairs.len());
+        let previous = self.inner.pairs[index].pair;
+        let pair = &mut self.inner.pairs[index].pair;
+        pair.midi_note = random_note(&mut self.rng);
+        pair.duration_ticks = random_duration_ticks(&mut self.rng, self.inner.ticks_per_second);
+        pair.velocity = random_velocity(&mut self.rng);
+        Some(previous)
+    }
+
+    /// Insert a new pair immediately after a random existing pair and return
+    /// the new pair's index in file order. The new pair starts at a random
+    /// tick between the picked pair's start tick and the following pair's
+    /// start tick (or the end of the loop for the last pair), with a random
+    /// note, a random duration between 0 and [`MAX_MUTATED_DURATION_SECS`]
+    /// seconds, and a random velocity. It carries no comments; returns `None`
+    /// without mutating if the score has no pairs.
+    pub fn insert_after_random_pair(&mut self) -> Option<usize> {
+        if self.inner.pairs.is_empty() {
+            return None;
+        }
+        let index = self.rng.random_range(0..self.inner.pairs.len());
+        // The following pair in file order bounds the window; for a score
+        // that is still in canonical (start-tick) order that is the picked
+        // pair's temporal successor. The last pair's window runs to the end
+        // of the loop.
+        let chosen = self.inner.pairs[index].pair;
+        let window_end = self
+            .inner
+            .pairs
+            .get(index + 1)
+            .map(|next| next.pair.start_tick)
+            .unwrap_or_else(|| self.inner.effective_loop_ticks())
+            .max(chosen.start_tick);
+        let pair = ScoreNotePair {
+            start_tick: self.rng.random_range(chosen.start_tick..=window_end),
+            duration_ticks: random_duration_ticks(&mut self.rng, self.inner.ticks_per_second),
+            midi_note: random_note(&mut self.rng),
+            velocity: random_velocity(&mut self.rng),
+            release_velocity: None,
+        };
+        let inserted_at = index + 1;
+        self.inner.pairs.insert(
+            inserted_at,
+            AnnotatedPair {
+                pair,
+                comments: Vec::new(),
+            },
+        );
+        Some(inserted_at)
+    }
+}
+
+/// A random 88-key MIDI note.
+fn random_note(rng: &mut impl RngExt) -> u8 {
+    rng.random_range(FIRST_MIDI_NOTE..=LAST_MIDI_NOTE)
+}
+
+/// A random velocity in `0..=MAX_VELOCITY`.
+fn random_velocity(rng: &mut impl RngExt) -> u8 {
+    rng.random_range(0..=MAX_VELOCITY)
+}
+
+/// A random duration between 0 and [`MAX_MUTATED_DURATION_SECS`] seconds,
+/// kept at least one tick so the pair stays a valid note.
+fn random_duration_ticks(rng: &mut impl RngExt, ticks_per_second: u64) -> u64 {
+    let max_ticks = MAX_MUTATED_DURATION_SECS.saturating_mul(ticks_per_second);
+    rng.random_range(1..=max_ticks.max(1))
 }
 
 /// Split a line at its first `;` into content and trailing comment.
@@ -729,6 +901,7 @@ fn action_rank(action: &PianoAction) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
 
     const SCORE: &str = "\
 ; written by hand
@@ -972,6 +1145,144 @@ loop_ticks 500
                 format!("{}{}", expected.name(), expected.octave())
             );
         }
+    }
+
+    fn fixture_mutant(seed: u64) -> MutantScore {
+        let inner = BhsScore::parse(SCORE).expect("the fixture should parse");
+        MutantScore {
+            inner,
+            rng: StdRng::seed_from_u64(seed),
+        }
+    }
+
+    #[test]
+    fn truncating_pairs_clears_the_loop_length() {
+        let mut mutant = fixture_mutant(0);
+        assert_eq!(mutant.inner.loop_ticks, Some(7680));
+        mutant.truncate_pairs(2);
+        assert_eq!(mutant.inner.pairs().count(), 2);
+        assert_eq!(mutant.inner.loop_ticks, None);
+        // The loop now falls back to the last release of the remaining pairs.
+        assert_eq!(mutant.inner.effective_loop_ticks(), 960);
+
+        // Truncating past the end keeps every pair but still clears the loop.
+        let mut mutant = fixture_mutant(0);
+        mutant.truncate_pairs(100);
+        assert_eq!(mutant.inner.pairs().count(), 5);
+        assert_eq!(mutant.inner.loop_ticks, None);
+    }
+
+    #[test]
+    fn transpose_shifts_notes_and_clamps_to_the_88_key_range() {
+        let mut score = BhsScore::parse(SCORE).expect("the fixture should parse");
+        // The fixture's notes, in file order: C4 A2 E4 F#4 Gb4.
+        let before: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        score.transpose(2);
+        let after: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(
+            after.iter().map(|pair| pair.midi_note).collect::<Vec<_>>(),
+            vec![62, 47, 66, 68, 68]
+        );
+        // Only the notes move; timing and velocities are untouched.
+        for (old, new) in before.iter().zip(&after) {
+            assert_eq!(new.start_tick, old.start_tick);
+            assert_eq!(new.duration_ticks, old.duration_ticks);
+            assert_eq!(new.velocity, old.velocity);
+            assert_eq!(new.release_velocity, old.release_velocity);
+        }
+
+        // Zero is a no-op.
+        let mut score = BhsScore::parse(SCORE).expect("the fixture should parse");
+        let before: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        score.transpose(0);
+        assert_eq!(score.pairs().copied().collect::<Vec<_>>(), before);
+
+        // Large shifts clamp to the 88-key range instead of overflowing.
+        let mut score = BhsScore::parse(SCORE).expect("the fixture should parse");
+        score.transpose(-1000);
+        assert!(score.pairs().all(|pair| pair.midi_note == FIRST_MIDI_NOTE));
+        let mut score = BhsScore::parse(SCORE).expect("the fixture should parse");
+        score.transpose(1000);
+        assert!(score.pairs().all(|pair| pair.midi_note == LAST_MIDI_NOTE));
+    }
+
+    #[test]
+    fn zero_noise_leaves_score_untouched() {
+        let mut mutant = BhsScore::parse(SCORE)
+            .expect("the fixture should parse")
+            .into_mutant();
+        let before: Vec<ScoreNotePair> = mutant.inner.pairs().copied().collect();
+        assert_eq!(mutant.mutate(0.0), 0);
+        let after: Vec<ScoreNotePair> = mutant.inner.pairs().copied().collect();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn mutation_primitives_keep_pairs_valid() {
+        // Deletion removes exactly one pair.
+        let mut mutant = fixture_mutant(2);
+        let before = mutant.inner.pairs().count();
+        let removed = mutant.delete_random_pair().expect("a pair should be removed");
+        assert_eq!(mutant.inner.pairs().count(), before - 1);
+        assert!((FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(&removed.midi_note));
+
+        // Substitution keeps the pair count, start ticks, and release
+        // velocities while rewriting note, duration, and velocity.
+        let mut mutant = fixture_mutant(2);
+        let before: Vec<ScoreNotePair> = mutant.inner.pairs().copied().collect();
+        mutant.substitute_random_pair().expect("a pair should be substituted");
+        let after: Vec<ScoreNotePair> = mutant.inner.pairs().copied().collect();
+        assert_eq!(after.len(), before.len());
+        for (old, new) in before.iter().zip(&after) {
+            assert_eq!(new.start_tick, old.start_tick);
+            assert_eq!(new.release_velocity, old.release_velocity);
+            assert!((FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(&new.midi_note));
+            assert!(new.duration_ticks >= 1);
+            assert!(new.velocity <= MAX_VELOCITY);
+        }
+
+        // Insertion adds exactly one valid pair at the reported index.
+        let mut mutant = fixture_mutant(2);
+        let before = mutant.inner.pairs().count();
+        let inserted_at =
+            mutant.insert_after_random_pair().expect("a pair should be inserted");
+        assert_eq!(mutant.inner.pairs().count(), before + 1);
+        let inserted = *mutant
+            .inner
+            .pairs()
+            .nth(inserted_at)
+            .expect("the inserted pair should exist");
+        assert!((FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(&inserted.midi_note));
+        assert!(inserted.duration_ticks >= 1);
+        assert!(inserted.velocity <= MAX_VELOCITY);
+        assert_eq!(inserted.release_velocity, None);
+    }
+
+    #[test]
+    fn heavy_noise_keeps_score_valid() {
+        let mut mutant = fixture_mutant(3);
+        mutant.mutate(1.0);
+        for pair in mutant.inner.pairs() {
+            assert!((FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(&pair.midi_note));
+            assert!(pair.duration_ticks >= 1);
+            assert!(pair.velocity <= MAX_VELOCITY);
+        }
+        // The mutated document still round-trips through the text format.
+        let reemitted = BhsScore::parse(&mutant.inner.format())
+            .expect("mutated score should re-parse");
+        assert_eq!(reemitted.pairs().count(), mutant.inner.pairs().count());
+    }
+
+    #[test]
+    fn mutations_on_an_empty_score_are_no_ops() {
+        let mut mutant = MutantScore {
+            inner: BhsScore::new(960, None, None, Vec::new()),
+            rng: StdRng::seed_from_u64(4),
+        };
+        assert!(mutant.delete_random_pair().is_none());
+        assert!(mutant.substitute_random_pair().is_none());
+        assert!(mutant.insert_after_random_pair().is_none());
+        assert_eq!(mutant.mutate(1.0), 0);
     }
 
     #[test]
