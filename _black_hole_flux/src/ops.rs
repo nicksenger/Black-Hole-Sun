@@ -337,24 +337,18 @@ pub trait SunOps: Send + Sync {
         A::Seed: Sync + Send;
 
     /// Observe one spawned animal by journey id and decode its typed appearance.
-    async fn observe_animal<A>(&self, journey_id: uuid::Uuid) -> Result<A::Appearance, String>
+    async fn observe_animal<Ap>(&self, journey_id: uuid::Uuid) -> Result<Ap, String>
     where
-        A: jungle_sdk::Animal + jungle_sdk::Observe,
-        A::Id: jungle_sdk::AnimalIdValue,
-        A::Generation: typosaurus::num::Unsigned,
-        A::Appearance: DeserializeOwned + Send;
+        Ap: DeserializeOwned + Send;
 
     /// Perturb one spawned animal by journey id with a typed stimulus payload.
-    async fn perturb_animal<A>(
+    async fn perturb_animal<S>(
         &self,
         journey_id: uuid::Uuid,
-        stimulus: &A::Stimulus,
+        stimulus: &S,
     ) -> Result<(), String>
     where
-        A: jungle_sdk::Animal + jungle_sdk::Perturb,
-        A::Id: jungle_sdk::AnimalIdValue,
-        A::Generation: typosaurus::num::Unsigned,
-        A::Stimulus: Serialize + Sync + Send;
+        S: Serialize + Sync + Send;
 }
 
 #[cfg(test)]
