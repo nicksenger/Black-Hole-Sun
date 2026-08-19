@@ -35,7 +35,8 @@ use iced::{
 };
 use iced_sugiyama::motion::easing::Easing;
 use iced_sugiyama::{
-    circo_layout, AutoFit, Cluster, EdgeEndpointKind, Graph, LayoutInput, Sugiyama,
+    circo_layout, microdot_layout, AutoFit, Cluster, EdgeEndpointKind, Graph, LayoutInput,
+    Sugiyama,
 };
 use jungle_sdk::{Animal, AnimalIdValue, JourneyAstSource, JungleClient, Observe};
 use jungle_vision::{
@@ -197,7 +198,7 @@ pub struct BeamBuilder {
 #[derive(Clone, Copy)]
 enum BeamLayout {
     Circo,
-    Dot,
+    Microdot,
 }
 
 impl Default for BeamBuilder {
@@ -259,9 +260,9 @@ impl BeamBuilder {
         self
     }
 
-    /// Use iced-sugiyama's default layout (`dot`) for node placement.
-    pub fn dot_layout(mut self) -> Self {
-        self.layout = BeamLayout::Dot;
+    /// Use iced-sugiyama's microdot layout for node placement.
+    pub fn microdot_layout(mut self) -> Self {
+        self.layout = BeamLayout::Microdot;
         self
     }
 
@@ -2026,7 +2027,7 @@ impl BeamApp {
 
     fn cell_graph(&self) -> Element<'_, Message> {
         let mut layout_graph = self.model.graph.clone();
-        //if matches!(self.config.layout, BeamLayout::Dot) {
+        //if matches!(self.config.layout, BeamLayout::Microdot) {
         // Match the spacing used by iced-sugiyama's "moar" example.
         layout_graph.config.vertex_spacing = DOT_VERTEX_SPACING;
         //}
@@ -2130,6 +2131,8 @@ impl BeamApp {
                 };
                 circo_layout(&remapped_input)
             });
+        } else if matches!(self.config.layout, BeamLayout::Microdot) {
+            graph = graph.layout_fn(microdot_layout);
         }
 
         graph = graph
@@ -2559,8 +2562,8 @@ mod tests {
         assert_eq!(BeamBuilder::default().title, "Black Hole Sun");
         assert!(matches!(BeamBuilder::default().layout, BeamLayout::Circo));
         assert!(matches!(
-            BeamBuilder::new().dot_layout().layout,
-            BeamLayout::Dot
+            BeamBuilder::new().microdot_layout().layout,
+            BeamLayout::Microdot
         ));
         let p1_step1 = node_style_colors(SunNodeState::Propagation1, 1, 4, None).body;
         let p1_step4 = node_style_colors(SunNodeState::Propagation1, 4, 4, None).body;

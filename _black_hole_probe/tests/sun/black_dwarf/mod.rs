@@ -182,7 +182,7 @@ pub(crate) fn run_beam_black_dwarf() {
     });
 
     black_hole_beam::BeamBuilder::new()
-        .dot_layout()
+        .microdot_layout()
         .view_live::<BlackDwarfBlackHole>(client, journey_id)
         .expect("Black Hole Beam should run");
 }

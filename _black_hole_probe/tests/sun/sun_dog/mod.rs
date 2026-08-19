@@ -171,7 +171,7 @@ pub(crate) fn run_beam() {
     });
 
     black_hole_beam::BeamBuilder::new()
-        .dot_layout()
+        .microdot_layout()
         .view_live::<ExpandedBlackHoleAnimal>(client, journey_id)
         .expect("Black Hole Beam should run");
 }
