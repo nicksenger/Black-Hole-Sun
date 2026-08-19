@@ -1414,7 +1414,7 @@ struct BeamApp {
 
 impl BeamApp {
     fn new(
-        config: BeamConfig,
+        #[allow(unused_mut)] mut config: BeamConfig,
         model: BeamModel,
         live: Option<LiveConfig>,
     ) -> (Self, Task<Message>) {
