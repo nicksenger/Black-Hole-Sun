@@ -49,10 +49,14 @@ fn loaded_from_document(document: &BhsScore) -> Result<LoadedPianoScore, String>
     let loop_duration =
         score_text::ticks_to_duration(document.effective_loop_ticks(), document.ticks_per_second);
     if loop_duration.is_zero() {
-        return Err("the inferred loop duration is zero; add a later event or loop_duration"
-            .to_string());
+        return Err(
+            "the inferred loop duration is zero; add a later event or loop_duration".to_string(),
+        );
     }
-    Ok(LoadedPianoScore { events, loop_duration })
+    Ok(LoadedPianoScore {
+        events,
+        loop_duration,
+    })
 }
 
 impl PianoScorePlayback {
@@ -141,7 +145,10 @@ loop_ticks 1200
         assert_eq!(score.take_due(start + Duration::from_millis(500)).len(), 0);
         let release = score.take_due(start + Duration::from_millis(625));
         assert_eq!(release.len(), 1);
-        assert!(matches!(release[0].event.action, PianoAction::Release { .. }));
+        assert!(matches!(
+            release[0].event.action,
+            PianoAction::Release { .. }
+        ));
 
         // The loop_ticks header (1200 ticks = 1.25s) closes the cycle with
         // tail silence before the next attack.
@@ -165,7 +172,10 @@ loop_ticks 1200
         assert_eq!(first[0].event.note.midi_note, 62);
         let release = playback.take_due(start + Duration::from_millis(625));
         assert_eq!(release.len(), 1);
-        assert!(matches!(release[0].event.action, PianoAction::Release { .. }));
+        assert!(matches!(
+            release[0].event.action,
+            PianoAction::Release { .. }
+        ));
 
         // The loop_ticks header (1200 ticks = 1.25s) closes the cycle.
         let wrapped = playback.take_due(start + Duration::from_millis(1_250));
@@ -191,20 +201,14 @@ ticks_per_second 960
         let first = playback.take_due(start);
         assert_eq!(first.len(), 2);
         assert_eq!(first[0].event.note.midi_note, 60);
-        assert!(matches!(
-            first[0].event.action,
-            PianoAction::Attack { .. }
-        ));
+        assert!(matches!(first[0].event.action, PianoAction::Attack { .. }));
         assert_eq!(first[1].event.note.midi_note, 64);
 
         // At tick 480 (0.5s) only the shorter pair's release is due.
         let mid = playback.take_due(start + Duration::from_millis(500));
         assert_eq!(mid.len(), 1);
         assert_eq!(mid[0].event.note.midi_note, 60);
-        assert!(matches!(
-            mid[0].event.action,
-            PianoAction::Release { .. }
-        ));
+        assert!(matches!(mid[0].event.action, PianoAction::Release { .. }));
 
         // At tick 960 (1.0s) the E4 release closes cycle 0 and both attacks
         // of cycle 1 are due at the same instant; the cyclic walk keeps the

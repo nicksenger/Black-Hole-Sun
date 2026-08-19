@@ -1217,7 +1217,10 @@ loop_ticks 500
         let score = BhsScore::parse(SCORE).expect("the fixture should parse");
         let shifted = score.transposed(2);
         assert_eq!(
-            shifted.pairs().map(|pair| pair.midi_note).collect::<Vec<_>>(),
+            shifted
+                .pairs()
+                .map(|pair| pair.midi_note)
+                .collect::<Vec<_>>(),
             vec![62, 47, 66, 68, 68]
         );
     }
@@ -1238,7 +1241,9 @@ loop_ticks 500
         // Deletion removes exactly one pair.
         let mut mutant = fixture_mutant(2);
         let before = mutant.inner.pairs().count();
-        let removed = mutant.delete_random_pair().expect("a pair should be removed");
+        let removed = mutant
+            .delete_random_pair()
+            .expect("a pair should be removed");
         assert_eq!(mutant.inner.pairs().count(), before - 1);
         assert!((FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(&removed.midi_note));
 
@@ -1246,7 +1251,9 @@ loop_ticks 500
         // velocities while rewriting note, duration, and velocity.
         let mut mutant = fixture_mutant(2);
         let before: Vec<ScoreNotePair> = mutant.inner.pairs().copied().collect();
-        mutant.substitute_random_pair().expect("a pair should be substituted");
+        mutant
+            .substitute_random_pair()
+            .expect("a pair should be substituted");
         let after: Vec<ScoreNotePair> = mutant.inner.pairs().copied().collect();
         assert_eq!(after.len(), before.len());
         for (old, new) in before.iter().zip(&after) {
@@ -1260,8 +1267,9 @@ loop_ticks 500
         // Insertion adds exactly one valid pair at the reported index.
         let mut mutant = fixture_mutant(2);
         let before = mutant.inner.pairs().count();
-        let inserted_at =
-            mutant.insert_after_random_pair().expect("a pair should be inserted");
+        let inserted_at = mutant
+            .insert_after_random_pair()
+            .expect("a pair should be inserted");
         assert_eq!(mutant.inner.pairs().count(), before + 1);
         let inserted = *mutant
             .inner
@@ -1284,8 +1292,8 @@ loop_ticks 500
             assert!(pair.velocity <= MAX_VELOCITY);
         }
         // The mutated document still round-trips through the text format.
-        let reemitted = BhsScore::parse(&mutant.inner.format())
-            .expect("mutated score should re-parse");
+        let reemitted =
+            BhsScore::parse(&mutant.inner.format()).expect("mutated score should re-parse");
         assert_eq!(reemitted.pairs().count(), mutant.inner.pairs().count());
     }
 

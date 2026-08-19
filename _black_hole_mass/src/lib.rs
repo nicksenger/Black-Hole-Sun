@@ -3400,10 +3400,10 @@ mod tests {
         client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
         repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
         resolve_model_oscillation, select_start_target, to_engine_error_feedback,
-        to_engine_perturbation_mode, to_mass_perturbation_mode,
-        FrozenOscillation, MassContext, MassMode, MassServerDefaults, MassSession, MassState,
-        ModelRuntimeConfig, ModelSlot, RouteTarget, ServerBuilder, TransportMode, TunnelWorker,
-        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        to_engine_perturbation_mode, to_mass_perturbation_mode, FrozenOscillation, MassContext,
+        MassMode, MassServerDefaults, MassSession, MassState, ModelRuntimeConfig, ModelSlot,
+        RouteTarget, ServerBuilder, TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT,
+        DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{
         MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig, MassPerturbationMode,
@@ -3665,7 +3665,10 @@ mod tests {
         assert_eq!(first.training_z_loss, 0.005);
         assert_eq!(first.training_lb_loss, 0.015);
         assert_eq!(first.training_clip_threshold, 1.25);
-        assert_eq!(first.training_perturbation_mode, MassPerturbationMode::Activation);
+        assert_eq!(
+            first.training_perturbation_mode,
+            MassPerturbationMode::Activation
+        );
         assert_eq!(
             first.training_error_feedback,
             MassErrorFeedbackConfig::Replay {

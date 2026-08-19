@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use black_hole_spec::{
-    ObjectId, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut,
+    MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut, ObjectId,
 };
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
@@ -142,9 +142,7 @@ impl MassClient {
     }
 
     pub async fn query_model_params(&self, model_id: ObjectId) -> Result<MassModelParams, String> {
-        let resp = self
-            .request(&MassIn::QueryModelParams { model_id })
-            .await?;
+        let resp = self.request(&MassIn::QueryModelParams { model_id }).await?;
         match resp {
             MassOut::ModelParams { params } => Ok(params),
             MassOut::Error { message } => Err(message),

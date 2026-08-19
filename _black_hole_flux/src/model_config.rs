@@ -1,8 +1,7 @@
 //! Model configuration traits for per-instance mass start settings.
 
 use black_hole_spec::{
-    MassErrorFeedbackConfig, MassErrorFeedbackMode, MassModelConfig, MassPerturbationMode,
-    ObjectId,
+    MassErrorFeedbackConfig, MassErrorFeedbackMode, MassModelConfig, MassPerturbationMode, ObjectId,
 };
 
 /// Compile-time oscillation schedule for train/freeze windows.
@@ -37,12 +36,10 @@ pub trait ErrorFeedbackPolicy {
         match Self::MODE {
             None => None,
             Some(MassErrorFeedbackMode::Off) => Some(MassErrorFeedbackConfig::Off),
-            Some(MassErrorFeedbackMode::Persistent) => {
-                Some(MassErrorFeedbackConfig::Persistent {
-                    decay: Self::DECAY,
-                    gain: Self::GAIN,
-                })
-            }
+            Some(MassErrorFeedbackMode::Persistent) => Some(MassErrorFeedbackConfig::Persistent {
+                decay: Self::DECAY,
+                gain: Self::GAIN,
+            }),
             Some(MassErrorFeedbackMode::Replay) => Some(MassErrorFeedbackConfig::Replay {
                 steps: Self::REPLAY_STEPS,
                 decay: Self::DECAY,
@@ -146,9 +143,7 @@ impl ModelConfig for DefaultConfig {
 #[cfg(test)]
 mod tests {
     use super::{ErrorFeedbackPolicy, ModelConfig, OscillationSchedule};
-    use black_hole_spec::{
-        MassErrorFeedbackConfig, MassErrorFeedbackMode, MassPerturbationMode,
-    };
+    use black_hole_spec::{MassErrorFeedbackConfig, MassErrorFeedbackMode, MassPerturbationMode};
 
     struct FrozenConfig;
     impl ModelConfig for FrozenConfig {
@@ -241,7 +236,10 @@ mod tests {
     #[test]
     fn perturbation_mode_override_emits_model_config() {
         let config = PerturbationModeConfig::mass_model_config().expect("expected override config");
-        assert_eq!(config.training_perturbation_mode, Some(MassPerturbationMode::Activation));
+        assert_eq!(
+            config.training_perturbation_mode,
+            Some(MassPerturbationMode::Activation)
+        );
     }
 
     #[test]

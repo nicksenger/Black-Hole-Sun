@@ -35,9 +35,9 @@ pub use black_hole_flux::{
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, ObjectId, Potentiation, MassErrorFeedbackConfig,
-    MassErrorFeedbackMode, MassIn, MassModelCapacity, MassModelConfig, MassModelParams,
-    MassOut, MassPerturbationMode, SequenceOutput, Transmission,
+    InferenceRequest, LogitEntry, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn,
+    MassModelCapacity, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode, ObjectId,
+    Potentiation, SequenceOutput, Transmission,
 };
 
 // Convenience re-exports — void types

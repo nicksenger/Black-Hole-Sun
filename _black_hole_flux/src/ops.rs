@@ -11,7 +11,7 @@ const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    ObjectId, MassModelConfig, MassModelParams, Transmission,
+    MassModelConfig, MassModelParams, ObjectId, Transmission,
 };
 
 use crate::AtomError;
@@ -335,6 +335,26 @@ pub trait SunOps: Send + Sync {
         A::Id: jungle_sdk::AnimalIdValue,
         A::Generation: typosaurus::num::Unsigned,
         A::Seed: Sync + Send;
+
+    /// Observe one spawned animal by journey id and decode its typed appearance.
+    async fn observe_animal<A>(&self, journey_id: uuid::Uuid) -> Result<A::Appearance, String>
+    where
+        A: jungle_sdk::Animal + jungle_sdk::Observe,
+        A::Id: jungle_sdk::AnimalIdValue,
+        A::Generation: typosaurus::num::Unsigned,
+        A::Appearance: DeserializeOwned + Send;
+
+    /// Perturb one spawned animal by journey id with a typed stimulus payload.
+    async fn perturb_animal<A>(
+        &self,
+        journey_id: uuid::Uuid,
+        stimulus: &A::Stimulus,
+    ) -> Result<(), String>
+    where
+        A: jungle_sdk::Animal + jungle_sdk::Perturb,
+        A::Id: jungle_sdk::AnimalIdValue,
+        A::Generation: typosaurus::num::Unsigned,
+        A::Stimulus: Serialize + Sync + Send;
 }
 
 #[cfg(test)]

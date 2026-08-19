@@ -20,11 +20,7 @@ const MASS_INFER_BACKOFF_MULTIPLIER: u8 = 2;
 
 /// Runs one Atom inference step with automatic retry backoff.
 #[derive(Flow)]
-pub struct MassInferWithBackoff<
-    M: Serialize + DeserializeOwned + Send + 'static,
-    S,
-    H: ModelConfig,
->(
+pub struct MassInferWithBackoff<M: Serialize + DeserializeOwned + Send + 'static, S, H: ModelConfig>(
     Backoff<
         CellState<S>,
         (Uuid, EmissionId),

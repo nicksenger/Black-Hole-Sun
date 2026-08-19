@@ -4,7 +4,7 @@
 //! construction and shaping sequences for prompting (trimming, padding,
 //! framing) lives here instead.
 
-use black_hole_spec::{DarkToken, InferenceOutput, LogitEntry, PAD, IM_END, SequenceOutput};
+use black_hole_spec::{DarkToken, InferenceOutput, LogitEntry, SequenceOutput, IM_END, PAD};
 
 /// Operations for constructing dark tokens.
 pub trait TokenOps: Sized {

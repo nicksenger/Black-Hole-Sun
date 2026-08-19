@@ -51,8 +51,8 @@ pub use black_hole_spec::EmissionId;
 pub use black_hole_spec::Potentiation;
 
 use super::effect::{
-    GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown,
-    MassStart, Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
+    GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown, MassStart,
+    Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
 
 // ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ use crate::fusion::FusionFlow;
 
 pub use action::{
     InitializePropagation, NodeIdsFromList, ProcessNextNode, PropagationState, SendRootPropagation,
-    Spawn,
+    Spawn, SpawnWarpAnimal, SpawnWarpBoundary,
 };
 pub use effect::{
     SendRootPropagationEffect, SendRootPropagationInput, SpawnAnimal,
@@ -51,6 +51,46 @@ pub struct Binary<P1: Unsigned, P2: Unsigned, A: Animal, E: NodeIdsFromList>(
     PhantomData<A>,
     PhantomData<E>,
 );
+
+/// Type-level warp vertex that composes a nested Sun animal behind a boundary
+/// cell that handles ingress/egress behavior in the parent graph.
+///
+/// `P` is both the public input port and deterministic internal vertex key.
+/// The warp animal is spawned first, then the boundary animal is spawned with a
+/// [`BoundaryInit`] that includes the warp journey id.
+pub struct Warp<
+    P: Unsigned,
+    WarpAnimal: Animal + Observe,
+    BoundaryAnimal: Animal,
+    E: NodeIdsFromList,
+>(
+    PhantomData<P>,
+    PhantomData<WarpAnimal>,
+    PhantomData<BoundaryAnimal>,
+    PhantomData<E>,
+);
+
+/// Initialization payload for one spawned warp boundary cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BoundaryInit {
+    /// First propagation mailbox that this boundary should await.
+    pub recv_id: ObjectId,
+    /// Number of propagation microsteps to run per perturbation phase.
+    #[serde(default = "default_gradient_accumulation_steps")]
+    pub grad_steps: usize,
+    /// Journey id of the spawned nested warp animal associated with this boundary.
+    pub warp_journey_id: Uuid,
+}
+
+impl Default for BoundaryInit {
+    fn default() -> Self {
+        Self {
+            recv_id: ObjectId::nil(),
+            grad_steps: default_gradient_accumulation_steps(),
+            warp_journey_id: Uuid::nil(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // SunState — runtime state for sun orchestration
@@ -470,6 +510,36 @@ pub struct BinarySunStepWithState<
 pub type BinarySunStep<P1, P2, AnimalT, E, S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
     BinarySunStepWithState<P1, P2, AnimalT, E, S, GRADIENT_ACCUMULATION_STEPS>;
 
+/// Generate boundary mailboxes, spawn the nested warp animal, then spawn and
+/// register the boundary animal in the parent topology.
+#[derive(Flow)]
+pub struct WarpSunStepWithState<
+    P: Unsigned,
+    WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
+    BoundaryAnimalT: Animal<
+        Id: AnimalIdValue,
+        Generation: Unsigned,
+        Seed = BoundaryInit,
+        State = crate::cell::action::CellState<<WarpAnimalT as Observe>::Appearance>,
+    >,
+    E: NodeIdsFromList,
+    S,
+    const GRADIENT_ACCUMULATION_STEPS: usize,
+>(
+    Step<GenUuid<S, GRADIENT_ACCUMULATION_STEPS>>,
+    Step<action::SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S>>,
+    Step<action::SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S>>,
+);
+
+pub type WarpSunStep<
+    P,
+    WarpAnimalT,
+    BoundaryAnimalT,
+    E,
+    S = (),
+    const GRADIENT_ACCUMULATION_STEPS: usize = 1,
+> = WarpSunStepWithState<P, WarpAnimalT, BoundaryAnimalT, E, S, GRADIENT_ACCUMULATION_STEPS>;
+
 /// One descriptor-specific spawn flow followed by the remaining descriptors.
 #[derive(Flow)]
 pub struct SunNode<S, U>(S, U);
@@ -514,6 +584,25 @@ where
 {
     type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
         BinarySunStep<P1, P2, A, E, M::State, ACCUM_STEPS>,
+        <U as BlackHole>::Sun<M, ACCUM_STEPS>,
+    >;
+}
+impl<P, WarpAnimalT, BoundaryAnimalT, E, U> BlackHole
+    for List<(Warp<P, WarpAnimalT, BoundaryAnimalT, E>, U)>
+where
+    P: Unsigned,
+    WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
+    BoundaryAnimalT: Animal<
+        Id: AnimalIdValue,
+        Generation: Unsigned,
+        Seed = BoundaryInit,
+        State = crate::cell::action::CellState<<WarpAnimalT as Observe>::Appearance>,
+    >,
+    E: NodeIdsFromList,
+    U: BlackHole,
+{
+    type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
+        WarpSunStep<P, WarpAnimalT, BoundaryAnimalT, E, M::State, ACCUM_STEPS>,
         <U as BlackHole>::Sun<M, ACCUM_STEPS>,
     >;
 }

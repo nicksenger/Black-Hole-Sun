@@ -17,9 +17,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use black_hole_beam::score_text::{
-    BhsScore, ScoreNotePair, FIRST_MIDI_NOTE, LAST_MIDI_NOTE,
-};
+use black_hole_beam::score_text::{BhsScore, ScoreNotePair, FIRST_MIDI_NOTE, LAST_MIDI_NOTE};
 use clap::{Parser, Subcommand};
 use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 
@@ -226,12 +224,8 @@ fn parse_midi(bytes: &[u8], wanted_channel: Option<u8>) -> Result<ParsedMidi, St
                 TrackEventKind::Meta(MetaMessage::Tempo(micros_per_quarter)) => {
                     tempos.push((tick, u32::from(*micros_per_quarter)));
                 }
-                TrackEventKind::Meta(MetaMessage::TimeSignature(
-                    numerator,
-                    denominator,
-                    _,
-                    _,
-                )) if time_signature.is_none() =>
+                TrackEventKind::Meta(MetaMessage::TimeSignature(numerator, denominator, _, _))
+                    if time_signature.is_none() =>
                 {
                     time_signature = Some((*numerator, *denominator));
                 }
@@ -355,8 +349,7 @@ fn build_score(
             skipped_notes += 1;
             continue;
         }
-        let start_tick =
-            (tempo_map.at(pair.on_tick) * ticks_per_second as f64).round() as u64;
+        let start_tick = (tempo_map.at(pair.on_tick) * ticks_per_second as f64).round() as u64;
         // Rounding can collapse a pair to zero length; keep at least one tick.
         let end_tick = (tempo_map.at(pair.off_tick) * ticks_per_second as f64)
             .round()
@@ -386,7 +379,11 @@ fn build_score(
     let loop_ticks = match loop_duration {
         Some(seconds) => {
             let ticks = (seconds * ticks_per_second as f64).round() as u64;
-            let last_release = score_pairs.iter().map(|pair| pair.end_tick()).max().expect("at least one pair");
+            let last_release = score_pairs
+                .iter()
+                .map(|pair| pair.end_tick())
+                .max()
+                .expect("at least one pair");
             if ticks < last_release {
                 return Err(format!(
                     "loop duration ({seconds}s) precedes the last note ({}s)",
@@ -464,7 +461,11 @@ fn run_check(path: &Path) -> Result<(), String> {
             black_hole_beam::score_text::DiagnosticLevel::Warning => "warning",
         };
         match finding.line {
-            Some(line) => println!("{}: line {line}: {level}: {}", path.display(), finding.message),
+            Some(line) => println!(
+                "{}: line {line}: {level}: {}",
+                path.display(),
+                finding.message
+            ),
             None => println!("{}: {level}: {}", path.display(), finding.message),
         }
     }
@@ -620,7 +621,6 @@ mod tests {
         assert!(events
             .iter()
             .all(|event| event.source == PianoInputSource::Score));
-
     }
 
     #[test]
@@ -746,7 +746,10 @@ mod tests {
             FALLBACK_TICKS_PER_SECOND
         );
         // Non-integral ticks/second falls back to microseconds.
-        assert_eq!(choose_ticks_per_second(&[(0, 504_375)], 960), FALLBACK_TICKS_PER_SECOND);
+        assert_eq!(
+            choose_ticks_per_second(&[(0, 504_375)], 960),
+            FALLBACK_TICKS_PER_SECOND
+        );
     }
 
     #[test]
@@ -774,7 +777,10 @@ mod tests {
         assert_eq!(lines[2], "format bhs-score-v1");
         assert_eq!(lines[3], "ticks_per_second 960");
         assert_eq!(lines[4], "loop_ticks 960");
-        assert_eq!(lines[5], "; start duration note velocity [release_velocity]");
+        assert_eq!(
+            lines[5],
+            "; start duration note velocity [release_velocity]"
+        );
         assert_eq!(lines[6], "0 480 C4 80");
         assert_eq!(lines[7], "480 240 E4 80");
         assert_eq!(lines[8], "720 240 G4 80");

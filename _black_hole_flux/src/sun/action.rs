@@ -208,6 +208,113 @@ where
     }
 }
 
+/// Spawns and registers a [`Warp`](super::Warp) descriptor's boundary node.
+///
+/// This runs in two steps:
+/// 1. Spawn the nested warp animal and keep its journey id.
+/// 2. Spawn the boundary animal with [`super::BoundaryInit`], then register
+///    the boundary journey as the parent graph vertex for scheduling.
+pub struct SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S = ()>(
+    PhantomData<fn() -> (P, WarpAnimalT, BoundaryAnimalT, E, S)>,
+);
+
+#[jungle::action]
+impl<P, WarpAnimalT, BoundaryAnimalT, E, S> Action
+    for SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S>
+where
+    P: Unsigned,
+    WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
+    BoundaryAnimalT: Animal<
+        Id: AnimalIdValue,
+        Generation: Unsigned,
+        Seed = super::BoundaryInit,
+        State = crate::cell::action::CellState<<WarpAnimalT as Observe>::Appearance>,
+    >,
+    E: NodeIdsFromList,
+{
+    type Effect = super::effect::SpawnAnimal<WarpAnimalT>;
+    type Input = crate::cell::action::Init;
+    type Output = (crate::cell::action::Init, Uuid);
+    type Carry = crate::cell::action::Init;
+
+    fn emit(_state: &super::SunState<S>, input: Self::Input) -> ((), crate::cell::action::Init) {
+        ((), input)
+    }
+
+    fn absorb(
+        _state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+        carry: crate::cell::action::Init,
+    ) -> Result<Self::Output, Failure> {
+        let warp_journey_id =
+            output.map_err(|e| Failure::Message(format!("warp spawn failed: {e}")))?;
+        Ok((carry, warp_journey_id))
+    }
+}
+
+pub struct SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S = ()>(
+    PhantomData<fn() -> (P, WarpAnimalT, BoundaryAnimalT, E, S)>,
+);
+
+#[jungle::action]
+impl<P, WarpAnimalT, BoundaryAnimalT, E, S> Action
+    for SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S>
+where
+    P: Unsigned,
+    WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
+    BoundaryAnimalT: Animal<
+        Id: AnimalIdValue,
+        Generation: Unsigned,
+        Seed = super::BoundaryInit,
+        State = crate::cell::action::CellState<<WarpAnimalT as Observe>::Appearance>,
+    >,
+    E: NodeIdsFromList,
+{
+    type Effect = super::effect::SpawnAnimal<BoundaryAnimalT>;
+    type Input = (crate::cell::action::Init, Uuid);
+    type Output = ();
+    type Carry = (crate::cell::action::Init, Uuid);
+
+    fn emit(
+        _state: &super::SunState<S>,
+        input: Self::Input,
+    ) -> (super::BoundaryInit, (crate::cell::action::Init, Uuid)) {
+        let (init, warp_journey_id) = input;
+        (
+            super::BoundaryInit {
+                recv_id: init.recv_id,
+                grad_steps: init.grad_steps,
+                warp_journey_id,
+            },
+            (init, warp_journey_id),
+        )
+    }
+
+    fn absorb(
+        state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+        carry: (crate::cell::action::Init, Uuid),
+    ) -> Result<Self::Output, Failure> {
+        let boundary_journey_id =
+            output.map_err(|e| Failure::Message(format!("boundary spawn failed: {e}")))?;
+        let (init, _warp_journey_id) = carry;
+        let port_id = P::U32;
+        register_vertex(
+            state,
+            port_id,
+            format!(
+                "Warp<{}, {}>",
+                short_type_name::<WarpAnimalT>(),
+                short_type_name::<BoundaryAnimalT>()
+            ),
+            &[(port_id, init.recv_id)],
+            E::node_ids(),
+            boundary_journey_id,
+        );
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // InitializePropagation — initialize the dynamic Kahn frontier
 // ---------------------------------------------------------------------------
@@ -1849,6 +1956,34 @@ mod tests {
         type Flow = crate::Fusion<crate::Primordium>;
     }
 
+    struct TestWarpChildAnimal;
+
+    impl Animal for TestWarpChildAnimal {
+        type Id = Id<U1>;
+        type Generation = U0;
+        type State = super::super::SunState;
+        type Seed = ();
+        type Flow = ();
+    }
+
+    impl Observe for TestWarpChildAnimal {
+        type Appearance = crate::Ray;
+
+        fn observe(_state: &Self::State) -> Self::Appearance {
+            crate::Ray { frozen: false }
+        }
+    }
+
+    struct TestWarpBoundaryAnimal;
+
+    impl Animal for TestWarpBoundaryAnimal {
+        type Id = Id<U2>;
+        type Generation = U0;
+        type State = crate::CellState<<TestWarpChildAnimal as Observe>::Appearance>;
+        type Seed = super::super::BoundaryInit;
+        type Flow = ();
+    }
+
     fn add_vertex(
         state: &mut super::super::SunState,
         vertex_id: u32,
@@ -1963,6 +2098,64 @@ mod tests {
             <SpawnBinaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, seed);
         assert_eq!(effect_seed.p1_recv_id, seed.p1_recv_id);
         assert_eq!(effect_seed.p2_recv_id, seed.p2_recv_id);
+    }
+
+    #[test]
+    fn warp_actions_seed_boundary_with_spawned_warp_journey() {
+        type Payload = (String, String);
+        let mut state = super::super::SunState::<Payload>::default();
+        let init = crate::cell::action::Init {
+            recv_id: Uuid::new_v4(),
+            grad_steps: 3,
+        };
+
+        type SpawnWarpAnimalBound = <SpawnWarpAnimal<
+            U1,
+            TestWarpChildAnimal,
+            TestWarpBoundaryAnimal,
+            Empty,
+            Payload,
+        > as Action>::Bind<TestSunAnimalWithPayload>;
+        let spawn_input =
+            <SpawnWarpAnimalBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, init);
+        assert_eq!(spawn_input, ());
+
+        let warp_journey_id = Uuid::new_v4();
+        let (boundary_init, boundary_carry) = <SpawnWarpAnimalBound as BoundAction<
+            TestSunAnimalWithPayload,
+        >>::absorb_with_carry(
+            &mut state, Ok(warp_journey_id), init
+        )
+        .unwrap();
+        assert_eq!(boundary_init, init);
+        assert_eq!(boundary_carry, warp_journey_id);
+
+        type SpawnWarpBoundaryBound = <SpawnWarpBoundary<
+            U1,
+            TestWarpChildAnimal,
+            TestWarpBoundaryAnimal,
+            Empty,
+            Payload,
+        > as Action>::Bind<TestSunAnimalWithPayload>;
+        let boundary_seed = <SpawnWarpBoundaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(
+            &state,
+            (boundary_init, boundary_carry),
+        );
+        assert_eq!(boundary_seed.recv_id, init.recv_id);
+        assert_eq!(boundary_seed.grad_steps, init.grad_steps);
+        assert_eq!(boundary_seed.warp_journey_id, warp_journey_id);
+
+        let boundary_journey_id = Uuid::new_v4();
+        <SpawnWarpBoundaryBound as BoundAction<TestSunAnimalWithPayload>>::absorb_with_carry(
+            &mut state,
+            Ok(boundary_journey_id),
+            (boundary_init, boundary_carry),
+        )
+        .unwrap();
+
+        let inner = state.a.shared.lock().unwrap();
+        assert_eq!(inner.journey_ids.get(&U1::U32), Some(&boundary_journey_id));
+        assert_eq!(inner.port_vertices.get(&U1::U32), Some(&U1::U32));
     }
 
     #[test]

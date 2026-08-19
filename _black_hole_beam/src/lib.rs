@@ -35,8 +35,7 @@ use iced::{
 };
 use iced_sugiyama::motion::easing::Easing;
 use iced_sugiyama::{
-    circo_layout, microdot_layout, AutoFit, Cluster, EdgeEndpointKind, Graph, LayoutInput,
-    Sugiyama,
+    circo_layout, microdot_layout, AutoFit, Cluster, EdgeEndpointKind, Graph, LayoutInput, Sugiyama,
 };
 use jungle_sdk::{Animal, AnimalIdValue, JourneyAstSource, JungleClient, Observe};
 use jungle_vision::{
@@ -1460,25 +1459,25 @@ impl BeamApp {
             }
         };
         #[cfg(feature = "piano")]
-        let (piano_score, piano_score_error) = if let Some(path) = config.piano_score_path.as_deref()
-        {
-            match PianoScorePlayback::load(path, Instant::now()) {
-                Ok(score) => (Some(score), None),
-                Err(error) => (None, Some(error)),
-            }
-        } else if let Some(data) = config.piano_score_data.as_deref() {
-            match PianoScorePlayback::from_bytes(data, Instant::now()) {
-                Ok(score) => (Some(score), None),
-                Err(error) => (None, Some(error)),
-            }
-        } else if let Some(score) = config.piano_score.take() {
-            match PianoScorePlayback::from_score(score, Instant::now()) {
-                Ok(score) => (Some(score), None),
-                Err(error) => (None, Some(error)),
-            }
-        } else {
-            (None, None)
-        };
+        let (piano_score, piano_score_error) =
+            if let Some(path) = config.piano_score_path.as_deref() {
+                match PianoScorePlayback::load(path, Instant::now()) {
+                    Ok(score) => (Some(score), None),
+                    Err(error) => (None, Some(error)),
+                }
+            } else if let Some(data) = config.piano_score_data.as_deref() {
+                match PianoScorePlayback::from_bytes(data, Instant::now()) {
+                    Ok(score) => (Some(score), None),
+                    Err(error) => (None, Some(error)),
+                }
+            } else if let Some(score) = config.piano_score.take() {
+                match PianoScorePlayback::from_score(score, Instant::now()) {
+                    Ok(score) => (Some(score), None),
+                    Err(error) => (None, Some(error)),
+                }
+            } else {
+                (None, None)
+            };
 
         (
             Self {
@@ -2278,7 +2277,11 @@ impl BeamApp {
                     .get(&node_id)
                     .map(|visual| visual.frozen_for_state(state, cell.frozen))
                     .unwrap_or(cell.frozen);
-                let status = if frozen == Some(true) { "frozen" } else { "optimizing" };
+                let status = if frozen == Some(true) {
+                    "frozen"
+                } else {
+                    "optimizing"
+                };
                 Some(format!("{} [{status}]", state.label()))
             }
             _ => Some(state.label().to_string()),
@@ -2502,8 +2505,7 @@ fn push_shortened_type_token(shortened: &mut String, token: &mut String) {
 mod tests {
     use super::*;
     use black_hole_flux::sun::{
-        Binary, BlackHole, Manifest, StatelessManifest, SunEdgeAppearance, SunNodeAppearance,
-        Unary,
+        Binary, BlackHole, Manifest, StatelessManifest, SunEdgeAppearance, SunNodeAppearance, Unary,
     };
     use black_hole_flux::{CellState, Fusion, Primordium};
     use jungle_sdk::typosaurus::collections::list::{Empty, List};
@@ -2727,7 +2729,10 @@ mod tests {
             .expect("the fixture should parse");
         let config = BeamBuilder::new().score(score).into_config();
         assert_eq!(
-            config.piano_score.as_ref().map(|score| score.ticks_per_second),
+            config
+                .piano_score
+                .as_ref()
+                .map(|score| score.ticks_per_second),
             Some(960)
         );
     }

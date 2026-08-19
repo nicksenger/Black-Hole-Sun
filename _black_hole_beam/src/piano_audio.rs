@@ -850,8 +850,7 @@ mod tests {
             let settle_samples = (sample_rate / 100.0) as usize;
             let mut peak = 0.0f32;
             for sample in 0..(sample_rate * 2.0) as usize {
-                let x = (std::f32::consts::TAU * frequency_hz * sample as f32 / sample_rate)
-                    .sin()
+                let x = (std::f32::consts::TAU * frequency_hz * sample as f32 / sample_rate).sin()
                     * 0.5;
                 let (out, _) = eq.process(x, 0.0);
                 // Ignore the first 10 ms while the biquad states settle.
@@ -865,8 +864,14 @@ mod tests {
         let midrange = drive(700.0);
         let top = drive(13_000.0);
 
-        assert!(midrange > 0.5 * 1.4, "700 Hz should be boosted, got {midrange}");
-        assert!(top < 0.5 * 0.12, "13 kHz should be heavily attenuated, got {top}");
+        assert!(
+            midrange > 0.5 * 1.4,
+            "700 Hz should be boosted, got {midrange}"
+        );
+        assert!(
+            top < 0.5 * 0.12,
+            "13 kHz should be heavily attenuated, got {top}"
+        );
     }
 
     #[test]
@@ -1083,7 +1088,11 @@ loop_ticks 20
                     power += xl[k] * xl[k] + yl[k] * yl[k] + xr[k] * xr[k] + yr[k] * yr[k];
                 }
                 power *= 0.25;
-                let db = (if power > 0.0 { 10.0 * power.log10() } else { -120.0 }) + scale_shift;
+                let db = (if power > 0.0 {
+                    10.0 * power.log10()
+                } else {
+                    -120.0
+                }) + scale_shift;
                 if db > -50.0 {
                     band_sum[band] += db;
                     band_cnt[band] += 1;
@@ -1100,15 +1109,20 @@ loop_ticks 20
         eprintln!("full-score sim: centroid {centroid:.1} Hz");
         for band in 0..7 {
             let got = band_sum[band] / band_cnt[band] as f64;
-            eprintln!("  band{}: {got:.1} dB (expected ~{} +/- 5)", band + 1, expected[band]);
+            eprintln!(
+                "  band{}: {got:.1} dB (expected ~{} +/- 5)",
+                band + 1,
+                expected[band]
+            );
         }
         for band in 0..7 {
             let got = band_sum[band] / band_cnt[band] as f64;
-            assert!
-                ((got - expected[band]).abs() < 5.0,
-                 "band {} drifted: got {got:.1} dB, expected ~{} dB",
-                 band + 1,
-                 expected[band]);
+            assert!(
+                (got - expected[band]).abs() < 5.0,
+                "band {} drifted: got {got:.1} dB, expected ~{} dB",
+                band + 1,
+                expected[band]
+            );
         }
         assert!(
             (centroid - 599.6).abs() < 80.0,

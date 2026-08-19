@@ -106,16 +106,17 @@ pub use twin::Twin;
 pub use sun::{
     action::{
         BroadcastPotentiation, BroadcastPotentiationInput, InitializePropagation, NodeIdsFromList,
-        ProcessNextNode, PropagationState, SendRootPropagation, Spawn,
+        ProcessNextNode, PropagationState, SendRootPropagation, Spawn, SpawnWarpAnimal,
+        SpawnWarpBoundary,
     },
     effect::{
         BroadcastPotentiationEffect, BroadcastPotentiationResult, NodeTransmission,
         SendRootPropagationEffect, SendRootPropagationInput, WaitForNodeTransmissionEffect,
         WaitForNodeTransmissionInput,
     },
-    Binary, BlackHole, Epoch, Manifest, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
-    PropagationFlows, PropagationLoop, SpawnAnimal, StatelessManifest, SunAppearance,
-    SunEdgeAppearance, SunInner, SunNodeAppearance, SunNodeState, SunState, Unary,
+    Binary, BlackHole, BoundaryInit, Epoch, Manifest, PendingNotEmpty, PropA, PropAFlow, PropB,
+    PropBFlow, PropagationFlows, PropagationLoop, SpawnAnimal, StatelessManifest, SunAppearance,
+    SunEdgeAppearance, SunInner, SunNodeAppearance, SunNodeState, SunState, Unary, Warp,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]

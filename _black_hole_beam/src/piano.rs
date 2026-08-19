@@ -69,10 +69,7 @@ pub enum PianoAction {
         pressure: Option<f32>,
     },
     /// A key stopped being held. Velocity is normalized to `0.0..=1.0`.
-    Release {
-        velocity: f32,
-        held_for: Duration,
-    },
+    Release { velocity: f32, held_for: Duration },
 }
 
 /// A lossless-in-time description of an on-screen piano performance event.
@@ -552,5 +549,4 @@ mod tests {
         assert_eq!(computer_key_note(']'), Some(90));
         assert_eq!(computer_key_note('!'), None);
     }
-
 }

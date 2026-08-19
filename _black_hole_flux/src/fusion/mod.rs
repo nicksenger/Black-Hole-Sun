@@ -16,14 +16,15 @@ use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 
 pub use action::{
-    AdvanceFusionGradientStep, BeginFusionGradientAccumulation, FusionOptimize, FusionPerturbDown,
-    FusionPerturbUp, FusionMassInferStep, FusionSeed, FusionStartModel, FusionState,
+    AdvanceFusionGradientStep, BeginFusionGradientAccumulation, FusionMassInferStep,
+    FusionOptimize, FusionPerturbDown, FusionPerturbUp, FusionSeed, FusionStartModel, FusionState,
     FusionTransmit, GenerateTransformId, InitFusion, PrepareTransformInput,
-    WaitForFusionPotentiation, WaitForFusionPotentiationForOptimize,
-    WaitForFusionPropagation,
+    WaitForFusionPotentiation, WaitForFusionPotentiationForOptimize, WaitForFusionPropagation,
 };
 
-pub use effect::{GenerateTransformIdEffect, WaitForFusionPotentiationEffect, WaitForFusionPropagationEffect};
+pub use effect::{
+    GenerateTransformIdEffect, WaitForFusionPotentiationEffect, WaitForFusionPropagationEffect,
+};
 
 /// Predicate that keeps running fusion microsteps until `grad_steps` is reached.
 pub struct HasPendingFusionGradientStep;

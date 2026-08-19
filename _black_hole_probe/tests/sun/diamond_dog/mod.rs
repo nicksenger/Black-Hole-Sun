@@ -18,7 +18,7 @@ use black_hole_sun::sun::{
     Binary, BlackHole, StatelessManifest, SunAppearance, SunNodeState, SunState, Unary,
 };
 use black_hole_sun::{
-    AtomError, EmissionId, InferenceRequest, ObjectId, MassModelConfig, MassModelParams, Ray,
+    AtomError, EmissionId, InferenceRequest, MassModelConfig, MassModelParams, ObjectId, Ray,
     TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use black_hole_sun::{Fusion, FusionSeed, FusionState};
@@ -455,6 +455,43 @@ impl SunOps for ProbeSpaceJungle {
         let client = self.client.clone().expect("client not set");
         let handle = client.spawn::<A>(seed).await.map_err(|e| e.to_string())?;
         Ok(handle.journey_id)
+    }
+
+    async fn observe_animal<A>(&self, journey_id: Uuid) -> Result<A::Appearance, String>
+    where
+        A: Animal + Observe,
+        A::Id: AnimalIdValue,
+        A::Generation: jungle_sdk::typosaurus::num::Unsigned,
+        A::Appearance: serde::de::DeserializeOwned + Send,
+    {
+        let client = self.client.clone().expect("client not set");
+        let appearance_bytes = client
+            .animal_appearance(journey_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("appearance unavailable for journey {journey_id}"))?;
+        postcard::from_bytes::<A::Appearance>(&appearance_bytes)
+            .map_err(|error| format!("deserialize appearance failed: {error}"))
+    }
+
+    async fn perturb_animal<A>(
+        &self,
+        journey_id: Uuid,
+        stimulus: &A::Stimulus,
+    ) -> Result<(), String>
+    where
+        A: Animal + Perturb,
+        A::Id: AnimalIdValue,
+        A::Generation: jungle_sdk::typosaurus::num::Unsigned,
+        A::Stimulus: serde::Serialize + Sync + Send,
+    {
+        let payload = postcard::to_allocvec(stimulus)
+            .map_err(|error| format!("serialize perturb stimulus failed: {error}"))?;
+        let client = self.client.clone().expect("client not set");
+        client
+            .perturb_animal(journey_id, payload)
+            .await
+            .map_err(|error| error.to_string())
     }
 }
 
