@@ -60,6 +60,7 @@ use thiserror::Error;
 
 pub mod animal;
 pub mod atom;
+pub mod boundary;
 pub mod cell;
 pub mod fusion;
 pub mod model_config;
@@ -77,6 +78,14 @@ pub use black_hole_spec::{
 
 pub use animal::Progenitor;
 pub use atom::effect::MassInfer;
+pub use boundary::action::{
+    InitRecvId as InitBoundaryRecvId, WaitForPotentiation as WaitForBoundaryPotentiation,
+    WaitForPotentiationForInput as WaitForBoundaryPotentiationForInput,
+};
+pub use boundary::{
+    Boundary, Inner as BoundaryInner, InnerPropagationMicrostep as BoundaryMicrostep,
+    NoModelBoundary,
+};
 pub use cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
     InitRecvId, MassInferStep, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput,
