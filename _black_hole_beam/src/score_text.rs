@@ -316,6 +316,14 @@ impl BhsScore {
         }
     }
 
+    /// Consuming counterpart of [`BhsScore::transpose`]: shift every note by
+    /// `semitones` and return the result, consuming the original score.
+    pub fn transposed(self, semitones: i32) -> Self {
+        let mut score = self;
+        score.transpose(semitones);
+        score
+    }
+
     /// Expand the pairs into score events, ready for playback: attacks and
     /// releases in performance order with dense sequence numbers and voice ids
     /// assigned in canonical pair order.
@@ -1204,6 +1212,14 @@ loop_ticks 500
         let mut score = BhsScore::parse(SCORE).expect("the fixture should parse");
         score.transpose(1000);
         assert!(score.pairs().all(|pair| pair.midi_note == LAST_MIDI_NOTE));
+
+        // The consuming variant shifts the same way.
+        let score = BhsScore::parse(SCORE).expect("the fixture should parse");
+        let shifted = score.transposed(2);
+        assert_eq!(
+            shifted.pairs().map(|pair| pair.midi_note).collect::<Vec<_>>(),
+            vec![62, 47, 66, 68, 68]
+        );
     }
 
     #[test]
