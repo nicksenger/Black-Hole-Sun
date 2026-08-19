@@ -41,7 +41,10 @@ pub(crate) fn load_score(path: &Path) -> Result<LoadedPianoScore, String> {
 }
 
 fn parse_score_text(text: &str) -> Result<LoadedPianoScore, String> {
-    let document = BhsScore::parse(text)?;
+    loaded_from_document(&BhsScore::parse(text)?)
+}
+
+fn loaded_from_document(document: &BhsScore) -> Result<LoadedPianoScore, String> {
     let events = document.to_events()?;
     let loop_duration =
         score_text::ticks_to_duration(document.effective_loop_ticks(), document.ticks_per_second);
@@ -61,6 +64,10 @@ impl PianoScorePlayback {
         let text = std::str::from_utf8(bytes)
             .map_err(|error| format!("piano score is not valid UTF-8: {error}"))?;
         Ok(Self::from_loaded(parse_score_text(text)?, started_at))
+    }
+
+    pub(crate) fn from_score(score: BhsScore, started_at: Instant) -> Result<Self, String> {
+        Ok(Self::from_loaded(loaded_from_document(&score)?, started_at))
     }
 
     #[cfg(test)]
@@ -139,6 +146,29 @@ loop_ticks 1200
         // The loop_ticks header (1200 ticks = 1.25s) closes the cycle with
         // tail silence before the next attack.
         let wrapped = score.take_due(start + Duration::from_millis(1_250));
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(wrapped[0].cycle, 1);
+    }
+
+    #[test]
+    fn plays_back_an_owned_score() {
+        let start = Instant::now();
+        let mut document = BhsScore::parse(TEXT_SCORE).unwrap();
+        // A mutation made before playback is reflected in the events.
+        document.transpose(2);
+        let mut playback = PianoScorePlayback::from_score(document, start).unwrap();
+
+        // The transposed attack (D4) is due immediately; the release lands
+        // at tick 600, 0.625s into a 960 ticks/second grid.
+        let first = playback.take_due(start);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].event.note.midi_note, 62);
+        let release = playback.take_due(start + Duration::from_millis(625));
+        assert_eq!(release.len(), 1);
+        assert!(matches!(release[0].event.action, PianoAction::Release { .. }));
+
+        // The loop_ticks header (1200 ticks = 1.25s) closes the cycle.
+        let wrapped = playback.take_due(start + Duration::from_millis(1_250));
         assert_eq!(wrapped.len(), 1);
         assert_eq!(wrapped[0].cycle, 1);
     }

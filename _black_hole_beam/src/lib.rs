@@ -64,6 +64,8 @@ use piano_audio::PianoAudioEngine;
 pub use piano_audio::{render_piano_score_to_wav, PianoRenderReport};
 #[cfg(feature = "piano")]
 use piano_score::{PianoScorePlayback, SCORE_TICK_INTERVAL};
+#[cfg(feature = "piano")]
+use score_text::BhsScore;
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
@@ -188,6 +190,8 @@ pub struct BeamBuilder {
     piano_score_path: Option<PathBuf>,
     #[cfg(feature = "piano")]
     piano_score_data: Option<Vec<u8>>,
+    #[cfg(feature = "piano")]
+    piano_score: Option<BhsScore>,
 }
 
 #[derive(Clone, Copy)]
@@ -212,6 +216,8 @@ impl Default for BeamBuilder {
             piano_score_path: None,
             #[cfg(feature = "piano")]
             piano_score_data: None,
+            #[cfg(feature = "piano")]
+            piano_score: None,
         }
     }
 }
@@ -331,6 +337,19 @@ impl BeamBuilder {
         self
     }
 
+    /// Continuously loop a recorded piano performance from an owned score.
+    ///
+    /// `score` is a parsed [`BhsScore`] (see [`score_text`]), ready to play
+    /// as-is — for example one loaded and mutated in memory. Events are
+    /// routed through the same audio, visualization, and callback paths as
+    /// live key presses. This source is used only when neither a path nor
+    /// data is set via [`Self::score_data`].
+    #[cfg(feature = "piano")]
+    pub fn score(mut self, score: BhsScore) -> Self {
+        self.piano_score = Some(score);
+        self
+    }
+
     fn into_config(self) -> BeamConfig {
         BeamConfig {
             title: self.title,
@@ -346,6 +365,8 @@ impl BeamBuilder {
             piano_score_path: self.piano_score_path,
             #[cfg(feature = "piano")]
             piano_score_data: self.piano_score_data,
+            #[cfg(feature = "piano")]
+            piano_score: self.piano_score,
         }
     }
 }
@@ -453,6 +474,8 @@ struct BeamConfig {
     piano_score_path: Option<PathBuf>,
     #[cfg(feature = "piano")]
     piano_score_data: Option<Vec<u8>>,
+    #[cfg(feature = "piano")]
+    piano_score: Option<BhsScore>,
 }
 
 #[derive(Clone)]
@@ -1391,7 +1414,7 @@ struct BeamApp {
 
 impl BeamApp {
     fn new(
-        config: BeamConfig,
+        mut config: BeamConfig,
         model: BeamModel,
         live: Option<LiveConfig>,
     ) -> (Self, Task<Message>) {
@@ -1444,6 +1467,11 @@ impl BeamApp {
             }
         } else if let Some(data) = config.piano_score_data.as_deref() {
             match PianoScorePlayback::from_bytes(data, Instant::now()) {
+                Ok(score) => (Some(score), None),
+                Err(error) => (None, Some(error)),
+            }
+        } else if let Some(score) = config.piano_score.take() {
+            match PianoScorePlayback::from_score(score, Instant::now()) {
                 Ok(score) => (Some(score), None),
                 Err(error) => (None, Some(error)),
             }
@@ -2687,6 +2715,18 @@ mod tests {
         let data = b"format bhs-score-v1";
         let config = BeamBuilder::new().score_data(data).into_config();
         assert_eq!(config.piano_score_data.as_deref(), Some(data.as_slice()));
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn builder_records_an_owned_score() {
+        let score = BhsScore::parse("format bhs-score-v1\nticks_per_second 960\n0 960 C4 80\n")
+            .expect("the fixture should parse");
+        let config = BeamBuilder::new().score(score).into_config();
+        assert_eq!(
+            config.piano_score.as_ref().map(|score| score.ticks_per_second),
+            Some(960)
+        );
     }
 
     #[cfg(feature = "piano")]
