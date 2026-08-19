@@ -880,6 +880,7 @@ dependencies = [
  "hound",
  "iced",
  "iced-sugiyama",
+ "jungle-client",
  "jungle-sdk",
  "jungle-vision",
  "midly",

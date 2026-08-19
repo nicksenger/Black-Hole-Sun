@@ -25,6 +25,9 @@ tracing = "0.1"
 typenum = "1"
 uuid = { version = "1", features = ["serde"] }
 
+[dev-dependencies]
+jungle-client = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun" }
+
 [[bin]]
 name = "black-hole-score"
 required-features = ["piano"]

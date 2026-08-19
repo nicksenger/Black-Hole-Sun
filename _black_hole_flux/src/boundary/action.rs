@@ -41,7 +41,7 @@ impl<S> Action for InitRecvId<S> {
         state.recv_id = carry.recv_id;
         state.grad_steps = carry.grad_steps.max(1);
         state.grad_step = 0;
-        state.model_id = carry.warp_journey_id;
+        state.warp_journey_id = carry.warp_journey_id;
         Ok(())
     }
 }
@@ -177,7 +177,10 @@ impl<S> Action for Transmit<S> {
     type Input = EmissionId;
     type Output = ();
 
-    fn emit(state: &BoundaryState<S>, input: Self::Input) -> (EmissionId, black_hole_spec::ObjectId) {
+    fn emit(
+        state: &BoundaryState<S>,
+        input: Self::Input,
+    ) -> (EmissionId, black_hole_spec::ObjectId) {
         (input, state.send_id)
     }
 

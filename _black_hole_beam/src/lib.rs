@@ -271,6 +271,10 @@ impl BeamBuilder {
     /// registrations opens that node's journey in the subpanel overlay,
     /// replacing any child flow that is currently open. Only one child
     /// flow is shown at a time.
+    ///
+    /// Warp nodes are labeled `Warp<WarpAnimal, BoundaryAnimal>` and run
+    /// the boundary animal's journey, so registering a warp node's boundary
+    /// animal opens its subpanel on that boundary's live journey.
     pub fn register_subpanel_animal<A>(mut self) -> Self
     where
         A: Animal + 'static,
@@ -2256,6 +2260,17 @@ impl BeamApp {
             .subpanel_animals
             .iter()
             .find(|config| config.animal_label == lookup_key)
+            .or_else(|| {
+                // Warp nodes are labeled `Warp<WarpAnimal, BoundaryAnimal>`
+                // and run the boundary animal's journey, so a registered
+                // boundary animal stands in for the whole warp node.
+                warp_boundary_label(&lookup_key).and_then(|boundary_key| {
+                    self.config
+                        .subpanel_animals
+                        .iter()
+                        .find(|config| config.animal_label == boundary_key)
+                })
+            })
             .cloned()
     }
 
@@ -2472,6 +2487,25 @@ fn animal_label_key(label: &str) -> String {
     short_type_label(label)
 }
 
+/// Extracts the boundary animal label from a warp node label of the form
+/// `Warp<WarpAnimal, BoundaryAnimal>`.
+///
+/// Animal labels may carry generic arguments with nested angle brackets and
+/// commas, so the split happens at the first top-level comma.
+fn warp_boundary_label(label: &str) -> Option<String> {
+    let inner = label.strip_prefix("Warp<")?.strip_suffix('>')?;
+    let mut depth = 0i32;
+    for (index, char) in inner.char_indices() {
+        match char {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => return Some(animal_label_key(&inner[index + 1..])),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn short_type_label(label: &str) -> String {
     let mut shortened = String::with_capacity(label.len());
     let mut token = String::new();
@@ -2605,6 +2639,80 @@ mod tests {
         assert_eq!(config.subpanel_animals[1].title, "GenericCell<String>");
         assert_eq!(config.subpanel_animals[2].animal_label, "GenericCell<u8>");
         assert_eq!(config.subpanel_animals[2].title, "GenericCell<u8>");
+    }
+
+    #[test]
+    fn extracts_warp_boundary_labels() {
+        assert_eq!(
+            warp_boundary_label("Warp<MyWarp, MyBoundary>").as_deref(),
+            Some("MyBoundary")
+        );
+        assert_eq!(
+            warp_boundary_label("Warp<Outer<A, B>, Inner<C>>").as_deref(),
+            Some("Inner<C>"),
+            "the split happens at the first top-level comma"
+        );
+        assert_eq!(warp_boundary_label("MyWarp<A, B>"), None);
+        assert_eq!(warp_boundary_label("Warp<Solo>"), None);
+        assert_eq!(warp_boundary_label("Warp<A,"), None);
+    }
+
+    #[test]
+    fn warp_node_subpanel_resolves_registered_boundary_animal() {
+        let config = BeamBuilder::new()
+            .register_subpanel_animal::<TestCell>()
+            .into_config();
+        let (app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+
+        assert_eq!(
+            app.resolve_subpanel_config("Warp<OtherAnimal, TestCell>")
+                .map(|config| config.animal_label),
+            Some("TestCell".to_string()),
+            "the registered boundary animal stands in for the warp node"
+        );
+        assert_eq!(
+            app.resolve_subpanel_config("Warp<TestCell, OtherAnimal>")
+                .map(|config| config.animal_label),
+            None,
+            "registering the warp animal does not open the warp node"
+        );
+        assert_eq!(
+            app.resolve_subpanel_config("TestCell")
+                .map(|config| config.animal_label),
+            Some("TestCell".to_string()),
+            "direct registrations still match plain nodes"
+        );
+    }
+
+    #[test]
+    fn warp_node_click_opens_the_boundary_journey_subpanel() {
+        let boundary_journey = Uuid::new_v4();
+        let config = BeamBuilder::new()
+            .register_subpanel_animal::<TestCell>()
+            .into_config();
+        let live = LiveConfig {
+            client: Arc::new(jungle_client::MockClient::default()),
+            journey_id: Uuid::new_v4(),
+        };
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), Some(live));
+
+        let mut cell = CellDefinition::new::<TestCell>(7, vec![0], vec![]);
+        cell.animal_name = "Warp<OtherAnimal, TestCell>".to_string();
+        cell.journey_id = boundary_journey;
+        app.model.cells.push(cell);
+
+        app.open_subpanel_for_node(7);
+
+        let subpanel = app
+            .subpanel
+            .as_ref()
+            .expect("the warp node should open its subpanel");
+        assert_eq!(subpanel.node_id, 7);
+        assert_eq!(subpanel.title, "TestCell");
+        assert_eq!(
+            subpanel.journey_id, boundary_journey,
+            "the subpanel shows the boundary's live journey"
+        );
     }
 
     #[cfg(feature = "piano")]
