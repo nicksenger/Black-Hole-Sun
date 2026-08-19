@@ -228,7 +228,7 @@ where
         Id: AnimalIdValue,
         Generation: Unsigned,
         Seed = super::BoundaryInit,
-        State = crate::cell::action::CellState<<WarpAnimalT as Observe>::Appearance>,
+        State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
     >,
     E: NodeIdsFromList,
 {
@@ -266,7 +266,7 @@ where
         Id: AnimalIdValue,
         Generation: Unsigned,
         Seed = super::BoundaryInit,
-        State = crate::cell::action::CellState<<WarpAnimalT as Observe>::Appearance>,
+        State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
     >,
     E: NodeIdsFromList,
 {
@@ -1979,7 +1979,7 @@ mod tests {
     impl Animal for TestWarpBoundaryAnimal {
         type Id = Id<U2>;
         type Generation = U0;
-        type State = crate::CellState<<TestWarpChildAnimal as Observe>::Appearance>;
+        type State = crate::BoundaryState<<TestWarpChildAnimal as Observe>::Appearance>;
         type Seed = super::super::BoundaryInit;
         type Flow = ();
     }

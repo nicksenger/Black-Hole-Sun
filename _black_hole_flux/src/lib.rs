@@ -81,8 +81,8 @@ pub use atom::effect::MassInfer;
 pub use boundary::action::{InitRecvId as InitBoundaryRecvId, ObserveWarp, PerturbWarp};
 pub use boundary::effect::{ObserveWarpEffect, PerturbWarpEffect};
 pub use boundary::{
-    Boundary, Inner as BoundaryInner, InnerPropagationMicrostep as BoundaryMicrostep,
-    NoModelBoundary,
+    Boundary, BoundaryState, Inner as BoundaryInner,
+    InnerPropagationMicrostep as BoundaryMicrostep, NoModelBoundary,
 };
 pub use cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
