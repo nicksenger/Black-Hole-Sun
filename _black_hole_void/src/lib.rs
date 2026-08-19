@@ -385,7 +385,7 @@ async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<VoidContext>)
             Ok(request) => request,
             Err(ServerError::UnexpectedEof) => return,
             Err(error) => {
-                error!("failed to read tcp request frame: {error}");
+                warn!("failed to read tcp request frame: {error}");
                 return;
             }
         };

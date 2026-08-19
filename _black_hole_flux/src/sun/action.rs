@@ -56,10 +56,14 @@ fn register_vertex<S>(
     ports: &[(u32, ObjectId)],
     declared_outputs: Vec<u32>,
     journey_id: Uuid,
+    warp_journey_id: Option<Uuid>,
 ) {
     let mut inner = state.a.shared.lock().unwrap();
 
     inner.journey_ids.entry(vertex_id).or_insert(journey_id);
+    if let Some(warp_journey_id) = warp_journey_id {
+        inner.warp_journey_ids.insert(vertex_id, warp_journey_id);
+    }
     inner.node_labels.entry(vertex_id).or_insert(node_label);
     inner.node_states.entry(vertex_id).or_default();
     inner.node_state_sequences.entry(vertex_id).or_default();
@@ -156,6 +160,7 @@ where
             &[(port_id, initial_recv_id.recv_id)],
             E::node_ids(),
             journey_id,
+            None,
         );
 
         Ok(())
@@ -202,6 +207,7 @@ where
             &[(p1, seed.p1_recv_id), (p2, seed.p2_recv_id)],
             E::node_ids(),
             journey_id,
+            None,
         );
 
         Ok(())
@@ -297,7 +303,7 @@ where
     ) -> Result<Self::Output, Failure> {
         let boundary_journey_id =
             output.map_err(|e| Failure::Message(format!("boundary spawn failed: {e}")))?;
-        let (init, _warp_journey_id) = carry;
+        let (init, warp_journey_id) = carry;
         let port_id = P::U32;
         register_vertex(
             state,
@@ -310,6 +316,7 @@ where
             &[(port_id, init.recv_id)],
             E::node_ids(),
             boundary_journey_id,
+            Some(warp_journey_id),
         );
         Ok(())
     }
@@ -2001,6 +2008,7 @@ mod tests {
             &ports,
             outputs.to_vec(),
             Uuid::new_v4(),
+            None,
         );
     }
 
@@ -2155,6 +2163,10 @@ mod tests {
 
         let inner = state.a.shared.lock().unwrap();
         assert_eq!(inner.journey_ids.get(&U1::U32), Some(&boundary_journey_id));
+        assert_eq!(
+            inner.warp_journey_ids.get(&U1::U32),
+            Some(&warp_journey_id)
+        );
         assert_eq!(inner.port_vertices.get(&U1::U32), Some(&U1::U32));
     }
 

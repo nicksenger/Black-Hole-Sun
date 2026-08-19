@@ -127,6 +127,10 @@ pub struct SunNodeAppearance {
     pub id: u32,
     /// Journey ID of the spawned child workflow represented by this node.
     pub journey_id: Uuid,
+    /// Journey ID of the nested warp animal when this node is a warp vertex;
+    /// nil for ordinary vertices.
+    #[serde(default)]
+    pub warp_journey_id: Uuid,
     pub label: String,
     pub input_ports: Vec<u32>,
     pub state: SunNodeState,
@@ -284,6 +288,11 @@ impl<S> SunStateWithInner<S> {
                     .get(&id)
                     .copied()
                     .unwrap_or_else(Uuid::nil),
+                warp_journey_id: inner
+                    .warp_journey_ids
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_else(Uuid::nil),
                 label: inner
                     .node_labels
                     .get(&id)
@@ -335,6 +344,8 @@ pub struct SunInner {
     pub finalized: bool,
     /// Maps an internal vertex key to its associated journey ID.
     pub journey_ids: HashMap<u32, Uuid>,
+    /// Journey IDs of the nested warp animals for warp vertices.
+    pub warp_journey_ids: HashMap<u32, Uuid>,
     /// Human-readable animal type names keyed by internal vertex.
     pub node_labels: HashMap<u32, String>,
     /// Latest observable orchestration phase reached by each internal vertex.
