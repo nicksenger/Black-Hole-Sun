@@ -3,18 +3,22 @@
 use std::marker::PhantomData;
 
 use jungle_sdk::prelude::*;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use uuid::Uuid;
 
 pub use crate::cell::action::{
-    AdvanceGradientStep, BeginGradientAccumulation, CellState, EmissionId, Potentiation,
-    Propagation, Transmit, WaitForPropagation,
+    AdvanceGradientStep, BeginGradientAccumulation, EmissionId, Potentiation, Propagation,
+    Transmit, WaitForPotentiation, WaitForPropagation,
 };
 pub use crate::sun::BoundaryInit;
 
-use super::effect::WaitForBoundaryPotentiationEffect;
+use super::effect::{ObserveWarpEffect, PerturbWarpEffect};
+use super::BoundaryState;
 
 /// Initializes boundary state from [`BoundaryInit`].
 ///
-/// The `warp_journey_id` is stored in `CellState::model_id` so downstream
+/// The `warp_journey_id` is stored in `BoundaryState::model_id` so downstream
 /// boundary actions can address the associated warp journey without introducing
 /// a separate state shape.
 pub struct InitRecvId<S = ()>(PhantomData<fn() -> S>);
@@ -25,12 +29,12 @@ impl<S> Action for InitRecvId<S> {
     type Input = BoundaryInit;
     type Output = ();
 
-    fn emit(_state: &CellState<S>, input: Self::Input) -> ((), BoundaryInit) {
+    fn emit(_state: &BoundaryState<S>, input: Self::Input) -> ((), BoundaryInit) {
         ((), input)
     }
 
     fn absorb(
-        state: &mut CellState<S>,
+        state: &mut BoundaryState<S>,
         _output: EffectCompletion<Self::Effect>,
         carry: BoundaryInit,
     ) -> Result<Self::Output, Failure> {
@@ -42,54 +46,60 @@ impl<S> Action for InitRecvId<S> {
     }
 }
 
-/// Waits for a boundary potentiation envelope and advances the receive mailbox.
-pub struct WaitForPotentiation<S = ()>(PhantomData<fn() -> S>);
+// ---------------------------------------------------------------------------
+// ObserveWarp — query the warp journey appearance into state
+// ---------------------------------------------------------------------------
 
-#[jungle::action]
-impl<S> Action for WaitForPotentiation<S> {
-    type Effect = WaitForBoundaryPotentiationEffect;
-    type Input = ();
-    type Output = ();
+/// Queries the associated warp journey's appearance and stores it in
+/// [`BoundaryState::inner`], passing the incoming emission id through.
+pub struct ObserveWarp<S = ()>(PhantomData<fn() -> S>);
 
-    fn emit(state: &CellState<S>, _input: Self::Input) -> black_hole_spec::ObjectId {
-        state.recv_id
+#[jungle::action(carry = EmissionId)]
+impl<S> Action for ObserveWarp<S>
+where
+    S: Serialize + DeserializeOwned + Send + 'static,
+{
+    type Effect = ObserveWarpEffect<S>;
+    type Input = EmissionId;
+    type Output = EmissionId;
+
+    fn emit(state: &BoundaryState<S>, emission_id: Self::Input) -> (Uuid, EmissionId) {
+        (state.warp_journey_id, emission_id)
     }
 
     fn absorb(
-        state: &mut CellState<S>,
+        state: &mut BoundaryState<S>,
         output: EffectCompletion<Self::Effect>,
+        emission_id: EmissionId,
     ) -> Result<Self::Output, Failure> {
-        let (potentiation, recv_id) = output.map_err(|error| {
-            Failure::Message(format!("wait for boundary potentiation failed: {error}"))
-        })?;
-        state.recv_id = recv_id;
-        state.perturbation_seed = potentiation.seed;
-        Ok(())
+        let appearance =
+            output.map_err(|error| Failure::Message(format!("observe warp failed: {error}")))?;
+        state.inner = appearance;
+        Ok(emission_id)
     }
 }
 
-/// Waits for boundary potentiation and emits the payload to downstream steps.
-pub struct WaitForPotentiationForInput<S = ()>(PhantomData<fn() -> S>);
+// ---------------------------------------------------------------------------
+// PerturbWarp — forward a potentiation to the warp journey
+// ---------------------------------------------------------------------------
+
+/// Forwards a [`Potentiation`] to the associated warp journey via perturb.
+pub struct PerturbWarp<S = ()>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl<S> Action for WaitForPotentiationForInput<S> {
-    type Effect = WaitForBoundaryPotentiationEffect;
-    type Input = ();
-    type Output = Potentiation;
+impl<S> Action for PerturbWarp<S> {
+    type Effect = PerturbWarpEffect;
+    type Input = Potentiation;
+    type Output = ();
 
-    fn emit(state: &CellState<S>, _input: Self::Input) -> black_hole_spec::ObjectId {
-        state.recv_id
+    fn emit(state: &BoundaryState<S>, input: Self::Input) -> (Uuid, Potentiation) {
+        (state.warp_journey_id, input)
     }
 
     fn absorb(
-        state: &mut CellState<S>,
+        _state: &mut BoundaryState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let (potentiation, recv_id) = output.map_err(|error| {
-            Failure::Message(format!("wait for boundary potentiation failed: {error}"))
-        })?;
-        state.recv_id = recv_id;
-        state.perturbation_seed = potentiation.seed;
-        Ok(potentiation)
+        output.map_err(|error| Failure::Message(format!("perturb warp failed: {error}")))
     }
 }

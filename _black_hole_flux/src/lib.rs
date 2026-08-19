@@ -78,10 +78,8 @@ pub use black_hole_spec::{
 
 pub use animal::Progenitor;
 pub use atom::effect::MassInfer;
-pub use boundary::action::{
-    InitRecvId as InitBoundaryRecvId, WaitForPotentiation as WaitForBoundaryPotentiation,
-    WaitForPotentiationForInput as WaitForBoundaryPotentiationForInput,
-};
+pub use boundary::action::{InitRecvId as InitBoundaryRecvId, ObserveWarp, PerturbWarp};
+pub use boundary::effect::{ObserveWarpEffect, PerturbWarpEffect};
 pub use boundary::{
     Boundary, Inner as BoundaryInner, InnerPropagationMicrostep as BoundaryMicrostep,
     NoModelBoundary,
@@ -165,4 +163,10 @@ pub enum AtomError {
 
     #[error("spawn failed: {0}")]
     Spawn(String),
+
+    #[error("observe warp failed: {0}")]
+    ObserveWarp(String),
+
+    #[error("perturb warp failed: {0}")]
+    PerturbWarp(String),
 }

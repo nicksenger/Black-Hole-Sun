@@ -30,8 +30,7 @@ pub use black_hole_flux::{
     BoundaryMicrostep, CellInit, DefaultConfig, ErrorFeedbackPolicy, Fusion, FusionSeed,
     FusionState, InitBoundaryRecvId, LeftStack, ModelConfig, NoErrorFeedback, NoModelBoundary,
     NoOscillation, OscillationSchedule, Progenitor, QuzoFusion, QuzoFusionWithModelConfig,
-    RandStack, Ray, RightStack, Twin, WaitForBoundaryPotentiation,
-    WaitForBoundaryPotentiationForInput,
+    RandStack, Ray, RightStack, Twin,
 };
 
 // Convenience re-exports — spec types

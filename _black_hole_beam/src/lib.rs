@@ -1414,7 +1414,7 @@ struct BeamApp {
 
 impl BeamApp {
     fn new(
-        mut config: BeamConfig,
+        config: BeamConfig,
         model: BeamModel,
         live: Option<LiveConfig>,
     ) -> (Self, Task<Message>) {
