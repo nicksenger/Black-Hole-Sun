@@ -2215,7 +2215,7 @@ impl BeamApp {
             move |node_id: u32, animal_name: String, phase_label: String, style| {
                 if Some(node_id) == expanded_node {
                     if let Some(model) = &nested_model {
-                        return warp_expansion_view(model.clone(), layout);
+                        return warp_expansion_view(model.clone(), layout, style);
                     }
                 }
                 button(
@@ -2524,7 +2524,11 @@ fn build_sun_graph(
 
 /// Renders the nested Black Hole Sun graph of a warp journey inside an
 /// expanded warp node.
-fn warp_expansion_view(model: BeamModel, layout: BeamLayout) -> Element<'static, Message> {
+fn warp_expansion_view(
+    model: BeamModel,
+    layout: BeamLayout,
+    style: NodeStyleColors,
+) -> Element<'static, Message> {
     let labels = model
         .cells
         .iter()
@@ -2585,6 +2589,9 @@ fn warp_expansion_view(model: BeamModel, layout: BeamLayout) -> Element<'static,
     container(container(graph).width(Length::Fill).height(Length::Fill))
         .width(Length::Fixed(WARP_EXPANSION_SIZE))
         .height(Length::Fixed(WARP_EXPANSION_SIZE))
+        // Outline the subgraph like a node: phase-driven border color and
+        // the same corner rounding.
+        .style(move |_theme| cell_node_style(style))
         .clip(true)
         .into()
 }
