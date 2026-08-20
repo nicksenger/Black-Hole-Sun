@@ -1333,8 +1333,9 @@ fn node_style_colors(
     }
 }
 
-/// Warp nodes render with a black body and white text while keeping the
-/// phase-driven border color.
+/// Unexpanded warp nodes render with a black body and white text while
+/// keeping the phase-driven border color. Once their subgraph is expanded
+/// into the main graph they are colored like regular nodes instead.
 fn warp_node_style_colors(
     state: SunNodeState,
     grad_step: usize,
@@ -1805,11 +1806,7 @@ impl BeamApp {
                                             && !cell.warp_journey_id.is_nil()
                                     });
                                     if is_warp {
-                                        let merged = self
-                                            .model
-                                            .warp_paths
-                                            .get(&subpanel.node_id)
-                                            .is_some_and(|path| self.is_path_expanded(path))
+                                        let merged = self.is_warp_merged(subpanel.node_id)
                                             && self.warp_appearance_available(subpanel.node_id);
                                         self.subpanel_notice = if merged {
                                             None
@@ -2402,7 +2399,9 @@ impl BeamApp {
             .cells
             .iter()
             .map(|cell| {
-                let warp = !cell.warp_journey_id.is_nil();
+                // A warp cell whose subgraph is merged into the main graph is
+                // colored like a regular node rather than as a warp boundary.
+                let warp = !cell.warp_journey_id.is_nil() && !self.is_warp_merged(cell.id);
                 let style = self
                     .visuals
                     .get(&cell.id)
@@ -2504,6 +2503,15 @@ impl BeamApp {
             return self.rebuild_model();
         }
         Task::none()
+    }
+
+    /// Whether a warp cell's nested sun is currently merged into the main
+    /// graph.
+    fn is_warp_merged(&self, node_id: u32) -> bool {
+        self.model
+            .warp_paths
+            .get(&node_id)
+            .is_some_and(|path| self.is_path_expanded(path))
     }
 
     /// Whether every level of a warp path is expanded, i.e. the subgraph at
@@ -3665,6 +3673,67 @@ mod tests {
             "the whole merged chain leaves the main graph"
         );
         assert!(app.model.graph.edges.is_empty());
+    }
+
+    #[test]
+    fn expanded_warp_cells_are_colored_like_regular_nodes() {
+        let config = BeamBuilder::new()
+            .register_subpanel_animal::<TestCell>()
+            .into_config();
+        let live = LiveConfig {
+            client: Arc::new(jungle_client::MockClient::default()),
+            journey_id: Uuid::new_v4(),
+        };
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), Some(live));
+
+        let appearance = SunAppearance {
+            finalized: true,
+            grad_steps: 1,
+            nodes: vec![SunNodeAppearance {
+                id: 7,
+                journey_id: Uuid::new_v4(),
+                warp_journey_id: Uuid::new_v4(),
+                label: "Warp<OtherAnimal, TestCell>".to_string(),
+                input_ports: vec![0],
+                state: SunNodeState::Idle,
+                state_sequence: 0,
+                grad_step: 1,
+            }],
+            edges: vec![],
+        };
+        let snapshot = LiveAppearanceSnapshot {
+            appearance,
+            child_rays: HashMap::new(),
+            warp_appearances: HashMap::from([(vec![7], nested_sun_appearance(true))]),
+            warp_diagnostics: HashMap::new(),
+        };
+        let _task = app.update(Message::AppearanceLoaded(Ok(Some(snapshot))));
+
+        let styles = app.cell_styles();
+        assert_eq!(
+            styles[&7].body,
+            Color::BLACK,
+            "an unexpanded warp cell keeps the black body"
+        );
+
+        // Expanding the subgraph recolors the boundary node like a regular
+        // one.
+        let _task = app.update(Message::NodeSelected(7));
+        let styles = app.cell_styles();
+        assert_eq!(
+            styles[&7],
+            node_style_colors(SunNodeState::Idle, 1, 1, None),
+            "an expanded warp cell is colored like a regular node"
+        );
+
+        // Collapsing it restores the warp styling.
+        let _task = app.update(Message::NodeSelected(7));
+        let styles = app.cell_styles();
+        assert_eq!(
+            styles[&7].body,
+            Color::BLACK,
+            "collapsing the subgraph restores the warp styling"
+        );
     }
 
     #[cfg(feature = "piano")]
