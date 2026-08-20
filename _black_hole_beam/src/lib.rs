@@ -53,7 +53,7 @@ pub use piano::score_text;
 #[cfg(feature = "piano")]
 pub use piano::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
 #[cfg(feature = "piano")]
-use piano::{PianoKeyAppearance, PianoKeyboard, PianoMessage, PianoPointerSource, PIANO_HEIGHT};
+use piano::{piano_height, PianoKeyAppearance, PianoKeyboard, PianoMessage, PianoPointerSource};
 #[cfg(feature = "piano")]
 use piano::piano_audio::PianoAudioEngine;
 #[cfg(feature = "piano")]
@@ -201,6 +201,8 @@ pub struct BeamBuilder {
     piano_score: Option<BhsScore>,
     #[cfg(feature = "piano")]
     piano_log: Option<PianoLog>,
+    #[cfg(feature = "piano")]
+    piano_labels: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -229,6 +231,8 @@ impl Default for BeamBuilder {
             piano_score: None,
             #[cfg(feature = "piano")]
             piano_log: None,
+            #[cfg(feature = "piano")]
+            piano_labels: false,
         }
     }
 }
@@ -381,6 +385,20 @@ impl BeamBuilder {
         self
     }
 
+    /// Show the computer-keyboard bindings above the piano keys.
+    ///
+    /// Each key in the currently active octave — the one selected by number
+    /// keys `0`-`7`, transposed one octave down or up while left or right
+    /// Shift is held — gets its binding character drawn in white directly
+    /// above it, and keys outside the active octave are unlabeled. Enabling
+    /// labels adds a label row above the keys, increasing the piano's
+    /// height.
+    #[cfg(feature = "piano")]
+    pub fn piano_labels(mut self) -> Self {
+        self.piano_labels = true;
+        self
+    }
+
     fn into_config(self) -> BeamConfig {
         BeamConfig {
             title: self.title,
@@ -400,6 +418,8 @@ impl BeamBuilder {
             piano_score: self.piano_score,
             #[cfg(feature = "piano")]
             piano_log: self.piano_log,
+            #[cfg(feature = "piano")]
+            piano_labels: self.piano_labels,
         }
     }
 }
@@ -511,6 +531,8 @@ struct BeamConfig {
     piano_score: Option<BhsScore>,
     #[cfg(feature = "piano")]
     piano_log: Option<PianoLog>,
+    #[cfg(feature = "piano")]
+    piano_labels: bool,
 }
 
 #[derive(Clone)]
@@ -2190,10 +2212,12 @@ impl BeamApp {
                 })
                 .or_insert(appearance);
         }
+        let label_octave = self.piano_label_octave();
+        let piano_height = piano_height(label_octave.is_some());
         let keyboard: Element<'_, PianoMessage> =
-            canvas::Canvas::new(PianoKeyboard::new(appearances))
+            canvas::Canvas::new(PianoKeyboard::new(appearances, label_octave))
                 .width(Length::Fill)
-                .height(Length::Fixed(PIANO_HEIGHT))
+                .height(Length::Fixed(piano_height))
                 .into();
         let keyboard: Element<'_, Message> = keyboard.map(Message::Piano);
         let audio_error = self
@@ -2224,7 +2248,7 @@ impl BeamApp {
         };
         container(keyboard)
             .width(Length::Fill)
-            .height(Length::Fixed(PIANO_HEIGHT))
+            .height(Length::Fixed(piano_height))
             .style(|_theme| container::Style {
                 background: Some(Background::Color(Color::BLACK)),
                 ..container::Style::default()
@@ -2347,6 +2371,14 @@ impl BeamApp {
             }
             _ => {}
         }
+    }
+
+    /// The octave whose computer-keyboard bindings are labeled above the
+    /// piano keys, or `None` when labels are disabled; held Shift keys
+    /// transpose it like they transpose struck notes.
+    #[cfg(feature = "piano")]
+    fn piano_label_octave(&self) -> Option<i8> {
+        self.config.piano_labels.then(|| self.piano_octave + self.piano_shift_offset())
     }
 
     /// The octave transposition currently held for piano input: left Shift
@@ -4107,6 +4139,60 @@ mod tests {
     fn builder_records_piano_log() {
         let config = BeamBuilder::new().piano_log(PianoLog::Input).into_config();
         assert_eq!(config.piano_log, Some(PianoLog::Input));
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn builder_records_piano_labels() {
+        assert!(!BeamBuilder::new().into_config().piano_labels);
+        assert!(BeamBuilder::new().piano_labels().into_config().piano_labels);
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn piano_labels_follow_the_active_octave_and_shifts() {
+        let config = BeamBuilder::new().piano_labels().into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+
+        // Labels are off by default.
+        let plain_config = BeamBuilder::new().into_config();
+        let (plain_app, _) = BeamApp::new(plain_config, BeamModel::empty(), None);
+        assert_eq!(plain_app.piano_label_octave(), None);
+
+        // The labeled octave starts at the selected octave...
+        assert_eq!(app.piano_label_octave(), Some(4));
+
+        let press_digit = |app: &mut BeamApp, key: char, code: keyboard::key::Code| {
+            app.update_piano_keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(key.to_string().into()),
+                modified_key: keyboard::Key::Character(key.to_string().into()),
+                physical_key: keyboard::key::Physical::Code(code),
+                location: keyboard::Location::Standard,
+                modifiers: Default::default(),
+                text: Some(key.to_string().into()),
+                repeat: false,
+            })
+        };
+
+        // ...and follows number-key octave selection.
+        press_digit(&mut app, '5', keyboard::key::Code::Digit5);
+        assert_eq!(app.piano_label_octave(), Some(5));
+
+        let shift = |code: keyboard::key::Code| keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Shift),
+            modified_key: keyboard::Key::Named(keyboard::key::Named::Shift),
+            physical_key: keyboard::key::Physical::Code(code),
+            location: keyboard::Location::Standard,
+            modifiers: Default::default(),
+            text: None,
+            repeat: false,
+        };
+
+        // ...and is transposed by held Shift keys.
+        app.update_piano_keyboard(shift(keyboard::key::Code::ShiftLeft));
+        assert_eq!(app.piano_label_octave(), Some(4), "left shift lowers");
+        app.update_piano_keyboard(shift(keyboard::key::Code::ShiftRight));
+        assert_eq!(app.piano_label_octave(), Some(5), "both shifts cancel");
     }
 
     #[cfg(feature = "piano")]

@@ -1,20 +1,33 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use iced::alignment::Vertical;
 use iced::mouse;
 use iced::touch;
 use iced::widget::canvas::{self, Path};
-use iced::{Color, Point, Rectangle, Size, Theme};
+use iced::widget::text::Alignment;
+use iced::{Color, Pixels, Point, Rectangle, Size, Theme};
 
 pub mod piano_audio;
 pub mod piano_score;
 pub mod score_text;
 
 pub(crate) const PIANO_HEIGHT: f32 = 185.0;
+/// The height of the keybind label row drawn above the keys when labels are
+/// enabled.
+pub(crate) const PIANO_LABEL_ROW_HEIGHT: f32 = 20.0;
+/// The font size of keybind labels in the label row.
+const PIANO_LABEL_FONT_SIZE: f32 = 13.0;
 const FIRST_MIDI_NOTE: u8 = 21; // A0
 const LAST_MIDI_NOTE: u8 = 108; // C8
 const WHITE_KEY_COUNT: f32 = 52.0;
 const BLACK_KEY_HEIGHT: f32 = PIANO_HEIGHT * 0.63;
+
+/// The piano canvas height for a given label state: the key row plus the
+/// keybind label row when labels are enabled.
+pub(crate) fn piano_height(labels_enabled: bool) -> f32 {
+    PIANO_HEIGHT + if labels_enabled { PIANO_LABEL_ROW_HEIGHT } else { 0.0 }
+}
 
 /// A piano note in equal temperament with A4 tuned to 440 Hz.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -131,11 +144,41 @@ pub(crate) struct PianoCanvasState {
 
 pub(crate) struct PianoKeyboard {
     appearances: HashMap<u8, PianoKeyAppearance>,
+    /// The octave whose computer-keyboard bindings are labeled above the
+    /// keys; it already includes any held-Shift transposition. `None` hides
+    /// the label row.
+    label_octave: Option<i8>,
 }
 
 impl PianoKeyboard {
-    pub(crate) fn new(appearances: HashMap<u8, PianoKeyAppearance>) -> Self {
-        Self { appearances }
+    pub(crate) fn new(
+        appearances: HashMap<u8, PianoKeyAppearance>,
+        label_octave: Option<i8>,
+    ) -> Self {
+        Self {
+            appearances,
+            label_octave,
+        }
+    }
+
+    /// The top edge of the key area in canvas coordinates; the label row
+    /// occupies the space above it when labels are enabled.
+    fn key_top(&self) -> f32 {
+        if self.label_octave.is_some() {
+            PIANO_LABEL_ROW_HEIGHT
+        } else {
+            0.0
+        }
+    }
+
+    /// The bounds of the key area within the canvas, excluding the label
+    /// row.
+    fn key_bounds(&self, bounds: Rectangle) -> Rectangle {
+        let key_top = self.key_top();
+        Rectangle::new(
+            Point::new(bounds.x, bounds.y + key_top),
+            Size::new(bounds.width, bounds.height - key_top),
+        )
     }
 }
 
@@ -156,15 +199,16 @@ impl canvas::Program<PianoMessage> for PianoKeyboard {
     ) -> Option<canvas::Action<PianoMessage>> {
         match event {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                let position = cursor.position_in(bounds)?;
-                let midi_note = note_at(position, bounds.size())?;
+                let key_bounds = self.key_bounds(bounds);
+                let position = cursor.position_in(key_bounds)?;
+                let midi_note = note_at(position, key_bounds.size())?;
                 if state.mouse_note.replace(midi_note).is_some() {
                     return None;
                 }
                 Some(
                     canvas::Action::publish(PianoMessage::Press {
                         midi_note,
-                        velocity: strike_velocity(position, bounds.size(), midi_note),
+                        velocity: strike_velocity(position, key_bounds.size(), midi_note),
                         source: PianoPointerSource::Mouse,
                     })
                     .and_capture(),
@@ -180,13 +224,14 @@ impl canvas::Program<PianoMessage> for PianoKeyboard {
                 })
             }
             canvas::Event::Touch(touch::Event::FingerPressed { id, position }) => {
-                let position = *position - iced::Vector::new(bounds.x, bounds.y);
-                let midi_note = note_at(position, bounds.size())?;
+                let key_bounds = self.key_bounds(bounds);
+                let position = *position - iced::Vector::new(key_bounds.x, key_bounds.y);
+                let midi_note = note_at(position, key_bounds.size())?;
                 state.touch_notes.insert(*id, midi_note);
                 Some(
                     canvas::Action::publish(PianoMessage::Press {
                         midi_note,
-                        velocity: strike_velocity(position, bounds.size(), midi_note),
+                        velocity: strike_velocity(position, key_bounds.size(), midi_note),
                         source: PianoPointerSource::Touch(id.0),
                     })
                     .and_capture(),
@@ -215,7 +260,8 @@ impl canvas::Program<PianoMessage> for PianoKeyboard {
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let key_height = bounds.height;
+        let key_top = self.key_top();
+        let key_height = bounds.height - key_top;
         let white_width = bounds.width / WHITE_KEY_COUNT;
 
         frame.fill_rectangle(Point::ORIGIN, bounds.size(), Color::BLACK);
@@ -228,7 +274,7 @@ impl canvas::Program<PianoMessage> for PianoKeyboard {
             let x = f32::from(white_index) * white_width;
             draw_white_key(
                 &mut frame,
-                Rectangle::new(Point::new(x, 0.0), Size::new(white_width, key_height)),
+                Rectangle::new(Point::new(x, key_top), Size::new(white_width, key_height)),
                 self.appearances
                     .get(&midi_note)
                     .copied()
@@ -245,7 +291,7 @@ impl canvas::Program<PianoMessage> for PianoKeyboard {
                 let x = f32::from(whites_before) * white_width - black_width / 2.0;
                 draw_black_key(
                     &mut frame,
-                    Rectangle::new(Point::new(x, 0.0), Size::new(black_width, black_height)),
+                    Rectangle::new(Point::new(x, key_top), Size::new(black_width, black_height)),
                     self.appearances
                         .get(&midi_note)
                         .copied()
@@ -253,6 +299,23 @@ impl canvas::Program<PianoMessage> for PianoKeyboard {
                 );
             } else {
                 whites_before += 1;
+            }
+        }
+
+        // Keybind labels sit in the row above the keys, each centered over
+        // its key. Only the bindings of the active octave are labeled.
+        if let Some(octave) = self.label_octave {
+            for (key, label) in MAPPED_KEY_LABELS {
+                let Some(midi_note) = computer_key_note(key, octave, 0) else {
+                    continue;
+                };
+                let mut text = canvas::Text::from(label);
+                text.position = Point::new(key_center_x(midi_note, bounds.width), key_top / 2.0);
+                text.color = Color::WHITE;
+                text.size = Pixels(PIANO_LABEL_FONT_SIZE);
+                text.align_x = Alignment::Center;
+                text.align_y = Vertical::Center;
+                frame.fill_text(text);
             }
         }
 
@@ -497,6 +560,47 @@ const fn black_key_semitones(key: char) -> Option<i32> {
     }
 }
 
+/// Every computer-keyboard character that can strike a note, paired with
+/// the string drawn as its label; Enter is shown as `↵`.
+const MAPPED_KEY_LABELS: [(char, &str); 22] = [
+    ('a', "a"),
+    ('s', "s"),
+    ('d', "d"),
+    ('f', "f"),
+    ('g', "g"),
+    ('h', "h"),
+    ('j', "j"),
+    ('k', "k"),
+    ('l', "l"),
+    (';', ";"),
+    ('\'' , "'"),
+    ('\r', "↵"),
+    ('q', "q"),
+    ('w', "w"),
+    ('r', "r"),
+    ('t', "t"),
+    ('u', "u"),
+    ('i', "i"),
+    ('o', "o"),
+    ('p', "p"),
+    ('[', "["),
+    ('\\', "\\"),
+];
+
+/// The horizontal center of a key within a keyboard of the given width,
+/// matching the layout drawn by [`PianoKeyboard`]: white keys are centered
+/// in their slot and black keys on the boundary between two white keys.
+fn key_center_x(midi_note: u8, width: f32) -> f32 {
+    let white_width = width / WHITE_KEY_COUNT;
+    let whites_before =
+        (FIRST_MIDI_NOTE..midi_note).filter(|note| !is_black(*note)).count() as u8;
+    if is_black(midi_note) {
+        f32::from(whites_before) * white_width
+    } else {
+        (f32::from(whites_before) + 0.5) * white_width
+    }
+}
+
 /// The MIDI note struck by a computer keyboard key in the selected
 /// scientific-pitch octave, transposed one octave down or up when `shift`
 /// is negative or positive, or `None` if the key is unmapped or the note
@@ -619,5 +723,43 @@ mod tests {
             });
             assert!(reachable, "MIDI note {midi_note} is unreachable");
         }
+    }
+
+    #[test]
+    fn the_label_row_extends_the_piano_height() {
+        assert_eq!(piano_height(false), PIANO_HEIGHT);
+        assert_eq!(piano_height(true), PIANO_HEIGHT + PIANO_LABEL_ROW_HEIGHT);
+    }
+
+    #[test]
+    fn key_centers_match_the_drawn_layout() {
+        let width = 1040.0;
+        let white_width = width / WHITE_KEY_COUNT;
+        // D4 is the 25th white key (index 24): A0 and B0, then the seven
+        // white keys of each of octaves 1 through 3, then C4. C#4 sits on
+        // the boundary after it, between C4 and D4.
+        assert_eq!(key_center_x(62, width), 24.5 * white_width);
+        assert_eq!(key_center_x(61, width), 24.0 * white_width);
+    }
+
+    #[test]
+    fn labels_cover_exactly_the_keys_of_the_active_octave() {
+        // At octave 4 every mapped key lands on the keyboard, so all 22
+        // bindings are labeled from G#4 (q) through F#6 (\\).
+        let labeled: Vec<u8> = MAPPED_KEY_LABELS
+            .iter()
+            .filter_map(|(key, _)| computer_key_note(*key, 4, 0))
+            .collect();
+        assert_eq!(labeled.len(), 22);
+        assert_eq!(labeled.iter().min(), Some(&68));
+        assert_eq!(labeled.iter().max(), Some(&90));
+
+        // At octave 7 only the bindings that still land on the keyboard are
+        // labeled: a, s, d and q, w.
+        let labeled: Vec<u8> = MAPPED_KEY_LABELS
+            .iter()
+            .filter_map(|(key, _)| computer_key_note(*key, 7, 0))
+            .collect();
+        assert_eq!(labeled, vec![105, 107, 108, 104, 106]);
     }
 }
