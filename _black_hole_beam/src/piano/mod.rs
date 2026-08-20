@@ -473,48 +473,67 @@ const fn is_black(midi_note: u8) -> bool {
     matches!(midi_note % 12, 1 | 3 | 6 | 8 | 10)
 }
 
-/// The Shift key held while striking a note-name key. Left shift strikes
-/// one semitone below the natural note; right shift strikes one semitone
-/// above it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PianoShiftSide {
-    Left,
-    Right,
-}
-
 /// The scientific-pitch octave selected by a number key. `0` selects the
-/// partial bottom octave (only A0 and B0 exist on the keyboard) and `9`
-/// selects nothing because the keyboard ends at C8.
+/// partial bottom octave (only A0 and B0 exist on the keyboard) and `8`
+/// through `9` select nothing because the keyboard ends at C8, which the
+/// home row reaches in octave 7.
 pub(crate) fn computer_octave_key(key: char) -> Option<i8> {
     let digit = key.to_digit(10)?;
-    (digit <= 8).then_some(digit as i8)
+    (digit <= 7).then_some(digit as i8)
 }
 
-/// The MIDI note struck by a note-name key (`a`-`g`) in the selected
-/// scientific-pitch octave, transposed by the held Shift side if any, or
-/// `None` if the key is not a note name or the note falls outside the
-/// 88-key range.
-pub(crate) fn computer_key_note(
-    key: char,
-    octave: i8,
-    shift: Option<PianoShiftSide>,
-) -> Option<u8> {
-    let pitch_class = match key.to_ascii_lowercase() {
-        'c' => 0,
-        'd' => 2,
-        'e' => 4,
-        'f' => 5,
-        'g' => 7,
-        'a' => 9,
-        'b' => 11,
-        _ => return None,
-    };
-    let shift_semitones = match shift {
-        Some(PianoShiftSide::Left) => -1,
-        Some(PianoShiftSide::Right) => 1,
-        None => 0,
-    };
-    let midi_note: i32 = 12 * (i32::from(octave) + 1) + pitch_class + shift_semitones;
+/// The semitone offset of a home-row white-key letter from the A that opens
+/// the row: `a` is A, `s` is B, `d` is C, and so on through `'`, which is D
+/// of the next octave. Enter (`\r`) closes the row at E of the next
+/// octave. Letters outside the row map to `None`.
+const fn white_key_semitones(key: char) -> Option<i32> {
+    match key {
+        'a' => Some(0),
+        's' => Some(2),
+        'd' => Some(3),
+        'f' => Some(5),
+        'g' => Some(7),
+        'h' => Some(8),
+        'j' => Some(10),
+        'k' => Some(12),
+        'l' => Some(14),
+        ';' => Some(15),
+        '\'' => Some(17),
+        '\r' => Some(19),
+        _ => None,
+    }
+}
+
+/// The semitone offset of a top-row black-key letter from the A that opens
+/// the home row: `q` is Ab/G# just below that A, `w` is A#, and so on through
+/// `\`, which is F# of the next octave. Letters outside the row map to
+/// `None`.
+const fn black_key_semitones(key: char) -> Option<i32> {
+    match key {
+        'q' => Some(-1),
+        'w' => Some(1),
+        'r' => Some(4),
+        't' => Some(6),
+        'u' => Some(9),
+        'i' => Some(11),
+        'o' => Some(13),
+        'p' => Some(16),
+        '[' => Some(18),
+        '\\' => Some(21),
+        _ => None,
+    }
+}
+
+/// The MIDI note struck by a computer keyboard key in the selected
+/// scientific-pitch octave, transposed one octave down or up when `shift`
+/// is negative or positive, or `None` if the key is unmapped or the note
+/// falls outside the 88-key range. The home row plays the white keys from A
+/// of the octave through E of the next (Enter); the top row plays the black
+/// keys between them.
+pub(crate) fn computer_key_note(key: char, octave: i8, shift: i8) -> Option<u8> {
+    let key = key.to_ascii_lowercase();
+    let semitones = white_key_semitones(key).or_else(|| black_key_semitones(key))?;
+    let midi_note = 12 * (i32::from(octave) + 1) + 9 + semitones + 12 * i32::from(shift);
     u8::try_from(midi_note)
         .ok()
         .filter(|note| (FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(note))
@@ -554,63 +573,76 @@ mod tests {
     }
 
     #[test]
-    fn computer_keyboard_mapping_is_octave_aware() {
-        // Note names map to their pitch classes in the selected octave.
-        assert_eq!(computer_key_note('c', 4, None), Some(60));
-        assert_eq!(computer_key_note('a', 4, None), Some(69));
-        assert_eq!(computer_key_note('B', 7, None), Some(107));
-        // The mapping reaches both ends of the 88-key range.
-        assert_eq!(computer_key_note('a', 0, None), Some(21));
-        assert_eq!(computer_key_note('b', 0, None), Some(23));
-        assert_eq!(computer_key_note('c', 8, None), Some(108));
+    fn home_row_walks_white_keys_from_a() {
+        // The row walks the white keys from A of the selected octave: a is
+        // A4, s is B4, d wraps to C5, and so on.
+        let expected = [69, 71, 72, 74, 76, 77, 79, 81, 83, 84, 86];
+        for (key, midi_note) in "asd fg hjkl;'"
+            .chars()
+            .filter(|c| *c != ' ')
+            .zip(expected)
+        {
+            assert_eq!(computer_key_note(key, 4, 0), Some(midi_note));
+        }
+        // The row is case-insensitive and the mapping reaches both ends of
+        // the 88-key range.
+        assert_eq!(computer_key_note('A', 4, 0), Some(69));
+        assert_eq!(computer_key_note('a', 0, 0), Some(21));
+        assert_eq!(computer_key_note('s', 0, 0), Some(23));
+        assert_eq!(computer_key_note('d', 7, 0), Some(108));
         // Notes outside the keyboard are not struck.
-        assert_eq!(computer_key_note('c', 0, None), None);
-        assert_eq!(computer_key_note('d', 8, None), None);
-        // Non-note keys are ignored.
-        assert_eq!(computer_key_note('z', 4, None), None);
-        assert_eq!(computer_key_note('!', 4, None), None);
+        assert_eq!(computer_key_note('a', -1, 0), None);
+        assert_eq!(computer_key_note('\'' , 8, 0), None);
+        // Unmapped letters are ignored.
+        assert_eq!(computer_key_note('z', 4, 0), None);
+        assert_eq!(computer_key_note('e', 4, 0), None);
+        assert_eq!(computer_key_note('!', 4, 0), None);
     }
 
     #[test]
-    fn shift_keys_transpose_note_names_by_one_semitone() {
-        use PianoShiftSide::{Left, Right};
-        // Left shift is a semitone down, right shift a semitone up.
-        assert_eq!(computer_key_note('c', 4, Some(Left)), Some(59));
-        assert_eq!(computer_key_note('c', 4, Some(Right)), Some(61));
+    fn top_row_walks_the_black_keys() {
+        // q is Ab4/G#4, w is A#4, and so on through \, which is F#6.
+        let expected = [68, 70, 73, 75, 78, 80, 82, 85, 87, 90];
+        for (key, midi_note) in "qwrtuiop[\\".chars().zip(expected) {
+            assert_eq!(computer_key_note(key, 4, 0), Some(midi_note));
+        }
+        // The row is case-insensitive and range-checked.
+        assert_eq!(computer_key_note('W', 4, 0), Some(70));
+        assert_eq!(computer_key_note('\\', 9, 0), None);
+    }
+
+    #[test]
+    fn shift_octaves_transpose_every_mapped_key() {
+        // Negative shifts drop an octave; positive shifts raise one.
+        assert_eq!(computer_key_note('a', 4, -1), Some(57));
+        assert_eq!(computer_key_note('a', 4, 1), Some(81));
+        assert_eq!(computer_key_note('w', 4, -1), Some(58));
+        assert_eq!(computer_key_note('\\', 4, 1), Some(102));
         // Shifted notes are range-checked like natural ones.
-        assert_eq!(computer_key_note('a', 0, Some(Left)), None);
-        assert_eq!(computer_key_note('a', 0, Some(Right)), Some(22));
-        assert_eq!(computer_key_note('c', 8, Some(Left)), Some(107));
-        assert_eq!(computer_key_note('c', 8, Some(Right)), None);
+        assert_eq!(computer_key_note('a', 0, -1), None);
+        assert_eq!(computer_key_note('a', 8, 1), None);
+        assert_eq!(computer_key_note('\'' , 8, 1), None);
     }
 
     #[test]
     fn number_keys_select_octaves() {
-        for digit in 0..=8 {
+        for digit in 0..=7 {
             let key = char::from(b'0' + digit);
             assert_eq!(computer_octave_key(key), Some(digit as i8));
         }
+        assert_eq!(computer_octave_key('8'), None);
         assert_eq!(computer_octave_key('9'), None);
         assert_eq!(computer_octave_key('a'), None);
     }
 
     #[test]
     fn computer_keys_reach_every_key_on_the_keyboard() {
-        // Note names a-g plus the Shift sides cover all 88 keys from A0 to
-        // C8.
-        let shifts = [
-            None,
-            Some(PianoShiftSide::Left),
-            Some(PianoShiftSide::Right),
-        ];
+        // The home row plus the top row cover all 88 keys from A0 to C8.
+        let letters = "asdfghjkl;'qwrtuiop[\\\r";
         for midi_note in FIRST_MIDI_NOTE..=LAST_MIDI_NOTE {
-            let reachable = ('a'..='g').any(|note| {
-                (0i8..=8).any(|octave| {
-                    shifts
-                        .iter()
-                        .copied()
-                        .any(|shift| computer_key_note(note, octave, shift) == Some(midi_note))
-                })
+            let reachable = letters.chars().any(|key| {
+                (0i8..=7)
+                    .any(|octave| computer_key_note(key, octave, 0) == Some(midi_note))
             });
             assert!(reachable, "MIDI note {midi_note} is unreachable");
         }
