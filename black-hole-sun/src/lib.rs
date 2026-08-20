@@ -26,11 +26,11 @@ pub use void_client::VoidClient;
 
 // Convenience re-exports — flux modules and core sun types
 pub use black_hole_flux::{
-    atom, cell, fusion, ops, sun, twin, warp, AtomError, Boundary, BoundaryInit, BoundaryInner,
+    atom, cell, fusion, ops, sun, warp, AtomError, Boundary, BoundaryInit, BoundaryInner,
     BoundaryMicrostep, BoundaryState, CellInit, DefaultConfig, ErrorFeedbackPolicy, Fusion,
-    FusionSeed, FusionState, InitBoundaryRecvId, LeftStack, ModelConfig, NoErrorFeedback,
-    NoModelBoundary, NoOscillation, OscillationSchedule, Progenitor, QuzoFusion,
-    QuzoFusionWithModelConfig, RandStack, Ray, RightStack, Twin, Warp,
+    FusionSeed, FusionState, InitBoundaryRecvId, ModelConfig, NoErrorFeedback, NoModelBoundary,
+    NoOscillation, OscillationSchedule, Progenitor, QuzoFusion, QuzoFusionWithModelConfig, Ray,
+    Warp,
 };
 
 // Convenience re-exports — spec types

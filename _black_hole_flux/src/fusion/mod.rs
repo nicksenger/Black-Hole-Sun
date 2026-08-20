@@ -93,7 +93,7 @@ pub struct QuzoFusionEpoch<
     Step<FusionOptimize>,
 );
 
-/// Infinite two-input QuZO loop for model-aware twin transforms.
+/// Infinite two-input QuZO loop for model-aware fusion transforms.
 #[derive(Flow)]
 pub struct QuzoFusionWithModelConfig<
     Transform,
