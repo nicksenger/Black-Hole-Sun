@@ -8,7 +8,8 @@
 //!
 //! The `piano` feature adds a NanoMoog-styled 88-key piano to the bottom of
 //! the viewer. Use `BeamBuilder::on_piano_event` to capture its expressive,
-//! performance-timed attack and release events.
+//! performance-timed attack and release events, or `BeamBuilder::piano_log`
+//! to log played notes to stdout as `bhs-score-v1` note pairs.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -160,6 +161,17 @@ where
     }
 }
 
+/// What [`BeamBuilder::piano_log`] prints to stdout while notes are played.
+#[cfg(feature = "piano")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PianoLog {
+    /// Only the notes the user inputs (e.g. through the computer keyboard or
+    /// a pointer); notes played from a configured score are not logged.
+    Input,
+    /// Every note, including those played from a configured score.
+    All,
+}
+
 /// Builder for Black Hole Sun graph viewers.
 ///
 /// A static view can be launched directly:
@@ -192,6 +204,8 @@ pub struct BeamBuilder {
     piano_score_data: Option<Vec<u8>>,
     #[cfg(feature = "piano")]
     piano_score: Option<BhsScore>,
+    #[cfg(feature = "piano")]
+    piano_log: Option<PianoLog>,
 }
 
 #[derive(Clone, Copy)]
@@ -218,6 +232,8 @@ impl Default for BeamBuilder {
             piano_score_data: None,
             #[cfg(feature = "piano")]
             piano_score: None,
+            #[cfg(feature = "piano")]
+            piano_log: None,
         }
     }
 }
@@ -354,6 +370,22 @@ impl BeamBuilder {
         self
     }
 
+    /// Log played notes to stdout as `bhs-score-v1` note pairs.
+    ///
+    /// Each released note prints one score-pair line —
+    /// `start_tick duration_ticks note velocity release_velocity` (see
+    /// [`score_text`]) — on a 1920 ticks-per-second grid where the
+    /// application start is tick 0, for example `86267 602 B3 55 55`. With
+    /// [`PianoLog::Input`] only notes the user inputs (e.g. through the
+    /// computer keyboard) are logged; [`PianoLog::All`] also logs notes
+    /// played from a configured score. In either mode, pressing the spacebar
+    /// prints a blank line.
+    #[cfg(feature = "piano")]
+    pub fn piano_log(mut self, log: PianoLog) -> Self {
+        self.piano_log = Some(log);
+        self
+    }
+
     fn into_config(self) -> BeamConfig {
         BeamConfig {
             title: self.title,
@@ -371,6 +403,8 @@ impl BeamBuilder {
             piano_score_data: self.piano_score_data,
             #[cfg(feature = "piano")]
             piano_score: self.piano_score,
+            #[cfg(feature = "piano")]
+            piano_log: self.piano_log,
         }
     }
 }
@@ -480,6 +514,8 @@ struct BeamConfig {
     piano_score_data: Option<Vec<u8>>,
     #[cfg(feature = "piano")]
     piano_score: Option<BhsScore>,
+    #[cfg(feature = "piano")]
+    piano_log: Option<PianoLog>,
 }
 
 #[derive(Clone)]
@@ -1127,6 +1163,27 @@ fn piano_computer_key(key: &keyboard::Key, physical_key: keyboard::key::Physical
     })
 }
 
+/// The tick grid [`BeamBuilder::piano_log`] prints on; the application start
+/// is tick 0.
+#[cfg(feature = "piano")]
+const PIANO_LOG_TICKS_PER_SECOND: u64 = 1920;
+
+/// Convert a duration to integer ticks on the piano log's tick grid.
+#[cfg(feature = "piano")]
+fn piano_log_ticks(duration: Duration) -> u64 {
+    let ticks_per_second = u128::from(PIANO_LOG_TICKS_PER_SECOND);
+    let total = u128::from(duration.as_secs()) * ticks_per_second
+        + u128::from(duration.subsec_nanos()) * ticks_per_second / 1_000_000_000;
+    total as u64
+}
+
+/// Quantize a normalized `0.0..=1.0` velocity onto the score's `0..=127`
+/// grid.
+#[cfg(feature = "piano")]
+fn piano_log_velocity(velocity: f32) -> u8 {
+    (velocity.clamp(0.0, 1.0) * f32::from(score_text::MAX_VELOCITY)).round() as u8
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     AppearanceTick,
@@ -1641,6 +1698,10 @@ struct BeamApp {
     piano_score_error: Option<String>,
     #[cfg(feature = "piano")]
     piano_score_cycle: u64,
+    /// Attacks awaiting release for [`Self::piano_log_line`], keyed by voice
+    /// id: the attack timestamp and quantized attack velocity.
+    #[cfg(feature = "piano")]
+    piano_log_attacks: HashMap<u64, (Duration, u8)>,
 }
 
 impl BeamApp {
@@ -1745,6 +1806,8 @@ impl BeamApp {
                 piano_score_error,
                 #[cfg(feature = "piano")]
                 piano_score_cycle: 0,
+                #[cfg(feature = "piano")]
+                piano_log_attacks: HashMap::new(),
             },
             task,
         )
@@ -2177,6 +2240,14 @@ impl BeamApp {
                 let Some(key) = piano_computer_key(&key, physical_key) else {
                     return;
                 };
+                if key == ' ' {
+                    // The spacebar is not a note; in log mode it prints a
+                    // blank line.
+                    if self.config.piano_log.is_some() {
+                        println!();
+                    }
+                    return;
+                }
                 let Some(midi_note) = piano::computer_key_note(key) else {
                     return;
                 };
@@ -2326,8 +2397,46 @@ impl BeamApp {
         if let Some(audio) = &self.piano_audio {
             audio.perform(event);
         }
+        if let Some(line) = self.piano_log_line(&event) {
+            println!("{line}");
+        }
         if let Some(handler) = &self.config.piano_event_handler {
             handler(event);
+        }
+    }
+
+    /// The line [`Self::emit_piano_event`] should print for `event`, if any.
+    ///
+    /// Attacks remember their start so the release can print the whole score
+    /// pair; returns `None` while logging is off, while an attack awaits its
+    /// release, when a release has no logged attack, or when the mode
+    /// excludes the event's source.
+    #[cfg(feature = "piano")]
+    fn piano_log_line(&mut self, event: &PianoEvent) -> Option<String> {
+        let mode = self.config.piano_log?;
+        if matches!(mode, PianoLog::Input) && event.source == PianoInputSource::Score {
+            return None;
+        }
+        match event.action {
+            PianoAction::Attack { velocity, .. } => {
+                self.piano_log_attacks.insert(
+                    event.voice_id,
+                    (event.timestamp, piano_log_velocity(velocity)),
+                );
+                None
+            }
+            PianoAction::Release { velocity, .. } => {
+                let (start, attack) = self.piano_log_attacks.remove(&event.voice_id)?;
+                let duration = event.timestamp.saturating_sub(start);
+                Some(format!(
+                    "{} {} {} {} {}",
+                    piano_log_ticks(start),
+                    piano_log_ticks(duration).max(1),
+                    score_text::note_name(event.note.midi_note),
+                    attack,
+                    piano_log_velocity(velocity)
+                ))
+            }
         }
     }
 
@@ -3864,6 +3973,137 @@ mod tests {
                 .map(|score| score.ticks_per_second),
             Some(960)
         );
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn builder_records_piano_log() {
+        let config = BeamBuilder::new().piano_log(PianoLog::Input).into_config();
+        assert_eq!(config.piano_log, Some(PianoLog::Input));
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn piano_log_ticks_use_a_1920_tick_grid() {
+        assert_eq!(piano_log_ticks(Duration::ZERO), 0);
+        assert_eq!(piano_log_ticks(Duration::from_millis(500)), 960);
+        // 812.5ms is exactly 1560 ticks; sub-tick remainders truncate.
+        assert_eq!(piano_log_ticks(Duration::new(0, 812_500_000)), 1560);
+        assert_eq!(piano_log_ticks(Duration::from_millis(1)), 1);
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn piano_log_formats_released_notes_as_score_pairs() {
+        let config = BeamBuilder::new().piano_log(PianoLog::Input).into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+
+        let attack = PianoEvent {
+            sequence: 1,
+            timestamp: Duration::from_millis(500),
+            voice_id: 7,
+            note: PianoNote::from_midi(59), // B3
+            action: PianoAction::Attack {
+                velocity: PianoEvent::BINARY_VELOCITY,
+                pressure: None,
+            },
+            source: PianoInputSource::ComputerKeyboard { key: 'z' },
+        };
+        assert!(
+            app.piano_log_line(&attack).is_none(),
+            "the attack waits for its release"
+        );
+
+        let release = PianoEvent {
+            sequence: 2,
+            timestamp: Duration::new(0, 812_500_000),
+            note: attack.note,
+            action: PianoAction::Release {
+                velocity: 0.0,
+                held_for: Duration::new(0, 312_500_000),
+            },
+            ..attack
+        };
+        assert_eq!(
+            app.piano_log_line(&release).as_deref(),
+            Some("960 600 B3 127 0"),
+            "start tick, duration ticks, note, attack velocity, release velocity"
+        );
+
+        // A release with no logged attack prints nothing.
+        let stray = PianoEvent {
+            sequence: 3,
+            timestamp: Duration::from_millis(1),
+            voice_id: 8,
+            ..release
+        };
+        assert!(app.piano_log_line(&stray).is_none());
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn piano_log_modes_choose_which_sources_print() {
+        let events = |source| {
+            [
+                PianoEvent {
+                    sequence: 1,
+                    timestamp: Duration::from_millis(500),
+                    voice_id: 7,
+                    note: PianoNote::from_midi(60), // C4
+                    action: PianoAction::Attack {
+                        velocity: 0.5,
+                        pressure: None,
+                    },
+                    source,
+                },
+                PianoEvent {
+                    sequence: 2,
+                    timestamp: Duration::from_millis(1_000),
+                    voice_id: 7,
+                    note: PianoNote::from_midi(60),
+                    action: PianoAction::Release {
+                        velocity: 0.5,
+                        held_for: Duration::from_millis(500),
+                    },
+                    source,
+                },
+            ]
+        };
+
+        // Input mode skips notes played from a configured score.
+        let config = BeamBuilder::new().piano_log(PianoLog::Input).into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+        for event in events(PianoInputSource::Score) {
+            assert!(app.piano_log_line(&event).is_none());
+        }
+
+        // All mode logs them.
+        let config = BeamBuilder::new().piano_log(PianoLog::All).into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+        let score_events = events(PianoInputSource::Score);
+        let mut logged = score_events
+            .iter()
+            .filter_map(|event| app.piano_log_line(event));
+        assert_eq!(logged.next().as_deref(), Some("960 960 C4 64 64"));
+        assert!(logged.next().is_none());
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn spacebar_is_not_a_piano_note() {
+        let config = BeamBuilder::new().piano_log(PianoLog::All).into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+        let event = keyboard::Event::KeyPressed {
+            key: keyboard::Key::Character(" ".into()),
+            modified_key: keyboard::Key::Character(" ".into()),
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Space),
+            location: keyboard::Location::Standard,
+            modifiers: Default::default(),
+            text: Some(" ".into()),
+            repeat: false,
+        };
+        app.update_piano_keyboard(event);
+        assert!(app.active_piano_notes.is_empty());
     }
 
     #[cfg(feature = "piano")]
