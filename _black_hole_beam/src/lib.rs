@@ -3021,8 +3021,12 @@ async fn fetch_appearance(live: LiveConfig) -> Result<Option<LiveAppearanceSnaps
     };
     let appearance = postcard::from_bytes::<SunAppearance>(&bytes)
         .map_err(|error| format!("could not decode Sun appearance: {error}"))?;
-    let child_rays = fetch_child_rays(&live, &appearance).await;
     let (warp_appearances, warp_diagnostics) = fetch_warp_appearances(&live, &appearance).await;
+    // Rays are fetched for every node of the top-level sun and of each nested
+    // warp sun so that merged subgraph cells keep their own frozen state.
+    let mut appearances: Vec<&SunAppearance> = vec![&appearance];
+    appearances.extend(warp_appearances.values());
+    let child_rays = fetch_child_rays(&live, &appearances).await;
     Ok(Some(LiveAppearanceSnapshot {
         appearance,
         child_rays,
@@ -3031,22 +3035,30 @@ async fn fetch_appearance(live: LiveConfig) -> Result<Option<LiveAppearanceSnaps
     }))
 }
 
-async fn fetch_child_rays(live: &LiveConfig, appearance: &SunAppearance) -> HashMap<Uuid, Ray> {
+async fn fetch_child_rays(
+    live: &LiveConfig,
+    appearances: &[&SunAppearance],
+) -> HashMap<Uuid, Ray> {
     let mut rays = HashMap::new();
-    for node in &appearance.nodes {
-        let maybe_bytes = live
-            .client
-            .animal_appearance(node.journey_id)
-            .await
-            .ok()
-            .flatten();
-        let Some(bytes) = maybe_bytes else {
-            continue;
-        };
-        let Ok(ray) = postcard::from_bytes::<Ray>(&bytes) else {
-            continue;
-        };
-        rays.insert(node.journey_id, ray);
+    for appearance in appearances {
+        for node in &appearance.nodes {
+            if rays.contains_key(&node.journey_id) {
+                continue;
+            }
+            let maybe_bytes = live
+                .client
+                .animal_appearance(node.journey_id)
+                .await
+                .ok()
+                .flatten();
+            let Some(bytes) = maybe_bytes else {
+                continue;
+            };
+            let Ok(ray) = postcard::from_bytes::<Ray>(&bytes) else {
+                continue;
+            };
+            rays.insert(node.journey_id, ray);
+        }
     }
     rays
 }
