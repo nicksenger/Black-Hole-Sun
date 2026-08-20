@@ -233,7 +233,6 @@ impl canvas::Program<PianoMessage> for PianoKeyboard {
                     .get(&midi_note)
                     .copied()
                     .unwrap_or_default(),
-                midi_note < LAST_MIDI_NOTE && is_black(midi_note + 1),
             );
             white_index += 1;
         }
@@ -274,148 +273,122 @@ impl canvas::Program<PianoMessage> for PianoKeyboard {
     }
 }
 
-fn draw_white_key(
-    frame: &mut canvas::Frame,
-    bounds: Rectangle,
-    appearance: PianoKeyAppearance,
-    has_black_key_after: bool,
-) {
+fn draw_white_key(frame: &mut canvas::Frame, bounds: Rectangle, appearance: PianoKeyAppearance) {
     let intensity = appearance.intensity.clamp(0.0, 1.0);
     let face = Path::rectangle(bounds.position(), bounds.size());
-    let gradient = || {
-        canvas::gradient::Linear::new(
-            Point::new(bounds.x, bounds.y),
-            Point::new(bounds.x, bounds.y + bounds.height),
-        )
-    };
-    let fill = gradient()
+    frame.fill(&face, mix_color(Color::WHITE, Color::from_rgb8(255, 220, 142), intensity));
+    frame.stroke(
+        &face,
+        canvas::Stroke::default()
+            .with_color(mix_color(
+                Color::from_rgb8(89, 89, 92),
+                Color::from_rgb8(150, 100, 40),
+                intensity,
+            ))
+            .with_width(0.8),
+    );
+}
+
+/// A point inside a black key's bounding box, in the normalized coordinates
+/// of NanoMoog's original SVG art: `u` runs across the key and `v` down its
+/// height.
+fn key_point(bounds: Rectangle, u: f32, v: f32) -> Point {
+    Point::new(bounds.x + bounds.width * u, bounds.y + bounds.height * v)
+}
+
+/// Draws a black key in NanoMoog's style: a black body with a faint top
+/// sheen, two highlight lines, a gray bullet band up top, a diagonal sheen
+/// band below it, and a beveled front lip shaded white-to-black.
+fn draw_black_key(frame: &mut canvas::Frame, bounds: Rectangle, appearance: PianoKeyAppearance) {
+    let intensity = appearance.intensity.clamp(0.0, 1.0);
+    let p = |u: f32, v: f32| key_point(bounds, u, v);
+
+    // The body is black with a faint sheen fading in from the top edge.
+    let face = Path::rectangle(bounds.position(), bounds.size());
+    let fill = canvas::gradient::Linear::new(
+        Point::new(bounds.x, bounds.y),
+        Point::new(bounds.x, bounds.y + bounds.height),
+    )
+    .add_stop(
+        0.0,
+        mix_color(Color::from_rgb8(42, 42, 42), Color::from_rgb8(105, 50, 16), intensity),
+    )
+    .add_stop(0.10, mix_color(Color::BLACK, Color::from_rgb8(90, 42, 12), intensity))
+    .add_stop(1.0, mix_color(Color::BLACK, Color::from_rgb8(90, 42, 12), intensity));
+    frame.fill(&face, fill);
+
+    // Thin highlight lines run down the key face between its bands.
+    let line_color = mix_color(
+        Color::from_rgb8(123, 123, 123),
+        Color::from_rgb8(196, 142, 60),
+        intensity,
+    );
+    for u in [0.2117_f32, 0.7748] {
+        let line = Path::line(p(u, 0.0), p(u, 0.8695));
+        frame.stroke(
+            &line,
+            canvas::Stroke::default()
+                .with_color(line_color)
+                .with_width(0.8),
+        );
+    }
+
+    // The beveled front lip, shaded white-to-black from top to bottom.
+    let lip = Path::new(|path| {
+        path.move_to(p(0.2117, 0.8747));
+        path.line_to(p(0.7748, 0.8747));
+        path.line_to(p(0.9685, 0.9940));
+        path.line_to(p(0.0270, 0.9940));
+        path.close();
+    });
+    let lip_fill = canvas::gradient::Linear::new(p(0.0, 0.5588), p(0.0, 0.9902))
         .add_stop(
             0.0,
             mix_color(Color::WHITE, Color::from_rgb8(255, 220, 142), intensity),
         )
-        .add_stop(
-            0.72,
-            mix_color(
-                Color::from_rgb8(248, 246, 239),
-                Color::from_rgb8(236, 165, 82),
-                intensity,
-            ),
-        )
-        .add_stop(
-            1.0,
-            mix_color(
-                Color::from_rgb8(205, 202, 194),
-                Color::from_rgb8(214, 124, 45),
-                intensity,
-            ),
-        );
-    frame.fill(&face, fill);
+        .add_stop(1.0, mix_color(Color::BLACK, Color::from_rgb8(80, 38, 10), intensity));
+    frame.fill(&lip, lip_fill);
     frame.stroke(
-        &face,
+        &lip,
         canvas::Stroke::default()
-            .with_color(Color::from_rgb8(89, 89, 92))
+            .with_color(mix_color(
+                Color::from_rgb8(73, 73, 73),
+                Color::from_rgb8(120, 66, 20),
+                intensity,
+            ))
             .with_width(0.8),
     );
 
-    if has_black_key_after {
-        // NanoMoog's white keys carry a dark inner shoulder below black keys.
-        let shoulder = Path::new(|path| {
-            path.move_to(Point::new(bounds.x + bounds.width * 0.78, 1.0));
-            path.line_to(Point::new(
-                bounds.x + bounds.width * 0.78,
-                bounds.height * 0.63,
-            ));
-            path.line_to(Point::new(
-                bounds.x + bounds.width * 0.96,
-                bounds.height * 0.55,
-            ));
-            path.line_to(Point::new(bounds.x + bounds.width * 0.94, 1.0));
-            path.close();
-        });
-        frame.fill(
-            &shoulder,
-            Color::from_rgba8(54, 54, 54, 0.34 - intensity * 0.14),
-        );
-    }
-}
-
-fn draw_black_key(frame: &mut canvas::Frame, bounds: Rectangle, appearance: PianoKeyAppearance) {
-    let intensity = appearance.intensity.clamp(0.0, 1.0);
-    let face = Path::new(|path| {
-        path.move_to(bounds.position());
-        path.line_to(Point::new(bounds.x + bounds.width, bounds.y));
-        path.line_to(Point::new(bounds.x + bounds.width * 0.94, bounds.height));
-        path.line_to(Point::new(bounds.x + bounds.width * 0.06, bounds.height));
-        path.close();
-    });
-    let gradient = || {
-        canvas::gradient::Linear::new(
-            Point::new(bounds.x, bounds.y),
-            Point::new(bounds.x, bounds.y + bounds.height),
-        )
-    };
-    let fill = gradient()
-        .add_stop(
-            0.0,
-            mix_color(
-                Color::from_rgb8(10, 10, 10),
-                Color::from_rgb8(105, 50, 16),
-                intensity,
-            ),
-        )
-        .add_stop(
-            0.72,
-            mix_color(
-                Color::from_rgb8(34, 34, 34),
-                Color::from_rgb8(169, 78, 21),
-                intensity,
-            ),
-        )
-        .add_stop(
-            1.0,
-            mix_color(Color::BLACK, Color::from_rgb8(226, 108, 30), intensity),
-        );
-    frame.fill(&face, fill);
-    frame.stroke(
-        &face,
-        canvas::Stroke::default()
-            .with_color(Color::from_rgb8(73, 73, 73))
-            .with_width(0.8),
-    );
-
-    let left_highlight = Path::line(
-        Point::new(bounds.x + bounds.width * 0.22, 2.0),
-        Point::new(bounds.x + bounds.width * 0.22, bounds.height * 0.86),
-    );
-    frame.stroke(
-        &left_highlight,
-        canvas::Stroke::default()
-            .with_color(Color::from_rgba8(160, 160, 160, 0.7))
-            .with_width(0.8),
-    );
-
-    // A beveled lip recreates the distinctive shaded black-key front.
-    let lip = Path::new(|path| {
-        path.move_to(Point::new(
-            bounds.x + bounds.width * 0.22,
-            bounds.height * 0.86,
-        ));
-        path.line_to(Point::new(
-            bounds.x + bounds.width * 0.78,
-            bounds.height * 0.86,
-        ));
-        path.line_to(Point::new(bounds.x + bounds.width * 0.94, bounds.height));
-        path.line_to(Point::new(bounds.x + bounds.width * 0.06, bounds.height));
+    // The upper band: a gray bullet with a curved lower end.
+    let bullet = Path::new(|path| {
+        path.move_to(p(0.2568, 0.3511));
+        path.line_to(p(0.2568, 0.0137));
+        path.line_to(p(0.7387, 0.0137));
+        path.line_to(p(0.7387, 0.2215));
+        path.bezier_curve_to(p(0.7342, 0.2215), p(0.2613, 0.2300), p(0.2568, 0.3511));
         path.close();
     });
     frame.fill(
-        &lip,
-        mix_color(
-            Color::from_rgb8(91, 91, 91),
-            Color::from_rgb8(120, 56, 18),
-            intensity,
-        ),
+        &bullet,
+        mix_color(Color::from_rgb8(99, 99, 99), Color::from_rgb8(150, 84, 26), intensity),
     );
+
+    // The lower band: a diagonal white-to-black sheen.
+    let sheen = Path::new(|path| {
+        path.move_to(p(0.7342, 0.8695));
+        path.line_to(p(0.2568, 0.8695));
+        path.line_to(p(0.2568, 0.5270));
+        path.bezier_curve_to(p(0.2568, 0.5270), p(0.7297, 0.5717), p(0.7387, 0.6215));
+        path.bezier_curve_to(p(0.7432, 0.6721), p(0.7342, 0.8695), p(0.7342, 0.8695));
+        path.close();
+    });
+    let sheen_fill = canvas::gradient::Linear::new(p(-0.9640, 0.9441), p(0.8234, 0.6431))
+        .add_stop(
+            0.0,
+            mix_color(Color::WHITE, Color::from_rgb8(255, 220, 142), intensity),
+        )
+        .add_stop(1.0, mix_color(Color::BLACK, Color::from_rgb8(80, 38, 10), intensity));
+    frame.fill(&sheen, sheen_fill);
 }
 
 fn mix_color(from: Color, to: Color, amount: f32) -> Color {
