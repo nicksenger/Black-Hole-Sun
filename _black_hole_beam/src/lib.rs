@@ -1698,6 +1698,18 @@ struct BeamApp {
     piano_score_error: Option<String>,
     #[cfg(feature = "piano")]
     piano_score_cycle: u64,
+    /// The scientific-pitch octave selected by number keys `0`-`8`; the note
+    /// names `a`-`g` sound in this octave.
+    #[cfg(feature = "piano")]
+    piano_octave: i8,
+    /// Whether the left Shift key is currently held for piano input; it
+    /// strikes one semitone below the note name.
+    #[cfg(feature = "piano")]
+    piano_shift_left: bool,
+    /// Whether the right Shift key is currently held for piano input; it
+    /// strikes one semitone above the note name.
+    #[cfg(feature = "piano")]
+    piano_shift_right: bool,
     /// Attacks awaiting release for [`Self::piano_log_line`], keyed by voice
     /// id: the attack timestamp and quantized attack velocity.
     #[cfg(feature = "piano")]
@@ -1806,6 +1818,12 @@ impl BeamApp {
                 piano_score_error,
                 #[cfg(feature = "piano")]
                 piano_score_cycle: 0,
+                #[cfg(feature = "piano")]
+                piano_octave: 4,
+                #[cfg(feature = "piano")]
+                piano_shift_left: false,
+                #[cfg(feature = "piano")]
+                piano_shift_right: false,
                 #[cfg(feature = "piano")]
                 piano_log_attacks: HashMap::new(),
             },
@@ -2237,6 +2255,19 @@ impl BeamApp {
                 repeat,
                 ..
             } if !repeat => {
+                // Track the held Shift keys so note names can be transposed
+                // by a semitone; the Shift keys themselves never sound.
+                match physical_key {
+                    keyboard::key::Physical::Code(keyboard::key::Code::ShiftLeft) => {
+                        self.piano_shift_left = true;
+                        return;
+                    }
+                    keyboard::key::Physical::Code(keyboard::key::Code::ShiftRight) => {
+                        self.piano_shift_right = true;
+                        return;
+                    }
+                    _ => {}
+                }
                 let Some(key) = piano_computer_key(&key, physical_key) else {
                     return;
                 };
@@ -2248,7 +2279,14 @@ impl BeamApp {
                     }
                     return;
                 }
-                let Some(midi_note) = piano::computer_key_note(key) else {
+                // Number keys select the octave rather than sounding a note.
+                if let Some(octave) = piano::computer_octave_key(key) {
+                    self.piano_octave = octave;
+                    return;
+                }
+                let Some(midi_note) =
+                    piano::computer_key_note(key, self.piano_octave, self.piano_shift_side())
+                else {
                     return;
                 };
                 self.attack_piano_note(
@@ -2262,12 +2300,34 @@ impl BeamApp {
             keyboard::Event::KeyReleased {
                 key, physical_key, ..
             } => {
+                match physical_key {
+                    keyboard::key::Physical::Code(keyboard::key::Code::ShiftLeft) => {
+                        self.piano_shift_left = false;
+                        return;
+                    }
+                    keyboard::key::Physical::Code(keyboard::key::Code::ShiftRight) => {
+                        self.piano_shift_right = false;
+                        return;
+                    }
+                    _ => {}
+                }
                 let Some(key) = piano_computer_key(&key, physical_key) else {
                     return;
                 };
                 self.release_piano_note(PianoInputId::ComputerKeyboard(key), 0.0);
             }
             _ => {}
+        }
+    }
+
+    /// The Shift side currently held for piano input; with both Shift keys
+    /// held the note name sounds natural.
+    #[cfg(feature = "piano")]
+    fn piano_shift_side(&self) -> Option<piano::PianoShiftSide> {
+        match (self.piano_shift_left, self.piano_shift_right) {
+            (true, false) => Some(piano::PianoShiftSide::Left),
+            (false, true) => Some(piano::PianoShiftSide::Right),
+            _ => None,
         }
     }
 
@@ -3858,8 +3918,8 @@ mod tests {
         let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
 
         app.attack_piano_note(
-            PianoInputId::ComputerKeyboard('z'),
-            PianoInputSource::ComputerKeyboard { key: 'z' },
+            PianoInputId::ComputerKeyboard('c'),
+            PianoInputSource::ComputerKeyboard { key: 'c' },
             60,
             PianoEvent::BINARY_VELOCITY,
             None,
@@ -3871,7 +3931,7 @@ mod tests {
             0.42,
             Some(0.7),
         );
-        app.release_piano_note(PianoInputId::ComputerKeyboard('z'), 0.0);
+        app.release_piano_note(PianoInputId::ComputerKeyboard('c'), 0.0);
         assert_eq!(app.active_piano_notes.len(), 1);
         app.release_piano_note(PianoInputId::Pointer(PianoPointerSource::Mouse), 0.31);
 
@@ -4103,6 +4163,130 @@ mod tests {
             repeat: false,
         };
         app.update_piano_keyboard(event);
+        assert!(app.active_piano_notes.is_empty());
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn number_keys_select_the_octave_for_letter_notes() {
+        let config = BeamBuilder::new().into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+        assert_eq!(app.piano_octave, 4);
+
+        let press = |app: &mut BeamApp, key: &str, code: keyboard::key::Code| {
+            app.update_piano_keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(key.into()),
+                modified_key: keyboard::Key::Character(key.into()),
+                physical_key: keyboard::key::Physical::Code(code),
+                location: keyboard::Location::Standard,
+                modifiers: Default::default(),
+                text: Some(key.into()),
+                repeat: false,
+            })
+        };
+
+        let release = |app: &mut BeamApp, key: char| {
+            app.release_piano_note(PianoInputId::ComputerKeyboard(key), 0.0)
+        };
+        let struck = |app: &BeamApp, key: char| {
+            app.active_piano_notes
+                .get(&PianoInputId::ComputerKeyboard(key))
+                .map(|active| active.note.midi_note)
+        };
+
+        // The default octave is 4, so 'c' strikes middle C.
+        press(&mut app, "c", keyboard::key::Code::KeyC);
+        assert_eq!(struck(&app, 'c'), Some(60));
+        release(&mut app, 'c');
+
+        // '5' selects octave 5 without sounding a note; the next 'c' is C5.
+        press(&mut app, "5", keyboard::key::Code::Digit5);
+        assert_eq!(app.piano_octave, 5);
+        assert!(app.active_piano_notes.is_empty());
+        press(&mut app, "c", keyboard::key::Code::KeyC);
+        assert_eq!(struck(&app, 'c'), Some(72));
+        release(&mut app, 'c');
+
+        // Octave 8 only contains C8 on the keyboard.
+        press(&mut app, "8", keyboard::key::Code::Digit8);
+        press(&mut app, "d", keyboard::key::Code::KeyD);
+        assert_eq!(struck(&app, 'd'), None, "D8 is above the keyboard");
+        press(&mut app, "c", keyboard::key::Code::KeyC);
+        assert_eq!(struck(&app, 'c'), Some(108));
+        release(&mut app, 'c');
+
+        // Octave 0 reaches the keyboard's bottom two keys.
+        press(&mut app, "0", keyboard::key::Code::Digit0);
+        press(&mut app, "a", keyboard::key::Code::KeyA);
+        assert_eq!(struck(&app, 'a'), Some(21));
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn shift_keys_transpose_note_names_by_one_semitone() {
+        let config = BeamBuilder::new().into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+
+        let press = |app: &mut BeamApp, key: keyboard::Key, code: keyboard::key::Code| {
+            app.update_piano_keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: keyboard::key::Physical::Code(code),
+                location: keyboard::Location::Standard,
+                modifiers: Default::default(),
+                text: None,
+                repeat: false,
+            })
+        };
+        let release = |app: &mut BeamApp, key: keyboard::Key, code: keyboard::key::Code| {
+            app.update_piano_keyboard(keyboard::Event::KeyReleased {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: keyboard::key::Physical::Code(code),
+                location: keyboard::Location::Standard,
+                modifiers: Default::default(),
+            })
+        };
+        let letter = |key: char| keyboard::Key::Character(key.to_string().into());
+        let shift = || keyboard::Key::Named(keyboard::key::Named::Shift);
+        let struck = |app: &BeamApp, key: char| {
+            app.active_piano_notes
+                .get(&PianoInputId::ComputerKeyboard(key))
+                .map(|active| active.note.midi_note)
+        };
+
+        // Left shift strikes a semitone below the note name; releasing the
+        // Shift key does not cut off the held note.
+        press(&mut app, shift(), keyboard::key::Code::ShiftLeft);
+        press(&mut app, letter('c'), keyboard::key::Code::KeyC);
+        assert_eq!(struck(&app, 'c'), Some(59), "left-shift c is B3");
+        release(&mut app, shift(), keyboard::key::Code::ShiftLeft);
+        assert_eq!(
+            struck(&app, 'c'),
+            Some(59),
+            "releasing shift keeps the note sounding"
+        );
+        release(&mut app, letter('c'), keyboard::key::Code::KeyC);
+
+        // Right shift strikes a semitone above the note name.
+        press(&mut app, shift(), keyboard::key::Code::ShiftRight);
+        press(&mut app, letter('c'), keyboard::key::Code::KeyC);
+        assert_eq!(struck(&app, 'c'), Some(61), "right-shift c is C#4");
+        release(&mut app, letter('c'), keyboard::key::Code::KeyC);
+        release(&mut app, shift(), keyboard::key::Code::ShiftRight);
+
+        // With both Shift keys held the note name sounds natural.
+        press(&mut app, shift(), keyboard::key::Code::ShiftLeft);
+        press(&mut app, shift(), keyboard::key::Code::ShiftRight);
+        press(&mut app, letter('c'), keyboard::key::Code::KeyC);
+        assert_eq!(
+            struck(&app, 'c'),
+            Some(60),
+            "both shifts sound the natural note"
+        );
+        release(&mut app, letter('c'), keyboard::key::Code::KeyC);
+        release(&mut app, shift(), keyboard::key::Code::ShiftLeft);
+        release(&mut app, shift(), keyboard::key::Code::ShiftRight);
         assert!(app.active_piano_notes.is_empty());
     }
 
