@@ -12,15 +12,17 @@ It also includes a GUI monitoring tool with an optional piano:
 
 https://github.com/user-attachments/assets/9c399800-04bb-4bc7-93fc-d2fa1a400b53
 
-Nodes in a `BlackHole::Sun` graph (`Cell`s) are agents implemented in terms of `jungle::Flow` which progress through the following 3 phases:
+Nodes in a `BlackHole::Sun` graph (`Cell`s) are agents implemented in terms of `jungle::Flow` which progress through 3 phases:
 
-1. **Propagation 1**: perturbation is applied and samples are collected
-2. **Propagation 2**: opposite perturbation is applied and samples collected
-3. **Potentiation**: the gradient is approximated and the weights optimized
+1. **Propagation 1**: a perturbation is applied (to weights or activations) and samples are collected
+2. **Propagation 2**: the opposite perturbation is applied and samples collected again
+3. **Potentiation**: the gradient is approximated and the weights updated
 
 The process then starts over again from propagation 1.
 
 The role of `black-hole-sun` is to orchestrate this process efficiently and reliably over arbitrarily large networks of cells.
 
-`black-hole-sun` is intended as a research tool. The software is provided 'as-is', without warranty of any kind, express or implied. In no event shall the author be held liable for any claim, damages or other liability, whether in an action or contract, tort or otherwise, arising from, out of or in connection with the software or the use or dealings in the software. 
+`black-hole-sun` is designed as a research tool. Documentation is sparse and its interface is highly unstable. I hope to move much of the existing surface into the framework itself and stabilize a more ergonomic API in the near future.
+
+The software is provided 'as-is', without warranty of any kind, express or implied. In no event shall the author be held liable for any claim, damages or other liability, whether in an action or contract, tort or otherwise, arising from, out of or in connection with the software or the use or dealings in the software. 
 
