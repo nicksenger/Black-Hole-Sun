@@ -1,5 +1,3 @@
-//! Expressive 88-key piano input for the beam UI.
-
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -7,6 +5,10 @@ use iced::mouse;
 use iced::touch;
 use iced::widget::canvas::{self, Path};
 use iced::{Color, Point, Rectangle, Size, Theme};
+
+pub mod piano_audio;
+pub mod piano_score;
+pub mod score_text;
 
 pub(crate) const PIANO_HEIGHT: f32 = 185.0;
 const FIRST_MIDI_NOTE: u8 = 21; // A0
@@ -512,11 +514,10 @@ pub(crate) fn computer_key_note(
         Some(PianoShiftSide::Right) => 1,
         None => 0,
     };
-    let midi_note: i32 =
-        12 * (i32::from(octave) + 1) + pitch_class + shift_semitones;
-    u8::try_from(midi_note).ok().filter(|note| {
-        (FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(note)
-    })
+    let midi_note: i32 = 12 * (i32::from(octave) + 1) + pitch_class + shift_semitones;
+    u8::try_from(midi_note)
+        .ok()
+        .filter(|note| (FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(note))
 }
 
 #[cfg(test)]
