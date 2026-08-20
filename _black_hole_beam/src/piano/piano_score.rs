@@ -1,7 +1,7 @@
 //! Loading and clocking looping piano scores.
 //!
 //! Scores are the compact hand-editable `bhs-score-v1` text format (see
-//! [`crate::score_text`]).
+//! [`crate::piano::score_text`]).
 
 use std::fs;
 use std::path::Path;
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use iced::time::Instant;
 
-use crate::score_text::{self, BhsScore};
+use crate::piano::score_text::{self, BhsScore};
 
 pub(crate) const SCORE_TICK_INTERVAL: Duration = Duration::from_millis(5);
 const MAX_EVENTS_PER_TICK: usize = 4_096;
@@ -254,7 +254,7 @@ ticks_per_second 960
         for midi_note in 21..=108u8 {
             let name = crate::PianoNote::from_midi(midi_note);
             assert_eq!(
-                crate::score_text::note_name(midi_note),
+                crate::piano::score_text::note_name(midi_note),
                 format!("{}{}", name.name(), name.octave()),
                 "note {midi_note}"
             );

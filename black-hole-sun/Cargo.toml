@@ -14,6 +14,8 @@ qwen35_2b = ["black-hole-mass/qwen35_2b"]
 qwen35_4b = ["black-hole-mass/qwen35_4b"]
 qwen35_9b = ["black-hole-mass/qwen35_9b"]
 qwen35_27b = ["black-hole-mass/qwen35_27b"]
+qwen35_35b_a3b = ["black-hole-mass/qwen35_35b_a3b"]
+qwen36_27b = ["black-hole-mass/qwen35_27b"]
 qwen38_27b = ["black-hole-mass/qwen38_27b"]
 
 [dependencies]

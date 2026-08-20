@@ -49,24 +49,20 @@ use uuid::Uuid;
 #[cfg(feature = "piano")]
 mod piano;
 #[cfg(feature = "piano")]
-mod piano_audio;
-#[cfg(feature = "piano")]
-mod piano_score;
-#[cfg(feature = "piano")]
-pub mod score_text;
+pub use piano::score_text;
 
 #[cfg(feature = "piano")]
 pub use piano::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
 #[cfg(feature = "piano")]
 use piano::{PianoKeyAppearance, PianoKeyboard, PianoMessage, PianoPointerSource, PIANO_HEIGHT};
 #[cfg(feature = "piano")]
-use piano_audio::PianoAudioEngine;
+use piano::piano_audio::PianoAudioEngine;
 #[cfg(feature = "piano")]
-pub use piano_audio::{render_piano_score_to_wav, PianoRenderReport};
+pub use piano::piano_audio::{render_piano_score_to_wav, PianoRenderReport};
 #[cfg(feature = "piano")]
-use piano_score::{PianoScorePlayback, SCORE_TICK_INTERVAL};
+use piano::piano_score::{PianoScorePlayback, SCORE_TICK_INTERVAL};
 #[cfg(feature = "piano")]
-use score_text::BhsScore;
+use piano::score_text::BhsScore;
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;

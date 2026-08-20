@@ -10,7 +10,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};
 use tracing::warn;
 
-use crate::piano_score::load_score;
+use crate::piano::piano_score::load_score;
 use crate::{PianoAction, PianoEvent};
 
 const PARTIAL_COUNT: usize = 48;
@@ -971,7 +971,7 @@ loop_ticks 20
     #[test]
     #[ignore = "runs the full score through the synth; needs /home/chip/Desktop/score.bhs"]
     fn full_score_sim_band_balance() {
-        use crate::piano_score::load_score;
+        use crate::piano::piano_score::load_score;
 
         const SR: f32 = 48_000.0;
         const N: usize = 13_532_880; // same length as the reference render
