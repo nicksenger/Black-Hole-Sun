@@ -13,6 +13,7 @@ use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 use typenum::Unsigned;
 use typosaurus::collections::list::{Empty, List};
+use typosaurus::traits::semigroup::Mappend;
 use uuid::Uuid;
 
 use crate::fusion::action::{FusionSeed, FusionState};
@@ -571,6 +572,22 @@ pub struct SunNode<S, U>(S, U);
 /// `SunState<S>::inner`.
 pub trait BlackHole {
     type Sun<M: Manifest, const ACCUM_STEPS: usize>;
+}
+impl<U> BlackHole for List<(Empty, U)>
+where
+    U: BlackHole,
+{
+    type Sun<M: Manifest, const ACCUM_STEPS: usize> = <U as BlackHole>::Sun<M, ACCUM_STEPS>;
+}
+impl<T1, T2, U> BlackHole for List<(List<(T1, T2)>, U)>
+where
+    List<(T1, T2)>: BlackHole,
+    U: BlackHole,
+    (List<(T1, T2)>, U): Mappend,
+    <(List<(T1, T2)>, U) as Mappend>::Out: BlackHole,
+{
+    type Sun<M: Manifest, const ACCUM_STEPS: usize> =
+        <<(List<(T1, T2)>, U) as Mappend>::Out as BlackHole>::Sun<M, ACCUM_STEPS>;
 }
 impl<P, A, E, U> BlackHole for List<(Unary<P, A, E>, U)>
 where
