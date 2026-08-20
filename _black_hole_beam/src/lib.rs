@@ -747,6 +747,10 @@ struct BeamModel {
     graph: Graph,
     grad_steps: usize,
     errors: Vec<String>,
+    /// Main-graph id -> path of local cell ids (top level first) for every
+    /// warp cell, e.g. `[7]` for a top-level warp and `[7, 3]` for warp cell
+    /// 3 inside cell 7's nested sun. Empty for statically built models.
+    warp_paths: HashMap<u32, Vec<u32>>,
 }
 
 impl BeamModel {
@@ -756,6 +760,7 @@ impl BeamModel {
             graph: Graph::new(Vec::new(), Vec::new()),
             grad_steps: 1,
             errors: Vec::new(),
+            warp_paths: HashMap::new(),
         }
     }
 
@@ -818,13 +823,22 @@ impl BeamModel {
             graph,
             grad_steps: 1,
             errors,
+            warp_paths: HashMap::new(),
         }
     }
 
+    /// Builds the main graph from a live appearance, merging every finalized
+    /// nested sun listed in `warp_appearances`.
+    ///
+    /// `warp_appearances` is keyed by the path of cell ids that locates the
+    /// warp cell relative to `appearance`: `[7]` is a warp cell of this
+    /// appearance, while `[7, 3]` is warp cell 3 inside cell 7's nested sun.
+    /// Merging is recursive: when a nested sun joins the main graph, its own
+    /// listed sub-suns join with it.
     fn from_appearance(
         appearance: SunAppearance,
         child_rays: &HashMap<Uuid, Ray>,
-        warp_appearances: &HashMap<u32, SunAppearance>,
+        warp_appearances: &HashMap<Vec<u32>, SunAppearance>,
     ) -> Result<Self, String> {
         if !appearance.finalized {
             return Err("the Black Hole Sun topology is not finalized".to_string());
@@ -832,14 +846,52 @@ impl BeamModel {
         let grad_steps = appearance.grad_steps.max(1);
 
         let mut errors = Vec::new();
-        let mut cells = appearance
+        let (cells, pending_edges, warp_paths) =
+            Self::merge_appearance(&appearance, child_rays, warp_appearances, &mut errors);
+        let edges = Self::validate(&cells, &pending_edges, &mut errors);
+
+        if cells.is_empty() {
+            errors.push("the Black Hole Sun contains no cells".to_string());
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+
+        let nodes = cells.iter().map(|cell| cell.id).collect();
+        Ok(Self {
+            cells,
+            graph: Graph::new(nodes, edges),
+            grad_steps,
+            errors: Vec::new(),
+            warp_paths,
+        })
+    }
+
+    /// Combines `appearance`'s cells with every listed nested sun (recursively),
+    /// remapping nested node and port ids to fresh values so they cannot
+    /// collide with the outer topology, and adding an edge from each boundary
+    /// cell to its subgraph's terminal node.
+    ///
+    /// Returns the combined cells, the unvalidated edges (source, target,
+    /// target port), and the warp paths of every merged warp cell. Structural
+    /// validation happens in [`Self::validate`]; violations are reported in
+    /// `errors`.
+    fn merge_appearance(
+        appearance: &SunAppearance,
+        child_rays: &HashMap<Uuid, Ray>,
+        warp_appearances: &HashMap<Vec<u32>, SunAppearance>,
+        errors: &mut Vec<String>,
+    ) -> (Vec<CellDefinition>, Vec<(u32, u32, u32)>, HashMap<u32, Vec<u32>>) {
+        let grad_steps = appearance.grad_steps.max(1);
+
+        let mut cells: Vec<CellDefinition> = appearance
             .nodes
-            .into_iter()
+            .iter()
             .map(|node| CellDefinition {
                 id: node.id,
                 journey_id: node.journey_id,
                 warp_journey_id: node.warp_journey_id,
-                ports: node.input_ports,
+                ports: node.input_ports.clone(),
                 outgoing_ports: Vec::new(),
                 animal_name: animal_label_key(&node.label),
                 state: node.state,
@@ -848,11 +900,11 @@ impl BeamModel {
                 grad_steps,
                 frozen: child_rays.get(&node.journey_id).map(|ray| ray.frozen),
             })
-            .collect::<Vec<_>>();
+            .collect();
         cells.sort_by_key(|cell| cell.id);
 
         // Outer edges plus every merged warp subgraph edge, validated
-        // together below.
+        // together by the caller.
         let mut pending_edges: Vec<(u32, u32, u32)> = appearance
             .edges
             .iter()
@@ -870,10 +922,22 @@ impl BeamModel {
             .max()
             .unwrap_or(0)
             + 1;
-        let mut warp_cell_ids: Vec<u32> = warp_appearances.keys().copied().collect();
+        // Every warp cell of this appearance is locatable by its own id.
+        let mut warp_paths: HashMap<u32, Vec<u32>> = cells
+            .iter()
+            .filter(|cell| !cell.warp_journey_id.is_nil())
+            .map(|cell| (cell.id, vec![cell.id]))
+            .collect();
+        // Warp cells of this appearance are the length-1 paths; longer paths
+        // belong to deeper levels and travel with their parent's sub-map.
+        let mut warp_cell_ids: Vec<u32> = warp_appearances
+            .keys()
+            .filter(|path| path.len() == 1)
+            .map(|path| path[0])
+            .collect();
         warp_cell_ids.sort_unstable();
         for parent_id in warp_cell_ids {
-            let warp_appearance = &warp_appearances[&parent_id];
+            let warp_appearance = &warp_appearances[&vec![parent_id]];
             if !warp_appearance.finalized {
                 // The subgraph joins the main graph once the nested sun
                 // finalizes.
@@ -883,35 +947,34 @@ impl BeamModel {
                 errors.push(format!("warp appearance for unknown cell {parent_id}"));
                 continue;
             }
+            // Deeper expansions are re-keyed relative to the nested sun and
+            // merged recursively.
+            let sub_expansions: HashMap<Vec<u32>, SunAppearance> = warp_appearances
+                .iter()
+                .filter(|(path, _)| {
+                    path.len() > 1 && path.first() == Some(&parent_id)
+                })
+                .map(|(path, appearance)| (path[1..].to_vec(), appearance.clone()))
+                .collect();
             // Validate the nested sun with the same rules as the outer one;
             // a malformed subgraph is skipped rather than failing the whole
             // model.
-            let Ok(nested) =
-                Self::from_appearance(warp_appearance.clone(), child_rays, &HashMap::new())
-            else {
+            let mut nested_errors = Vec::new();
+            let (nested_cells, nested_edges, nested_paths) = Self::merge_appearance(
+                warp_appearance,
+                child_rays,
+                &sub_expansions,
+                &mut nested_errors,
+            );
+            let _ = Self::validate(&nested_cells, &nested_edges, &mut nested_errors);
+            if !nested_errors.is_empty() {
                 continue;
-            };
-
-            let mut id_map = HashMap::new();
-            for cell in &nested.cells {
-                id_map.insert(cell.id, next_id);
-                next_id += 1;
-            }
-            let mut nested_ports: Vec<u32> = nested
-                .cells
-                .iter()
-                .flat_map(|cell| cell.ports.iter().copied())
-                .collect();
-            nested_ports.sort_unstable();
-            nested_ports.dedup();
-            let mut port_map = HashMap::new();
-            for port in nested_ports {
-                port_map.insert(port, next_port);
-                next_port += 1;
             }
 
             // A finalized sun has exactly one sink: the node with no
-            // outgoing edges.
+            // outgoing edges in its own appearance. Deeper merges connect
+            // through their own boundaries, so this stays the terminal of
+            // this subgraph.
             let sources = warp_appearance
                 .edges
                 .iter()
@@ -927,7 +990,34 @@ impl BeamModel {
                 continue;
             }
 
-            for cell in nested.cells {
+            let mut id_map = HashMap::new();
+            for cell in &nested_cells {
+                id_map.insert(cell.id, next_id);
+                next_id += 1;
+            }
+            let mut nested_ports: Vec<u32> = nested_cells
+                .iter()
+                .flat_map(|cell| cell.ports.iter().copied())
+                .collect();
+            nested_ports.sort_unstable();
+            nested_ports.dedup();
+            let mut port_map = HashMap::new();
+            for port in nested_ports {
+                port_map.insert(port, next_port);
+                next_port += 1;
+            }
+
+            // Carry the nested sun's warp paths over, prefixed with this
+            // boundary cell so merged warp cells stay locatable.
+            for (local_id, local_path) in &nested_paths {
+                if let Some(&merged_id) = id_map.get(local_id) {
+                    let mut path = vec![parent_id];
+                    path.extend_from_slice(local_path);
+                    warp_paths.insert(merged_id, path);
+                }
+            }
+
+            for cell in nested_cells {
                 let id = id_map[&cell.id];
                 cells.push(CellDefinition {
                     id,
@@ -935,12 +1025,8 @@ impl BeamModel {
                     ..cell
                 });
             }
-            for edge in &warp_appearance.edges {
-                pending_edges.push((
-                    id_map[&edge.source],
-                    id_map[&edge.target],
-                    port_map[&edge.target_port],
-                ));
+            for (source, target, target_port) in nested_edges {
+                pending_edges.push((id_map[&source], id_map[&target], port_map[&target_port]));
             }
 
             // Connect the boundary cell to the nested sink through a
@@ -954,9 +1040,19 @@ impl BeamModel {
             pending_edges.push((parent_id, sink_id, connector_port));
         }
 
+        (cells, pending_edges, warp_paths)
+    }
+
+    /// Checks merged cells and edges for duplicates and dangling references,
+    /// returning the deduplicated `(source, target)` edge list.
+    fn validate(
+        cells: &[CellDefinition],
+        pending_edges: &[(u32, u32, u32)],
+        errors: &mut Vec<String>,
+    ) -> Vec<(u32, u32)> {
         let mut node_ids = HashSet::new();
         let mut port_owner = HashMap::new();
-        for cell in &cells {
+        for cell in cells {
             if !node_ids.insert(cell.id) {
                 errors.push(format!("duplicate cell id {}", cell.id));
             }
@@ -973,11 +1069,11 @@ impl BeamModel {
         let mut edges = Vec::new();
         let mut seen_edges = HashSet::new();
         for (source, target, target_port) in pending_edges {
-            if !node_ids.contains(&source) {
+            if !node_ids.contains(source) {
                 errors.push(format!("edge starts at unknown cell {source}"));
                 continue;
             }
-            if !node_ids.contains(&target) {
+            if !node_ids.contains(target) {
                 errors.push(format!("edge targets unknown cell {target}"));
                 continue;
             }
@@ -985,32 +1081,18 @@ impl BeamModel {
                 errors.push(format!("cell {source} has a self edge on port {target_port}"));
                 continue;
             }
-            if port_owner.get(&target_port) != Some(&target) {
+            if port_owner.get(target_port) != Some(target) {
                 errors.push(format!(
                     "edge to cell {target} references unowned input port {target_port}"
                 ));
                 continue;
             }
-            if seen_edges.insert((source, target)) {
-                edges.push((source, target));
+            if seen_edges.insert((*source, *target)) {
+                edges.push((*source, *target));
             }
         }
         edges.sort_unstable();
-
-        if cells.is_empty() {
-            errors.push("the Black Hole Sun contains no cells".to_string());
-        }
-        if !errors.is_empty() {
-            return Err(errors.join("; "));
-        }
-
-        let nodes = cells.iter().map(|cell| cell.id).collect();
-        Ok(Self {
-            cells,
-            graph: Graph::new(nodes, edges),
-            grad_steps,
-            errors,
-        })
+        edges
     }
 }
 
@@ -1140,11 +1222,13 @@ impl PianoStrikeVisual {
 struct LiveAppearanceSnapshot {
     appearance: SunAppearance,
     child_rays: HashMap<Uuid, Ray>,
-    /// Nested Sun appearances for warp cells, keyed by the parent cell id.
-    warp_appearances: HashMap<u32, SunAppearance>,
+    /// Nested Sun appearances for warp cells, keyed by the path of cell ids
+    /// that locates the warp cell: `[7]` is a top-level warp, `[7, 3]` is
+    /// warp cell 3 inside cell 7's nested sun.
+    warp_appearances: HashMap<Vec<u32>, SunAppearance>,
     /// Why a warp cell's nested appearance could not be used yet, keyed by
-    /// the parent cell id. Present whenever no usable model was produced.
-    warp_diagnostics: HashMap<u32, String>,
+    /// the same paths. Present whenever no usable model was produced.
+    warp_diagnostics: HashMap<Vec<u32>, String>,
 }
 
 trait NodeStateVisual {
@@ -1521,9 +1605,11 @@ struct BeamApp {
     model: BeamModel,
     live: Option<LiveConfig>,
     subpanel: Option<SubpanelState>,
-    /// Warp cells whose nested sun is merged into the main graph. Toggled by
-    /// clicking the boundary cell.
-    expanded_warp_cells: HashSet<u32>,
+    /// Warp cells whose nested sun is merged into the main graph, as paths of
+    /// local cell ids from the top level (e.g. `[7]` or `[7, 3]`). Toggled by
+    /// clicking the boundary cell; collapsing a path also collapses every
+    /// expanded sub-path beneath it.
+    expanded_warp_cells: HashSet<Vec<u32>>,
     /// Latest polled snapshot; the source for rebuilding the main graph when
     /// warp subgraphs expand or collapse.
     last_snapshot: Option<LiveAppearanceSnapshot>,
@@ -1677,14 +1763,9 @@ impl BeamApp {
                 self.appearance_loading = false;
                 match result {
                     Ok(Some(snapshot)) if snapshot.appearance.finalized => {
-                        // Only warp subgraphs whose boundary cell is
-                        // expanded join the main graph.
-                        let warp_appearances = snapshot
-                            .warp_appearances
-                            .iter()
-                            .filter(|(node_id, _)| self.expanded_warp_cells.contains(node_id))
-                            .map(|(node_id, appearance)| (*node_id, appearance.clone()))
-                            .collect::<HashMap<u32, SunAppearance>>();
+                        // Only warp subgraphs whose full path is expanded
+                        // join the main graph.
+                        let warp_appearances = self.expanded_warp_appearances(&snapshot);
                         match BeamModel::from_appearance(
                             snapshot.appearance.clone(),
                             &snapshot.child_rays,
@@ -1725,8 +1806,10 @@ impl BeamApp {
                                     });
                                     if is_warp {
                                         let merged = self
-                                            .expanded_warp_cells
-                                            .contains(&subpanel.node_id)
+                                            .model
+                                            .warp_paths
+                                            .get(&subpanel.node_id)
+                                            .is_some_and(|path| self.is_path_expanded(path))
                                             && self.warp_appearance_available(subpanel.node_id);
                                         self.subpanel_notice = if merged {
                                             None
@@ -1800,7 +1883,10 @@ impl BeamApp {
                     .is_some_and(|cell| !cell.warp_journey_id.is_nil());
                 if closing_warp_node {
                     let node_id = self.subpanel.as_ref().unwrap().node_id;
-                    self.expanded_warp_cells.remove(&node_id);
+                    let path = self.model.warp_paths.get(&node_id).cloned();
+                    if let Some(path) = path {
+                        self.collapse_warp_path(&path);
+                    }
                 }
                 self.subpanel = None;
                 if closing_warp_node {
@@ -2380,10 +2466,13 @@ impl BeamApp {
             .as_ref()
             .is_some_and(|subpanel| subpanel.journey_id == journey_id);
         if is_warp {
-            if closing {
-                self.expanded_warp_cells.remove(&node_id);
-            } else {
-                self.expanded_warp_cells.insert(node_id);
+            let path = self.model.warp_paths.get(&node_id).cloned();
+            if let Some(path) = path {
+                if closing {
+                    self.collapse_warp_path(&path);
+                } else {
+                    self.expanded_warp_cells.insert(path);
+                }
             }
         }
 
@@ -2417,35 +2506,69 @@ impl BeamApp {
         Task::none()
     }
 
+    /// Whether every level of a warp path is expanded, i.e. the subgraph at
+    /// that path joins the main graph.
+    fn is_path_expanded(&self, path: &[u32]) -> bool {
+        (1..=path.len())
+            .all(|len| self.expanded_warp_cells.contains(&path[..len].to_vec()))
+    }
+
+    /// Removes a warp path and every expanded sub-path beneath it, so
+    /// collapsing a subgraph also collapses its expanded child subgraphs.
+    fn collapse_warp_path(&mut self, path: &[u32]) {
+        let collapsed: Vec<Vec<u32>> = self
+            .expanded_warp_cells
+            .iter()
+            .filter(|expanded| expanded.starts_with(path))
+            .cloned()
+            .collect();
+        for expanded in collapsed {
+            self.expanded_warp_cells.remove(&expanded);
+        }
+    }
+
+    /// The warp appearances from the latest snapshot whose full path is
+    /// expanded; these are the subgraphs that join the main graph.
+    fn expanded_warp_appearances<'a>(
+        &'a self,
+        snapshot: &'a LiveAppearanceSnapshot,
+    ) -> HashMap<Vec<u32>, SunAppearance> {
+        snapshot
+            .warp_appearances
+            .iter()
+            .filter(|(path, _)| self.is_path_expanded(path))
+            .map(|(path, appearance)| (path.clone(), appearance.clone()))
+            .collect()
+    }
+
     /// Whether the latest snapshot carries a usable (finalized) nested sun
     /// for a warp cell.
     fn warp_appearance_available(&self, node_id: u32) -> bool {
+        let Some(path) = self.model.warp_paths.get(&node_id) else {
+            return false;
+        };
         self.last_snapshot
             .as_ref()
-            .and_then(|snapshot| snapshot.warp_appearances.get(&node_id))
-            .is_some_and(|appearance| appearance.finalized)
+            .and_then(|snapshot| snapshot.warp_appearances.get(path))
+        .is_some_and(|appearance| appearance.finalized)
     }
 
     /// The latest diagnostic explaining why a warp cell's nested sun could
     /// not be used, if any.
     fn warp_diagnostic(&self, node_id: u32) -> Option<&String> {
+        let path = self.model.warp_paths.get(&node_id)?;
         self.last_snapshot
             .as_ref()
-            .and_then(|snapshot| snapshot.warp_diagnostics.get(&node_id))
+            .and_then(|snapshot| snapshot.warp_diagnostics.get(path))
     }
 
     /// Rebuilds the main graph from the latest snapshot, merging only the
-    /// warp subgraphs whose boundary cell is expanded.
+    /// warp subgraphs whose full path is expanded.
     fn rebuild_model(&mut self) -> Task<Message> {
         let Some(snapshot) = &self.last_snapshot else {
             return Task::none();
         };
-        let warp_appearances = snapshot
-            .warp_appearances
-            .iter()
-            .filter(|(node_id, _)| self.expanded_warp_cells.contains(node_id))
-            .map(|(node_id, appearance)| (*node_id, appearance.clone()))
-            .collect::<HashMap<u32, SunAppearance>>();
+        let warp_appearances = self.expanded_warp_appearances(snapshot);
         let Ok(model) = BeamModel::from_appearance(
             snapshot.appearance.clone(),
             &snapshot.child_rays,
@@ -2696,57 +2819,74 @@ async fn fetch_child_rays(live: &LiveConfig, appearance: &SunAppearance) -> Hash
     rays
 }
 
-/// Fetches the nested Sun appearance behind every warp cell.
+/// How many levels of nested warps to fetch. Guards against cyclic warp
+/// journeys, which would otherwise be fetched forever.
+const MAX_WARP_DEPTH: usize = 16;
+
+/// Fetches the nested Sun appearance behind every warp cell, recursing into
+/// each nested sun so that warps within warps are discovered as well.
 ///
 /// Returns the decodable appearances together with a per-cell diagnostic for
-/// every warp cell that did not yield one, so the UI can explain why a warp
-/// node has not expanded.
+/// every warp cell that did not yield one, both keyed by the path of cell
+/// ids from the top level, so the UI can explain why a warp node has not
+/// expanded.
 async fn fetch_warp_appearances(
     live: &LiveConfig,
     appearance: &SunAppearance,
-) -> (HashMap<u32, SunAppearance>, HashMap<u32, String>) {
+) -> (HashMap<Vec<u32>, SunAppearance>, HashMap<Vec<u32>, String>) {
     let mut warp_appearances = HashMap::new();
     let mut warp_diagnostics = HashMap::new();
-    for node in &appearance.nodes {
-        if node.warp_journey_id.is_nil() {
-            continue;
-        }
-        match live.client.animal_appearance(node.warp_journey_id).await {
-            Ok(Some(bytes)) => match postcard::from_bytes::<SunAppearance>(&bytes) {
-                Ok(warp_appearance) => {
-                    warp_appearances.insert(node.id, warp_appearance);
-                }
-                Err(error) => {
-                    warp_diagnostics.insert(
-                        node.id,
-                        format!(
-                            "warp journey {} published an appearance that is not a decodable Black Hole Sun (SunAppearance): {error}",
-                            node.warp_journey_id
-                        ),
-                    );
-                }
-            },
-            Ok(None) => {
-                warp_diagnostics.insert(
-                    node.id,
-                    format!(
-                        "warp journey {} has not published an appearance yet",
-                        node.warp_journey_id
-                    ),
-                );
+    // Depth-first worklist of (sun to scan, path prefix). Iterative so that
+    // arbitrarily deep warp chains do not recurse.
+    let mut stack: Vec<(SunAppearance, Vec<u32>)> = vec![(appearance.clone(), Vec::new())];
+    while let Some((sun, prefix)) = stack.pop() {
+        for node in &sun.nodes {
+            if node.warp_journey_id.is_nil() {
+                continue;
             }
-            Err(error) => {
+            let mut path = prefix.clone();
+            path.push(node.id);
+            if path.len() > MAX_WARP_DEPTH {
                 warp_diagnostics.insert(
-                    node.id,
+                    path,
                     format!(
-                        "fetching warp journey {} failed: {error}",
+                        "warp journey {} is nested more than {MAX_WARP_DEPTH} levels deep; deeper subgraphs are not fetched",
                         node.warp_journey_id
                     ),
                 );
+                continue;
+            }
+            match fetch_sun_appearance(live, node.warp_journey_id).await {
+                Ok(warp_appearance) => {
+                    warp_appearances.insert(path.clone(), warp_appearance.clone());
+                    stack.push((warp_appearance, path));
+                }
+                Err(diagnostic) => {
+                    warp_diagnostics.insert(path, diagnostic);
+                }
             }
         }
     }
     (warp_appearances, warp_diagnostics)
+}
+
+/// Fetches and decodes one journey's Sun appearance, with a diagnostic
+/// message for every way it can fail.
+async fn fetch_sun_appearance(
+    live: &LiveConfig,
+    journey_id: Uuid,
+) -> Result<SunAppearance, String> {
+    match live.client.animal_appearance(journey_id).await {
+        Ok(Some(bytes)) => postcard::from_bytes::<SunAppearance>(&bytes).map_err(|error| {
+            format!(
+                "warp journey {journey_id} published an appearance that is not a decodable Black Hole Sun (SunAppearance): {error}"
+            )
+        }),
+        Ok(None) => Err(format!(
+            "warp journey {journey_id} has not published an appearance yet"
+        )),
+        Err(error) => Err(format!("fetching warp journey {journey_id} failed: {error}")),
+    }
 }
 
 fn black_hole_text() -> Color {
@@ -3179,7 +3319,7 @@ mod tests {
                 child_rays: HashMap::new(),
                 warp_appearances: HashMap::new(),
                 warp_diagnostics: HashMap::from([(
-                    7,
+                    vec![7],
                     "warp journey 0f3c has not published an appearance yet".to_string(),
                 )]),
             },
@@ -3203,7 +3343,7 @@ mod tests {
             LiveAppearanceSnapshot {
                 appearance,
                 child_rays: HashMap::new(),
-                warp_appearances: HashMap::from([(7, nested_sun_appearance(true))]),
+                warp_appearances: HashMap::from([(vec![7], nested_sun_appearance(true))]),
                 warp_diagnostics: HashMap::new(),
             },
         ))));
@@ -3219,7 +3359,7 @@ mod tests {
             "the boundary cell connects to the nested sink"
         );
         assert!(
-            app.expanded_warp_cells.contains(&7),
+            app.expanded_warp_cells.contains(&vec![7]),
             "the expanded warp cell is tracked for rebuilds"
         );
         assert_eq!(
@@ -3231,7 +3371,7 @@ mod tests {
         // the merged subgraph out of the main graph.
         let _task = app.update(Message::NodeSelected(7));
         assert!(app.subpanel.is_none());
-        assert!(!app.expanded_warp_cells.contains(&7));
+        assert!(!app.expanded_warp_cells.contains(&vec![7]));
         assert_eq!(
             app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
             vec![7],
@@ -3303,8 +3443,8 @@ mod tests {
             edges: vec![],
         };
         let warp_appearances = HashMap::from([
-            (3, nested_sun_appearance(true)),
-            (5, nested_sun_appearance(false)),
+            (vec![3], nested_sun_appearance(true)),
+            (vec![5], nested_sun_appearance(false)),
         ]);
 
         let model = BeamModel::from_appearance(appearance, &HashMap::new(), &warp_appearances)
@@ -3321,6 +3461,210 @@ mod tests {
             vec![(3, 6)],
             "the boundary cell connects to the nested sink"
         );
+    }
+
+    #[test]
+    fn from_appearance_merges_nested_warps_recursively() {
+        let outer = SunAppearance {
+            finalized: true,
+            grad_steps: 1,
+            nodes: vec![SunNodeAppearance {
+                id: 7,
+                journey_id: Uuid::new_v4(),
+                warp_journey_id: Uuid::new_v4(),
+                label: "Warp<A, B>".to_string(),
+                input_ports: vec![0],
+                state: SunNodeState::Idle,
+                state_sequence: 0,
+                grad_step: 1,
+            }],
+            edges: vec![],
+        };
+        // Cell 2 is itself a warp cell inside the nested sun; the edge makes
+        // it the unique sink of the middle sun.
+        let middle = SunAppearance {
+            finalized: true,
+            grad_steps: 1,
+            nodes: vec![
+                SunNodeAppearance {
+                    id: 0,
+                    journey_id: Uuid::new_v4(),
+                    warp_journey_id: Uuid::nil(),
+                    label: "NestedRoot".to_string(),
+                    input_ports: vec![0],
+                    state: SunNodeState::Idle,
+                    state_sequence: 0,
+                    grad_step: 1,
+                },
+                SunNodeAppearance {
+                    id: 2,
+                    journey_id: Uuid::new_v4(),
+                    warp_journey_id: Uuid::new_v4(),
+                    label: "Warp<C, D>".to_string(),
+                    input_ports: vec![1],
+                    state: SunNodeState::Idle,
+                    state_sequence: 0,
+                    grad_step: 1,
+                },
+            ],
+            edges: vec![SunEdgeAppearance {
+                source: 0,
+                target: 2,
+                target_port: 1,
+            }],
+        };
+        let inner = nested_sun_appearance(true);
+
+        let warp_appearances = HashMap::from([
+            (vec![7], middle.clone()),
+            (vec![7, 2], inner),
+        ]);
+        let model = BeamModel::from_appearance(outer, &HashMap::new(), &warp_appearances)
+            .unwrap();
+
+        assert_eq!(
+            model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            vec![7, 8, 9, 10],
+            "every level of the warp chain joins the main graph"
+        );
+        assert_eq!(
+            model.graph.edges,
+            vec![(7, 9), (8, 9), (9, 10)],
+            "the boundary connects to the middle sink, which in turn connects to the inner sink"
+        );
+        assert_eq!(
+            model.warp_paths.get(&7),
+            Some(&vec![7]),
+            "the top-level warp is locatable by its own id"
+        );
+        assert_eq!(
+            model.warp_paths.get(&9),
+            Some(&vec![7, 2]),
+            "the merged nested warp keeps its path from the top level"
+        );
+    }
+
+    #[test]
+    fn nested_warp_subgraphs_expand_and_collapse_recursively() {
+        let config = BeamBuilder::new()
+            .register_subpanel_animal::<TestCell>()
+            .into_config();
+        let live = LiveConfig {
+            client: Arc::new(jungle_client::MockClient::default()),
+            journey_id: Uuid::new_v4(),
+        };
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), Some(live));
+
+        let boundary_journey = Uuid::new_v4();
+        let appearance = SunAppearance {
+            finalized: true,
+            grad_steps: 1,
+            nodes: vec![SunNodeAppearance {
+                id: 7,
+                journey_id: boundary_journey,
+                warp_journey_id: Uuid::new_v4(),
+                label: "Warp<OtherAnimal, TestCell>".to_string(),
+                input_ports: vec![0],
+                state: SunNodeState::Idle,
+                state_sequence: 0,
+                grad_step: 1,
+            }],
+            edges: vec![],
+        };
+        // The nested sun contains its own warp cell (id 2), whose sub-sun is
+        // exposed as well.
+        let middle = SunAppearance {
+            finalized: true,
+            grad_steps: 1,
+            nodes: vec![
+                SunNodeAppearance {
+                    id: 0,
+                    journey_id: Uuid::new_v4(),
+                    warp_journey_id: Uuid::nil(),
+                    label: "NestedRoot".to_string(),
+                    input_ports: vec![0],
+                    state: SunNodeState::Idle,
+                    state_sequence: 0,
+                    grad_step: 1,
+                },
+                SunNodeAppearance {
+                    id: 2,
+                    journey_id: Uuid::new_v4(),
+                    warp_journey_id: Uuid::new_v4(),
+                    label: "Warp<InnerAnimal, TestCell>".to_string(),
+                    input_ports: vec![1],
+                    state: SunNodeState::Idle,
+                    state_sequence: 0,
+                    grad_step: 1,
+                },
+            ],
+            edges: vec![SunEdgeAppearance {
+                source: 0,
+                target: 2,
+                target_port: 1,
+            }],
+        };
+
+        let snapshot = LiveAppearanceSnapshot {
+            appearance,
+            child_rays: HashMap::new(),
+            warp_appearances: HashMap::from([
+                (vec![7], middle.clone()),
+                (vec![7, 2], nested_sun_appearance(true)),
+            ]),
+            warp_diagnostics: HashMap::new(),
+        };
+        let _task = app.update(Message::AppearanceLoaded(Ok(Some(snapshot))));
+        assert_eq!(
+            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            vec![7],
+            "nothing merges until a warp cell is clicked"
+        );
+
+        // Expand the top-level warp: its nested sun joins the main graph.
+        let _task = app.update(Message::NodeSelected(7));
+        assert_eq!(app.expanded_warp_cells, HashSet::from([vec![7]]));
+        assert_eq!(
+            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            vec![7, 8, 9]
+        );
+
+        // Expand the merged nested warp: its sub-sun joins as well.
+        let _task = app.update(Message::NodeSelected(9));
+        assert_eq!(
+            app.expanded_warp_cells,
+            HashSet::from([vec![7], vec![7, 2]]),
+            "both levels of the warp chain are tracked"
+        );
+        assert_eq!(
+            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            vec![7, 8, 9, 10],
+            "the deeper sub-sun joins the main graph"
+        );
+        assert_eq!(app.model.graph.edges, vec![(7, 9), (8, 9), (9, 10)]);
+
+        // Clicking the top-level warp again while its child subgraph is
+        // still expanded only switches the subpanel back to it...
+        let _task = app.update(Message::NodeSelected(7));
+        assert_eq!(
+            app.expanded_warp_cells,
+            HashSet::from([vec![7], vec![7, 2]]),
+            "the child subgraph stays expanded while its parent is re-clicked"
+        );
+
+        // ...and clicking it once more closes the subpanel and collapses the
+        // whole chain, including the still-expanded child subgraph.
+        let _task = app.update(Message::NodeSelected(7));
+        assert!(
+            app.expanded_warp_cells.is_empty(),
+            "collapsing the parent also collapses its expanded child subgraphs"
+        );
+        assert_eq!(
+            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            vec![7],
+            "the whole merged chain leaves the main graph"
+        );
+        assert!(app.model.graph.edges.is_empty());
     }
 
     #[cfg(feature = "piano")]
@@ -4047,21 +4391,21 @@ mod warp_fetch_diagnostics {
         let (models, diagnostics) = rt.block_on(fetch_warp_appearances(&live, &appearance));
 
         assert!(
-            models.contains_key(&3),
+            models.contains_key(&vec![3]),
             "a decodable nested sun becomes a model"
         );
-        assert!(!models.contains_key(&1));
-        assert!(!models.contains_key(&2));
+        assert!(!models.contains_key(&vec![1]));
+        assert!(!models.contains_key(&vec![2]));
         assert_eq!(diagnostics.len(), 2);
         assert!(
-            diagnostics[&1].contains("has not published an appearance yet"),
+            diagnostics[&vec![1]].contains("has not published an appearance yet"),
             "missing journey: {}",
-            diagnostics[&1]
+            diagnostics[&vec![1]]
         );
         assert!(
-            diagnostics[&2].contains("not a decodable Black Hole Sun"),
+            diagnostics[&vec![2]].contains("not a decodable Black Hole Sun"),
             "foreign appearance: {}",
-            diagnostics[&2]
+            diagnostics[&vec![2]]
         );
     }
 }
