@@ -24,7 +24,6 @@ use black_hole_flux::sun::{
     UnarySunStep,
 };
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState, Ray};
-#[cfg(feature = "piano")]
 use iced::keyboard;
 use iced::mouse;
 use iced::time::Instant;
@@ -1187,6 +1186,7 @@ enum Message {
     ColorTick(Instant),
     NodeSelected(u32),
     CloseSubpanel,
+    Escape,
     Subpanel(EjectedViewerMessage),
     SubpanelOverlayPointerEvent,
     #[cfg(feature = "piano")]
@@ -1944,27 +1944,19 @@ impl BeamApp {
             }
             Message::NodeSelected(node_id) => return self.open_subpanel_for_node(node_id),
             Message::CloseSubpanel => {
-                // Closing the subpanel also collapses any warp subgraph it
-                // expanded.
-                let closing_warp_node = self
-                    .subpanel
-                    .as_ref()
-                    .and_then(|subpanel| {
-                        self.model
-                            .cells
-                            .iter()
-                            .find(|cell| cell.id == subpanel.node_id)
-                    })
-                    .is_some_and(|cell| !cell.warp_journey_id.is_nil());
-                if closing_warp_node {
-                    let node_id = self.subpanel.as_ref().unwrap().node_id;
-                    let path = self.model.warp_paths.get(&node_id).cloned();
-                    if let Some(path) = path {
-                        self.collapse_warp_path(&path);
-                    }
+                if self.close_subpanel() {
+                    return self.rebuild_model();
                 }
-                self.subpanel = None;
-                if closing_warp_node {
+            }
+            Message::Escape => {
+                // Escape closes the open subpanel and collapses every
+                // expanded warp subgraph.
+                let mut topology_changed = self.close_subpanel();
+                if !self.expanded_warp_cells.is_empty() {
+                    self.expanded_warp_cells.clear();
+                    topology_changed = true;
+                }
+                if topology_changed {
                     return self.rebuild_model();
                 }
             }
@@ -2010,6 +2002,23 @@ impl BeamApp {
         if let Some(subpanel) = self.subpanel.as_ref() {
             subscriptions.push(subpanel.viewer.subscription().map(Message::Subpanel));
         }
+        // Escape closes any open subpanel and collapses every expanded warp
+        // subgraph, with or without the piano feature.
+        subscriptions.push(
+            keyboard::listen()
+                .filter_map(|event| {
+                    matches!(
+                        event,
+                        keyboard::Event::KeyPressed {
+                            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                            repeat: false,
+                            ..
+                        }
+                    )
+                    .then_some(())
+                })
+                .map(|_| Message::Escape),
+        );
         #[cfg(feature = "piano")]
         subscriptions.push(keyboard::listen().map(Message::PianoKeyboard));
         #[cfg(feature = "piano")]
@@ -2693,6 +2702,31 @@ impl BeamApp {
             return self.rebuild_model();
         }
         Task::none()
+    }
+
+    /// Closes the open subpanel, collapsing any warp subgraph it expanded.
+    /// Returns whether the main graph topology changed and needs rebuilding.
+    fn close_subpanel(&mut self) -> bool {
+        // Closing the subpanel also collapses any warp subgraph it
+        // expanded.
+        let closing_warp_node = self
+            .subpanel
+            .as_ref()
+            .and_then(|subpanel| {
+                self.model
+                    .cells
+                    .iter()
+                    .find(|cell| cell.id == subpanel.node_id)
+            })
+            .is_some_and(|cell| !cell.warp_journey_id.is_nil());
+        if closing_warp_node {
+            let node_id = self.subpanel.as_ref().unwrap().node_id;
+            if let Some(path) = self.model.warp_paths.get(&node_id).cloned() {
+                self.collapse_warp_path(&path);
+            }
+        }
+        self.subpanel = None;
+        closing_warp_node
     }
 
     /// Whether a warp cell's nested sun is currently merged into the main
