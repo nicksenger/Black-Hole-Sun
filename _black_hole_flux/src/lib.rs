@@ -60,7 +60,6 @@ use thiserror::Error;
 
 pub mod animal;
 pub mod atom;
-pub mod boundary;
 pub mod cell;
 pub mod fusion;
 pub mod model_config;
@@ -68,6 +67,7 @@ pub mod ops;
 pub mod ray;
 pub mod sun;
 pub mod twin;
+pub mod warp;
 
 pub use black_hole_spec::{
     DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
@@ -78,12 +78,6 @@ pub use black_hole_spec::{
 
 pub use animal::Progenitor;
 pub use atom::effect::MassInfer;
-pub use boundary::action::{InitRecvId as InitBoundaryRecvId, ObserveWarp, PerturbWarp};
-pub use boundary::effect::{ObserveWarpEffect, PerturbWarpEffect};
-pub use boundary::{
-    Boundary, BoundaryState, Inner as BoundaryInner,
-    InnerPropagationMicrostep as BoundaryMicrostep, NoModelBoundary,
-};
 pub use cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
     InitRecvId, MassInferStep, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput,
@@ -103,6 +97,12 @@ pub use model_config::{
 };
 pub use ops::VoidInferOps;
 pub use ray::Ray;
+pub use warp::action::{InitRecvId as InitBoundaryRecvId, ObserveWarp, PerturbWarp};
+pub use warp::effect::{ObserveWarpEffect, PerturbWarpEffect};
+pub use warp::{
+    Boundary, BoundaryState, Inner as BoundaryInner,
+    InnerPropagationMicrostep as BoundaryMicrostep, NoModelBoundary,
+};
 
 pub use atom::Atom;
 pub use atom::NoBackoffAtom;
