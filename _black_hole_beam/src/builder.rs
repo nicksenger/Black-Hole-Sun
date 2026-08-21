@@ -257,11 +257,13 @@ impl BeamBuilder {
     /// [`Self::score_path`], [`Self::score_data`], or [`Self::score`]; a
     /// no-op when `seconds` is zero or no score is configured.
     ///
-    /// Because the skipped time never plays, notes played from the score are
-    /// timed — and logged by [`Self::piano_log`] — as if the score began at
-    /// the skip point: a note at 10s in a score skipped by 5s sounds, and
-    /// logs, at 5s. Skipping past every note of the score is an error,
-    /// surfaced in the viewer's status line.
+    /// Notes played from the score sound at app time with the skipped intro
+    /// removed — a note at 10s in a score skipped by 5s sounds at 5s — but
+    /// [`Self::piano_log`] reports their position in the original score, so
+    /// that same note logs at 10s. Notes the user inputs are padded by the
+    /// same amount, so every logged line sits on the original score's
+    /// timeline. Skipping past every note of the score is an error, surfaced
+    /// in the viewer's status line.
     #[cfg(feature = "piano")]
     pub fn score_skip(mut self, seconds: u64) -> Self {
         self.piano_score_skip_seconds = Some(seconds);
@@ -273,7 +275,10 @@ impl BeamBuilder {
     /// Each released note prints one score-pair line —
     /// `start_tick duration_ticks note velocity release_velocity` (see
     /// [`score_text`]) — on a 1920 ticks-per-second grid where the
-    /// application start is tick 0, for example `86267 602 B3 55 55`. With
+    /// application start is tick 0, for example `86267 602 B3 55 55`. When a
+    /// score skip is configured ([`Self::score_skip`]), every logged time is
+    /// padded by the skipped amount, so tick 0 is the beginning of the
+    /// original score rather than the application start. With
     /// [`PianoLog::Input`] only notes the user inputs (e.g. through the
     /// computer keyboard) are logged; [`PianoLog::All`] also logs notes
     /// played from a configured score. In either mode, pressing the spacebar

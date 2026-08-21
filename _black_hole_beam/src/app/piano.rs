@@ -479,6 +479,9 @@ impl BeamApp {
             PianoAction::Release { velocity, .. } => {
                 let (start, attack) = self.piano_log_attacks.remove(&event.voice_id)?;
                 let duration = event.timestamp.saturating_sub(start);
+                // The log's timeline starts at the beginning of the original
+                // score, so pad every logged time by the skipped intro.
+                let start = start + self.piano_score_skip;
                 Some(format!(
                     "{} {} {} {} {}",
                     piano_log_ticks(start),

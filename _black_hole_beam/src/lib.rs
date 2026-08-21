@@ -995,6 +995,52 @@ mod tests {
 
     #[cfg(feature = "piano")]
     #[test]
+    fn piano_log_pads_input_notes_by_the_score_skip() {
+        let config = BeamBuilder::new()
+            .score_skip(5)
+            .piano_log(PianoLog::All)
+            .into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+
+        // An input note at 500ms of app time logs at 5.5s: the skipped intro
+        // is padded in, putting it on the original score's timeline.
+        let attack = PianoEvent {
+            sequence: 1,
+            timestamp: Duration::from_millis(500),
+            voice_id: 7,
+            note: PianoNote::from_midi(59), // B3
+            action: PianoAction::Attack {
+                velocity: PianoEvent::BINARY_VELOCITY,
+                pressure: None,
+            },
+            source: PianoInputSource::ComputerKeyboard { key: 'z' },
+        };
+        assert!(
+            app.piano_log_line(&attack).is_none(),
+            "the attack waits for its release"
+        );
+
+        let release = PianoEvent {
+            sequence: 2,
+            timestamp: Duration::new(0, 812_500_000),
+            note: attack.note,
+            action: PianoAction::Release {
+                velocity: 0.0,
+                held_for: Duration::new(0, 312_500_000),
+            },
+            ..attack
+        };
+        // Start is padded from tick 960 (500ms) to tick 10560 (5.5s); the
+        // duration is untouched by the pad.
+        assert_eq!(
+            app.piano_log_line(&release).as_deref(),
+            Some("10560 600 B3 127 0"),
+            "the input note's logged start includes the skipped time"
+        );
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
     fn piano_log_modes_choose_which_sources_print() {
         let events = |source| {
             [
@@ -1360,12 +1406,13 @@ loop_ticks 19200
 
     #[cfg(feature = "piano")]
     #[test]
-    fn score_skip_subtracts_skipped_time_from_logged_times() {
+    fn score_skip_keeps_skipped_time_in_logged_times() {
         use std::sync::Mutex;
 
         // The same score, skipped by 5s and played on a clock that is already
-        // 5s into the app's run: the note that sat at 10s sounds now, so its
-        // log line must report ~5s — not its original 10s.
+        // 5s into the app's run: the note that sat at 10s sounds now (at ~5s
+        // of app time), but its log line must still report 10s — the log
+        // includes the skipped time.
         let score_text = "\
 format bhs-score-v1
 ticks_per_second 960
@@ -1379,6 +1426,7 @@ loop_ticks 19200
         let captured = Arc::new(Mutex::new(Vec::new()));
         let callback_events = Arc::clone(&captured);
         let config = BeamBuilder::new()
+            .score_skip(5)
             .piano_log(PianoLog::All)
             .on_piano_event(move |event| callback_events.lock().unwrap().push(event))
             .into_config();
@@ -1399,9 +1447,9 @@ loop_ticks 19200
         assert_eq!(attack.note.midi_note, 64);
         drop(captured);
 
-        // Log the pair through the same path the app uses: 5s on the log's
-        // 1920 ticks/second grid is tick 9600 — the note's original 10s
-        // (tick 19200) minus the skipped 5s.
+        // Log the pair through the same path the app uses: the note sounds at
+        // ~5s of app time, but the log reports its original position — 10s
+        // on the log's 1920 ticks/second grid is tick 19200.
         let mut release = attack;
         release.action = PianoAction::Release {
             velocity: f32::from(80u8) / 127.0,
@@ -1419,7 +1467,7 @@ loop_ticks 19200
             (fields.next(), fields.next(), fields.next()),
             (Some("E4"), Some("80"), Some("80"))
         );
-        assert!((start_tick as i64 - 9600).abs() <= 192, "{line}");
+        assert!((start_tick as i64 - 19200).abs() <= 192, "{line}");
         assert_eq!(duration_ticks, 1920);
     }
 

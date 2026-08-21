@@ -106,6 +106,11 @@ pub(crate) struct BeamApp {
     pub(crate) piano_score_error:  Option<String>,
     #[cfg(feature = "piano")]
     pub(crate) piano_score_cycle:  u64,
+    /// The skipped intro of a configured score ([`BeamBuilder::score_skip`]),
+    /// padded into every time reported by [`Self::piano_log_line`] so the
+    /// log's timeline starts at the beginning of the original score.
+    #[cfg(feature = "piano")]
+    pub(crate) piano_score_skip:  Duration,
     /// The scientific-pitch octave selected by number keys `0`-`7`; the home
     /// row sounds the white keys from the A in this octave (through E of the
     /// next on Enter), and the top row plays the black keys between them.
@@ -198,6 +203,10 @@ impl BeamApp {
             Ok(None) => (None, None),
             Err(error) => (None, Some(error)),
         };
+        #[cfg(feature = "piano")]
+        let piano_score_skip = config
+            .piano_score_skip_seconds
+            .map_or(Duration::ZERO, Duration::from_secs);
 
         (
             Self {
@@ -234,6 +243,8 @@ impl BeamApp {
                 piano_score_error,
                 #[cfg(feature = "piano")]
                 piano_score_cycle: 0,
+                #[cfg(feature = "piano")]
+                piano_score_skip,
                 #[cfg(feature = "piano")]
                 piano_octave: 4,
                 #[cfg(feature = "piano")]
