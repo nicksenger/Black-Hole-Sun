@@ -11,7 +11,11 @@
 //!
 //! `check` validates a `bhs-score-v1` score (range errors, duplicate pairs,
 //! canonical order, stale measure anchors, loop length). `pretty` re-emits a
-//! score in canonical form, preserving user comments.
+//! score in canonical form, preserving user comments. `rescale` stretches or
+//! compresses a score to a new loop duration, moving every note to the same
+//! relative position in the new duration. `shift-secs` and `shift-ticks`
+//! move every note's start time by a positive (later) or negative (earlier)
+//! amount, dropping any note that would start before tick 0.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -46,6 +50,12 @@ enum Command {
     Check(CheckArgs),
     /// Re-emit a bhs-score-v1 score in canonical form, preserving comments
     Pretty(PrettyArgs),
+    /// Rescale a bhs-score-v1 score to a new loop duration
+    Rescale(RescaleArgs),
+    /// Shift every note's start time by a number of seconds (negative for earlier)
+    ShiftSecs(ShiftSecsArgs),
+    /// Shift every note's start time by a number of ticks (negative for earlier)
+    ShiftTicks(ShiftTicksArgs),
 }
 
 #[derive(clap::Args)]
@@ -78,6 +88,48 @@ struct PrettyArgs {
     score: PathBuf,
 
     /// Write the canonical form to this file instead of standard output
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct RescaleArgs {
+    /// Score file to rescale
+    score: PathBuf,
+
+    /// The new loop duration in seconds
+    #[arg(value_name = "SECONDS")]
+    duration: f64,
+
+    /// Write the rescaled score to this file instead of standard output
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct ShiftSecsArgs {
+    /// Score file to shift
+    score: PathBuf,
+
+    /// The shift in seconds; negative shifts notes earlier
+    #[arg(value_name = "SECONDS", allow_negative_numbers = true)]
+    seconds: f64,
+
+    /// Write the shifted score to this file instead of standard output
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct ShiftTicksArgs {
+    /// Score file to shift
+    score: PathBuf,
+
+    /// The shift in ticks; negative shifts notes earlier
+    #[arg(value_name = "TICKS", allow_negative_numbers = true)]
+    ticks: i64,
+
+    /// Write the shifted score to this file instead of standard output
     #[arg(short, long)]
     output: Option<PathBuf>,
 }
@@ -409,6 +461,9 @@ fn main() -> Result<(), String> {
         Command::Convert(args) => run_convert(&args),
         Command::Check(args) => run_check(&args.score),
         Command::Pretty(args) => run_pretty(&args.score, args.output.as_deref()),
+        Command::Rescale(args) => run_rescale(&args),
+        Command::ShiftSecs(args) => run_shift_secs(&args),
+        Command::ShiftTicks(args) => run_shift_ticks(&args),
     }
 }
 
@@ -476,6 +531,46 @@ fn run_check(path: &Path) -> Result<(), String> {
         return Err(format!("{}: the score has errors", path.display()));
     }
     Ok(())
+}
+
+fn run_rescale(args: &RescaleArgs) -> Result<(), String> {
+    if !args.duration.is_finite() || args.duration <= 0.0 {
+        return Err(
+            "the new duration must be a finite number of seconds greater than zero".to_string(),
+        );
+    }
+
+    let path = &args.score;
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let mut score = BhsScore::parse(&text)
+        .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
+    score.rescale_to_duration(args.duration)?;
+    write_output(args.output.as_deref(), &score.format())
+}
+
+fn run_shift_secs(args: &ShiftSecsArgs) -> Result<(), String> {
+    if !args.seconds.is_finite() {
+        return Err("the shift must be a finite number of seconds".to_string());
+    }
+
+    let path = &args.score;
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let mut score = BhsScore::parse(&text)
+        .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
+    score.shift_seconds(args.seconds)?;
+    write_output(args.output.as_deref(), &score.format())
+}
+
+fn run_shift_ticks(args: &ShiftTicksArgs) -> Result<(), String> {
+    let path = &args.score;
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let mut score = BhsScore::parse(&text)
+        .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
+    score.shift_ticks(args.ticks)?;
+    write_output(args.output.as_deref(), &score.format())
 }
 
 fn run_pretty(path: &Path, output: Option<&Path>) -> Result<(), String> {
@@ -788,5 +883,102 @@ mod tests {
         // The re-emitted text parses back to the same pairs.
         let reparsed = BhsScore::parse(&text).unwrap();
         assert_eq!(reparsed.format(), text);
+    }
+
+    #[test]
+    fn rescale_stretches_the_score_to_the_new_duration() {
+        // The fixture loops at eight seconds (7680 ticks at 960/second).
+        let directory = std::env::temp_dir();
+        let input = directory.join(format!("bhs-rescale-in-{}.bhs", std::process::id()));
+        let output = directory.join(format!("bhs-rescale-out-{}.bhs", std::process::id()));
+        fs::write(
+            &input,
+            "format bhs-score-v1\nticks_per_second 960\nloop_ticks 7680\n\
+             0 960 C4 80\n3840 960 E4 64\n",
+        )
+        .expect("the fixture should be written");
+
+        run_rescale(&RescaleArgs {
+            score: input.clone(),
+            duration: 16.0,
+            output: Some(output.clone()),
+        })
+        .expect("the rescale should succeed");
+
+        let text = fs::read_to_string(&output).expect("the output should be written");
+        let score = BhsScore::parse(&text).expect("the rescaled score should parse");
+        assert_eq!(score.loop_ticks, Some(15360));
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(pairs.len(), 2);
+        // Both notes keep their relative positions (0 and 0.5 of the loop)
+        // on the stretched grid.
+        assert_eq!(pairs[0].start_tick, 0);
+        assert_eq!(pairs[0].duration_ticks, 1920);
+        assert_eq!(pairs[1].start_tick, 7680);
+        assert_eq!(pairs[1].duration_ticks, 1920);
+        assert!(score.to_events().is_ok());
+
+        let _ = fs::remove_file(&output);
+        let _ = fs::remove_file(&input);
+    }
+
+    #[test]
+    fn shift_moves_notes_and_drops_the_negative_ones() {
+        // The fixture loops at eight seconds (7680 ticks at 960/second).
+        let directory = std::env::temp_dir();
+        let input = directory.join(format!("bhs-shift-in-{}.bhs", std::process::id()));
+        let output = directory.join(format!("bhs-shift-out-{}.bhs", std::process::id()));
+        fs::write(
+            &input,
+            "format bhs-score-v1\nticks_per_second 960\nloop_ticks 7680\n\
+             0 480 C4 80\n3840 480 E4 64\n",
+        )
+        .expect("the fixture should be written");
+
+        // Shifting one second earlier drops the tick-0 note and moves the
+        // rest up; the explicit loop shortens with them.
+        run_shift_ticks(&ShiftTicksArgs {
+            score: input.clone(),
+            ticks: -960,
+            output: Some(output.clone()),
+        })
+        .expect("the shift should succeed");
+        let text = fs::read_to_string(&output).expect("the output should be written");
+        let score = BhsScore::parse(&text).expect("the shifted score should parse");
+        assert_eq!(score.loop_ticks, Some(6720));
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].start_tick, 2880);
+        assert_eq!(pairs[0].duration_ticks, 480);
+
+        // The seconds form of the same shift agrees on this grid.
+        run_shift_ticks(&ShiftTicksArgs {
+            score: input.clone(),
+            ticks: 960,
+            output: Some(output.clone()),
+        })
+        .expect("the shift should succeed");
+        let text = fs::read_to_string(&output).expect("the output should be written");
+        let score = BhsScore::parse(&text).expect("the shifted score should parse");
+        assert_eq!(score.loop_ticks, Some(8640));
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(pairs[0].start_tick, 960);
+        assert_eq!(pairs[1].start_tick, 4800);
+
+        run_shift_secs(&ShiftSecsArgs {
+            score: input.clone(),
+            seconds: -1.0,
+            output: Some(output.clone()),
+        })
+        .expect("the shift should succeed");
+        let text = fs::read_to_string(&output).expect("the output should be written");
+        let score = BhsScore::parse(&text).expect("the shifted score should parse");
+        assert_eq!(score.loop_ticks, Some(6720));
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].start_tick, 2880);
+
+        let _ = fs::remove_file(&output);
+        let _ = fs::remove_file(&input);
     }
 }

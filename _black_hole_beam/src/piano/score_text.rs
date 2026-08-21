@@ -367,6 +367,130 @@ impl BhsScore {
         Ok(())
     }
 
+    /// Rescale the score so its loop length becomes `new_seconds`: every note
+    /// (and the measure grid, when present) moves to the same relative
+    /// position in the new duration, as if the whole performance were
+    /// stretched or compressed. The old duration is the effective loop
+    /// length ([`BhsScore::effective_loop_ticks`]); the rescaled score carries
+    /// an explicit `loop_ticks` header of exactly `new_seconds`, so a score
+    /// with an implicit loop gains one.
+    ///
+    /// Tick counts are rounded to the nearest tick and every note keeps at
+    /// least one tick of duration. A note whose tail rounds past the new loop
+    /// end is pulled back into it so the score stays playable. Returns an
+    /// error when `new_seconds` is not a positive finite number or is shorter
+    /// than one tick on this grid.
+    pub fn rescale_to_duration(&mut self, new_seconds: f64) -> Result<(), String> {
+        if !new_seconds.is_finite() || new_seconds <= 0.0 {
+            return Err(
+                "the new duration must be a finite number of seconds greater than zero".to_string(),
+            );
+        }
+        let old_loop = self.effective_loop_ticks();
+        let new_loop = (new_seconds * self.ticks_per_second as f64).round() as u64;
+        if new_loop < 1 {
+            return Err(format!(
+                "a duration of {new_seconds}s is shorter than one tick at {} ticks/second",
+                self.ticks_per_second
+            ));
+        }
+
+        let rescale = |ticks: u64| rescale_ticks(ticks, old_loop, new_loop);
+        for annotated in &mut self.pairs {
+            let pair = &mut annotated.pair;
+            let start = rescale(pair.start_tick);
+            let duration = rescale(pair.duration_ticks).max(1);
+            // Rounding can push a note's tail a tick past the new loop end;
+            // pull the whole note back so the score stays playable.
+            if start.saturating_add(duration) > new_loop {
+                pair.start_tick = new_loop - 1;
+                pair.duration_ticks = 1;
+            } else {
+                pair.start_tick = start;
+                pair.duration_ticks = duration;
+            }
+        }
+        if let Some(measure_ticks) = self.measure_ticks {
+            self.measure_ticks = Some(rescale(measure_ticks).max(1));
+        }
+        self.loop_ticks = Some(new_loop);
+        Ok(())
+    }
+
+    /// Shift every note later or earlier by `delta_ticks` ticks (positive
+    /// later, negative earlier), dropping any note that would start before
+    /// tick 0. Durations and velocities are untouched. An explicit loop
+    /// length moves with the notes so the period stays aligned; an implicit
+    /// loop follows the last release and needs no change.
+    ///
+    /// Zero is a no-op. Returns an error when every note would start before
+    /// tick 0, leaving no notes to play.
+    pub fn shift_ticks(&mut self, delta_ticks: i64) -> Result<(), String> {
+        if delta_ticks == 0 {
+            return Ok(());
+        }
+
+        // Drop pairs that would start before tick 0 (negative shifts only).
+        // Walk in reverse so the removals do not shift the indices still to
+        // be examined.
+        if delta_ticks < 0 {
+            let drop_before = (-delta_ticks) as u64;
+            let mut index = self.pairs.len();
+            while index > 0 {
+                index -= 1;
+                if self.pairs[index].pair.start_tick < drop_before {
+                    self.pairs.remove(index);
+                }
+            }
+            if self.pairs.is_empty() {
+                return Err(format!(
+                    "shifting by {delta_ticks} ticks leaves no notes in the score"
+                ));
+            }
+        }
+
+        for annotated in &mut self.pairs {
+            let pair = &mut annotated.pair;
+            if delta_ticks > 0 {
+                pair.start_tick += delta_ticks as u64;
+            } else {
+                // Surviving pairs all start at or after the shift point, so
+                // this cannot underflow.
+                pair.start_tick -= (-delta_ticks) as u64;
+            }
+        }
+
+        // Move an explicit loop length with the notes to keep the period
+        // aligned. Notes survive only when the content (and therefore the
+        // loop) extends past the shift point, so this cannot underflow.
+        if let Some(loop_ticks) = self.loop_ticks {
+            self.loop_ticks = Some(if delta_ticks > 0 {
+                loop_ticks.saturating_add(delta_ticks as u64)
+            } else {
+                loop_ticks - (-delta_ticks) as u64
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Shift every note later or earlier by `seconds` (positive later,
+    /// negative earlier), dropping any note that would start before tick 0.
+    /// The shift is rounded to the nearest tick on this grid; see
+    /// [`BhsScore::shift_ticks`] for the details. Returns an error when
+    /// `seconds` is not finite or does not fit in a tick count.
+    pub fn shift_seconds(&mut self, seconds: f64) -> Result<(), String> {
+        if !seconds.is_finite() {
+            return Err("the shift must be a finite number of seconds".to_string());
+        }
+        let delta = (seconds * self.ticks_per_second as f64).round();
+        // Beyond this magnitude the shift does not fit in an i64 tick count.
+        if !(-9_200_000_000_000_000_000.0..=9_200_000_000_000_000_000.0).contains(&delta) {
+            return Err(format!("a shift of {seconds}s overflows the tick count"));
+        }
+        self.shift_ticks(delta as i64)
+    }
+
     /// Merge `other` into this score so both play simultaneously.
     ///
     /// The result keeps this score's grid ([`BhsScore::ticks_per_second`]);
@@ -1420,6 +1544,357 @@ loop_ticks 1920
         .expect("the fixture should parse");
         let error = score.skip_seconds(3).expect_err("no pairs start after the skip point");
         assert!(error.contains("leaves no notes"), "{error}");
+    }
+
+    fn rescale_fixture() -> BhsScore {
+        BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+measure_ticks 3840
+loop_ticks 7680
+0 960 C4 80
+3840 960 E4 64
+5760 960 G4 50
+",
+        )
+        .expect("the fixture should parse")
+    }
+
+    #[test]
+    fn rescaling_stretches_notes_to_the_same_relative_positions() {
+        let mut score = rescale_fixture();
+        // The loop is eight seconds; double it to sixteen.
+        score.rescale_to_duration(16.0).expect("the rescale should succeed");
+
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ScoreNotePair {
+                    start_tick: 0,
+                    duration_ticks: 1920,
+                    midi_note: 60,
+                    velocity: 80,
+                    release_velocity: None,
+                },
+                ScoreNotePair {
+                    start_tick: 7680,
+                    duration_ticks: 1920,
+                    midi_note: 64,
+                    velocity: 64,
+                    release_velocity: None,
+                },
+                ScoreNotePair {
+                    start_tick: 11520,
+                    duration_ticks: 1920,
+                    midi_note: 67,
+                    velocity: 50,
+                    release_velocity: None,
+                },
+            ]
+        );
+        assert_eq!(score.loop_ticks, Some(15360));
+        // The measure grid stretches with the loop.
+        assert_eq!(score.measure_ticks, Some(7680));
+
+        // Every note keeps its relative position in the loop: 0, 0.5, 0.75.
+        for (pair, expected) in pairs.iter().zip([0.0, 0.5, 0.75]) {
+            let relative = pair.start_tick as f64 / 15360.0;
+            assert!((relative - expected).abs() < 1e-9);
+        }
+        assert!(score.to_events().is_ok());
+    }
+
+    #[test]
+    fn rescaling_compresses_notes_and_keeps_them_in_the_loop() {
+        let mut score = rescale_fixture();
+        // Halve the eight-second loop to four.
+        score.rescale_to_duration(4.0).expect("the rescale should succeed");
+
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ScoreNotePair {
+                    start_tick: 0,
+                    duration_ticks: 480,
+                    midi_note: 60,
+                    velocity: 80,
+                    release_velocity: None,
+                },
+                ScoreNotePair {
+                    start_tick: 1920,
+                    duration_ticks: 480,
+                    midi_note: 64,
+                    velocity: 64,
+                    release_velocity: None,
+                },
+                ScoreNotePair {
+                    start_tick: 2880,
+                    duration_ticks: 480,
+                    midi_note: 67,
+                    velocity: 50,
+                    release_velocity: None,
+                },
+            ]
+        );
+        assert_eq!(score.loop_ticks, Some(3840));
+        assert_eq!(score.measure_ticks, Some(1920));
+
+        // No note escapes the shortened loop, and the score still plays.
+        for pair in &pairs {
+            assert!(pair.end_tick() <= 3840);
+        }
+        let events = score.to_events().expect("the rescaled score should play");
+        assert_eq!(events.len(), 6);
+    }
+
+    #[test]
+    fn rescaling_an_implicit_loop_makes_it_explicit() {
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+0 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        assert_eq!(score.loop_ticks, None);
+        // The implicit loop is the last release: tick 480, half a second.
+        score.rescale_to_duration(2.0).expect("the rescale should succeed");
+
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(
+            pairs,
+            vec![ScoreNotePair {
+                start_tick: 0,
+                duration_ticks: 1920,
+                midi_note: 60,
+                velocity: 80,
+                release_velocity: None,
+            }]
+        );
+        assert_eq!(score.loop_ticks, Some(1920));
+    }
+
+    #[test]
+    fn rescaling_by_a_fractional_factor_keeps_relative_positions() {
+        let mut score = rescale_fixture();
+        // Grow the eight-second loop to twelve (a 1.5x stretch).
+        score.rescale_to_duration(12.0).expect("the rescale should succeed");
+
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(
+            pairs.iter().map(|pair| pair.start_tick).collect::<Vec<_>>(),
+            vec![0, 5760, 8640]
+        );
+        assert!(pairs.iter().all(|pair| pair.duration_ticks == 1440));
+        assert_eq!(score.loop_ticks, Some(11520));
+        assert_eq!(score.measure_ticks, Some(5760));
+    }
+
+    #[test]
+    fn rescaling_rejects_bad_durations() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut score = rescale_fixture();
+            assert!(
+                score.rescale_to_duration(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+
+        // A positive duration shorter than one tick on a 960-tick grid is
+        // still rejected.
+        let mut score = rescale_fixture();
+        assert!(score.rescale_to_duration(1e-9).is_err());
+    }
+
+    #[test]
+    fn shifting_later_moves_every_note_and_the_loop() {
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 7680
+0 480 C4 80
+3840 480 E4 64
+",
+        )
+        .expect("the fixture should parse");
+
+        score.shift_ticks(1920).expect("the shift should succeed");
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ScoreNotePair {
+                    start_tick: 1920,
+                    duration_ticks: 480,
+                    midi_note: 60,
+                    velocity: 80,
+                    release_velocity: None,
+                },
+                ScoreNotePair {
+                    start_tick: 5760,
+                    duration_ticks: 480,
+                    midi_note: 64,
+                    velocity: 64,
+                    release_velocity: None,
+                },
+            ]
+        );
+        // The explicit loop moves with the notes so the content still fits.
+        assert_eq!(score.loop_ticks, Some(9600));
+        assert!(score.to_events().is_ok());
+
+        // Zero is a no-op.
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 7680
+0 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        let before: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        score.shift_ticks(0).expect("zero is a no-op");
+        assert_eq!(score.pairs().copied().collect::<Vec<_>>(), before);
+        assert_eq!(score.loop_ticks, Some(7680));
+    }
+
+    #[test]
+    fn shifting_earlier_drops_notes_that_would_go_negative() {
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 7680
+0 480 C4 80
+1920 480 E4 64
+5760 480 G4 50
+",
+        )
+        .expect("the fixture should parse");
+
+        // Shift two seconds earlier: the tick-0 note is dropped, a note that
+        // starts exactly at the shift point survives at tick 0, and the rest
+        // move up.
+        score.shift_ticks(-1920).expect("the shift should succeed");
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ScoreNotePair {
+                    start_tick: 0,
+                    duration_ticks: 480,
+                    midi_note: 64,
+                    velocity: 64,
+                    release_velocity: None,
+                },
+                ScoreNotePair {
+                    start_tick: 3840,
+                    duration_ticks: 480,
+                    midi_note: 67,
+                    velocity: 50,
+                    release_velocity: None,
+                },
+            ]
+        );
+        // The explicit loop shortens with the notes.
+        assert_eq!(score.loop_ticks, Some(5760));
+        let events = score.to_events().expect("the shifted score should play");
+        assert_eq!(events.len(), 4);
+
+        // Shifting past every note leaves nothing to play.
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 7680
+0 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        let error = score.shift_ticks(-480).expect_err("no notes remain");
+        assert!(error.contains("leaves no notes"), "{error}");
+    }
+
+    #[test]
+    fn shifting_an_implicit_loop_needs_no_loop_change() {
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+480 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        assert_eq!(score.loop_ticks, None);
+
+        score.shift_ticks(960).expect("the shift should succeed");
+        assert_eq!(score.loop_ticks, None, "an implicit loop is untouched");
+        // The loop now follows the shifted last release (tick 1920).
+        assert_eq!(score.effective_loop_ticks(), 1920);
+
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+480 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        score.shift_ticks(-480).expect("the shift should succeed");
+        assert_eq!(score.loop_ticks, None);
+        // The note now starts at tick 0 and the loop follows its release.
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(pairs[0].start_tick, 0);
+        assert_eq!(score.effective_loop_ticks(), 480);
+    }
+
+    #[test]
+    fn shifting_by_seconds_rounds_to_the_nearest_tick() {
+        // One quarter second on a 960-tick grid is exactly 240 ticks.
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 7680
+0 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        score.shift_seconds(0.25).expect("the shift should succeed");
+        assert_eq!(score.pairs().next().unwrap().start_tick, 240);
+        assert_eq!(score.loop_ticks, Some(7920));
+
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 7680
+960 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        score.shift_seconds(-0.25).expect("the shift should succeed");
+        assert_eq!(score.pairs().next().unwrap().start_tick, 720);
+        assert_eq!(score.loop_ticks, Some(7440));
+
+        // Non-finite shifts are rejected without mutating the score.
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+0 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        for bad in [f64::NAN, f64::INFINITY, -f64::INFINITY] {
+            assert!(score.shift_seconds(bad).is_err(), "{bad:?} should be rejected");
+        }
     }
 
     #[test]
