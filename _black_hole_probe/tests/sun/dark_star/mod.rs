@@ -11,13 +11,14 @@ use async_trait::async_trait;
 use black_hole_sun::cell::action::{
     CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiation, WaitForPropagation,
 };
+use black_hole_sun::cell::Primordium;
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{Binary, BlackHole, StatelessManifest, SunAppearance, SunState, Unary};
 use black_hole_sun::{
-    EmissionId, InferenceRequest, MassClient, MassModelConfig, MassModelParams, ObjectId,
+    EmissionId, InferenceRequest, MassClient, MassModelConfig, MassModelParams, ObjectId, Ray,
     TestMassServer, TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
-use black_hole_sun::{FusionSeed, FusionState, Progenitor, QuzoFusion};
+use black_hole_sun::{FusionSeed, FusionState, QuzoFusion};
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
 use jungle_sdk::FusedClient;
@@ -33,6 +34,28 @@ const DARK_STAR_PORT_COUNT: usize = 13;
 const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
 
 pub(super) const SPACE_PROBE_DISTANCE_PROMPT: &str = "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
+
+/// The Progenitor: the first and simplest cell — a bare mass-inference loop
+/// with no input/output processing and no metadata.
+#[derive(Clone)]
+pub(super) struct Progenitor;
+
+#[jungle::animal(observe, id = 0, generation = 0)]
+impl Animal for Progenitor {
+    type State = CellState;
+    type Seed = black_hole_sun::CellInit;
+    type Flow = Primordium;
+}
+
+impl Observe for Progenitor {
+    type Appearance = Ray;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        Ray {
+            frozen: state.is_frozen,
+        }
+    }
+}
 
 pub(super) type ThreeUnary0 = Unary<U0, Progenitor, list![U1]>;
 pub(super) type ThreeUnary1 = Unary<U1, Progenitor, list![U2]>;

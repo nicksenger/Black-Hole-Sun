@@ -7,11 +7,13 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use black_hole_sun::cell::action::CellState;
+use black_hole_sun::cell::Primordium;
 use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::{
     CellInit, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    MassClient, MassModelConfig, MassModelParams, ObjectId, Progenitor, SequenceOutput,
-    TestMassServer, TestVoidServer, Tokenizer, Transmission, VoidClient,
+    MassClient, MassModelConfig, MassModelParams, ObjectId, Ray, SequenceOutput, TestMassServer,
+    TestVoidServer, Tokenizer, Transmission, VoidClient,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -21,6 +23,36 @@ use postcard::to_allocvec;
 use uuid::Uuid;
 
 use common::*;
+
+// ─── Progenitor animal ───────────────────────────────────────────────────────
+
+/// The Progenitor: the first and simplest cell — a bare mass-inference loop
+/// with no input/output processing and no metadata.
+#[derive(Clone)]
+pub struct Progenitor;
+
+#[jungle::animal(observe, id = 0, generation = 0)]
+impl Animal for Progenitor {
+    type State = CellState;
+    type Seed = CellInit;
+    type Flow = Primordium;
+}
+
+impl Observe for Progenitor {
+    type Appearance = Ray;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        Ray {
+            frozen: state.is_frozen,
+        }
+    }
+}
+
+#[test]
+fn progenitor_observe_reports_cell_frozen_state() {
+    let state = CellState::<()> { is_frozen: true, ..Default::default() };
+    assert_eq!(Progenitor::observe(&state), Ray { frozen: true });
+}
 
 // ─── Ecosystem ───────────────────────────────────────────────────────────────
 

@@ -53,7 +53,6 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub mod animal;
 pub mod atom;
 pub mod cell;
 pub mod fusion;
@@ -70,7 +69,6 @@ pub use black_hole_spec::{
     Transmission,
 };
 
-pub use animal::Progenitor;
 pub use atom::effect::MassInfer;
 pub use cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
