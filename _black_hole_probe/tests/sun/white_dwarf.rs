@@ -48,7 +48,7 @@ const JUNGLE_CONNECT_ATTEMPTS: usize = 40;
 const JUNGLE_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 #[derive(Default)]
-struct WhiteDwarfStateInner {
+pub struct WhiteDwarfStateInner {
     _seen_epoch_count: usize,
 }
 
