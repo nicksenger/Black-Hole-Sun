@@ -16,7 +16,9 @@ use self::piano::{ActivePianoNote, PianoInputId, PianoStrikeVisual};
 #[cfg(feature = "piano")]
 use crate::piano::piano_audio::PianoAudioEngine;
 #[cfg(feature = "piano")]
-use crate::piano::piano_score::{PianoScorePlayback, SCORE_TICK_INTERVAL};
+use crate::piano::piano_score::{load_score_document, PianoScorePlayback, SCORE_TICK_INTERVAL};
+#[cfg(feature = "piano")]
+use crate::piano::score_text::BhsScore;
 #[cfg(feature = "piano")]
 use crate::piano::PianoMessage;
 use crate::builder::BeamConfig;
@@ -188,25 +190,14 @@ impl BeamApp {
             }
         };
         #[cfg(feature = "piano")]
-        let (piano_score, piano_score_error) =
-            if let Some(path) = config.piano_score_path.as_deref() {
-                match PianoScorePlayback::load(path, Instant::now()) {
-                    Ok(score) => (Some(score), None),
-                    Err(error) => (None, Some(error)),
-                }
-            } else if let Some(data) = config.piano_score_data.as_deref() {
-                match PianoScorePlayback::from_bytes(data, Instant::now()) {
-                    Ok(score) => (Some(score), None),
-                    Err(error) => (None, Some(error)),
-                }
-            } else if let Some(score) = config.piano_score.take() {
-                match PianoScorePlayback::from_score(score, Instant::now()) {
-                    Ok(score) => (Some(score), None),
-                    Err(error) => (None, Some(error)),
-                }
-            } else {
-                (None, None)
-            };
+        let (piano_score, piano_score_error) = match Self::configured_score(&mut config) {
+            Ok(Some(score)) => match PianoScorePlayback::from_score(score, Instant::now()) {
+                Ok(score) => (Some(score), None),
+                Err(error) => (None, Some(error)),
+            },
+            Ok(None) => (None, None),
+            Err(error) => (None, Some(error)),
+        };
 
         (
             Self {
@@ -254,6 +245,31 @@ impl BeamApp {
             },
             task,
         )
+    }
+
+    /// The score document configured on `config`, if any: a path or data
+    /// source is parsed here and an owned score is taken as-is. A configured
+    /// skip ([`BeamBuilder::score_skip`]) is applied to whatever source is
+    /// set before the document is returned.
+    #[cfg(feature = "piano")]
+    fn configured_score(config: &mut BeamConfig) -> Result<Option<BhsScore>, String> {
+        let document = if let Some(path) = config.piano_score_path.as_deref() {
+            Some(load_score_document(path)?)
+        } else if let Some(data) = config.piano_score_data.as_deref() {
+            let text = std::str::from_utf8(data)
+                .map_err(|error| format!("piano score is not valid UTF-8: {error}"))?;
+            Some(BhsScore::parse(text)?)
+        } else {
+            config.piano_score.take()
+        };
+        if let Some(mut document) = document {
+            if let Some(seconds) = config.piano_score_skip_seconds {
+                document.skip_seconds(seconds)?;
+            }
+            Ok(Some(document))
+        } else {
+            Ok(None)
+        }
     }
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {

@@ -33,15 +33,16 @@ pub(crate) struct LoadedPianoScore {
     pub loop_duration: Duration,
 }
 
-pub(crate) fn load_score(path: &Path) -> Result<LoadedPianoScore, String> {
+/// Read and parse the score document at `path`.
+pub(crate) fn load_score_document(path: &Path) -> Result<BhsScore, String> {
     let text = fs::read_to_string(path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    parse_score_text(&text)
+    BhsScore::parse(&text)
         .map_err(|error| format!("invalid piano score {}: {error}", path.display()))
 }
 
-fn parse_score_text(text: &str) -> Result<LoadedPianoScore, String> {
-    loaded_from_document(&BhsScore::parse(text)?)
+pub(crate) fn load_score(path: &Path) -> Result<LoadedPianoScore, String> {
+    loaded_from_document(&load_score_document(path)?)
 }
 
 fn loaded_from_document(document: &BhsScore) -> Result<LoadedPianoScore, String> {
@@ -60,23 +61,16 @@ fn loaded_from_document(document: &BhsScore) -> Result<LoadedPianoScore, String>
 }
 
 impl PianoScorePlayback {
-    pub(crate) fn load(path: &Path, started_at: Instant) -> Result<Self, String> {
-        Ok(Self::from_loaded(load_score(path)?, started_at))
-    }
-
-    pub(crate) fn from_bytes(bytes: &[u8], started_at: Instant) -> Result<Self, String> {
-        let text = std::str::from_utf8(bytes)
-            .map_err(|error| format!("piano score is not valid UTF-8: {error}"))?;
-        Ok(Self::from_loaded(parse_score_text(text)?, started_at))
-    }
-
     pub(crate) fn from_score(score: BhsScore, started_at: Instant) -> Result<Self, String> {
         Ok(Self::from_loaded(loaded_from_document(&score)?, started_at))
     }
 
     #[cfg(test)]
     pub(crate) fn from_text(text: &str, started_at: Instant) -> Result<Self, String> {
-        Ok(Self::from_loaded(parse_score_text(text)?, started_at))
+        Ok(Self::from_loaded(
+            loaded_from_document(&BhsScore::parse(text)?)?,
+            started_at,
+        ))
     }
 
     fn from_loaded(score: LoadedPianoScore, started_at: Instant) -> Self {

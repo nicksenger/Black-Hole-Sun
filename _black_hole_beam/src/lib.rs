@@ -868,6 +868,14 @@ mod tests {
 
     #[cfg(feature = "piano")]
     #[test]
+    fn builder_records_score_skip() {
+        assert_eq!(BeamBuilder::new().into_config().piano_score_skip_seconds, None);
+        let config = BeamBuilder::new().score_path("intro.bhs").score_skip(5).into_config();
+        assert_eq!(config.piano_score_skip_seconds, Some(5));
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
     fn builder_records_piano_log() {
         let config = BeamBuilder::new().piano_log(PianoLog::Input).into_config();
         assert_eq!(config.piano_log, Some(PianoLog::Input));
@@ -1316,6 +1324,103 @@ loop_ticks 1000
         assert_eq!(captured[0].source, PianoInputSource::Score);
         assert_eq!(captured[2].source, PianoInputSource::Score);
         assert_ne!(captured[0].voice_id, captured[2].voice_id);
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn score_skip_shifts_playback() {
+        // A 20-second loop with a note at t=0 and one at t=10s: skipping 5s
+        // drops the first note and makes the 10s note sound at app time 5s.
+        let score_text = "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 19200
+0 960 C4 80
+9600 960 E4 80
+";
+        let config = BeamBuilder::new()
+            .score_data(score_text.as_bytes())
+            .score_skip(5)
+            .into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+        assert!(app.piano_score_error.is_none(), "{:?}", app.piano_score_error);
+        let start = Instant::now();
+
+        // Nothing sounds at the start: the tick-0 note was skipped and the
+        // survivor does not sound until 5s in.
+        app.update_piano_score(start);
+        assert!(app.active_piano_notes.is_empty());
+
+        // The 10s note sounds at app time 5s and releases one second later.
+        app.update_piano_score(start + Duration::from_secs(5));
+        assert_eq!(app.active_piano_notes.len(), 1);
+        app.update_piano_score(start + Duration::from_secs(6));
+        assert!(app.active_piano_notes.is_empty());
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn score_skip_subtracts_skipped_time_from_logged_times() {
+        use std::sync::Mutex;
+
+        // The same score, skipped by 5s and played on a clock that is already
+        // 5s into the app's run: the note that sat at 10s sounds now, so its
+        // log line must report ~5s — not its original 10s.
+        let score_text = "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 19200
+0 960 C4 80
+9600 960 E4 80
+";
+        let mut score = BhsScore::parse(score_text).expect("the fixture should parse");
+        score.skip_seconds(5).expect("the skip should succeed");
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let callback_events = Arc::clone(&captured);
+        let config = BeamBuilder::new()
+            .piano_log(PianoLog::All)
+            .on_piano_event(move |event| callback_events.lock().unwrap().push(event))
+            .into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+        let start = Instant::now();
+        app.piano_score = Some(
+            PianoScorePlayback::from_score(score, start - Duration::from_secs(5))
+                .expect("the skipped score should play"),
+        );
+        app.piano_started_at = start - Duration::from_secs(5);
+
+        // The attack is due now (it was scheduled 5s after the shifted start)
+        // and stamps itself at ~5s of app time; the release is not due yet.
+        app.update_piano_score(start);
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1, "only the attack is due yet");
+        let attack = captured[0];
+        assert_eq!(attack.note.midi_note, 64);
+        drop(captured);
+
+        // Log the pair through the same path the app uses: 5s on the log's
+        // 1920 ticks/second grid is tick 9600 — the note's original 10s
+        // (tick 19200) minus the skipped 5s.
+        let mut release = attack;
+        release.action = PianoAction::Release {
+            velocity: f32::from(80u8) / 127.0,
+            held_for: Duration::from_secs(1),
+        };
+        release.timestamp = attack.timestamp + Duration::from_secs(1);
+        assert!(app.piano_log_line(&attack).is_none(), "the attack waits for its release");
+        let line = app
+            .piano_log_line(&release)
+            .expect("the release should log a pair");
+        let mut fields = line.split_whitespace();
+        let start_tick: u64 = fields.next().expect("a start tick").parse().unwrap();
+        let duration_ticks: u64 = fields.next().expect("a duration").parse().unwrap();
+        assert_eq!(
+            (fields.next(), fields.next(), fields.next()),
+            (Some("E4"), Some("80"), Some("80"))
+        );
+        assert!((start_tick as i64 - 9600).abs() <= 192, "{line}");
+        assert_eq!(duration_ticks, 1920);
     }
 
     #[test]
@@ -1881,3 +1986,4 @@ mod warp_fetch_diagnostics {
         );
     }
 }
+

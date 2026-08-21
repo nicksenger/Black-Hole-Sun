@@ -324,6 +324,49 @@ impl BhsScore {
         score
     }
 
+    /// Skip the first `seconds` seconds of the score: drop every pair that
+    /// starts before the skip point, then shift the remaining pairs (and any
+    /// explicit loop length) back by the same amount so playback begins at
+    /// the skip point, as if the score had jumped straight there. An implicit
+    /// loop (no `loop_ticks` header) follows the last release and needs no
+    /// change.
+    ///
+    /// Zero seconds is a no-op. Returns an error when every pair starts
+    /// before the skip point, leaving no notes to play.
+    pub fn skip_seconds(&mut self, seconds: u64) -> Result<(), String> {
+        let skip_ticks = seconds.saturating_mul(self.ticks_per_second);
+        if skip_ticks == 0 {
+            return Ok(());
+        }
+
+        // Drop pairs that start before the skip point. Walk in reverse so the
+        // removals do not shift the indices still to be examined.
+        let mut index = self.pairs.len();
+        while index > 0 {
+            index -= 1;
+            if self.pairs[index].pair.start_tick < skip_ticks {
+                self.pairs.remove(index);
+            }
+        }
+        if self.pairs.is_empty() {
+            return Err(format!("skipping {seconds}s leaves no notes in the score"));
+        }
+
+        // Shift the survivors so the skip point becomes tick 0. Kept pairs
+        // all start at or after the skip point, so this cannot underflow.
+        for annotated in &mut self.pairs {
+            annotated.pair.start_tick -= skip_ticks;
+        }
+
+        // The score now covers the tail of one original cycle, so shorten an
+        // explicit loop length by the same amount to keep the period aligned.
+        if let Some(loop_ticks) = self.loop_ticks {
+            self.loop_ticks = Some(loop_ticks.saturating_sub(skip_ticks));
+        }
+
+        Ok(())
+    }
+
     /// Merge `other` into this score so both play simultaneously.
     ///
     /// The result keeps this score's grid ([`BhsScore::ticks_per_second`]);
@@ -1266,6 +1309,117 @@ loop_ticks 500
                 .collect::<Vec<_>>(),
             vec![62, 47, 66, 68, 68]
         );
+    }
+
+    #[test]
+    fn skipping_drops_early_pairs_and_shifts_the_rest_back() {
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 7680
+0 960 C4 80
+3840 960 E4 64
+5760 960 G4 50
+",
+        )
+        .expect("the fixture should parse");
+
+        // Skip four seconds (3840 ticks): the tick-0 C4 is dropped, the pair
+        // that starts exactly at the skip point survives at tick 0, and the
+        // rest shift back by the same amount.
+        score.skip_seconds(4).expect("the skip should succeed");
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ScoreNotePair {
+                    start_tick: 0,
+                    duration_ticks: 960,
+                    midi_note: 64,
+                    velocity: 64,
+                    release_velocity: None,
+                },
+                ScoreNotePair {
+                    start_tick: 1920,
+                    duration_ticks: 960,
+                    midi_note: 67,
+                    velocity: 50,
+                    release_velocity: None,
+                },
+            ]
+        );
+        // The explicit loop shortens by the skip so the period stays aligned.
+        assert_eq!(score.loop_ticks, Some(3840));
+
+        // The shifted score plays from tick 0: the first attack is due
+        // immediately and the last release closes the shortened loop.
+        let events = score.to_events().expect("the skipped score should play");
+        assert_eq!(events[0].timestamp, Duration::ZERO);
+        assert_eq!(score.last_release_tick(), 2880);
+    }
+
+    #[test]
+    fn skipping_an_implicit_loop_needs_no_loop_change() {
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+0 960 C4 80
+3840 960 E4 64
+",
+        )
+        .expect("the fixture should parse");
+        assert_eq!(score.loop_ticks, None);
+
+        score.skip_seconds(4).expect("the skip should succeed");
+        assert_eq!(score.loop_ticks, None, "an implicit loop is untouched");
+        // The loop now follows the last release of what remains.
+        assert_eq!(score.effective_loop_ticks(), 960);
+    }
+
+    #[test]
+    fn skipping_past_every_note_is_an_error() {
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+0 960 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        let error = score.skip_seconds(1).expect_err("no notes remain");
+        assert!(error.contains("leaves no notes"), "{error}");
+
+        // Zero is a no-op, even for an empty-after-skip score.
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+0 960 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        let before: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        score.skip_seconds(0).expect("zero is a no-op");
+        assert_eq!(score.pairs().copied().collect::<Vec<_>>(), before);
+    }
+
+    #[test]
+    fn skipping_beyond_the_content_is_an_error() {
+        // The skip walks the static pair table, not the infinite loop: a
+        // skip past the last pair's start leaves no pairs and is rejected.
+        let mut score = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 1920
+480 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        let error = score.skip_seconds(3).expect_err("no pairs start after the skip point");
+        assert!(error.contains("leaves no notes"), "{error}");
     }
 
     #[test]

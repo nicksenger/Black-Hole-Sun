@@ -67,6 +67,8 @@ pub struct BeamBuilder {
     #[cfg(feature = "piano")]
     piano_score: Option<BhsScore>,
     #[cfg(feature = "piano")]
+    piano_score_skip_seconds: Option<u64>,
+    #[cfg(feature = "piano")]
     piano_log: Option<PianoLog>,
     #[cfg(feature = "piano")]
     piano_labels: bool,
@@ -96,6 +98,8 @@ impl Default for BeamBuilder {
             piano_score_data: None,
             #[cfg(feature = "piano")]
             piano_score: None,
+            #[cfg(feature = "piano")]
+            piano_score_skip_seconds: None,
             #[cfg(feature = "piano")]
             piano_log: None,
             #[cfg(feature = "piano")]
@@ -245,6 +249,25 @@ impl BeamBuilder {
         self
     }
 
+    /// Skip the first `seconds` seconds of any configured score before
+    /// playback: pairs that start before the skip point are dropped and the
+    /// remaining pairs shift back so playback begins at the skip point, as
+    /// if the score had jumped straight there (see
+    /// [`BhsScore::skip_seconds`]). Applies to a score set via
+    /// [`Self::score_path`], [`Self::score_data`], or [`Self::score`]; a
+    /// no-op when `seconds` is zero or no score is configured.
+    ///
+    /// Because the skipped time never plays, notes played from the score are
+    /// timed — and logged by [`Self::piano_log`] — as if the score began at
+    /// the skip point: a note at 10s in a score skipped by 5s sounds, and
+    /// logs, at 5s. Skipping past every note of the score is an error,
+    /// surfaced in the viewer's status line.
+    #[cfg(feature = "piano")]
+    pub fn score_skip(mut self, seconds: u64) -> Self {
+        self.piano_score_skip_seconds = Some(seconds);
+        self
+    }
+
     /// Log played notes to stdout as `bhs-score-v1` note pairs.
     ///
     /// Each released note prints one score-pair line —
@@ -293,6 +316,8 @@ impl BeamBuilder {
             #[cfg(feature = "piano")]
             piano_score: self.piano_score,
             #[cfg(feature = "piano")]
+            piano_score_skip_seconds: self.piano_score_skip_seconds,
+            #[cfg(feature = "piano")]
             piano_log: self.piano_log,
             #[cfg(feature = "piano")]
             piano_labels: self.piano_labels,
@@ -317,6 +342,8 @@ pub(crate) struct BeamConfig {
     pub(crate) piano_score_data: Option<Vec<u8>>,
     #[cfg(feature = "piano")]
     pub(crate) piano_score: Option<BhsScore>,
+    #[cfg(feature = "piano")]
+    pub(crate) piano_score_skip_seconds: Option<u64>,
     #[cfg(feature = "piano")]
     pub(crate) piano_log: Option<PianoLog>,
     #[cfg(feature = "piano")]
