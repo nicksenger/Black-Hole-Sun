@@ -363,9 +363,18 @@ impl BeamBuilder {
     /// routed through the same audio, visualization, and callback paths as
     /// live key presses. This source is used only when neither a path nor
     /// data is set via [`Self::score_data`].
+    ///
+    /// Calling this more than once merges the scores so they play
+    /// simultaneously: each added score's pairs are rescaled onto the first
+    /// score's ticks-per-second grid, and the merged score loops over the
+    /// longer of the two loop lengths (see [`BhsScore::merge_with`]).
     #[cfg(feature = "piano")]
     pub fn score(mut self, score: BhsScore) -> Self {
-        self.piano_score = Some(score);
+        let merged = match self.piano_score.take() {
+            Some(previous) => previous.merge_with(score),
+            None => score,
+        };
+        self.piano_score = Some(merged);
         self
     }
 
@@ -4132,6 +4141,30 @@ mod tests {
                 .map(|score| score.ticks_per_second),
             Some(960)
         );
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn builder_merges_repeated_owned_scores() {
+        let first = BhsScore::parse(
+            "format bhs-score-v1\nticks_per_second 960\nloop_ticks 960\n0 480 C4 80\n",
+        )
+        .expect("the fixture should parse");
+        let second = BhsScore::parse(
+            "format bhs-score-v1\nticks_per_second 1920\nloop_ticks 1920\n480 480 E4 64\n",
+        )
+        .expect("the fixture should parse");
+        let config = BeamBuilder::new().score(first).score(second).into_config();
+
+        // The second call merges into the first instead of replacing it: the
+        // first score's grid wins and both scores' notes are present.
+        let merged = config.piano_score.as_ref().expect("the scores should merge");
+        assert_eq!(merged.ticks_per_second, 960);
+        assert_eq!(merged.pairs().count(), 2);
+        // The second score's pair rescales from 1920 to 960 ticks/second.
+        let pairs: Vec<_> = merged.pairs().collect();
+        assert_eq!(pairs[1].start_tick, 240);
+        assert_eq!(pairs[1].duration_ticks, 240);
     }
 
     #[cfg(feature = "piano")]

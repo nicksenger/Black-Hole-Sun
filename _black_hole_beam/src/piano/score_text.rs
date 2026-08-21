@@ -324,6 +324,40 @@ impl BhsScore {
         score
     }
 
+    /// Merge `other` into this score so both play simultaneously.
+    ///
+    /// The result keeps this score's grid ([`BhsScore::ticks_per_second`]);
+    /// `other`'s pairs are rescaled onto it, each tick count rounded to the
+    /// nearest tick and every note kept at least one tick long. Comments
+    /// attached to `other`'s pairs carry over; its leading comments do not.
+    /// The merged loop length is the longer of the two effective loop
+    /// lengths (after rescaling), so scores that already share a loop length
+    /// keep playing in lockstep; when they differ, the shorter score's notes
+    /// sound once per merged cycle rather than repeating within it.
+    pub fn merge_with(mut self, other: BhsScore) -> Self {
+        let this_tps = self.ticks_per_second;
+        let other_tps = other.ticks_per_second;
+        let rescale = |ticks: u64| rescale_ticks(ticks, other_tps, this_tps);
+
+        let this_loop = self.effective_loop_ticks();
+        let other_loop = rescale(other.effective_loop_ticks());
+
+        for annotated in other.pairs {
+            self.pairs.push(AnnotatedPair {
+                pair: ScoreNotePair {
+                    start_tick: rescale(annotated.pair.start_tick),
+                    duration_ticks: rescale(annotated.pair.duration_ticks).max(1),
+                    midi_note: annotated.pair.midi_note,
+                    velocity: annotated.pair.velocity,
+                    release_velocity: annotated.pair.release_velocity,
+                },
+                comments: annotated.comments,
+            });
+        }
+        self.loop_ticks = Some(this_loop.max(other_loop));
+        self
+    }
+
     /// Expand the pairs into score events, ready for playback: attacks and
     /// releases in performance order with dense sequence numbers and voice ids
     /// assigned in canonical pair order.
@@ -883,6 +917,15 @@ pub fn note_name(midi_note: u8) -> String {
     )
 }
 
+/// Convert `ticks` from a grid of `from_tps` ticks per second onto a grid of
+/// `to_tps`, rounding to the nearest tick on the target grid.
+fn rescale_ticks(ticks: u64, from_tps: u64, to_tps: u64) -> u64 {
+    let numerator = u128::from(ticks) * u128::from(to_tps);
+    let denominator = u128::from(from_tps);
+    let rounded = (numerator + denominator / 2) / denominator;
+    u64::try_from(rounded).unwrap_or(u64::MAX)
+}
+
 /// Convert integer ticks on a ticks-per-second grid to an exact duration.
 pub fn ticks_to_duration(ticks: u64, ticks_per_second: u64) -> Duration {
     let seconds = ticks / ticks_per_second;
@@ -1223,6 +1266,175 @@ loop_ticks 500
                 .collect::<Vec<_>>(),
             vec![62, 47, 66, 68, 68]
         );
+    }
+
+    #[test]
+    fn merging_keeps_the_first_grid_and_rescales_the_other() {
+        let first = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 1920
+0 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        let second = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 1920
+loop_ticks 3840
+480 480 E4 64 ; a comment on the pair
+",
+        )
+        .expect("the fixture should parse");
+
+        let merged = first.clone().merge_with(second);
+
+        // The first score's grid wins; the second's ticks rescale onto it.
+        assert_eq!(merged.ticks_per_second, 960);
+        let pairs: Vec<ScoreNotePair> = merged.pairs().copied().collect();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(
+            pairs[0],
+            ScoreNotePair {
+                start_tick: 0,
+                duration_ticks: 480,
+                midi_note: 60,
+                velocity: 80,
+                release_velocity: None,
+            }
+        );
+        // 480 ticks at 1920/second is a quarter second: 240 ticks at
+        // 960/second, both for the start and the duration.
+        assert_eq!(
+            pairs[1],
+            ScoreNotePair {
+                start_tick: 240,
+                duration_ticks: 240,
+                midi_note: 64,
+                velocity: 64,
+                release_velocity: None,
+            }
+        );
+
+        // Both scores loop at two seconds, so the merged loop is 1920 ticks
+        // on the first grid and every note still fits inside it.
+        assert_eq!(merged.loop_ticks, Some(1920));
+        let events = merged.to_events().expect("the merge should be playable");
+        assert_eq!(events.len(), 4);
+
+        // The second score's pair comment survives the merge.
+        assert!(merged.format().contains("; a comment on the pair"));
+    }
+
+    #[test]
+    fn merging_unequal_loops_keeps_the_longer_one() {
+        let first = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 960
+0 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        let second = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+loop_ticks 1920
+0 480 E4 64
+",
+        )
+        .expect("the fixture should parse");
+
+        let merged = first.merge_with(second);
+        // The merged loop is the longer of the two (two seconds); the
+        // shorter score's notes sound once per merged cycle.
+        assert_eq!(merged.loop_ticks, Some(1920));
+        assert_eq!(merged.pairs().count(), 2);
+        assert!(merged.to_events().is_ok());
+    }
+
+    #[test]
+    fn merging_scores_on_the_same_grid_is_exact() {
+        let first = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+0 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        let second = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+240 480 E4 64
+",
+        )
+        .expect("the fixture should parse");
+
+        let merged = first.merge_with(second);
+        assert_eq!(merged.ticks_per_second, 960);
+        // No explicit loop header: the merge infers one from the last
+        // release (tick 720).
+        assert_eq!(merged.loop_ticks, Some(720));
+        let pairs: Vec<ScoreNotePair> = merged.pairs().copied().collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ScoreNotePair {
+                    start_tick: 0,
+                    duration_ticks: 480,
+                    midi_note: 60,
+                    velocity: 80,
+                    release_velocity: None,
+                },
+                ScoreNotePair {
+                    start_tick: 240,
+                    duration_ticks: 480,
+                    midi_note: 64,
+                    velocity: 64,
+                    release_velocity: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rescaling_rounds_to_the_nearest_tick_and_keeps_notes_sounded() {
+        // One tick on a 1920 grid is half a tick on a 960 grid: it rounds
+        // to the nearest tick, and a note shrinks to at least one tick.
+        assert_eq!(rescale_ticks(480, 1920, 960), 240);
+        assert_eq!(rescale_ticks(3840, 1920, 960), 1920);
+        assert_eq!(rescale_ticks(0, 1920, 960), 0);
+        // The identity conversion is exact.
+        assert_eq!(rescale_ticks(12345, 960, 960), 12345);
+
+        let first = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 960
+0 480 C4 80
+",
+        )
+        .expect("the fixture should parse");
+        let second = BhsScore::parse(
+            "\
+format bhs-score-v1
+ticks_per_second 1920
+1 1 E4 64
+",
+        )
+        .expect("the fixture should parse");
+        let merged = first.merge_with(second);
+        let pairs: Vec<ScoreNotePair> = merged.pairs().copied().collect();
+        // One tick on the 1920 grid is half a tick on the 960 grid; the
+        // tie rounds up, and the note keeps at least one tick of duration.
+        assert_eq!(pairs[1].start_tick, 1);
+        assert_eq!(pairs[1].duration_ticks, 1);
     }
 
     #[test]
