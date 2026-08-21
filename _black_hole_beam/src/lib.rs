@@ -10,6 +10,8 @@
 //! the viewer. Use `BeamBuilder::on_piano_event` to capture its expressive,
 //! performance-timed attack and release events, or `BeamBuilder::piano_log`
 //! to log played notes to stdout as `bhs-score-v1` note pairs.
+//! `BeamBuilder::metronome` adds a sample-accurate metronome click on every
+//! beat at the configured tempo.
 
 mod app;
 mod builder;
@@ -886,6 +888,14 @@ mod tests {
     fn builder_records_piano_labels() {
         assert!(!BeamBuilder::new().into_config().piano_labels);
         assert!(BeamBuilder::new().piano_labels().into_config().piano_labels);
+    }
+
+    #[cfg(feature = "piano")]
+    #[test]
+    fn builder_records_metronome() {
+        assert_eq!(BeamBuilder::new().into_config().piano_metronome_bpm, None);
+        let config = BeamBuilder::new().metronome(120).into_config();
+        assert_eq!(config.piano_metronome_bpm, Some(120));
     }
 
     #[cfg(feature = "piano")]

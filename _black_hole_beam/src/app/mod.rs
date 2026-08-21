@@ -190,7 +190,16 @@ impl BeamApp {
             (None, None)
         } else {
             match PianoAudioEngine::new() {
-                Ok(audio) => (Some(audio), None),
+                Ok(audio) => {
+                    // A zero bpm leaves the metronome silent.
+                    if let Some(bpm) = config
+                        .piano_metronome_bpm
+                        .filter(|bpm| *bpm > 0)
+                    {
+                        audio.enable_metronome(bpm);
+                    }
+                    (Some(audio), None)
+                }
                 Err(error) => (None, Some(error)),
             }
         };

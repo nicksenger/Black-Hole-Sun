@@ -100,6 +100,11 @@ enum Command {
         voice_id: u64,
         velocity: f32,
     },
+    /// Start (or restart) the metronome at `bpm` beats per minute; a
+    /// non-positive or non-finite tempo leaves it silent.
+    Metronome {
+        bpm: f32,
+    },
 }
 
 /// Owns the cpal stream. Dropping this value stops playback.
@@ -151,6 +156,18 @@ impl PianoAudioEngine {
         let command = command_from_event(event);
         if self.command_tx.send(command).is_err() {
             warn!("piano audio command discarded because the output stream has stopped");
+        }
+    }
+
+    /// Start a metronome click on every beat at `bpm` beats per minute.
+    ///
+    /// The clock runs on the audio thread's sample counter, so beats stay
+    /// sample-accurate regardless of the window's frame rate. A zero `bpm`
+    /// leaves the metronome silent.
+    pub(crate) fn enable_metronome(&self, bpm: u32) {
+        let command = Command::Metronome { bpm: bpm as f32 };
+        if self.command_tx.send(command).is_err() {
+            warn!("metronome command discarded because the output stream has stopped");
         }
     }
 
@@ -243,6 +260,12 @@ struct PianoSynth {
     voices: Vec<PianoVoice>,
     soundboard: StereoSoundboard,
     eq: StereoEq,
+    /// Total samples rendered so far; the metronome's clock runs on it.
+    frame: u64,
+    /// The active metronome, if one was enabled via [`Command::Metronome`].
+    metronome: Option<MetronomeClock>,
+    /// Metronome clicks currently sounding; each decays away on its own.
+    clicks: Vec<MetronomeClick>,
 }
 
 impl PianoSynth {
@@ -252,6 +275,9 @@ impl PianoSynth {
             voices: Vec::with_capacity(MAX_POLYPHONY),
             soundboard: StereoSoundboard::new(sample_rate),
             eq: StereoEq::new(sample_rate),
+            frame: 0,
+            metronome: None,
+            clicks: Vec::new(),
         }
     }
 
@@ -290,6 +316,21 @@ impl PianoSynth {
                     voice.release(velocity);
                 }
             }
+            Command::Metronome { bpm } => {
+                if bpm.is_finite() && bpm > 0.0 {
+                    // The interval is clamped to a whole sample so the
+                    // scheduler below can never spin on sub-sample beats.
+                    let beat_interval = (self.sample_rate as f64 * 60.0 / f64::from(bpm)).max(1.0);
+                    self.metronome = Some(MetronomeClock {
+                        beat_interval_samples: beat_interval,
+                        // Anchor the first click to the next rendered
+                        // sample so the metronome starts immediately.
+                        next_beat_at: self.frame as f64,
+                    });
+                } else {
+                    self.metronome = None;
+                }
+            }
         }
     }
 
@@ -303,13 +344,114 @@ impl PianoSynth {
             !voice.finished()
         });
 
+        // Metronome clicks are scheduled on the sample-accurate frame clock
+        // so beats do not drift with the UI's message loop. They are kept
+        // dry — outside the soundboard's room — so each tick stays a crisp
+        // transient instead of ringing out between beats.
+        let mut click = 0.0;
+        if let Some(metronome) = &mut self.metronome {
+            while (self.frame as f64) >= metronome.next_beat_at {
+                self.clicks.push(MetronomeClick::new(self.sample_rate));
+                metronome.next_beat_at += metronome.beat_interval_samples;
+            }
+        }
+        for click_voice in &mut self.clicks {
+            click += click_voice.next_sample();
+        }
+        self.clicks.retain(|click_voice| !click_voice.finished());
+
         let (body_left, body_right) = self.soundboard.process(left, right);
-        let left = soft_limit((left + body_left) * MASTER_GAIN);
-        let right = soft_limit((right + body_right) * MASTER_GAIN);
+        let left = soft_limit((left + body_left + click) * MASTER_GAIN);
+        let right = soft_limit((right + body_right + click) * MASTER_GAIN);
         let (left, right) = self.eq.process(left, right);
         // The midrange lift can push rare peaks just past unity; keep the
         // output contract of bounded samples.
-        (left.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0))
+        let (left, right) = (left.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0));
+        self.frame += 1;
+        (left, right)
+    }
+}
+
+/// The metronome's beat clock, in samples relative to [`PianoSynth::frame`].
+struct MetronomeClock {
+    /// Samples between beats; at least one sample per beat.
+    beat_interval_samples: f64,
+    /// The frame at which the next click sounds.
+    next_beat_at: f64,
+}
+
+/// A single metronome click: a short woodblock-like tick built from two
+/// inharmonic partials with a fast exponential decay.
+struct MetronomeClick {
+    fundamental_sine: f64,
+    fundamental_cosine: f64,
+    fundamental_step_sine: f64,
+    fundamental_step_cosine: f64,
+    overtone_sine: f64,
+    overtone_cosine: f64,
+    overtone_step_sine: f64,
+    overtone_step_cosine: f64,
+    envelope: f32,
+    decay: f32,
+}
+
+impl MetronomeClick {
+    const FUNDAMENTAL_HZ: f32 = 1_000.0;
+    /// The overtone's inharmonic ratio and level relative to the fundamental.
+    const OVERTONE_RATIO: f32 = 2.7;
+    const OVERTONE_GAIN: f64 = 0.35;
+    /// Peak click amplitude before the master gain; a full piano attack sums
+    /// several times higher, so the tick stays subordinate to the notes.
+    const PEAK_ENVELOPE: f32 = 0.75;
+    /// The click's decay time constant in seconds; ≈ 80 ms (5.6 time
+    /// constants) until the click is dropped as finished.
+    const DECAY_SECONDS: f32 = 0.014;
+
+    fn new(sample_rate: f32) -> Self {
+        let step = |frequency_hz: f32| {
+            let phase_step = TAU * f64::from(frequency_hz / sample_rate);
+            (phase_step.sin(), phase_step.cos())
+        };
+        let (fundamental_step_sine, fundamental_step_cosine) = step(Self::FUNDAMENTAL_HZ);
+        let (overtone_step_sine, overtone_step_cosine) =
+            step(Self::FUNDAMENTAL_HZ * Self::OVERTONE_RATIO);
+        Self {
+            // Starting at zero phase fades the tick in from silence, so the
+            // trigger itself cannot click.
+            fundamental_sine: 0.0,
+            fundamental_cosine: 1.0,
+            fundamental_step_sine,
+            fundamental_step_cosine,
+            overtone_sine: 0.0,
+            overtone_cosine: 1.0,
+            overtone_step_sine,
+            overtone_step_cosine,
+            envelope: Self::PEAK_ENVELOPE,
+            decay: (-1.0 / (Self::DECAY_SECONDS * sample_rate)).exp(),
+        }
+    }
+
+    fn next_sample(&mut self) -> f32 {
+        let sample = (self.fundamental_sine + Self::OVERTONE_GAIN * self.overtone_sine) as f32
+            * self.envelope;
+        rotate(
+            &mut self.fundamental_sine,
+            &mut self.fundamental_cosine,
+            self.fundamental_step_sine,
+            self.fundamental_step_cosine,
+        );
+        rotate(
+            &mut self.overtone_sine,
+            &mut self.overtone_cosine,
+            self.overtone_step_sine,
+            self.overtone_step_cosine,
+        );
+        self.envelope *= self.decay;
+        sample
+    }
+
+    fn finished(&self) -> bool {
+        self.envelope < 0.002
     }
 }
 
@@ -839,6 +981,64 @@ mod tests {
             });
         }
         assert_eq!(synth.voices.len(), 96);
+    }
+
+    #[test]
+    fn metronome_clicks_land_on_the_beat() {
+        let sample_rate = 48_000.0;
+        let mut synth = PianoSynth::new(sample_rate);
+        synth.command(Command::Metronome { bpm: 120.0 });
+
+        // 120 bpm at 48 kHz is one beat every 24 000 samples; render two
+        // beats and split the energy on and off the beat. The ≈ 80 ms click
+        // tail stays inside its own quarter of the render.
+        let mut on_beat = 0.0f32;
+        let mut off_beat = 0.0f32;
+        for frame in 0..48_000 {
+            let (left, right) = synth.next_sample();
+            let energy = left * left + right * right;
+            if frame % 24_000 < 12_000 {
+                on_beat += energy;
+            } else {
+                off_beat += energy;
+            }
+        }
+        assert!(
+            on_beat > 1e-4,
+            "the clicks should be audible, got {on_beat}"
+        );
+        assert!(
+            off_beat < 1e-5,
+            "beats should stay silent between clicks, got {off_beat}"
+        );
+        assert!(synth.clicks.is_empty(), "clicks decay away");
+    }
+
+    #[test]
+    fn metronome_keeps_the_beat_across_many_cycles() {
+        let sample_rate = 48_000.0;
+        let mut synth = PianoSynth::new(sample_rate);
+        synth.command(Command::Metronome { bpm: 60.0 });
+
+        // 60 bpm is one beat per second; over five beats the clicks must not
+        // drift, so each lands in its own one-second window.
+        let mut windows = [0.0f32; 5];
+        for frame in 0..240_000 {
+            let (left, right) = synth.next_sample();
+            windows[(frame / 48_000).min(4)] += left * left + right * right;
+        }
+        for (index, window) in windows.iter().enumerate() {
+            assert!(*window > 1e-4, "beat {index} should click, got {window}");
+        }
+    }
+
+    #[test]
+    fn metronome_rejects_invalid_tempi() {
+        let mut synth = PianoSynth::new(48_000.0);
+        synth.command(Command::Metronome { bpm: 0.0 });
+        assert!(synth.metronome.is_none(), "zero bpm stays silent");
+        synth.command(Command::Metronome { bpm: f32::NAN });
+        assert!(synth.metronome.is_none(), "a non-finite bpm stays silent");
     }
 
     #[test]

@@ -72,6 +72,8 @@ pub struct BeamBuilder {
     piano_log: Option<PianoLog>,
     #[cfg(feature = "piano")]
     piano_labels: bool,
+    #[cfg(feature = "piano")]
+    piano_metronome_bpm: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -104,6 +106,8 @@ impl Default for BeamBuilder {
             piano_log: None,
             #[cfg(feature = "piano")]
             piano_labels: false,
+            #[cfg(feature = "piano")]
+            piano_metronome_bpm: None,
         }
     }
 }
@@ -303,6 +307,20 @@ impl BeamBuilder {
         self
     }
 
+    /// Play a metronome click on every beat at `bpm` beats per minute.
+    ///
+    /// The clicks are scheduled on the audio thread's sample clock, so they
+    /// stay in time regardless of the window's frame rate, and sound
+    /// alongside whatever is played on the piano. They are not
+    /// [`PianoEvent`]s: neither [`Self::on_piano_event`] nor
+    /// [`Self::piano_log`] reports them. A zero `bpm` leaves the metronome
+    /// silent.
+    #[cfg(feature = "piano")]
+    pub fn metronome(mut self, bpm: u32) -> Self {
+        self.piano_metronome_bpm = Some(bpm);
+        self
+    }
+
     pub(crate) fn into_config(self) -> BeamConfig {
         BeamConfig {
             title: self.title,
@@ -326,6 +344,8 @@ impl BeamBuilder {
             piano_log: self.piano_log,
             #[cfg(feature = "piano")]
             piano_labels: self.piano_labels,
+            #[cfg(feature = "piano")]
+            piano_metronome_bpm: self.piano_metronome_bpm,
         }
     }
 }
@@ -353,6 +373,8 @@ pub(crate) struct BeamConfig {
     pub(crate) piano_log: Option<PianoLog>,
     #[cfg(feature = "piano")]
     pub(crate) piano_labels: bool,
+    #[cfg(feature = "piano")]
+    pub(crate) piano_metronome_bpm: Option<u32>,
 }
 /// Render a static Black Hole Sun with default viewer settings.
 pub fn view<A>() -> iced::Result
