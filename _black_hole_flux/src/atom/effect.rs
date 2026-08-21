@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 pub use black_hole_spec::{Emission, EmissionId, InferenceOutputId, InferenceRequest};
 
-use crate::model_config::DefaultConfig;
+use crate::mass::DefaultConfig;
 use crate::ops::VoidInferOps;
 use crate::AtomError;
 

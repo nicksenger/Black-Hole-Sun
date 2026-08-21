@@ -11,7 +11,7 @@
 pub mod action;
 pub mod effect;
 
-use crate::model_config::{DefaultConfig, ModelConfig};
+use crate::mass::{DefaultConfig, ModelConfig};
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 
@@ -121,7 +121,7 @@ impl<
 }
 
 mod sealed {
-    use crate::model_config::ModelConfig;
+    use crate::mass::ModelConfig;
 
     pub trait Sealed {}
 

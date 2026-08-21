@@ -56,7 +56,7 @@ use thiserror::Error;
 pub mod atom;
 pub mod cell;
 pub mod fusion;
-pub mod model_config;
+pub mod mass;
 pub mod ops;
 pub mod ray;
 pub mod sun;
@@ -83,7 +83,7 @@ pub use fusion::action::{FusionSeed, FusionState};
 pub use fusion::{
     Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch, QuzoFusionWithModelConfig,
 };
-pub use model_config::{
+pub use mass::{
     DefaultConfig, ErrorFeedbackPolicy, ModelConfig, NoErrorFeedback, NoOscillation,
     OscillationSchedule,
 };

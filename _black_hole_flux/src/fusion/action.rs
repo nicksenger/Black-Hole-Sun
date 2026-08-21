@@ -17,7 +17,7 @@ use crate::cell::action::Potentiation;
 use crate::cell::effect::{
     MassOptimize, MassPerturbDown, MassPerturbUp, MassStart, Transmit as TransmitEffect,
 };
-use crate::model_config::{DefaultConfig, ModelConfig};
+use crate::mass::{DefaultConfig, ModelConfig};
 
 /// Initial receive mailboxes for a binary vertex, in declared `P1`, `P2` order.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

@@ -10,7 +10,7 @@ use uuid::Uuid;
 use black_hole_spec::{ObjectId, Transmission};
 
 use super::action::{Potentiation, Propagation};
-use crate::model_config::{DefaultConfig, ModelConfig};
+use crate::mass::{DefaultConfig, ModelConfig};
 use crate::ops::VoidInferOps;
 use crate::AtomError;
 

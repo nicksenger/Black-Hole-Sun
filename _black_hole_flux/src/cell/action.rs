@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::model_config::{DefaultConfig, ModelConfig};
+use crate::mass::{DefaultConfig, ModelConfig};
 
 // ---------------------------------------------------------------------------
 // CellState — holds the next transmission ID threaded across Cell iterations

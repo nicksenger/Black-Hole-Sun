@@ -10,7 +10,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::cell::action::CellState;
-use crate::model_config::{DefaultConfig, ModelConfig};
+use crate::mass::{DefaultConfig, ModelConfig};
 use crate::EmissionId;
 use action::MassInferStep;
 

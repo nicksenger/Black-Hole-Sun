@@ -20,7 +20,7 @@ use jungle_zoo::predicate::Always;
 use jungle_zoo::Noop;
 use uuid::Uuid;
 
-use crate::model_config::{DefaultConfig, ModelConfig};
+use crate::mass::{DefaultConfig, ModelConfig};
 use crate::Atom;
 
 /// Predicate that keeps running cell microsteps until `grad_steps` is reached.
