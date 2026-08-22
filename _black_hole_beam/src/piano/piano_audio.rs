@@ -504,9 +504,16 @@ impl PianoVoice {
         let pan_right = ((1.0 + pan) * 0.5).sqrt();
         let inharmonicity = 0.000_3 * 2.0_f32.powf(key_position * 6.4);
         let hammer_position = 0.115 + 0.035 * key_position;
-        let spectral_rolloff = 0.35 + 0.58 * (1.0 - velocity) + 0.28 * (1.0 - pressure);
+        // A piano's soft strikes are both quieter and much darker than hard
+        // ones.  Keeping this slope too shallow makes a MIDI performance with
+        // many low-velocity notes behave like every string was struck firmly:
+        // upper partial tails overlap until they become a constant wash.
+        let spectral_rolloff = 0.50 + 0.90 * (1.0 - velocity) + 0.28 * (1.0 - pressure);
         let base_decay_seconds = 3.4 - 2.7 * key_position.powf(0.72);
-        let velocity_gain = velocity.powf(0.72) * (0.88 + pressure * 0.12);
+        // Do not expand the bottom of the MIDI velocity range.  The previous
+        // 0.72 exponent made a velocity-32 note more than twice as loud as a
+        // linear response, which flattened dense score dynamics.
+        let velocity_gain = velocity.powf(1.15) * (0.88 + pressure * 0.12);
 
         let mut partial_sine = [0.0; PARTIAL_COUNT];
         let mut partial_cosine = [0.0; PARTIAL_COUNT];
@@ -552,7 +559,11 @@ impl PianoVoice {
             if partial_frequency > sample_rate * 0.47 {
                 amplitude[partial] = 0.0;
             }
-            let decay_seconds = base_decay_seconds / (1.0 + 0.13 * (harmonic - 1.0).powf(1.16));
+            // Upper modes shed energy quickly into the bridge and soundboard.
+            // Stronger frequency-dependent damping leaves the fundamental
+            // sustain intact while keeping released notes from accumulating
+            // persistent high-frequency energy.
+            let decay_seconds = base_decay_seconds / (1.0 + 0.22 * (harmonic - 1.0).powf(1.16));
             natural_decay[partial] = (-1.0 / (decay_seconds * sample_rate)).exp();
         }
 
@@ -941,6 +952,37 @@ mod tests {
 
         assert_eq!((left, right), (0.0, 0.0));
         assert_ne!(voice.previous_noise, 0.0, "the hammer noise path ran");
+    }
+
+    #[test]
+    fn soft_strikes_are_quieter_and_darker_than_hard_strikes() {
+        let soft = PianoVoice::new(1, 60, 261.625_55, 0.25, None, 48_000.0);
+        let hard = PianoVoice::new(2, 60, 261.625_55, 0.80, None, 48_000.0);
+
+        // Compare the modes' approximate lifetime energy.  Including their
+        // individual decay rates catches regressions in both strike voicing
+        // and upper-partial damping without needing an FFT in this unit test.
+        let band_energy = |voice: &PianoVoice, first: usize, last: usize| -> f32 {
+            (first..last)
+                .map(|partial| {
+                    let amplitude = voice.amplitude[partial];
+                    amplitude * amplitude / (1.0 - voice.natural_decay[partial].powi(2))
+                })
+                .sum()
+        };
+        let soft_body = band_energy(&soft, 0, 7);
+        let soft_upper = band_energy(&soft, 7, PARTIAL_COUNT);
+        let hard_body = band_energy(&hard, 0, 7);
+        let hard_upper = band_energy(&hard, 7, PARTIAL_COUNT);
+
+        assert!(
+            soft_body < hard_body * 0.2,
+            "soft notes stay genuinely soft"
+        );
+        assert!(
+            soft_upper / soft_body < hard_upper / hard_body * 0.65,
+            "soft notes carry proportionally less upper-partial energy"
+        );
     }
 
     #[test]
