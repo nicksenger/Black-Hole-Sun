@@ -1,6 +1,6 @@
 # Black Hole Sun
 
-`black-hole-sun` is an extension of the [Jungle](https://github.com/nicksenger/Jungle) "workflow-as-type" (WAT) orchestration system which performs blackbox co-optimization of distributed artificial intelligence agents.
+`black-hole-sun` is an extension of the [Jungle](https://github.com/nicksenger/Jungle) "workflow-as-type" (WAT) orchestration system which conducts blackbox co-optimization of distributed artificial intelligence agents.
 
 It runs on a [custom engine](https://github.com/nicksenger/paramecia) supporting GGUF quantizations of the Qwen3.* architecture (e.g. Qwen3.8 27b, Qwen3-Next, etc), and implements the forward-only optimization strategies described in these publications:
 
