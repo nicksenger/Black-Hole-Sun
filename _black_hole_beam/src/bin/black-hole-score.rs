@@ -17,15 +17,22 @@
 //! move every note's start time by a positive (later) or negative (earlier)
 //! amount, dropping any note that would start before tick 0. `transpose`
 //! shifts every note by a number of semitones (negative for down), clamping
-//! notes that would leave the 88-key range.
+//! notes that would leave the 88-key range. `mutate` randomly mutates a score
+//! by a noise level in `0.0..=1.0`, applying that fraction of the pair count
+//! as random deletions, substitutions, and insertions; an optional fixed seed
+//! makes the mutation reproducible.
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use black_hole_beam::score_text::{BhsScore, ScoreNotePair, FIRST_MIDI_NOTE, LAST_MIDI_NOTE};
+use black_hole_beam::score_text::{
+    BhsScore, DiagnosticLevel, MutantScore, ScoreNotePair, FIRST_MIDI_NOTE, LAST_MIDI_NOTE,
+};
 use clap::{Parser, Subcommand};
 use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 /// The MIDI default tempo when a file carries no tempo meta events: 120 BPM.
 const DEFAULT_MICROS_PER_QUARTER: u32 = 500_000;
@@ -60,6 +67,8 @@ enum Command {
     ShiftTicks(ShiftTicksArgs),
     /// Transpose every note by a number of semitones (negative for down)
     Transpose(TransposeArgs),
+    /// Mutate the score randomly by a noise level from 0.0 (none) to 1.0 (maximal)
+    Mutate(MutateArgs),
 }
 
 #[derive(clap::Args)]
@@ -148,6 +157,24 @@ struct TransposeArgs {
     semitones: i32,
 
     /// Write the transposed score to this file instead of standard output
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct MutateArgs {
+    /// Score file to mutate
+    score: PathBuf,
+
+    /// The noise level: the fraction of pairs to mutate, from 0.0 (none) to 1.0 (maximal)
+    #[arg(value_name = "NOISE")]
+    noise: f64,
+
+    /// A fixed seed for reproducible mutation; a random seed is drawn when omitted
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /// Write the mutated score to this file instead of standard output
     #[arg(short, long)]
     output: Option<PathBuf>,
 }
@@ -483,6 +510,7 @@ fn main() -> Result<(), String> {
         Command::ShiftSecs(args) => run_shift_secs(&args),
         Command::ShiftTicks(args) => run_shift_ticks(&args),
         Command::Transpose(args) => run_transpose(&args),
+        Command::Mutate(args) => run_mutate(&args),
     }
 }
 
@@ -600,6 +628,36 @@ fn run_transpose(args: &TransposeArgs) -> Result<(), String> {
         .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
     score.transpose(args.semitones);
     write_output(args.output.as_deref(), &score.format())
+}
+
+fn run_mutate(args: &MutateArgs) -> Result<(), String> {
+    if !args.noise.is_finite() || !(0.0..=1.0).contains(&args.noise) {
+        return Err(
+            "the noise level must be a finite number between 0.0 and 1.0".to_string(),
+        );
+    }
+
+    let path = &args.score;
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let score = BhsScore::parse(&text)
+        .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
+
+    let mut mutant = match args.seed {
+        Some(seed) => MutantScore {
+            inner: score,
+            rng: StdRng::seed_from_u64(seed),
+        },
+        None => score.into_mutant(),
+    };
+    mutant.mutate(args.noise as f32);
+
+    for finding in mutant.inner.diagnostics() {
+        if finding.level == DiagnosticLevel::Error {
+            eprintln!("warning: {}", finding.message);
+        }
+    }
+    write_output(args.output.as_deref(), &mutant.inner.format())
 }
 
 fn run_pretty(path: &Path, output: Option<&Path>) -> Result<(), String> {
@@ -1072,6 +1130,75 @@ mod tests {
         let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
         assert_eq!(pairs[0].midi_note, 60);
         assert_eq!(pairs[1].midi_note, 64);
+
+        let _ = fs::remove_file(&output);
+        let _ = fs::remove_file(&input);
+    }
+
+    #[test]
+    fn mutate_applies_noise_and_is_reproducible_with_a_seed() {
+        // The fixture loops at eight seconds (7680 ticks at 960/second).
+        let directory = std::env::temp_dir();
+        let input = directory.join(format!("bhs-mutate-in-{}.bhs", std::process::id()));
+        let output = directory.join(format!("bhs-mutate-out-{}.bhs", std::process::id()));
+        fs::write(
+            &input,
+            "format bhs-score-v1\nticks_per_second 960\nloop_ticks 7680\n\
+             0 480 C4 80\n960 480 E4 64\n1920 480 F4 72\n2880 480 G4 56\n3840 480 A4 64\n4800 480 B4 48\n",
+        )
+        .expect("the fixture should be written");
+
+        // Zero noise leaves every pair untouched.
+        run_mutate(&MutateArgs {
+            score: input.clone(),
+            noise: 0.0,
+            seed: None,
+            output: Some(output.clone()),
+        })
+        .expect("the mutate should succeed");
+        let text = fs::read_to_string(&output).expect("the output should be written");
+        let score = BhsScore::parse(&text).expect("the mutated score should parse");
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(pairs.len(), 6);
+        assert_eq!(pairs[0].start_tick, 0);
+        assert_eq!(pairs[0].duration_ticks, 480);
+        assert_eq!(pairs[0].midi_note, 60);
+        assert_eq!(pairs[0].velocity, 80);
+
+        // Noise in the middle of the range with a fixed seed applies the same
+        // mutation every time it is run.
+        run_mutate(&MutateArgs {
+            score: input.clone(),
+            noise: 0.5,
+            seed: Some(7),
+            output: Some(output.clone()),
+        })
+        .expect("the mutate should succeed");
+        let first = fs::read_to_string(&output).expect("the output should be written");
+
+        run_mutate(&MutateArgs {
+            score: input.clone(),
+            noise: 0.5,
+            seed: Some(7),
+            output: Some(output.clone()),
+        })
+        .expect("the mutate should succeed");
+        let second = fs::read_to_string(&output).expect("the output should be written");
+        assert_eq!(first, second);
+
+        // The mutated document stays a valid score.
+        let score = BhsScore::parse(&first).expect("the mutated score should parse");
+        assert!(score.pairs().count() >= 1);
+
+        // Noise outside 0.0..=1.0 is rejected.
+        let error = run_mutate(&MutateArgs {
+            score: input.clone(),
+            noise: 2.0,
+            seed: None,
+            output: Some(output.clone()),
+        })
+        .expect_err("the out-of-range noise should be rejected");
+        assert!(error.contains("between 0.0 and 1.0"));
 
         let _ = fs::remove_file(&output);
         let _ = fs::remove_file(&input);
