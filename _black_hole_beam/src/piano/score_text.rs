@@ -44,8 +44,18 @@ pub const FIRST_MIDI_NOTE: u8 = 21;
 pub const LAST_MIDI_NOTE: u8 = 108;
 /// The highest velocity a score may contain.
 pub const MAX_VELOCITY: u8 = 127;
+/// The decay scale, in semitones, for mutated note selection. A key's
+/// selection probability falls off exponentially with its distance from the
+/// keyboard center, so middle keys are favored and the outermost keys (about
+/// 18 times rarer than the center) are possible but unlikely.
+pub const MUTATED_NOTE_DECAY_SEMITONES: f64 = 15.0;
 /// The longest a mutated or inserted note may be held, in seconds.
 pub const MAX_MUTATED_DURATION_SECS: u64 = 5;
+/// The shortest a mutated or inserted note may be held, in seconds. Mutated
+/// durations are drawn on a natural-log scale between this floor and
+/// [`MAX_MUTATED_DURATION_SECS`], so shorter notes are more likely than
+/// longer ones.
+pub const MIN_MUTATED_DURATION_SECS: f64 = 0.1;
 
 const TITLE_COMMENT: &str = "; black-hole-beam piano score";
 const LEGEND_COMMENT: &str = "; start duration note velocity [release_velocity]";
@@ -811,10 +821,12 @@ impl<R: RngExt> MutantScore<R> {
         Some(self.inner.pairs.remove(index).pair)
     }
 
-    /// Give a random pair a new random 88-key note, a random duration between
-    /// 0 and [`MAX_MUTATED_DURATION_SECS`] seconds, and a random velocity,
-    /// keeping its start tick and release velocity. Returns the previous
-    /// values; `None` without mutating if the score has no pairs.
+    /// Give a random pair a new center-biased random 88-key note (see
+    /// [`MUTATED_NOTE_DECAY_SEMITONES`]), a log-scaled random
+    /// duration between [`MIN_MUTATED_DURATION_SECS`] and
+    /// [`MAX_MUTATED_DURATION_SECS`] seconds (shorter is more likely), and a
+    /// random velocity, keeping its start tick and release velocity. Returns
+    /// the previous values; `None` without mutating if the score has no pairs.
     pub fn substitute_random_pair(&mut self) -> Option<ScoreNotePair> {
         if self.inner.pairs.is_empty() {
             return None;
@@ -831,10 +843,12 @@ impl<R: RngExt> MutantScore<R> {
     /// Insert a new pair immediately after a random existing pair and return
     /// the new pair's index in file order. The new pair starts at a random
     /// tick between the picked pair's start tick and the following pair's
-    /// start tick (or the end of the loop for the last pair), with a random
-    /// note, a random duration between 0 and [`MAX_MUTATED_DURATION_SECS`]
-    /// seconds, and a random velocity. It carries no comments; returns `None`
-    /// without mutating if the score has no pairs.
+    /// start tick (or the end of the loop for the last pair), with a
+    /// center-biased random note (see [`MUTATED_NOTE_DECAY_SEMITONES`]), a
+    /// log-scaled random duration between
+    /// [`MIN_MUTATED_DURATION_SECS`] and [`MAX_MUTATED_DURATION_SECS`] seconds
+    /// (shorter is more likely), and a random velocity. It carries no
+    /// comments; returns `None` without mutating if the score has no pairs.
     pub fn insert_after_random_pair(&mut self) -> Option<usize> {
         if self.inner.pairs.is_empty() {
             return None;
@@ -871,9 +885,26 @@ impl<R: RngExt> MutantScore<R> {
     }
 }
 
-/// A random 88-key MIDI note.
+/// A random 88-key MIDI note, weighted so selection probability decays
+/// exponentially with distance from the keyboard center (see
+/// [`MUTATED_NOTE_DECAY_SEMITONES`]): middle keys are most likely, and the
+/// first and last keys are possible but unlikely.
 fn random_note(rng: &mut impl RngExt) -> u8 {
-    rng.random_range(FIRST_MIDI_NOTE..=LAST_MIDI_NOTE)
+    let center = (FIRST_MIDI_NOTE as f64 + LAST_MIDI_NOTE as f64) / 2.0;
+    let weight = |note: u8| {
+        (-((note as f64 - center).abs() / MUTATED_NOTE_DECAY_SEMITONES)).exp()
+    };
+    // Walk the cumulative weights; the range is fixed and tiny, so a linear
+    // scan is simpler (and faster) than precomputing a table.
+    let total: f64 = (FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).map(weight).sum();
+    let mut remaining = rng.random::<f64>() * total;
+    for note in FIRST_MIDI_NOTE..=LAST_MIDI_NOTE {
+        remaining -= weight(note);
+        if remaining <= 0.0 {
+            return note;
+        }
+    }
+    LAST_MIDI_NOTE
 }
 
 /// A random velocity in `0..=MAX_VELOCITY`.
@@ -881,11 +912,17 @@ fn random_velocity(rng: &mut impl RngExt) -> u8 {
     rng.random_range(0..=MAX_VELOCITY)
 }
 
-/// A random duration between 0 and [`MAX_MUTATED_DURATION_SECS`] seconds,
-/// kept at least one tick so the pair stays a valid note.
+/// A random duration between [`MIN_MUTATED_DURATION_SECS`] and
+/// [`MAX_MUTATED_DURATION_SECS`] seconds, drawn uniformly on a natural-log
+/// scale so shorter durations are more likely and longer ones far less
+/// likely (every doubling of length is equally probable). The result is at
+/// least one tick so the pair stays a valid note.
 fn random_duration_ticks(rng: &mut impl RngExt, ticks_per_second: u64) -> u64 {
-    let max_ticks = MAX_MUTATED_DURATION_SECS.saturating_mul(ticks_per_second);
-    rng.random_range(1..=max_ticks.max(1))
+    let min_secs = MIN_MUTATED_DURATION_SECS;
+    let max_secs = MAX_MUTATED_DURATION_SECS as f64;
+    // Uniform in ln(seconds), exponentiated back to seconds.
+    let seconds = min_secs * (rng.random::<f64>() * (max_secs / min_secs).ln()).exp();
+    ((seconds * ticks_per_second as f64).round() as u64).max(1)
 }
 
 /// Split a line at its first `;` into content and trailing comment.
@@ -2121,6 +2158,43 @@ ticks_per_second 1920
         assert!(inserted.duration_ticks >= 1);
         assert!(inserted.velocity <= MAX_VELOCITY);
         assert_eq!(inserted.release_velocity, None);
+    }
+
+    #[test]
+    fn mutated_notes_stay_in_range_and_bias_toward_center() {
+        let mut rng = StdRng::seed_from_u64(12);
+        let samples = 10_000;
+        let mut center_hits = 0;
+        for _ in 0..samples {
+            let note = random_note(&mut rng);
+            assert!((FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).contains(&note));
+            // The middle third of the keyboard (E3..=G#5).
+            if (48..=79).contains(&note) {
+                center_hits += 1;
+            }
+        }
+        // Exponential decay from the center puts ~69% of the draws in the
+        // middle third; a uniform draw would give ~36%.
+        assert!(center_hits * 5 > samples * 3);
+    }
+
+    #[test]
+    fn mutated_durations_stay_in_bounds_and_bias_short() {
+        let ticks_per_second = 960;
+        let max_ticks = MAX_MUTATED_DURATION_SECS * ticks_per_second;
+        let mut rng = StdRng::seed_from_u64(11);
+        let samples = 10_000;
+        let mut under_two_seconds = 0;
+        for _ in 0..samples {
+            let ticks = random_duration_ticks(&mut rng, ticks_per_second);
+            assert!((1..=max_ticks).contains(&ticks));
+            if (ticks as f64 / ticks_per_second as f64) < 2.0 {
+                under_two_seconds += 1;
+            }
+        }
+        // The log scale puts most draws in the lower part of the range: ~77%
+        // under two seconds, versus ~40% for a uniform draw over 0..5s.
+        assert!(under_two_seconds * 5 > samples * 3);
     }
 
     #[test]
