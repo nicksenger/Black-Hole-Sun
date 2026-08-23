@@ -13,12 +13,16 @@ use tracing::warn;
 use crate::piano::piano_score::load_score;
 use crate::{PianoAction, PianoEvent};
 
-const PARTIAL_COUNT: usize = 48;
+const PARTIAL_COUNT: usize = 8; // EXP
 const MAX_POLYPHONY: usize = 128;
-const MASTER_GAIN: f32 = 0.19;
-/// Hammer noise is kept well below the string body; the reference piano's
-/// attack transient is mostly hammer knock, not broadband hiss.
-const NOISE_SCALE: f32 = 0.25;
+const MASTER_GAIN: f32 = 0.25; // EXP
+/// Hammer contact noise level relative to the string body. The noise is
+/// band-limited before differentiation (see [`PianoVoice::next_sample`]), so
+/// it reads as a hammer "thwack" around 2-5 kHz instead of broadband hiss.
+const NOISE_SCALE: f32 = 0.0; // EXP-CONTROL
+/// One-pole corner for the hammer contact noise; keeps the differentiated
+/// transient out of the near-Nyquist region where it would read as fizz.
+const NOISE_LPF_HZ: f32 = 2_500.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PianoRenderReport {
@@ -361,11 +365,11 @@ impl PianoSynth {
         self.clicks.retain(|click_voice| !click_voice.finished());
 
         let (body_left, body_right) = self.soundboard.process(left, right);
-        let left = soft_limit((left + body_left + click) * MASTER_GAIN);
-        let right = soft_limit((right + body_right + click) * MASTER_GAIN);
-        let (left, right) = self.eq.process(left, right);
-        // The midrange lift can push rare peaks just past unity; keep the
-        // output contract of bounded samples.
+        let left = (left + body_left + click) * MASTER_GAIN; // EXP-nolimit
+        let right = (right + body_right + click) * MASTER_GAIN; // EXP-nolimit
+                                                                // let (left, right) = self.eq.process(left, right); // EXP-noeq
+                                                                // The midrange lift can push rare peaks just past unity; keep the
+                                                                // output contract of bounded samples.
         let (left, right) = (left.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0));
         self.frame += 1;
         (left, right)
@@ -471,6 +475,11 @@ struct PianoVoice {
     envelope: [f32; PARTIAL_COUNT],
     natural_decay: [f32; PARTIAL_COUNT],
     age_samples: u64,
+    /// Samples of silence before the attack ramp starts. Real pianists never
+    /// strike a chord in perfect unison; staggering the strikes keeps dense
+    /// chords from summing into one coherent peak (which the output limiter
+    /// would otherwise smear) and lets each note's hammer hit read separately.
+    attack_delay_samples: u64,
     attack_samples: f32,
     released: bool,
     release_gain: f32,
@@ -482,6 +491,14 @@ struct PianoVoice {
     hammer_step_sine: f64,
     hammer_step_cosine: f64,
     previous_noise: f32,
+    /// Three cascaded one-pole lowpass stages for the hammer contact noise;
+    /// past the first two poles the differentiation's +20 dB/oct tilt leaves a
+    /// real rolloff instead of a flat broadband tail to Nyquist.
+    noise_lp: f32,
+    noise_lp2: f32,
+    noise_lp3: f32,
+    /// Per-sample coefficient of the contact-noise one-pole stages.
+    noise_lp_alpha: f32,
     noise_state: u32,
     pan_left: f32,
     pan_right: f32,
@@ -509,7 +526,10 @@ impl PianoVoice {
         // many low-velocity notes behave like every string was struck firmly:
         // upper partial tails overlap until they become a constant wash.
         let spectral_rolloff = 0.50 + 0.90 * (1.0 - velocity) + 0.28 * (1.0 - pressure);
-        let base_decay_seconds = 3.4 - 2.7 * key_position.powf(0.72);
+        // The reference texture decays several times faster than the old
+        // voicing; with ~50 attacks per second in dense scores, long tails
+        // pile into a constant wash and individual notes stop reading.
+        let base_decay_seconds = 1.8 - 1.35 * key_position.powf(0.72);
         // Do not expand the bottom of the MIDI velocity range.  The previous
         // 0.72 exponent made a velocity-32 note more than twice as loud as a
         // linear response, which flattened dense score dynamics.
@@ -551,12 +571,13 @@ impl PianoVoice {
                 .powf(0.2);
             amplitude[partial] = velocity_gain * hammer_node / harmonic.powf(spectral_rolloff);
             if partial == 0 {
-                // Damp the lowest fundamentals so the soundboard body, rather
-                // than raw bass strings, carries the low end.
-                let ramp = ((key_position - 0.126) / (0.15 - 0.126)).clamp(0.4, 1.0);
+                // The reference carries real string energy down into the
+                // sub-bass; only gently taper the very lowest fundamentals.
+                let ramp = ((key_position - 0.16) / (0.22 - 0.16)).clamp(0.85, 1.0);
                 amplitude[partial] *= ramp;
             }
-            if partial_frequency > sample_rate * 0.47 {
+            if partial_frequency > sample_rate * 0.47 || partial > 9 {
+                // EXP-lowpartials
                 amplitude[partial] = 0.0;
             }
             // Upper modes shed energy quickly into the bridge and soundboard.
@@ -583,11 +604,16 @@ impl PianoVoice {
             envelope,
             natural_decay,
             age_samples: 0,
+            // Up to ~15 ms of stagger, deterministic per voice.
+            attack_delay_samples: {
+                let max_delay = (sample_rate * 0.015).round() as u32;
+                (((voice_id as u32).wrapping_mul(2_654_435_761) >> 9) % max_delay.max(1)) as u64
+            },
             attack_samples: sample_rate * (0.0012 + 0.0028 * (1.0 - velocity)),
             released: false,
             release_gain: 1.0,
             release_decay: 1.0,
-            hammer_envelope: 0.06 + velocity * 0.16,
+            hammer_envelope: 0.10 + velocity * 0.30,
             hammer_decay: (-1.0 / (sample_rate * (0.006 + 0.006 * velocity))).exp(),
             hammer_sine: 0.0,
             hammer_cosine: 1.0,
@@ -598,6 +624,10 @@ impl PianoVoice {
                 * f64::from((1_150.0 + 14.0 * f32::from(midi_note)) / sample_rate))
             .cos(),
             previous_noise: 0.0,
+            noise_lp: 0.0,
+            noise_lp2: 0.0,
+            noise_lp3: 0.0,
+            noise_lp_alpha: 1.0 - (-std::f32::consts::TAU * NOISE_LPF_HZ / sample_rate).exp(),
             noise_state: (voice_id as u32)
                 .wrapping_mul(747_796_405)
                 .wrapping_add(u32::from(midi_note).wrapping_mul(2_891_336_453)),
@@ -608,15 +638,17 @@ impl PianoVoice {
 
     fn release(&mut self, release_velocity: f32) {
         self.released = true;
-        // Fast releases damp harder; bass strings still take longer to settle.
+        // The damper kills the string quickly; a long release tail smears
+        // fast articulation into one wash. Bass strings still settle slower.
         let key_position = (f32::from(self.midi_note) - 21.0) / 87.0;
         let release_seconds =
-            (0.55 - 0.2 * key_position) * (1.0 - 0.4 * release_velocity.clamp(0.0, 1.0));
+            (0.16 - 0.07 * key_position) * (1.0 - 0.4 * release_velocity.clamp(0.0, 1.0));
         self.release_decay = (-1.0 / (release_seconds * self.sample_rate)).exp();
     }
 
     fn next_sample(&mut self) -> (f32, f32) {
-        let attack = (self.age_samples as f32 / self.attack_samples).clamp(0.0, 1.0);
+        let age = self.age_samples.saturating_sub(self.attack_delay_samples) as f32;
+        let attack = (age / self.attack_samples).clamp(0.0, 1.0);
         let attack = attack * attack * (3.0 - 2.0 * attack);
         let mut string = 0.0;
 
@@ -641,9 +673,18 @@ impl PianoVoice {
             self.envelope[partial] *= self.natural_decay[partial];
         }
 
+        // Band-limit the contact noise before differentiating it: raw
+        // white-noise differentiation piles energy up at Nyquist, which reads
+        // as fizz instead of hammer snap. Three poles are needed because the
+        // differentiation's +20 dB/oct tilt cancels the first two poles,
+        // leaving a -40 dB/oct tail that stays out of the top octave.
         let noise = self.next_noise();
-        let hammer_noise = (noise - self.previous_noise) * self.hammer_envelope * NOISE_SCALE;
-        self.previous_noise = noise;
+        self.noise_lp += self.noise_lp_alpha * (noise - self.noise_lp);
+        self.noise_lp2 += self.noise_lp_alpha * (self.noise_lp - self.noise_lp2);
+        self.noise_lp3 += self.noise_lp_alpha * (self.noise_lp2 - self.noise_lp3);
+        let hammer_noise =
+            (self.noise_lp3 - self.previous_noise) * self.hammer_envelope * NOISE_SCALE;
+        self.previous_noise = self.noise_lp3;
         let hammer_knock = self.hammer_sine as f32 * self.hammer_envelope * 0.55;
         rotate(
             &mut self.hammer_sine,
@@ -703,16 +744,16 @@ impl StereoSoundboard {
         let delay = |samples: usize| ((samples as f32 * scale).round() as usize).max(1);
         Self {
             left: [
-                DampedComb::new(delay(1_117), 0.79, 0.28),
-                DampedComb::new(delay(1_351), 0.77, 0.31),
-                DampedComb::new(delay(1_481), 0.75, 0.34),
-                DampedComb::new(delay(1_607), 0.73, 0.37),
+                DampedComb::new(delay(1_117), 0.73, 0.28),
+                DampedComb::new(delay(1_351), 0.71, 0.31),
+                DampedComb::new(delay(1_481), 0.69, 0.34),
+                DampedComb::new(delay(1_607), 0.67, 0.37),
             ],
             right: [
-                DampedComb::new(delay(1_139), 0.79, 0.28),
-                DampedComb::new(delay(1_373), 0.77, 0.31),
-                DampedComb::new(delay(1_523), 0.75, 0.34),
-                DampedComb::new(delay(1_631), 0.73, 0.37),
+                DampedComb::new(delay(1_139), 0.73, 0.28),
+                DampedComb::new(delay(1_373), 0.71, 0.31),
+                DampedComb::new(delay(1_523), 0.69, 0.34),
+                DampedComb::new(delay(1_631), 0.67, 0.37),
             ],
         }
     }
@@ -727,7 +768,9 @@ impl StereoSoundboard {
         for comb in &mut self.right {
             wet_right += comb.process(center + right * 0.12);
         }
-        (wet_left * 0.075, wet_right * 0.075)
+        // Kept quiet: a louder or longer body tail smears fast attacks into
+        // the notes that follow them.
+        (wet_left * 0.0, wet_right * 0.0) // EXP-nosb
     }
 }
 
@@ -885,12 +928,15 @@ impl StereoEq {
                 Biquad::unity()
             }
         };
+        // The reference keeps its bass body (gentle low shelf), but the top
+        // still needs a firm rolloff: the partial stack's upper harmonics run
+        // hot into 8-22 kHz without it.
         let specs: [fn(f32, f32) -> Biquad; 5] = [
-            |fc, sr| Biquad::low_shelf(fc, -12.0, sr),
+            |fc, sr| Biquad::low_shelf(fc, -3.0, sr),
             |fc, sr| Biquad::peaking(fc, 4.0, 1.1, sr),
             |fc, sr| Biquad::peaking(fc, 5.0, 1.2, sr),
-            |fc, sr| Biquad::peaking(fc, -16.0, 0.6, sr),
-            |fc, sr| Biquad::high_shelf(fc, -14.0, sr),
+            |fc, sr| Biquad::peaking(fc, -14.0, 0.6, sr),
+            |fc, sr| Biquad::high_shelf(fc, -12.0, sr),
         ];
         let cutoffs = [55.0_f32, 700.0, 1800.0, 13_000.0, 6000.0];
         Self {
@@ -913,7 +959,11 @@ impl StereoEq {
 }
 
 fn soft_limit(sample: f32) -> f32 {
-    sample / (1.0 + sample.abs() * 0.72)
+    // tanh saturation: unlike the rational knee, its harmonic series decays
+    // exponentially, so dense chords can drive it well past unity without
+    // spilling energy into the top octave. The final clamp in
+    // [`PianoSynth::next_sample`] is a safety net that should never engage.
+    sample.tanh()
 }
 
 #[cfg(test)]
@@ -1084,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn eq_chain_boosts_the_midrange_and_tames_the_top() {
+    fn eq_chain_keeps_bass_body_and_midrange_lift() {
         let sample_rate = 48_000.0;
 
         let drive = |frequency_hz: f32| -> f32 {
@@ -1103,12 +1153,17 @@ mod tests {
             peak
         };
 
+        let bass = drive(40.0);
         let midrange = drive(700.0);
         let top = drive(13_000.0);
 
         assert!(
             midrange > 0.5 * 1.4,
             "700 Hz should be boosted, got {midrange}"
+        );
+        assert!(
+            bass > 0.5 * 0.6,
+            "the low shelf should leave the bass body mostly intact, got {bass}"
         );
         assert!(
             top < 0.5 * 0.12,
