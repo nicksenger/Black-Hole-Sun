@@ -15,7 +15,9 @@
 //! compresses a score to a new loop duration, moving every note to the same
 //! relative position in the new duration. `shift-secs` and `shift-ticks`
 //! move every note's start time by a positive (later) or negative (earlier)
-//! amount, dropping any note that would start before tick 0.
+//! amount, dropping any note that would start before tick 0. `transpose`
+//! shifts every note by a number of semitones (negative for down), clamping
+//! notes that would leave the 88-key range.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -56,6 +58,8 @@ enum Command {
     ShiftSecs(ShiftSecsArgs),
     /// Shift every note's start time by a number of ticks (negative for earlier)
     ShiftTicks(ShiftTicksArgs),
+    /// Transpose every note by a number of semitones (negative for down)
+    Transpose(TransposeArgs),
 }
 
 #[derive(clap::Args)]
@@ -130,6 +134,20 @@ struct ShiftTicksArgs {
     ticks: i64,
 
     /// Write the shifted score to this file instead of standard output
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct TransposeArgs {
+    /// Score file to transpose
+    score: PathBuf,
+
+    /// The number of semitones to shift each note; negative shifts down
+    #[arg(value_name = "SEMITONES", allow_negative_numbers = true)]
+    semitones: i32,
+
+    /// Write the transposed score to this file instead of standard output
     #[arg(short, long)]
     output: Option<PathBuf>,
 }
@@ -464,6 +482,7 @@ fn main() -> Result<(), String> {
         Command::Rescale(args) => run_rescale(&args),
         Command::ShiftSecs(args) => run_shift_secs(&args),
         Command::ShiftTicks(args) => run_shift_ticks(&args),
+        Command::Transpose(args) => run_transpose(&args),
     }
 }
 
@@ -570,6 +589,16 @@ fn run_shift_ticks(args: &ShiftTicksArgs) -> Result<(), String> {
     let mut score = BhsScore::parse(&text)
         .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
     score.shift_ticks(args.ticks)?;
+    write_output(args.output.as_deref(), &score.format())
+}
+
+fn run_transpose(args: &TransposeArgs) -> Result<(), String> {
+    let path = &args.score;
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let mut score = BhsScore::parse(&text)
+        .map_err(|error| format!("{}: invalid score: {error}", path.display()))?;
+    score.transpose(args.semitones);
     write_output(args.output.as_deref(), &score.format())
 }
 
@@ -977,6 +1006,72 @@ mod tests {
         let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].start_tick, 2880);
+
+        let _ = fs::remove_file(&output);
+        let _ = fs::remove_file(&input);
+    }
+
+    #[test]
+    fn transpose_shifts_notes_and_keeps_timing() {
+        // The fixture loops at eight seconds (7680 ticks at 960/second).
+        let directory = std::env::temp_dir();
+        let input = directory.join(format!("bhs-transpose-in-{}.bhs", std::process::id()));
+        let output = directory
+            .join(format!("bhs-transpose-out-{}.bhs", std::process::id()));
+        fs::write(
+            &input,
+            "format bhs-score-v1\nticks_per_second 960\nloop_ticks 7680\n\
+             0 480 C4 80\n3840 480 E4 64\n",
+        )
+        .expect("the fixture should be written");
+
+        // Up a whole tone: C4 (60) to D4 (62), E4 (64) to F#4 (66). Timing,
+        // durations, velocities, and the loop length are untouched.
+        run_transpose(&TransposeArgs {
+            score: input.clone(),
+            semitones: 2,
+            output: Some(output.clone()),
+        })
+        .expect("the transpose should succeed");
+        let text = fs::read_to_string(&output).expect("the output should be written");
+        let score = BhsScore::parse(&text).expect("the transposed score should parse");
+        assert_eq!(score.loop_ticks, Some(7680));
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].start_tick, 0);
+        assert_eq!(pairs[0].duration_ticks, 480);
+        assert_eq!(pairs[0].midi_note, 62);
+        assert_eq!(pairs[0].velocity, 80);
+        assert_eq!(pairs[1].start_tick, 3840);
+        assert_eq!(pairs[1].duration_ticks, 480);
+        assert_eq!(pairs[1].midi_note, 66);
+        assert_eq!(pairs[1].velocity, 64);
+        assert!(score.to_events().is_ok());
+
+        // A large downward shift clamps every note to the lowest key (A0).
+        run_transpose(&TransposeArgs {
+            score: input.clone(),
+            semitones: -127,
+            output: Some(output.clone()),
+        })
+        .expect("the transpose should succeed");
+        let text = fs::read_to_string(&output).expect("the output should be written");
+        let score = BhsScore::parse(&text).expect("the transposed score should parse");
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert!(pairs.iter().all(|pair| pair.midi_note == 21));
+
+        // The same score shifted back up by the same amount is a no-op.
+        run_transpose(&TransposeArgs {
+            score: input.clone(),
+            semitones: 0,
+            output: Some(output.clone()),
+        })
+        .expect("the transpose should succeed");
+        let text = fs::read_to_string(&output).expect("the output should be written");
+        let score = BhsScore::parse(&text).expect("the transposed score should parse");
+        let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
+        assert_eq!(pairs[0].midi_note, 60);
+        assert_eq!(pairs[1].midi_note, 64);
 
         let _ = fs::remove_file(&output);
         let _ = fs::remove_file(&input);
