@@ -10,7 +10,7 @@ It runs on a [custom engine](https://github.com/nicksenger/paramecia) supporting
 
 It includes a GUI monitoring tool with optional piano:
 
-https://github.com/user-attachments/assets/9c399800-04bb-4bc7-93fc-d2fa1a400b53
+https://github.com/user-attachments/assets/ef463b7b-c1fd-455a-94fe-c712913842ab
 
 A `BlackHole::Sun` graph is a hierarchical, static-topology DAG where each node is an agent implemented in terms of `jungle::Flow` that progresses through 3 phases:
 

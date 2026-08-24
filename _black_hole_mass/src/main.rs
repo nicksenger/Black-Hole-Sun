@@ -58,8 +58,11 @@ struct Opt {
     #[clap(long = "training-epsilon")]
     training_epsilon: Option<f64>,
     /// Default QuZO perturbation direction mode for model instances
-    #[clap(long = "training-perturbation-mode", value_parser = ["weight", "activation"])]
+    #[clap(long = "training-perturbation-mode", value_parser = ["weight", "low-rank"])]
     training_perturbation_mode: Option<String>,
+    /// Number of factors used by low-rank perturbations (used when the mode is low-rank)
+    #[clap(long = "training-perturbation-rank", default_value_t = 1)]
+    training_perturbation_rank: usize,
     /// Optional root mass endpoint to register with as a tunnel worker
     #[clap(long = "tunnel")]
     tunnel: Option<SocketAddr>,
@@ -120,7 +123,7 @@ impl From<Opt> for black_hole_mass::ServerBuilder {
         if let Some(mode) = opt.training_perturbation_mode {
             let mode = match mode.as_str() {
                 "weight" => MassPerturbationMode::Weight,
-                "activation" => MassPerturbationMode::Activation,
+                "low-rank" => MassPerturbationMode::LowRank(opt.training_perturbation_rank),
                 _ => unreachable!("clap validates perturbation mode values"),
             };
             builder = builder.training_perturbation_mode(mode);
@@ -156,7 +159,14 @@ fn main() {
         std::process::exit(1);
     }
 
-    let builder = black_hole_mass::ServerBuilder::from(Opt::parse());
+    let opt = Opt::parse();
+    if opt.training_perturbation_mode.as_deref() == Some("low-rank")
+        && opt.training_perturbation_rank == 0
+    {
+        eprintln!("ERROR: --training-perturbation-rank must be greater than 0 in low-rank mode");
+        std::process::exit(1);
+    }
+    let builder = black_hole_mass::ServerBuilder::from(opt);
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let code = if let Err(e) = rt.block_on(builder.run()) {
         eprintln!("ERROR: {e}");

@@ -149,8 +149,9 @@ pub enum MassPerturbationMode {
     /// Sample perturbations in the full weight space (default).
     #[default]
     Weight,
-    /// Sample factored activation-space directions for linear weights.
-    Activation,
+    /// Sample factored low-rank activation-space directions for linear weights
+    /// using `rank` factors (`LowRank(1)` is the narrowest factored direction).
+    LowRank(usize),
 }
 
 /// Forwardable model operation used for root->worker tunnel requests.

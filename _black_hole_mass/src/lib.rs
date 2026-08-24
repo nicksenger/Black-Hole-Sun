@@ -893,14 +893,14 @@ fn to_engine_error_feedback(config: MassErrorFeedbackConfig) -> ErrorFeedbackMod
 fn to_engine_perturbation_mode(mode: MassPerturbationMode) -> PerturbationMode {
     match mode {
         MassPerturbationMode::Weight => PerturbationMode::Weight,
-        MassPerturbationMode::Activation => PerturbationMode::Activation,
+        MassPerturbationMode::LowRank(rank) => PerturbationMode::LowRank(rank),
     }
 }
 
 fn to_mass_perturbation_mode(mode: PerturbationMode) -> MassPerturbationMode {
     match mode {
         PerturbationMode::Weight => MassPerturbationMode::Weight,
-        PerturbationMode::Activation => MassPerturbationMode::Activation,
+        PerturbationMode::LowRank(rank) => MassPerturbationMode::LowRank(rank),
     }
 }
 
@@ -3452,7 +3452,7 @@ mod tests {
             training_z_loss: Some(0.12),
             training_lb_loss: Some(0.24),
             training_clip_threshold: Some(0.5),
-            training_perturbation_mode: Some(MassPerturbationMode::Activation),
+            training_perturbation_mode: Some(MassPerturbationMode::LowRank(4)),
             training_error_feedback: Some(MassErrorFeedbackConfig::Persistent {
                 decay: 0.8,
                 gain: 0.6,
@@ -3478,7 +3478,7 @@ mod tests {
         assert_eq!(resolved.training_config.clip_threshold, 0.5);
         assert_eq!(
             resolved.training_config.perturbation_mode,
-            paramecia_engine::PerturbationMode::Activation
+            paramecia_engine::PerturbationMode::LowRank(4)
         );
         assert_eq!(
             resolved.training_error_feedback,
@@ -3633,7 +3633,7 @@ mod tests {
             training_z_loss: 0.005,
             training_lb_loss: 0.015,
             training_clip_threshold: 1.25,
-            training_perturbation_mode: MassPerturbationMode::Activation,
+            training_perturbation_mode: MassPerturbationMode::LowRank(2),
             training_error_feedback: MassErrorFeedbackConfig::Replay {
                 steps: 64,
                 decay: 0.88,
@@ -3667,7 +3667,7 @@ mod tests {
         assert_eq!(first.training_clip_threshold, 1.25);
         assert_eq!(
             first.training_perturbation_mode,
-            MassPerturbationMode::Activation
+            MassPerturbationMode::LowRank(2)
         );
         assert_eq!(
             first.training_error_feedback,
@@ -3717,16 +3717,16 @@ mod tests {
             paramecia_engine::PerturbationMode::Weight
         );
         assert_eq!(
-            to_engine_perturbation_mode(MassPerturbationMode::Activation),
-            paramecia_engine::PerturbationMode::Activation
+            to_engine_perturbation_mode(MassPerturbationMode::LowRank(1)),
+            paramecia_engine::PerturbationMode::LowRank(1)
         );
         assert_eq!(
             to_mass_perturbation_mode(paramecia_engine::PerturbationMode::Weight),
             MassPerturbationMode::Weight
         );
         assert_eq!(
-            to_mass_perturbation_mode(paramecia_engine::PerturbationMode::Activation),
-            MassPerturbationMode::Activation
+            to_mass_perturbation_mode(paramecia_engine::PerturbationMode::LowRank(4)),
+            MassPerturbationMode::LowRank(4)
         );
     }
 

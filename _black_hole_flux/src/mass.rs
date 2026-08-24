@@ -74,7 +74,7 @@ pub trait ModelConfig {
     const TRAINING_Z_LOSS: Option<f64> = None;
     const TRAINING_LB_LOSS: Option<f64> = None;
     const TRAINING_CLIP_THRESHOLD: Option<f64> = None;
-    /// Optional QuZO perturbation direction mode (`Weight` or `Activation`).
+    /// Optional QuZO perturbation direction mode (`Weight` or `LowRank(rank)`).
     ///
     /// Leave as `None` to fall back to the mass server default.
     const TRAINING_PERTURBATION_MODE: Option<MassPerturbationMode> = None;
@@ -173,7 +173,7 @@ mod tests {
         type Oscillation = super::NoOscillation;
         type ErrorFeedback = super::NoErrorFeedback;
         const TRAINING_PERTURBATION_MODE: Option<MassPerturbationMode> =
-            Some(MassPerturbationMode::Activation);
+            Some(MassPerturbationMode::LowRank(1));
     }
 
     struct WindowedOscillation;
@@ -238,7 +238,7 @@ mod tests {
         let config = PerturbationModeConfig::mass_model_config().expect("expected override config");
         assert_eq!(
             config.training_perturbation_mode,
-            Some(MassPerturbationMode::Activation)
+            Some(MassPerturbationMode::LowRank(1))
         );
     }
 
