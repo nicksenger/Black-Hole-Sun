@@ -535,11 +535,7 @@ impl SunOps for SpaceJungle {
             .map_err(|error| format!("deserialize appearance failed: {error}"))
     }
 
-    async fn perturb_animal<S>(
-        &self,
-        journey_id: Uuid,
-        stimulus: &S,
-    ) -> Result<(), String>
+    async fn perturb_animal<S>(&self, journey_id: Uuid, stimulus: &S) -> Result<(), String>
     where
         S: serde::Serialize + Sync + Send,
     {
@@ -729,72 +725,4 @@ async fn dark_star() {
         None,
     )
     .await;
-}
-
-/// Runs the dark_star Sun indefinitely with a live Black Hole Beam viewer.
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) fn run_beam_dark_star() {
-    init_tracing();
-
-    let model_path = std::env::var("BLACK_HOLE_PROBE_MODEL_PATH")
-        .expect("BLACK_HOLE_PROBE_MODEL_PATH must be set to run beam_dark_star");
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("Tokio runtime should build");
-    let (client, journey_id, _void_server, _mass_server) = runtime.block_on(async {
-        let void_server = TestVoidServer::new()
-            .serve()
-            .await
-            .expect("failed to start void server");
-        let mass_server = TestMassServer::new(&model_path)
-            .void_addr(void_server.local_addr())
-            .serve()
-            .await
-            .expect("failed to start mass server");
-        let void_addr = void_server.local_addr();
-        let mass_addr = mass_server.local_addr();
-
-        let endpoint = make_client_endpoint().await;
-        let void_client = VoidClient::new(&endpoint, void_addr, "localhost");
-        let mass_client = MassClient::new(&endpoint, mass_addr, "localhost");
-        let mut jungle = SpaceJungle::new(void_client, mass_client, DARK_STAR_MODEL_NODE_COUNT);
-        let client = FusedClient::builder()
-            .build()
-            .await
-            .expect("fused client should build");
-        jungle.set_client(client.clone());
-
-        let journey_id = client
-            .spawn::<DarkStarBlackHole>(&())
-            .await
-            .expect("DarkStarBlackHole should spawn")
-            .journey_id;
-        println!("Spawned DarkStarBlackHole journey: {journey_id}");
-
-        // One worker per journey: dark_star graph vertices plus the parent.
-        let _worker_handles: Vec<_> = (0..(DARK_STAR_VERTEX_COUNT + 1))
-            .map(|_| {
-                let worker = JungleWorker::new(jungle.clone(), client.clone());
-                tokio::spawn(async move {
-                    let _ = worker.spawn().await;
-                })
-            })
-            .collect();
-
-        (client, journey_id, void_server, mass_server)
-    });
-
-    black_hole_beam::BeamBuilder::new()
-        .view_live::<DarkStarBlackHole>(client, journey_id)
-        .expect("Black Hole Beam should run");
-}
-
-#[cfg(test)]
-#[test]
-#[ignore]
-fn beam_dark_star() {
-    super::run_beam_example("beam_dark_star");
 }
