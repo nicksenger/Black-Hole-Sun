@@ -1,5 +1,7 @@
 #[cfg(test)]
 use futures::stream::StreamExt;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -88,6 +90,7 @@ struct RedDwarfJungle {
     void_client: VoidClient,
     mass_client: MassClient,
     client: Option<FusedClient>,
+    optimize_calls: Arc<AtomicUsize>,
 }
 
 impl RedDwarfJungle {
@@ -96,6 +99,7 @@ impl RedDwarfJungle {
             void_client,
             mass_client,
             client: None,
+            optimize_calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -174,9 +178,14 @@ impl VoidInferOps for RedDwarfJungle {
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
-        self.mass_client
+        let result = self
+            .mass_client
             .optimize(model_id, loss_up, loss_down)
-            .await
+            .await;
+        if result.is_ok() {
+            self.optimize_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        result
     }
 
     async fn query_model_params(&self, model_id: Uuid) -> Result<MassModelParams, String> {
@@ -229,11 +238,7 @@ impl SunOps for RedDwarfJungle {
             .map_err(|error| format!("deserialize appearance failed: {error}"))
     }
 
-    async fn perturb_animal<S>(
-        &self,
-        journey_id: Uuid,
-        stimulus: &S,
-    ) -> Result<(), String>
+    async fn perturb_animal<S>(&self, journey_id: Uuid, stimulus: &S) -> Result<(), String>
     where
         S: serde::Serialize + Sync + Send,
     {
@@ -413,6 +418,133 @@ async fn red_dwarf_child_ray_frozen_state_oscillates() {
         frozen_samples,
         vec![false, true],
         "expected child Ray frozen state to flip after successive optimize steps"
+    );
+
+    for worker_handle in worker_handles {
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+    drop(client);
+    void_server.abort();
+    mass_server.abort();
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn red_dwarf_flow_proceeds_through_optimization_three_times() {
+    init_tracing();
+
+    let model_path =
+        match require_model_path("red_dwarf_flow_proceeds_through_optimization_three_times") {
+            Some(path) => path,
+            None => return,
+        };
+
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let mass_server = TestMassServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start mass server");
+
+    let endpoint = make_client_endpoint().await;
+    let void_client = VoidClient::new(&endpoint, void_server.local_addr(), "localhost");
+    let mass_client = MassClient::new(&endpoint, mass_server.local_addr(), "localhost");
+    let mut jungle = RedDwarfJungle::new(void_client, mass_client);
+
+    let client = FusedClient::builder()
+        .build()
+        .await
+        .expect("fused client should build");
+    jungle.set_client(client.clone());
+
+    let parent_journey_id = client
+        .spawn::<RedDwarfBlackHoleAnimal>(&())
+        .await
+        .expect("RedDwarfBlackHoleAnimal should spawn")
+        .journey_id;
+    let mut subscription = client
+        .subscribe_step_updates(parent_journey_id, None)
+        .await
+        .expect("subscribe_step_updates should succeed");
+
+    let worker_handles: Vec<_> = (0..2)
+        .map(|_| {
+            let worker = JungleWorker::new(jungle.clone(), client.clone());
+            tokio::spawn(async move {
+                let _ = worker.spawn().await;
+            })
+        })
+        .collect();
+
+    let optimize_calls = Arc::clone(&jungle.optimize_calls);
+    let result = tokio::time::timeout(Duration::from_secs(240), async {
+        loop {
+            if optimize_calls.load(Ordering::SeqCst) >= 3 {
+                return Ok::<(), String>(());
+            }
+
+            tokio::select! {
+                update = subscription.next() => {
+                    match update {
+                        Some(Ok(update)) => match update.event {
+                            RunnerUpdateOut::EffectFailureOutput { node_id, .. } => {
+                                return Err(format!("parent effect {node_id} failed"));
+                            }
+                            RunnerUpdateOut::NodeLifecycle(node)
+                                if node.phase == jungle_sdk::types::NodeLifecyclePhase::Failed =>
+                            {
+                                return Err(format!("parent node {} failed", node.node_id));
+                            }
+                            _ => {}
+                        },
+                        Some(Err(error)) => {
+                            return Err(format!("step update stream failed: {error}"));
+                        }
+                        None => {
+                            return Err("step update stream ended unexpectedly".to_string());
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let status = client
+                .journey_details(parent_journey_id)
+                .await
+                .expect("journey_details should succeed");
+            panic!(
+                "red_dwarf failed before 3 optimization passes: {error}; \
+                 optimize_calls={}, status: {status:?}",
+                optimize_calls.load(Ordering::SeqCst)
+            );
+        }
+        Err(_) => {
+            let status = client
+                .journey_details(parent_journey_id)
+                .await
+                .expect("journey_details should succeed");
+            panic!(
+                "timeout waiting for red_dwarf to proceed through optimization 3 times (240s); \
+                 optimize_calls={}, status: {status:?}",
+                optimize_calls.load(Ordering::SeqCst)
+            );
+        }
+    }
+
+    assert!(
+        optimize_calls.load(Ordering::SeqCst) >= 3,
+        "expected the red_dwarf flow to proceed through optimization at least 3 times, got {}",
+        optimize_calls.load(Ordering::SeqCst)
     );
 
     for worker_handle in worker_handles {
