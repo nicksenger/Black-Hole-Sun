@@ -332,6 +332,7 @@ async fn tunnel_worker_retries_parent_registration_until_root_starts() {
             total: Some(1),
             available: Some(1),
             occupied: 0,
+            per_architecture: vec![],
         }
     );
 

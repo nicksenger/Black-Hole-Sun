@@ -28,9 +28,9 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use black_hole_spec::{
-    DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry,
+    DarkToken, InferenceInput, InferenceOutput, InferenceRequest, LogitEntry, MassArchitecture,
     MassErrorFeedbackConfig, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut,
-    MassPerturbationMode, ObjectId, SequenceOutput, TunnelRequest,
+    MassPerturbationMode, ObjectId, SequenceOutput, TunnelRequest, WorkerCapabilities,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -43,6 +43,28 @@ const DEFAULT_ENGINE_PRESENCE_PENALTY: f32 = 0.0;
 const DEFAULT_INFERENCE_LIMIT: u32 = 256;
 const DEFAULT_MAX_INSTANCES: usize = 1;
 const DEFAULT_CHECKPOINT_TOKENIZER_FILE: &str = "tokenizer.json";
+
+/// Architecture this mass binary's engine was compiled for.
+///
+/// paramecia selects model shapes at compile time via cargo features, so a
+/// given build serves exactly one architecture (or none). Tunnel workers
+/// advertise this to roots so model instances are only placed on compatible
+/// engines, and it is used to reject starts this engine cannot serve.
+pub const COMPILED_ARCHITECTURE: Option<MassArchitecture> = if cfg!(feature = "qwen35_0p8b") {
+    Some(MassArchitecture::Qwen35_0p8b)
+} else if cfg!(feature = "qwen35_2b") {
+    Some(MassArchitecture::Qwen35_2b)
+} else if cfg!(feature = "qwen35_4b") {
+    Some(MassArchitecture::Qwen35_4b)
+} else if cfg!(feature = "qwen35_9b") {
+    Some(MassArchitecture::Qwen35_9b)
+} else if cfg!(feature = "qwen35_27b") {
+    Some(MassArchitecture::Qwen35_27b)
+} else if cfg!(feature = "qwen38_27b") {
+    Some(MassArchitecture::Qwen38_27b)
+} else {
+    None
+};
 const DEFAULT_CHECKPOINT_TOKENIZER_DIR: &str = ".black-hole-sun/tokenizers";
 const CHECKPOINT_CACHE_DIR: &str = "black-hole-mass/checkpoints";
 const DEFAULT_TUNNEL_CONNECT_RETRY_MS: u64 = 200;
@@ -778,11 +800,14 @@ enum RouteTarget {
     Worker(Uuid),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct TunnelWorker {
     token: Uuid,
     worker_id: Uuid,
     max_instances: Option<usize>,
+    /// Capabilities advertised by the worker at registration. Empty on
+    /// legacy workers that predate capability advertising.
+    capabilities: WorkerCapabilities,
 }
 
 struct MassContext {
@@ -798,6 +823,9 @@ struct MassContext {
     workers: tokio::sync::RwLock<HashMap<Uuid, TunnelWorker>>,
     worker_connections: tokio::sync::RwLock<HashMap<Uuid, TunnelConnectionHandle>>,
     instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
+    /// Architecture requirement of each routed model instance (None when the
+    /// start carried no requirement), tracked for per-architecture capacity.
+    instance_requirements: tokio::sync::RwLock<HashMap<Uuid, Option<MassArchitecture>>>,
 }
 
 #[derive(Clone)]
@@ -1212,6 +1240,7 @@ impl ServerBuilder {
             workers: tokio::sync::RwLock::new(HashMap::new()),
             worker_connections: tokio::sync::RwLock::new(HashMap::new()),
             instances: tokio::sync::RwLock::new(HashMap::new()),
+            instance_requirements: tokio::sync::RwLock::new(HashMap::new()),
         });
 
         Ok((listener, local_addr, context))
@@ -1561,14 +1590,22 @@ async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<MassContext>)
             MassIn::RegisterTunnel {
                 worker_id,
                 max_instances,
+                capabilities,
             } => {
-                let out =
-                    match handle_register_tunnel(worker_id, max_instances, None, &context).await {
-                        Ok(out) => out,
-                        Err(error) => MassOut::Error {
-                            message: error.to_string(),
-                        },
-                    };
+                let out = match handle_register_tunnel(
+                    worker_id,
+                    max_instances,
+                    capabilities,
+                    None,
+                    &context,
+                )
+                .await
+                {
+                    Ok(out) => out,
+                    Err(error) => MassOut::Error {
+                        message: error.to_string(),
+                    },
+                };
                 if let Err(error) = write_frame_io(&mut stream, &out).await {
                     warn!(error = %error, "failed to write tcp tunnel registration response");
                     return;
@@ -1660,7 +1697,8 @@ async fn handle_request(
         MassIn::RegisterTunnel {
             worker_id,
             max_instances,
-        } => handle_register_tunnel(worker_id, max_instances, connection, ctx).await,
+            capabilities,
+        } => handle_register_tunnel(worker_id, max_instances, capabilities, connection, ctx).await,
         MassIn::UpdateTunnelCapacity {
             token,
             max_instances,
@@ -1703,6 +1741,14 @@ async fn register_tunnel_worker(
     max_instances: Option<usize>,
     transport_mode: TransportMode,
 ) -> Result<(Uuid, ParentTunnelSession)> {
+    // Advertise this worker's compiled architecture so the parent only routes
+    // compatible model instances to it.
+    let mut architectures = Vec::new();
+    if let Some(architecture) = COMPILED_ARCHITECTURE {
+        architectures.push(architecture);
+    }
+    let capabilities = WorkerCapabilities { architectures };
+
     let client = MassRpcClient::connect(parent_addr, transport_mode).await?;
     let connection = client.establish_connection().await?;
     match connection {
@@ -1712,6 +1758,7 @@ async fn register_tunnel_worker(
                 MassIn::RegisterTunnel {
                     worker_id,
                     max_instances,
+                    capabilities: Some(capabilities),
                 },
             )
             .await?;
@@ -1735,6 +1782,7 @@ async fn register_tunnel_worker(
                 &MassIn::RegisterTunnel {
                     worker_id,
                     max_instances,
+                    capabilities: Some(capabilities),
                 },
             )
             .await?;
@@ -1924,6 +1972,7 @@ async fn maintain_parent_registration_loop(context: Arc<MassContext>) {
 async fn handle_register_tunnel(
     worker_id: Uuid,
     max_instances: Option<usize>,
+    capabilities: Option<WorkerCapabilities>,
     connection: Option<TunnelConnectionHandle>,
     ctx: &MassContext,
 ) -> Result<MassOut> {
@@ -1936,6 +1985,11 @@ async fn handle_register_tunnel(
             .find(|(_, worker)| worker.worker_id == worker_id)
         {
             worker.max_instances = max_instances;
+            // Capabilities are compile-time fixed; refresh them when the
+            // (re)registering worker advertises them.
+            if let Some(capabilities) = capabilities {
+                worker.capabilities = capabilities;
+            }
             *token
         } else {
             let token = Uuid::new_v4();
@@ -1945,6 +1999,7 @@ async fn handle_register_tunnel(
                     token,
                     worker_id,
                     max_instances,
+                    capabilities: capabilities.unwrap_or_default(),
                 },
             );
             token
@@ -2042,7 +2097,23 @@ fn has_capacity(limit: Option<usize>, current: usize) -> bool {
     limit.is_none_or(|max| current < max)
 }
 
-async fn select_start_target(ctx: &MassContext) -> Result<RouteTarget> {
+/// Whether a worker's advertised capabilities satisfy an architecture
+/// requirement. A requirement-less start matches any engine; a required
+/// architecture only matches engines compiled for it.
+fn architecture_satisfies(
+    capabilities: &WorkerCapabilities,
+    required_architecture: Option<MassArchitecture>,
+) -> bool {
+    match required_architecture {
+        None => true,
+        Some(required) => capabilities.architectures.contains(&required),
+    }
+}
+
+async fn select_start_target(
+    ctx: &MassContext,
+    required_architecture: Option<MassArchitecture>,
+) -> Result<RouteTarget> {
     let routes = ctx.routes.read().await;
     let local_count = ctx.instances.read().await.len();
     let mut worker_counts: HashMap<Uuid, usize> = HashMap::new();
@@ -2056,14 +2127,28 @@ async fn select_start_target(ctx: &MassContext) -> Result<RouteTarget> {
     }
     drop(routes);
 
+    let local_eligible = architecture_satisfies(
+        &WorkerCapabilities {
+            architectures: std::iter::once(COMPILED_ARCHITECTURE)
+                .filter_map(|architecture| architecture)
+                .collect(),
+        },
+        required_architecture,
+    );
+
     let mut best: Option<(RouteTarget, usize)> = None;
-    if has_capacity(ctx.max_instances, local_count) {
+    let mut eligible_exists = local_eligible;
+    if local_eligible && has_capacity(ctx.max_instances, local_count) {
         best = Some((RouteTarget::Local, local_count));
     }
 
-    let mut workers: Vec<TunnelWorker> = ctx.workers.read().await.values().copied().collect();
+    let mut workers: Vec<TunnelWorker> = ctx.workers.read().await.values().cloned().collect();
     workers.sort_by_key(|worker| worker.token);
     for worker in workers {
+        if !architecture_satisfies(&worker.capabilities, required_architecture) {
+            continue;
+        }
+        eligible_exists = true;
         let current = worker_counts
             .get(&worker.token)
             .copied()
@@ -2077,8 +2162,16 @@ async fn select_start_target(ctx: &MassContext) -> Result<RouteTarget> {
         }
     }
 
-    best.map(|(target, _)| target)
-        .ok_or(ServerError::NoTunnelCapacity)
+    match (best, eligible_exists) {
+        (Some((target, _)), _) => Ok(target),
+        // Eligible engines exist but are all at capacity.
+        (None, true) => Err(ServerError::NoTunnelCapacity),
+        // No engine matches the required architecture at all.
+        (None, false) if required_architecture.is_some() => Err(
+            ServerError::NoCompatibleTunnelCapacity(required_architecture.expect("checked above")),
+        ),
+        (None, false) => Err(ServerError::NoTunnelCapacity),
+    }
 }
 
 async fn get_worker(token: Uuid, ctx: &MassContext) -> Result<TunnelWorker> {
@@ -2086,7 +2179,7 @@ async fn get_worker(token: Uuid, ctx: &MassContext) -> Result<TunnelWorker> {
         .read()
         .await
         .get(&token)
-        .copied()
+        .cloned()
         .ok_or(ServerError::TunnelWorkerUnavailable(token))
 }
 
@@ -2145,7 +2238,10 @@ async fn handle_start_distributed(
         return Err(ServerError::ModelInstanceAlreadyRunning(model_id));
     }
 
-    let target = select_start_target(ctx).await?;
+    let required_architecture = model_config
+        .as_ref()
+        .and_then(|config| config.required_architecture);
+    let target = select_start_target(ctx, required_architecture).await?;
     let out = match target {
         RouteTarget::Local => handle_start(model_id, model_config, ctx).await?,
         RouteTarget::Worker(token) => {
@@ -2166,6 +2262,10 @@ async fn handle_start_distributed(
     }
 
     ctx.routes.write().await.insert(model_id, target);
+    ctx.instance_requirements
+        .write()
+        .await
+        .insert(model_id, required_architecture);
     Ok(MassOut::Ack)
 }
 
@@ -2298,7 +2398,10 @@ async fn handle_shutdown_distributed(model_id: Uuid, ctx: &MassContext) -> Resul
         }
     };
     if matches!(out, MassOut::Ack) {
-        ctx.routes.write().await.remove(&model_id);
+        let mut routes = ctx.routes.write().await;
+        routes.remove(&model_id);
+        drop(routes);
+        ctx.instance_requirements.write().await.remove(&model_id);
     }
     Ok(out)
 }
@@ -2329,6 +2432,21 @@ async fn handle_start(
     model_config: Option<MassModelConfig>,
     ctx: &MassContext,
 ) -> Result<MassOut> {
+    // Reject starts this compiled engine cannot serve. The root already
+    // filters placement by capability; this guards direct and forwarded
+    // starts so a mismatch fails fast instead of at weight-load time.
+    if let Some(required) = model_config
+        .as_ref()
+        .and_then(|config| config.required_architecture)
+    {
+        if COMPILED_ARCHITECTURE != Some(required) {
+            return Err(ServerError::ArchitectureMismatch {
+                required,
+                compiled: COMPILED_ARCHITECTURE,
+            });
+        }
+    }
+
     {
         let mut instances = ctx.instances.write().await;
         if let Some(limit) = ctx.max_instances {
@@ -2580,15 +2698,102 @@ async fn handle_query_model_params(model_id: Uuid, ctx: &MassContext) -> Result<
     })
 }
 
+/// Architectures a route target's engine can serve (local engine or worker).
+fn target_architectures(
+    target: &RouteTarget,
+    workers: &HashMap<Uuid, TunnelWorker>,
+) -> Vec<MassArchitecture> {
+    match target {
+        RouteTarget::Local => std::iter::once(COMPILED_ARCHITECTURE)
+            .filter_map(|architecture| architecture)
+            .collect(),
+        RouteTarget::Worker(token) => workers
+            .get(token)
+            .map(|worker| worker.capabilities.architectures.clone())
+            .unwrap_or_default(),
+    }
+}
+
 async fn handle_query_model_capacity(ctx: &MassContext) -> Result<MassOut> {
-    let occupied = ctx.routes.read().await.len();
-    let total = advertised_capacity(ctx).await;
+    let (occupied, total, per_architecture) = {
+        let routes = ctx.routes.read().await;
+        let workers = ctx.workers.read().await;
+        let requirements = ctx.instance_requirements.read().await;
+
+        // Total capacity across local + workers (inlined from advertised_capacity
+        // because the worker lock is already held).
+        let mut total = ctx.max_instances;
+        for worker in workers.values() {
+            total = sum_capacity(total, worker.max_instances);
+        }
+
+        // Per-architecture view: one entry per architecture any engine in the
+        // subtree can serve. An instance occupies the architectures of its
+        // serving engine; instances started with an explicit requirement only
+        // count against that architecture.
+        let mut architectures: Vec<MassArchitecture> = Vec::new();
+        if let Some(architecture) = COMPILED_ARCHITECTURE {
+            architectures.push(architecture);
+        }
+        for worker in workers.values() {
+            for architecture in &worker.capabilities.architectures {
+                if !architectures.contains(architecture) {
+                    architectures.push(*architecture);
+                }
+            }
+        }
+        let per_architecture = architectures
+            .into_iter()
+            .map(|architecture| {
+                // Start from the local engine's limit when it serves this
+                // architecture (None means unbounded), else zero; sum_capacity
+                // treats None as unbounded, so an ineligible local engine must
+                // not contribute.
+                let mut arch_total = match COMPILED_ARCHITECTURE {
+                    Some(local) if local == architecture => ctx.max_instances,
+                    _ => Some(0),
+                };
+                for worker in workers.values() {
+                    if worker.capabilities.architectures.contains(&architecture) {
+                        arch_total = sum_capacity(arch_total, worker.max_instances);
+                    }
+                }
+                let mut arch_occupied = 0usize;
+                for (model_id, target) in routes.iter() {
+                    if !target_architectures(target, &workers).contains(&architecture) {
+                        continue;
+                    }
+                    let counts_against_arch = match requirements.get(model_id).copied().flatten() {
+                        Some(required) => required == architecture,
+                        None => true,
+                    };
+                    if counts_against_arch {
+                        arch_occupied += 1;
+                    }
+                }
+                let available = arch_total.map(|total| total.saturating_sub(arch_occupied));
+                (
+                    architecture,
+                    MassModelCapacity {
+                        total: arch_total,
+                        available,
+                        occupied: arch_occupied,
+                        per_architecture: Vec::new(),
+                    },
+                )
+            })
+            .collect();
+
+        (routes.len(), total, per_architecture)
+    };
+
     let available = total.map(|total| total.saturating_sub(occupied));
     Ok(MassOut::ModelCapacity {
         capacity: MassModelCapacity {
             total,
             available,
             occupied,
+            per_architecture,
         },
     })
 }
@@ -3362,8 +3567,21 @@ pub enum ServerError {
     TunnelForwardUnsupportedOnRoot,
     #[error("no mass capacity available across local and registered workers")]
     NoTunnelCapacity,
+    #[error(
+        "no engine compiled for architecture {0:?} is available (local or tunnel worker); \
+         start a mass built with that model feature and point it at this root via --tunnel"
+    )]
+    NoCompatibleTunnelCapacity(MassArchitecture),
     #[error("local mass reached max_instances capacity ({0})")]
     NoLocalCapacity(usize),
+    #[error(
+        "architecture mismatch: instance requires {required:?} but this mass engine was \
+         compiled for {compiled:?}"
+    )]
+    ArchitectureMismatch {
+        required: MassArchitecture,
+        compiled: Option<MassArchitecture>,
+    },
     #[error("tunnel worker {0} is unavailable")]
     TunnelWorkerUnavailable(Uuid),
     #[error("tunnel worker returned error: {0}")]
@@ -3397,19 +3615,21 @@ pub enum ServerError {
 mod tests {
     use super::{
         apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
-        client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel,
+        client_bind_addr_for, handle_query_model_capacity, handle_register_tunnel, handle_start,
         repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
         resolve_model_oscillation, select_start_target, to_engine_error_feedback,
         to_engine_perturbation_mode, to_mass_perturbation_mode, FrozenOscillation, MassContext,
         MassMode, MassServerDefaults, MassSession, MassState, ModelRuntimeConfig, ModelSlot,
-        RouteTarget, ServerBuilder, TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT,
-        DEFAULT_MAX_INSTANCES,
+        RouteTarget, ServerBuilder, ServerError, TransportMode, TunnelWorker,
+        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{
-        MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig, MassPerturbationMode,
+        MassArchitecture, MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig,
+        MassPerturbationMode, WorkerCapabilities,
     };
     use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
     use tokio::sync::{Mutex, RwLock};
+    use uuid::Uuid;
 
     #[test]
     fn model_config_none_passes_through_server_defaults() {
@@ -3463,6 +3683,7 @@ mod tests {
             oscillation_phase_steps: None,
             oscillation_warmup_steps: None,
             checkpoint_id: None,
+            required_architecture: None,
         }));
 
         assert_eq!(resolved.top_k, 64);
@@ -3957,6 +4178,7 @@ mod tests {
                 token: worker_a,
                 worker_id: uuid::Uuid::new_v4(),
                 max_instances: Some(3),
+                capabilities: WorkerCapabilities::default(),
             },
         );
         workers.insert(
@@ -3965,6 +4187,7 @@ mod tests {
                 token: worker_b,
                 worker_id: uuid::Uuid::new_v4(),
                 max_instances: Some(2),
+                capabilities: WorkerCapabilities::default(),
             },
         );
         let mut routes = HashMap::new();
@@ -3985,6 +4208,7 @@ mod tests {
             workers: RwLock::new(workers),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            instance_requirements: RwLock::new(HashMap::new()),
         };
 
         let out = handle_query_model_capacity(&ctx)
@@ -3999,6 +4223,7 @@ mod tests {
                 total: Some(7),
                 available: Some(3),
                 occupied: 4,
+                per_architecture: vec![],
             }
         );
     }
@@ -4021,6 +4246,7 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            instance_requirements: RwLock::new(HashMap::new()),
         };
 
         let out = handle_query_model_capacity(&ctx)
@@ -4035,6 +4261,7 @@ mod tests {
                 total: Some(1),
                 available: Some(0),
                 occupied: 2,
+                per_architecture: vec![],
             }
         );
     }
@@ -4054,10 +4281,11 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            instance_requirements: RwLock::new(HashMap::new()),
         };
         let worker_id = uuid::Uuid::new_v4();
 
-        let out = handle_register_tunnel(worker_id, None, None, &ctx)
+        let out = handle_register_tunnel(worker_id, None, None, None, &ctx)
             .await
             .expect("registration should succeed");
         let token = match out {
@@ -4069,7 +4297,7 @@ mod tests {
             .read()
             .await
             .get(&token)
-            .copied()
+            .cloned()
             .expect("worker should be tracked");
         assert_eq!(worker.worker_id, worker_id);
         assert_eq!(worker.max_instances, Some(DEFAULT_MAX_INSTANCES));
@@ -4090,11 +4318,12 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            instance_requirements: RwLock::new(HashMap::new()),
         };
         let worker_id = uuid::Uuid::new_v4();
         let requested = Some(3usize);
 
-        let out = handle_register_tunnel(worker_id, requested, None, &ctx)
+        let out = handle_register_tunnel(worker_id, requested, None, None, &ctx)
             .await
             .expect("registration should succeed");
         let token = match out {
@@ -4106,7 +4335,7 @@ mod tests {
             .read()
             .await
             .get(&token)
-            .copied()
+            .cloned()
             .expect("worker should be tracked");
         assert_eq!(worker.worker_id, worker_id);
         assert_eq!(worker.max_instances, requested);
@@ -4122,6 +4351,7 @@ mod tests {
                 token: worker_token,
                 worker_id: uuid::Uuid::new_v4(),
                 max_instances: Some(1),
+                capabilities: WorkerCapabilities::default(),
             },
         );
         let mut instances = HashMap::new();
@@ -4139,12 +4369,274 @@ mod tests {
             workers: RwLock::new(workers),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(instances),
+            instance_requirements: RwLock::new(HashMap::new()),
         };
 
-        let selected = select_start_target(&ctx)
+        let selected = select_start_target(&ctx, None)
             .await
             .expect("worker should be selected when local start is in progress");
         assert_eq!(selected, RouteTarget::Worker(worker_token));
+    }
+
+    fn ctx_with_workers(
+        workers: HashMap<Uuid, TunnelWorker>,
+        routes: HashMap<Uuid, RouteTarget>,
+    ) -> MassContext {
+        MassContext {
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Quic,
+            void_client: None,
+            defaults: MassServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(1),
+            mode: MassMode::Root,
+            start_dispatch: Mutex::new(()),
+            routes: RwLock::new(routes),
+            workers: RwLock::new(workers),
+            worker_connections: RwLock::new(HashMap::new()),
+            instances: RwLock::new(HashMap::new()),
+            instance_requirements: RwLock::new(HashMap::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn tunnel_registration_stores_advertised_capabilities() {
+        let ctx = MassContext {
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Quic,
+            void_client: None,
+            defaults: MassServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(DEFAULT_MAX_INSTANCES),
+            mode: MassMode::Root,
+            start_dispatch: Mutex::new(()),
+            routes: RwLock::new(HashMap::new()),
+            workers: RwLock::new(HashMap::new()),
+            worker_connections: RwLock::new(HashMap::new()),
+            instances: RwLock::new(HashMap::new()),
+            instance_requirements: RwLock::new(HashMap::new()),
+        };
+        let worker_id = uuid::Uuid::new_v4();
+        let capabilities = WorkerCapabilities {
+            architectures: vec![MassArchitecture::Qwen38_27b],
+        };
+
+        let out = handle_register_tunnel(worker_id, None, Some(capabilities.clone()), None, &ctx)
+            .await
+            .expect("registration should succeed");
+        let token = match out {
+            black_hole_spec::MassOut::TunnelRegistered { token } => token,
+            other => panic!("unexpected registration response: {other:?}"),
+        };
+        let worker = ctx
+            .workers
+            .read()
+            .await
+            .get(&token)
+            .cloned()
+            .expect("worker should be tracked");
+        assert_eq!(worker.capabilities, capabilities);
+    }
+
+    #[tokio::test]
+    async fn select_start_target_routes_required_architecture_to_matching_worker() {
+        // Test builds have COMPILED_ARCHITECTURE == None, so the local engine
+        // never satisfies a requirement; only matching workers are eligible.
+        let teacher_token = Uuid::new_v4();
+        let student_token = Uuid::new_v4();
+        let mut workers = HashMap::new();
+        workers.insert(
+            teacher_token,
+            TunnelWorker {
+                token: teacher_token,
+                worker_id: Uuid::new_v4(),
+                max_instances: Some(1),
+                capabilities: WorkerCapabilities {
+                    architectures: vec![MassArchitecture::Qwen38_27b],
+                },
+            },
+        );
+        workers.insert(
+            student_token,
+            TunnelWorker {
+                token: student_token,
+                worker_id: Uuid::new_v4(),
+                max_instances: Some(1),
+                capabilities: WorkerCapabilities {
+                    architectures: vec![MassArchitecture::Qwen35_0p8b],
+                },
+            },
+        );
+        let ctx = ctx_with_workers(workers, HashMap::new());
+
+        let selected = select_start_target(&ctx, Some(MassArchitecture::Qwen38_27b))
+            .await
+            .expect("compatible worker should be selected");
+        assert_eq!(selected, RouteTarget::Worker(teacher_token));
+
+        let selected = select_start_target(&ctx, Some(MassArchitecture::Qwen35_0p8b))
+            .await
+            .expect("compatible worker should be selected");
+        assert_eq!(selected, RouteTarget::Worker(student_token));
+    }
+
+    #[tokio::test]
+    async fn select_start_target_rejects_unknown_architecture() {
+        let teacher_token = Uuid::new_v4();
+        let mut workers = HashMap::new();
+        workers.insert(
+            teacher_token,
+            TunnelWorker {
+                token: teacher_token,
+                worker_id: Uuid::new_v4(),
+                max_instances: Some(1),
+                capabilities: WorkerCapabilities {
+                    architectures: vec![MassArchitecture::Qwen38_27b],
+                },
+            },
+        );
+        let ctx = ctx_with_workers(workers, HashMap::new());
+
+        let error = select_start_target(&ctx, Some(MassArchitecture::Qwen35_2b))
+            .await
+            .expect_err("no engine serves the required architecture");
+        assert!(matches!(
+            error,
+            ServerError::NoCompatibleTunnelCapacity(MassArchitecture::Qwen35_2b)
+        ));
+    }
+
+    #[tokio::test]
+    async fn select_start_target_prefers_matching_worker_over_local() {
+        // Local engine (None in test builds) is ineligible for a required
+        // architecture even when it has free capacity.
+        let worker_token = Uuid::new_v4();
+        let mut workers = HashMap::new();
+        workers.insert(
+            worker_token,
+            TunnelWorker {
+                token: worker_token,
+                worker_id: Uuid::new_v4(),
+                max_instances: Some(1),
+                capabilities: WorkerCapabilities {
+                    architectures: vec![MassArchitecture::Qwen35_0p8b],
+                },
+            },
+        );
+        let ctx = ctx_with_workers(workers, HashMap::new());
+
+        let selected = select_start_target(&ctx, Some(MassArchitecture::Qwen35_0p8b))
+            .await
+            .expect("matching worker should be selected");
+        assert_eq!(selected, RouteTarget::Worker(worker_token));
+    }
+
+    #[tokio::test]
+    async fn select_start_target_without_requirement_matches_any_engine() {
+        // Legacy behavior: a requirement-less start matches engines with no
+        // advertised capabilities (local in test builds).
+        let worker_token = Uuid::new_v4();
+        let mut workers = HashMap::new();
+        workers.insert(
+            worker_token,
+            TunnelWorker {
+                token: worker_token,
+                worker_id: uuid::Uuid::new_v4(),
+                max_instances: Some(1),
+                capabilities: WorkerCapabilities::default(),
+            },
+        );
+        let ctx = ctx_with_workers(workers, HashMap::new());
+
+        // Local is free and eligible, so it wins the tie.
+        let selected = select_start_target(&ctx, None)
+            .await
+            .expect("any engine should be eligible");
+        assert_eq!(selected, RouteTarget::Local);
+    }
+
+    #[tokio::test]
+    async fn handle_start_rejects_architecture_mismatch() {
+        let ctx = MassContext {
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Quic,
+            void_client: None,
+            defaults: MassServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(1),
+            mode: MassMode::Root,
+            start_dispatch: Mutex::new(()),
+            routes: RwLock::new(HashMap::new()),
+            workers: RwLock::new(HashMap::new()),
+            worker_connections: RwLock::new(HashMap::new()),
+            instances: RwLock::new(HashMap::new()),
+            instance_requirements: RwLock::new(HashMap::new()),
+        };
+        let model_config = MassModelConfig {
+            required_architecture: Some(MassArchitecture::Qwen38_27b),
+            ..Default::default()
+        };
+
+        let error = handle_start(Uuid::new_v4(), Some(model_config), &ctx)
+            .await
+            .expect_err("test engine is not compiled for the required architecture");
+        assert!(matches!(error, ServerError::ArchitectureMismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn query_model_capacity_reports_per_architecture() {
+        let teacher_token = Uuid::new_v4();
+        let mut workers = HashMap::new();
+        workers.insert(
+            teacher_token,
+            TunnelWorker {
+                token: teacher_token,
+                worker_id: Uuid::new_v4(),
+                max_instances: Some(2),
+                capabilities: WorkerCapabilities {
+                    architectures: vec![MassArchitecture::Qwen38_27b],
+                },
+            },
+        );
+        let model_id = Uuid::new_v4();
+        let mut routes = HashMap::new();
+        routes.insert(model_id, RouteTarget::Worker(teacher_token));
+        let mut requirements = HashMap::new();
+        requirements.insert(model_id, Some(MassArchitecture::Qwen38_27b));
+        let ctx = MassContext {
+            model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
+            transport_mode: TransportMode::Quic,
+            void_client: None,
+            defaults: MassServerDefaults::default(),
+            frozen: false,
+            max_instances: Some(1),
+            mode: MassMode::Root,
+            start_dispatch: Mutex::new(()),
+            routes: RwLock::new(routes),
+            workers: RwLock::new(workers),
+            worker_connections: RwLock::new(HashMap::new()),
+            instances: RwLock::new(HashMap::new()),
+            instance_requirements: RwLock::new(requirements),
+        };
+
+        let out = handle_query_model_capacity(&ctx)
+            .await
+            .expect("capacity query should succeed");
+        let black_hole_spec::MassOut::ModelCapacity { capacity } = out else {
+            panic!("unexpected query response");
+        };
+        assert_eq!(
+            capacity.per_architecture,
+            vec![(
+                MassArchitecture::Qwen38_27b,
+                MassModelCapacity {
+                    total: Some(2),
+                    available: Some(1),
+                    occupied: 1,
+                    per_architecture: vec![],
+                }
+            )]
+        );
     }
 }
 

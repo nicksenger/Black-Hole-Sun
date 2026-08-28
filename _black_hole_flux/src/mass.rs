@@ -1,7 +1,8 @@
 //! Model configuration traits for per-instance mass start settings.
 
 use black_hole_spec::{
-    MassErrorFeedbackConfig, MassErrorFeedbackMode, MassModelConfig, MassPerturbationMode, ObjectId,
+    MassArchitecture, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassModelConfig,
+    MassPerturbationMode, ObjectId,
 };
 
 /// Compile-time oscillation schedule for train/freeze windows.
@@ -80,6 +81,13 @@ pub trait ModelConfig {
     const TRAINING_PERTURBATION_MODE: Option<MassPerturbationMode> = None;
     const FROZEN: Option<bool> = None;
     const CHECKPOINT: Option<u128> = None;
+    /// Architecture the serving mass engine must be compiled for.
+    ///
+    /// Leave as `None` to allow any engine. Set this when the model
+    /// checkpoint requires a specific compile-time architecture (e.g. a 27B
+    /// teacher instance on a `qwen38_27b` mass versus a 0.8B student instance
+    /// on a `qwen35_0p8b` mass) so roots route the start to compatible engines.
+    const REQUIRED_ARCHITECTURE: Option<MassArchitecture> = None;
 
     fn mass_model_config() -> Option<MassModelConfig> {
         let config = MassModelConfig {
@@ -103,6 +111,7 @@ pub trait ModelConfig {
             oscillation_phase_steps: <Self::Oscillation as OscillationSchedule>::PHASE_STEPS,
             oscillation_warmup_steps: <Self::Oscillation as OscillationSchedule>::WARMUP_STEPS,
             checkpoint_id: Self::CHECKPOINT.map(ObjectId::from_u128),
+            required_architecture: Self::REQUIRED_ARCHITECTURE,
         };
 
         let has_any_override = config.top_k.is_some()

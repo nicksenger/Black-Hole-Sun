@@ -56,6 +56,9 @@ pub enum MassIn {
         worker_id: Uuid,
         /// Optional total model capacity advertised by this worker subtree (defaults to 1).
         max_instances: Option<usize>,
+        /// Capabilities of this worker's compiled engine. `None` on legacy
+        /// workers that predate capability advertising; treated as unknown.
+        capabilities: Option<WorkerCapabilities>,
     },
     /// Update the advertised tunnel capacity for an already-registered worker token.
     UpdateTunnelCapacity {
@@ -125,6 +128,12 @@ pub struct MassModelCapacity {
     pub available: Option<usize>,
     /// Occupied model-instance slots currently routed in this subtree.
     pub occupied: usize,
+    /// Per-architecture capacity view across the subtree.
+    ///
+    /// One entry per architecture any engine in the subtree can serve; empty
+    /// when no engine advertises an architecture (legacy builds). For workers
+    /// advertising multiple architectures, shared slots count against each.
+    pub per_architecture: Vec<(MassArchitecture, MassModelCapacity)>,
 }
 
 /// Error-feedback mode selector for QuZO optimization.
@@ -152,6 +161,33 @@ pub enum MassPerturbationMode {
     /// Sample factored low-rank activation-space directions for linear weights
     /// using `rank` factors (`LowRank(1)` is the narrowest factored direction).
     LowRank(usize),
+}
+
+/// Model architectures a mass engine binary can be compiled for.
+///
+/// paramecia selects model shapes at compile time via cargo features, so a
+/// given `black-hole-mass` build serves exactly one of these (or none).
+/// Tunnel workers advertise which one they are so roots can place model
+/// instances only on compatible engines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MassArchitecture {
+    Qwen35_0p8b,
+    Qwen35_2b,
+    Qwen35_4b,
+    Qwen35_9b,
+    Qwen35_27b,
+    Qwen38_27b,
+}
+
+/// Capabilities advertised by a tunnel worker at registration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerCapabilities {
+    /// Architectures this worker's compiled engine can load.
+    ///
+    /// Empty means the worker predates capability advertising (or was built
+    /// without an architecture feature); such workers only receive starts
+    /// that carry no architecture requirement.
+    pub architectures: Vec<MassArchitecture>,
 }
 
 /// Forwardable model operation used for root->worker tunnel requests.
@@ -232,6 +268,13 @@ pub struct MassModelConfig {
     ///
     /// When `None`, mass loads weights from its configured server model path.
     pub checkpoint_id: Option<ObjectId>,
+    /// Architecture the serving mass engine must be compiled for.
+    ///
+    /// When set, a root only routes this instance to local/worker engines
+    /// whose advertised capabilities include this architecture, and workers
+    /// reject starts their compiled engine cannot serve. When `None`, any
+    /// engine may serve the instance.
+    pub required_architecture: Option<MassArchitecture>,
 }
 
 // ---------------------------------------------------------------------------
