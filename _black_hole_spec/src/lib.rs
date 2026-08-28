@@ -74,6 +74,20 @@ pub enum MassIn {
         /// Forwarded model operation.
         request: TunnelRequest,
     },
+    /// Fuse the current weights of a running model instance with a checkpoint
+    /// stored in void using task arithmetic. The fused weights are uploaded to
+    /// void and their object ID is returned in MassOut::FusedWeights.
+    ///
+    /// The instance must be in its idle state (no perturbation in flight);
+    /// the running instance itself is left unmodified.
+    FuseWeights {
+        model_id: Uuid,
+        /// Void object ID of the GGUF checkpoint to fuse with the live weights.
+        checkpoint_id: ObjectId,
+        /// Task-arithmetic contribution of the checkpoint
+        /// (0.5 = plain average of live and checkpoint weights).
+        contribution: f32,
+    },
 }
 
 /// Response sent by the mass server to the client.
@@ -91,6 +105,8 @@ pub enum MassOut {
     ModelCapacity { capacity: MassModelCapacity },
     /// Tunnel worker registration complete; contains root-issued auth token.
     TunnelRegistered { token: Uuid },
+    /// Weight fusion complete; contains the void object ID of the fused weights.
+    FusedWeights { fused_id: ObjectId },
     /// Error from any operation.
     Error { message: String },
 }
@@ -224,6 +240,11 @@ pub enum TunnelRequest {
     },
     QueryModelParams {
         model_id: Uuid,
+    },
+    FuseWeights {
+        model_id: Uuid,
+        checkpoint_id: ObjectId,
+        contribution: f32,
     },
 }
 

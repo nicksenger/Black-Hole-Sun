@@ -11,8 +11,8 @@ use std::{
 };
 
 use paramecia_engine::{
-    ErrorFeedbackMode, ErrorFeedbackParams, HyperParameterUpdate, ModelEngine, PerturbationMode,
-    ReplayParams, TrainingConfig,
+    fuse_models, ErrorFeedbackMode, ErrorFeedbackParams, HyperParameterUpdate, ModelEngine,
+    PerturbationMode, QuantConflictStrategy, ReplayParams, TrainingConfig,
 };
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
@@ -36,6 +36,8 @@ pub use paramecia_engine::KvCacheQuantization;
 
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+/// Chunk size for streaming void transfers (must fit within one frame).
+const VOID_CHUNK_SIZE: usize = 16 * 1024 * 1024; // 16 MB
 const DEFAULT_ENGINE_TOP_K: usize = 256;
 const DEFAULT_ENGINE_TEMPERATURE: f64 = 0.7;
 const DEFAULT_ENGINE_REPEAT_PENALTY: f32 = 1.0;
@@ -137,18 +139,33 @@ fn resolve_configured_model_path(model_path: &Path) -> PathBuf {
 // ---------------------------------------------------------------------------
 
 /// Wire request sent to the void service.
+///
+/// Variant indices must stay aligned with black_hole_void::VoidIn — postcard
+/// encodes enums by index, so variants this client never sends (DownloadWait)
+/// are kept as placeholders.
 #[derive(Debug, Serialize, Deserialize)]
 enum VoidIn {
     Upload { data: Vec<u8> },
     UploadWith { id: ObjectId, data: Vec<u8> },
     Download { id: ObjectId },
+    /// Placeholder for wire compatibility with void (unused by this client).
+    DownloadWait { id: ObjectId, timeout_ms: u64 },
+    UploadBegin { id: Option<ObjectId>, total_size: u64 },
+    UploadPart { id: ObjectId, part_number: u32, data: Vec<u8> },
+    UploadFinish { id: ObjectId, part_count: u32 },
+    DownloadRange { id: ObjectId, offset: u64, length: u64 },
 }
 
 /// Wire response from the void service.
+///
+/// Variant indices must stay aligned with black_hole_void::VoidOut.
 #[derive(Debug, Serialize, Deserialize)]
 enum VoidOut {
     Uploaded { id: ObjectId },
     Downloaded { data: Vec<u8> },
+    /// Placeholder for wire compatibility with void (unused by this client).
+    TimedOut { id: ObjectId },
+    Ack,
     Error { message: String },
 }
 
@@ -304,6 +321,135 @@ impl VoidClient {
                 "unexpected void response for upload".into(),
             )),
         }
+    }
+
+    /// Upload a local file to void. Files that fit in one frame use the
+    /// single-shot upload; larger files are streamed as a chunked multipart
+    /// upload. Returns the assigned object ID.
+    pub async fn upload_file(&self, path: &Path) -> Result<ObjectId> {
+        let size = fs::metadata(path)
+            .map_err(|source| ServerError::FileMetadata {
+                path: path.to_path_buf(),
+                source,
+            })?
+            .len();
+
+        if size <= MAX_FRAME_SIZE as u64 {
+            let data = fs::read(path).map_err(|source| ServerError::ReadFile {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            return self.upload(data).await;
+        }
+
+        let id = match self
+            .call(VoidIn::UploadBegin { id: None, total_size: size })
+            .await?
+        {
+            VoidOut::Uploaded { id } => id,
+            VoidOut::Error { message } => return Err(ServerError::VoidError(message)),
+            _ => {
+                return Err(ServerError::VoidError(
+                    "unexpected void response for upload begin".into(),
+                ))
+            }
+        };
+
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|source| ServerError::OpenFile {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let mut part_number: u32 = 1;
+        loop {
+            let mut buffer = vec![0u8; VOID_CHUNK_SIZE];
+            let read = file
+                .read(&mut buffer)
+                .await
+                .map_err(|source| ServerError::ReadFile {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            if read == 0 {
+                break;
+            }
+            buffer.truncate(read);
+            match self
+                .call(VoidIn::UploadPart {
+                    id,
+                    part_number,
+                    data: buffer,
+                })
+                .await?
+            {
+                VoidOut::Ack => {}
+                VoidOut::Error { message } => return Err(ServerError::VoidError(message)),
+                _ => {
+                    return Err(ServerError::VoidError(
+                        "unexpected void response for upload part".into(),
+                    ))
+                }
+            }
+            part_number += 1;
+        }
+
+        let part_count = part_number - 1;
+        match self
+            .call(VoidIn::UploadFinish { id, part_count })
+            .await?
+        {
+            VoidOut::Uploaded { id } => Ok(id),
+            VoidOut::Error { message } => Err(ServerError::VoidError(message)),
+            _ => Err(ServerError::VoidError(
+                "unexpected void response for upload finish".into(),
+            )),
+        }
+    }
+
+    /// Download an object from void directly to a local file using ranged
+    /// reads, so arbitrarily large objects never need to fit in one frame.
+    /// Returns the number of bytes written.
+    pub async fn download_to_file(&self, id: ObjectId, path: &Path) -> Result<u64> {
+        let mut file = tokio::fs::File::create(path)
+            .await
+            .map_err(|source| ServerError::OpenFile {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let mut offset: u64 = 0;
+        loop {
+            let data = match self
+                .call(VoidIn::DownloadRange {
+                    id,
+                    offset,
+                    length: VOID_CHUNK_SIZE as u64,
+                })
+                .await?
+            {
+                VoidOut::Downloaded { data } => data,
+                VoidOut::Error { message } => return Err(ServerError::VoidError(message)),
+                _ => {
+                    return Err(ServerError::VoidError(
+                        "unexpected void response for download range".into(),
+                    ))
+                }
+            };
+            if data.is_empty() {
+                break;
+            }
+            file.write_all(&data)
+                .await
+                .map_err(|source| ServerError::WriteFile {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            offset += data.len() as u64;
+            if data.len() < VOID_CHUNK_SIZE {
+                break;
+            }
+        }
+        Ok(offset)
     }
 }
 
@@ -1725,6 +1871,11 @@ async fn handle_request(
             handle_query_model_params_routed(model_id, ctx).await
         }
         MassIn::QueryModelCapacity => handle_query_model_capacity(ctx).await,
+        MassIn::FuseWeights {
+            model_id,
+            checkpoint_id,
+            contribution,
+        } => handle_fuse_weights_routed(model_id, checkpoint_id, contribution, ctx).await,
     }
 }
 
@@ -2081,6 +2232,11 @@ async fn handle_tunnel_request_local(request: TunnelRequest, ctx: &MassContext) 
         TunnelRequest::QueryModelParams { model_id } => {
             handle_query_model_params_distributed(model_id, ctx).await
         }
+        TunnelRequest::FuseWeights {
+            model_id,
+            checkpoint_id,
+            contribution,
+        } => handle_fuse_weights_distributed(model_id, checkpoint_id, contribution, ctx).await,
     }
 }
 
@@ -2910,24 +3066,18 @@ fn resolve_checkpoint_tokenizer_path() -> Result<PathBuf> {
     }
 }
 
-fn write_checkpoint_file(
-    model_id: Uuid,
-    checkpoint_id: ObjectId,
-    checkpoint_bytes: &[u8],
-) -> Result<PathBuf> {
+fn checkpoint_cache_dir() -> Result<PathBuf> {
     let checkpoint_dir = std::env::temp_dir().join(CHECKPOINT_CACHE_DIR);
     fs::create_dir_all(&checkpoint_dir).map_err(|source| ServerError::CreateCheckpointDir {
         path: checkpoint_dir.clone(),
         source,
     })?;
-    let checkpoint_path = checkpoint_dir.join(format!("{model_id}-{checkpoint_id}.gguf"));
-    fs::write(&checkpoint_path, checkpoint_bytes).map_err(|source| {
-        ServerError::WriteCheckpoint {
-            path: checkpoint_path.clone(),
-            source,
-        }
-    })?;
-    Ok(checkpoint_path)
+    Ok(checkpoint_dir)
+}
+
+fn checkpoint_file_path(model_id: Uuid, checkpoint_id: ObjectId) -> Result<PathBuf> {
+    let checkpoint_dir = checkpoint_cache_dir()?;
+    Ok(checkpoint_dir.join(format!("{model_id}-{checkpoint_id}.gguf")))
 }
 
 fn cleanup_checkpoint_file(path: &PathBuf) {
@@ -2955,11 +3105,12 @@ async fn resolve_model_source(
 
     let tokenizer_path = resolve_checkpoint_tokenizer_path()?;
     let void = require_void_client(ctx, "checkpoint restore")?;
-    let checkpoint_bytes = void.download(checkpoint_id).await?;
-    if checkpoint_bytes.is_empty() {
+    let checkpoint_path = checkpoint_file_path(model_id, checkpoint_id)?;
+    let downloaded = void.download_to_file(checkpoint_id, &checkpoint_path).await?;
+    if downloaded == 0 {
+        cleanup_checkpoint_file(&checkpoint_path);
         return Err(ServerError::CheckpointEmpty(checkpoint_id));
     }
-    let checkpoint_path = write_checkpoint_file(model_id, checkpoint_id, &checkpoint_bytes)?;
     Ok(ResolvedModelSource {
         model_path: checkpoint_path.clone(),
         tokenizer_path: Some(tokenizer_path),
@@ -3029,25 +3180,12 @@ fn optimization_model_error(error_message: &str, hint: Option<&str>) -> ServerEr
     ServerError::ModelError(message)
 }
 
-async fn checkpoint_model(engine: &ModelEngine) -> Result<Vec<u8>> {
-    let checkpoint_path = engine
+/// Save the engine's current weights to a GGUF file on disk.
+async fn save_model_checkpoint(engine: &ModelEngine) -> Result<PathBuf> {
+    engine
         .save_checkpoint()
         .await
-        .map_err(|error| ServerError::ModelError(error.to_string()))?;
-    let checkpoint_bytes = fs::read(&checkpoint_path).map_err(|error| {
-        ServerError::ModelError(format!(
-            "failed to read checkpoint {}: {error}",
-            checkpoint_path.display()
-        ))
-    })?;
-    if let Err(error) = fs::remove_file(&checkpoint_path) {
-        warn!(
-            path = %checkpoint_path.display(),
-            error = %error,
-            "failed to remove temporary checkpoint file"
-        );
-    }
-    Ok(checkpoint_bytes)
+        .map_err(|error| ServerError::ModelError(error.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -3271,10 +3409,141 @@ async fn handle_checkpoint(model_id: Uuid, ctx: &MassContext) -> Result<MassOut>
     ensure_running(&session, model_id)?;
 
     let void = require_void_client(ctx, "checkpoint upload")?;
-    let checkpoint_bytes = checkpoint_model(&instance.engine).await?;
-    let checkpoint_id = void.upload(checkpoint_bytes).await?;
+    let checkpoint_path = save_model_checkpoint(&instance.engine).await?;
+    let checkpoint_id = match void.upload_file(&checkpoint_path).await {
+        Ok(id) => id,
+        Err(error) => {
+            cleanup_checkpoint_file(&checkpoint_path);
+            return Err(error);
+        }
+    };
+    cleanup_checkpoint_file(&checkpoint_path);
 
     Ok(MassOut::Checkpointed { checkpoint_id })
+}
+
+async fn handle_fuse_weights_routed(
+    model_id: Uuid,
+    checkpoint_id: ObjectId,
+    contribution: f32,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    ensure_root_mode(ctx)?;
+    handle_fuse_weights_distributed(model_id, checkpoint_id, contribution, ctx).await
+}
+
+async fn handle_fuse_weights_distributed(
+    model_id: Uuid,
+    checkpoint_id: ObjectId,
+    contribution: f32,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    match route_for_model(model_id, ctx).await? {
+        RouteTarget::Local => handle_fuse_weights(model_id, checkpoint_id, contribution, ctx).await,
+        RouteTarget::Worker(token) => forward_tunnel_request(
+            token,
+            TunnelRequest::FuseWeights {
+                model_id,
+                checkpoint_id,
+                contribution,
+            },
+            ctx,
+        )
+        .await,
+    }
+}
+
+/// Fuse the instance's current weights with a void-stored checkpoint using
+/// task arithmetic (base = live weights, member = checkpoint at `contribution`),
+/// and upload the fused GGUF back to void.
+async fn handle_fuse_weights(
+    model_id: Uuid,
+    checkpoint_id: ObjectId,
+    contribution: f32,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    debug!(%model_id, %checkpoint_id, contribution, "received fuse weights request");
+    let instance = get_instance(model_id, ctx).await?;
+
+    // Capture the live weights while holding the session lock so a concurrent
+    // PerturbUp cannot interleave and leave us fusing perturbed weights.
+    let base_path = {
+        let session = instance.session.lock().await;
+        ensure_running(&session, model_id)?;
+        if session.state != MassState::Idle {
+            return Err(ServerError::InvalidMassState(format!(
+                "FuseWeights requires Idle state, got {:?}",
+                session.state
+            )));
+        }
+        instance
+            .engine
+            .save_checkpoint()
+            .await
+            .map_err(|error| ServerError::ModelError(error.to_string()))?
+    };
+
+    let void = require_void_client(ctx, "weight fusion")?;
+
+    // Stream the checkpoint down from void.
+    let checkpoint_dir = checkpoint_cache_dir()?;
+    let checkpoint_path = checkpoint_dir.join(format!("{model_id}-{checkpoint_id}.gguf"));
+    let downloaded = void.download_to_file(checkpoint_id, &checkpoint_path).await?;
+    if downloaded == 0 {
+        cleanup_checkpoint_file(&checkpoint_path);
+        return Err(ServerError::CheckpointEmpty(checkpoint_id));
+    }
+
+    // Run the (CPU-bound, file-level) fusion off the async runtime.
+    let fused_path = checkpoint_dir.join(format!("{model_id}-fused-{checkpoint_id}.gguf"));
+    let fuse_error = {
+        let base_path = base_path.clone();
+        let checkpoint_path = checkpoint_path.clone();
+        let fused_path = fused_path.clone();
+        tokio::task::spawn_blocking(move || {
+            fuse_models(
+                &base_path,
+                &[(checkpoint_path, contribution)],
+                &fused_path,
+                QuantConflictStrategy::Reject,
+            )
+        })
+        .await
+    };
+    match fuse_error {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            cleanup_checkpoint_file(&base_path);
+            cleanup_checkpoint_file(&checkpoint_path);
+            return Err(ServerError::ModelError(format!("model fusion failed: {error}")));
+        }
+        Err(join_error) => {
+            cleanup_checkpoint_file(&base_path);
+            cleanup_checkpoint_file(&checkpoint_path);
+            return Err(ServerError::ModelError(format!(
+                "fusion task failed: {join_error}"
+            )));
+        }
+    }
+
+    // Stream the fused weights back up to void.
+    let fused_id = match void.upload_file(&fused_path).await {
+        Ok(id) => id,
+        Err(error) => {
+            cleanup_checkpoint_file(&base_path);
+            cleanup_checkpoint_file(&checkpoint_path);
+            cleanup_checkpoint_file(&fused_path);
+            return Err(error);
+        }
+    };
+
+    // Best-effort cleanup of the temporary GGUFs.
+    cleanup_checkpoint_file(&base_path);
+    cleanup_checkpoint_file(&checkpoint_path);
+    cleanup_checkpoint_file(&fused_path);
+
+    info!(%model_id, %fused_id, "fused weights uploaded to void");
+    Ok(MassOut::FusedWeights { fused_id })
 }
 
 async fn handle_optimize(
@@ -3511,14 +3780,32 @@ pub enum ServerError {
     CheckpointTokenizerMissing(PathBuf),
     #[error("checkpoint {0} downloaded from void is empty")]
     CheckpointEmpty(ObjectId),
-    #[error("failed to create checkpoint cache directory {path}: {source}")]
-    CreateCheckpointDir {
+    #[error("failed to read file metadata for {path}: {source}")]
+    FileMetadata {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
-    #[error("failed to write checkpoint cache file {path}: {source}")]
-    WriteCheckpoint {
+    #[error("failed to open file {path}: {source}")]
+    OpenFile {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to read file {path}: {source}")]
+    ReadFile {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to write file {path}: {source}")]
+    WriteFile {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to create checkpoint cache directory {path}: {source}")]
+    CreateCheckpointDir {
         path: PathBuf,
         #[source]
         source: io::Error,

@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{fs, net::SocketAddr, path::Path};
 
 use black_hole_spec::ObjectId;
 use black_hole_void::{VoidIn, VoidOut};
@@ -20,6 +20,10 @@ enum VoidTransport {
         addr: SocketAddr,
     },
 }
+
+/// Chunk size for streaming void transfers (must fit within one frame on
+/// both ends; mass caps frames at 64 MB).
+const VOID_CHUNK_SIZE: usize = 16 * 1024 * 1024; // 16 MB
 
 /// Client for interacting with the Void service.
 #[derive(Clone, Debug)]
@@ -89,6 +93,106 @@ impl VoidClient {
             VoidOut::Error { message } => Err(message),
             _ => Err("unexpected void response for download_wait".to_string()),
         }
+    }
+
+    /// Upload a local file to void. Files that fit in one frame use the
+    /// single-shot upload; larger files are streamed as a chunked multipart
+    /// upload. Returns the assigned object ID.
+    pub async fn upload_file(&self, path: &Path) -> Result<ObjectId, String> {
+        let size = fs::metadata(path)
+            .map_err(|e| format!("failed to read file metadata for {}: {e}", path.display()))?;
+
+        if size.len() <= 64 * 1024 * 1024 {
+            let data =
+                fs::read(path).map_err(|e| format!("failed to read file {}: {e}", path.display()))?;
+            return self.upload(data).await;
+        }
+
+        let id = match self
+            .request(&VoidIn::UploadBegin {
+                id: None,
+                total_size: size.len() as u64,
+            })
+            .await?
+        {
+            VoidOut::Uploaded { id } => id,
+            VoidOut::Error { message } => return Err(message),
+            _ => return Err("unexpected void response for upload_begin".to_string()),
+        };
+
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| format!("failed to open file {}: {e}", path.display()))?;
+        let mut part_number: u32 = 1;
+        loop {
+            let mut buffer = vec![0u8; VOID_CHUNK_SIZE];
+            let read = file
+                .read(&mut buffer)
+                .await
+                .map_err(|e| format!("failed to read file {}: {e}", path.display()))?;
+            if read == 0 {
+                break;
+            }
+            buffer.truncate(read);
+            match self
+                .request(&VoidIn::UploadPart {
+                    id,
+                    part_number,
+                    data: buffer,
+                })
+                .await?
+            {
+                VoidOut::Ack => {}
+                VoidOut::Error { message } => return Err(message),
+                _ => return Err("unexpected void response for upload_part".to_string()),
+            }
+            part_number += 1;
+        }
+
+        let part_count = part_number - 1;
+        match self
+            .request(&VoidIn::UploadFinish { id, part_count })
+            .await?
+        {
+            VoidOut::Uploaded { id } => Ok(id),
+            VoidOut::Error { message } => Err(message),
+            _ => Err("unexpected void response for upload_finish".to_string()),
+        }
+    }
+
+    /// Download an object from void directly to a local file using ranged
+    /// reads, so arbitrarily large objects never need to fit in one frame.
+    /// Returns the number of bytes written.
+    pub async fn download_to_file(&self, id: ObjectId, path: &Path) -> Result<u64, String> {
+        let mut file = tokio::fs::File::create(path)
+            .await
+            .map_err(|e| format!("failed to create file {}: {e}", path.display()))?;
+        let mut offset: u64 = 0;
+        loop {
+            let data = match self
+                .request(&VoidIn::DownloadRange {
+                    id,
+                    offset,
+                    length: VOID_CHUNK_SIZE as u64,
+                })
+                .await?
+            {
+                VoidOut::Downloaded { data } => data,
+                VoidOut::Error { message } => return Err(message),
+                _ => return Err("unexpected void response for download_range".to_string()),
+            };
+            if data.is_empty() {
+                break;
+            }
+            file.write_all(&data)
+                .await
+                .map_err(|e| format!("failed to write file {}: {e}", path.display()))?;
+            offset += data.len() as u64;
+            if data.len() < VOID_CHUNK_SIZE {
+                break;
+            }
+        }
+        Ok(offset)
     }
 
     async fn request(&self, request: &VoidIn) -> Result<VoidOut, String> {

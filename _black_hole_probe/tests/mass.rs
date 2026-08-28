@@ -1098,3 +1098,282 @@ async fn dark_optimization() {
     void_server.abort();
     mass_server.abort();
 }
+
+// ---------------------------------------------------------------------------
+// Void chunked transfer (multipart upload + ranged download)
+// ---------------------------------------------------------------------------
+
+/// Size that forces the chunked path: above mass's 64 MB single-frame cap.
+const MULTIPART_TEST_SIZE: usize = 70 * 1024 * 1024; // 70 MB
+
+fn patterned_bytes(size: usize) -> Vec<u8> {
+    (0..size).map(|i| (i % 251) as u8).collect()
+}
+
+async fn roundtrip_file_through_void(
+    void_client: &VoidClient,
+    source_path: &std::path::Path,
+) -> std::io::Result<Vec<u8>> {
+    let id = void_client.upload_file(source_path).await.unwrap();
+    let downloaded_path = std::env::temp_dir().join(format!("bhs-void-roundtrip-{id}.bin"));
+    let written = void_client
+        .download_to_file(id, &downloaded_path)
+        .await
+        .unwrap();
+    let bytes = std::fs::read(&downloaded_path).unwrap();
+    let _ = std::fs::remove_file(&downloaded_path);
+    assert_eq!(written as usize, bytes.len(), "download byte count mismatch");
+    Ok(bytes)
+}
+
+#[tokio::test]
+async fn void_multipart_roundtrip_in_memory_store() {
+    init_tracing();
+
+    let void_server = TestVoidServer::new()
+        .tcp()
+        .serve()
+        .await
+        .expect("failed to start void server");
+
+    let void_client = VoidClient::new_tcp(void_server.local_addr());
+
+    let source_path = std::env::temp_dir().join(format!(
+        "bhs-void-multipart-src-{}.bin",
+        Uuid::new_v4()
+    ));
+    std::fs::write(&source_path, patterned_bytes(MULTIPART_TEST_SIZE)).unwrap();
+
+    let downloaded = roundtrip_file_through_void(&void_client, &source_path)
+        .await
+        .expect("multipart roundtrip should succeed");
+    let _ = std::fs::remove_file(&source_path);
+
+    assert_eq!(
+        downloaded.len(),
+        MULTIPART_TEST_SIZE,
+        "roundtripped size mismatch"
+    );
+    assert_eq!(
+        downloaded,
+        patterned_bytes(MULTIPART_TEST_SIZE),
+        "multipart roundtrip corrupted data"
+    );
+
+    void_server.abort();
+}
+
+#[tokio::test]
+async fn void_multipart_roundtrip_filesystem_store() {
+    init_tracing();
+
+    let store_root = std::env::temp_dir().join(format!("bhs-void-fs-store-{}", Uuid::new_v4()));
+    let store = black_hole_sun::object_store::FilesystemObjectStore::new(&store_root)
+        .expect("failed to create filesystem object store");
+    let void_server = TestVoidServer::new()
+        .tcp()
+        .object_store(Box::new(store))
+        .serve()
+        .await
+        .expect("failed to start void server");
+
+    let void_client = VoidClient::new_tcp(void_server.local_addr());
+
+    let source_path = std::env::temp_dir().join(format!(
+        "bhs-void-multipart-src-{}.bin",
+        Uuid::new_v4()
+    ));
+    std::fs::write(&source_path, patterned_bytes(MULTIPART_TEST_SIZE)).unwrap();
+
+    let downloaded = roundtrip_file_through_void(&void_client, &source_path)
+        .await
+        .expect("multipart roundtrip should succeed");
+    let _ = std::fs::remove_file(&source_path);
+    let _ = std::fs::remove_dir_all(&store_root);
+
+    assert_eq!(
+        downloaded.len(),
+        MULTIPART_TEST_SIZE,
+        "roundtripped size mismatch"
+    );
+    assert_eq!(
+        downloaded,
+        patterned_bytes(MULTIPART_TEST_SIZE),
+        "multipart roundtrip corrupted data"
+    );
+
+    void_server.abort();
+}
+
+#[tokio::test]
+async fn mass_void_client_multipart_roundtrip() {
+    init_tracing();
+
+    let void_server = TestVoidServer::new()
+        .tcp()
+        .serve()
+        .await
+        .expect("failed to start void server");
+
+    // The mass-side client is the one used by FuseWeights/Checkpoint flows.
+    let void_client = black_hole_sun::black_hole_mass::VoidClient::connect(
+        void_server.local_addr(),
+        black_hole_sun::black_hole_mass::TransportMode::Tcp,
+    )
+    .await
+    .expect("failed to connect mass void client");
+
+    let source_path = std::env::temp_dir().join(format!(
+        "bhs-mass-void-src-{}.bin",
+        Uuid::new_v4()
+    ));
+    std::fs::write(&source_path, patterned_bytes(MULTIPART_TEST_SIZE)).unwrap();
+
+    let id = void_client
+        .upload_file(&source_path)
+        .await
+        .expect("mass multipart upload should succeed");
+    let downloaded_path = std::env::temp_dir().join(format!("bhs-mass-void-dl-{id}.bin"));
+    let written = void_client
+        .download_to_file(id, &downloaded_path)
+        .await
+        .expect("mass ranged download should succeed");
+    let bytes = std::fs::read(&downloaded_path).unwrap();
+    let _ = std::fs::remove_file(&source_path);
+    let _ = std::fs::remove_file(&downloaded_path);
+
+    assert_eq!(written as usize, MULTIPART_TEST_SIZE);
+    assert_eq!(
+        bytes,
+        patterned_bytes(MULTIPART_TEST_SIZE),
+        "mass multipart roundtrip corrupted data"
+    );
+
+    void_server.abort();
+}
+
+// ---------------------------------------------------------------------------
+// FuseWeights
+// ---------------------------------------------------------------------------
+
+// Multi-thread flavor: fusion takes minutes, and paramecia's actor writes
+// checkpoint files synchronously; a current-thread runtime can starve the
+// QUIC keep-alive past quinn's 30s idle timeout under load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fuse_weights_with_checkpoint() {
+    init_tracing();
+
+    let model_path = match require_model_path("fuse_weights_with_checkpoint") {
+        Some(path) => path,
+        None => return,
+    };
+
+    let void_server = TestVoidServer::new()
+        .serve()
+        .await
+        .expect("failed to start void server");
+    let mass_server = TestMassServer::new(&model_path)
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .expect("failed to start mass server");
+
+    let void_endpoint = make_client_endpoint().await;
+    let void_client = VoidClient::new(&void_endpoint, void_server.local_addr(), "localhost");
+    let mass_endpoint = make_client_endpoint().await;
+    let mass_client = MassClient::new(&mass_endpoint, mass_server.local_addr(), "localhost");
+
+    let model_id = Uuid::new_v4();
+    mass_client.start(model_id, None).await.unwrap();
+
+    // Checkpoint the fresh weights into void.
+    let checkpoint_id = mass_client.checkpoint(model_id).await.unwrap();
+    let checkpoint_path = std::env::temp_dir().join(format!("bhs-ckpt-{checkpoint_id}.gguf"));
+    let checkpoint_len = void_client
+        .download_to_file(checkpoint_id, &checkpoint_path)
+        .await
+        .unwrap_or_else(|e| panic!("checkpoint should download: {e}"));
+    assert!(checkpoint_len >= 4, "checkpoint object is empty");
+
+    // Fuse live weights with the checkpoint at 50/50.
+    let fused_id = mass_client
+        .fuse_weights(model_id, checkpoint_id, 0.5)
+        .await
+        .unwrap_or_else(|e| panic!("fuse_weights should succeed: {e}"));
+
+    // The fused object must be a valid, non-trivial GGUF of comparable size.
+    let fused_path = std::env::temp_dir().join(format!("bhs-fused-{fused_id}.gguf"));
+    let written = void_client
+        .download_to_file(fused_id, &fused_path)
+        .await
+        .unwrap_or_else(|e| panic!("fused object should download: {e}"));
+    let fused_bytes = std::fs::read(&fused_path).unwrap();
+    let _ = std::fs::remove_file(&fused_path);
+    let _ = std::fs::remove_file(&checkpoint_path);
+
+    assert_eq!(written as usize, fused_bytes.len());
+    assert!(fused_bytes.len() >= 4, "fused object is too small to be a GGUF");
+    assert_eq!(
+        &fused_bytes[0..4],
+        b"GGUF",
+        "fused object is missing the GGUF magic header"
+    );
+    assert!(
+        (fused_bytes.len() as u64) >= checkpoint_len / 2
+            && (fused_bytes.len() as u64) <= checkpoint_len * 2,
+        "fused size {} not comparable to checkpoint size {checkpoint_len}",
+        fused_bytes.len()
+    );
+
+    // Fusing an unknown model must fail cleanly.
+    let error = mass_client
+        .fuse_weights(Uuid::new_v4(), checkpoint_id, 0.5)
+        .await
+        .expect_err("fusing an unknown model should fail");
+    assert!(
+        error.contains("not running"),
+        "unexpected unknown-model fuse error: {error}"
+    );
+
+    // Fusing against a missing void object must fail cleanly.
+    let error = mass_client
+        .fuse_weights(model_id, Uuid::new_v4(), 0.5)
+        .await
+        .expect_err("fusing a missing checkpoint should fail");
+    assert!(
+        !error.is_empty(),
+        "missing-checkpoint fuse error should not be empty"
+    );
+
+    // The running instance must still work after fusion (fusion is
+    // non-destructive: it only produced a new void object).
+    let tokenizer = Tokenizer::init();
+    let output_id = mass_client
+        .infer(
+            model_id,
+            void_client
+                .upload(
+                    to_allocvec(&InferenceRequest::Sequences {
+                        sequences: vec![vec![InferenceInput::Text("Hello".into())]],
+                        limit: Some(8),
+                    })
+                    .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let output_bytes = void_client.download(output_id).await.unwrap();
+    let output: black_hole_sun::InferenceOutput =
+        from_bytes(&output_bytes).expect("failed to decode inference output");
+    assert!(
+        !output.results[0].0.is_empty(),
+        "post-fusion inference returned zero predictions"
+    );
+    let _ = tokenizer.decode(&output.results[0].0);
+
+    mass_client.shutdown(model_id).await.unwrap();
+    void_server.abort();
+    mass_server.abort();
+}

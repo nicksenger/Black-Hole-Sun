@@ -29,7 +29,7 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 serde = "1"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-tokio = { version = "1", features = ["io-util"] }
+tokio = { version = "1", features = ["io-util", "fs"] }
 
 [lints]
 workspace = true

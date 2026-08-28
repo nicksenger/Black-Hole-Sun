@@ -21,6 +21,8 @@ pub mod persist;
 const DEFAULT_LISTEN_ADDR: &str = "[::1]:4434";
 const S3_MAX_FRAME_SIZE: usize = 1024 * 1024 * 1024; // 1 GB
 const MAX_DOWNLOAD_WAIT_TIMEOUT_MS: u64 = 30_000;
+/// Maximum number of parts in one multipart upload (matches the S3 limit).
+const MAX_MULTIPART_PARTS: u32 = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportMode {
@@ -46,6 +48,17 @@ pub enum VoidIn {
     Download { id: uuid::Uuid },
     /// Wait up to `timeout_ms` for an object to exist, then download it.
     DownloadWait { id: uuid::Uuid, timeout_ms: u64 },
+    /// Begin a multipart upload for objects too large for one frame. When
+    /// `id` is None the server assigns one. Server responds with VoidOut::Uploaded(id).
+    UploadBegin { id: Option<uuid::Uuid>, total_size: u64 },
+    /// Upload one part (1-indexed) of an in-flight multipart upload.
+    UploadPart { id: uuid::Uuid, part_number: u32, data: Vec<u8> },
+    /// Complete an in-flight multipart upload, making the object visible to
+    /// downloads. `part_count` must match the number of parts uploaded.
+    UploadFinish { id: uuid::Uuid, part_count: u32 },
+    /// Download up to `length` bytes of an object starting at `offset`.
+    /// Returns fewer bytes (possibly zero) at end of object.
+    DownloadRange { id: uuid::Uuid, offset: u64, length: u64 },
 }
 
 /// Wire response sent by the server.
@@ -57,6 +70,8 @@ pub enum VoidOut {
     Downloaded { data: Vec<u8> },
     /// Request timed out while waiting for an upload.
     TimedOut { id: uuid::Uuid },
+    /// Generic acknowledgment (part uploads, etc).
+    Ack,
     /// Error message for any failure.
     Error { message: String },
 }
@@ -201,6 +216,7 @@ impl ServerBuilder {
             object_store: self.object_store,
             store: self.store,
             wait_registry: WaitRegistry::default(),
+            multipart_uploads: tokio::sync::Mutex::new(HashMap::new()),
         });
 
         Ok((listener, local_addr, context))
@@ -275,11 +291,22 @@ impl VoidListener {
     }
 }
 
+/// One in-flight multipart upload, tracked between UploadBegin and
+/// UploadFinish. `store_session_id` is the backend-specific session handle;
+/// `parts` maps part number -> part token (ETag for S3).
+#[derive(Debug)]
+struct MultipartSession {
+    store_session_id: String,
+    parts: std::collections::BTreeMap<u32, String>,
+    total_size: u64,
+}
+
 struct VoidContext {
     object_namespace: String,
     object_store: Box<dyn object_store::ObjectStore>,
     store: Box<dyn persist::VoidStore>,
     wait_registry: WaitRegistry,
+    multipart_uploads: tokio::sync::Mutex<HashMap<uuid::Uuid, MultipartSession>>,
 }
 
 #[derive(Default)]
@@ -365,6 +392,18 @@ async fn handle_stream(
         VoidIn::DownloadWait { id, timeout_ms } => {
             handle_download_wait(&context, id, timeout_ms).await
         }
+        VoidIn::UploadBegin { id, total_size } => handle_upload_begin(&context, id, total_size).await,
+        VoidIn::UploadPart {
+            id,
+            part_number,
+            data,
+        } => handle_upload_part(&context, id, part_number, data).await,
+        VoidIn::UploadFinish { id, part_count } => {
+            handle_upload_finish(&context, id, part_count).await
+        }
+        VoidIn::DownloadRange { id, offset, length } => {
+            handle_download_range(&context, id, offset, length).await
+        }
     };
 
     if let Err(e) = write_frame_quic(&mut send, &response).await {
@@ -396,6 +435,20 @@ async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<VoidContext>)
             VoidIn::Download { id } => handle_download(&context, id).await,
             VoidIn::DownloadWait { id, timeout_ms } => {
                 handle_download_wait(&context, id, timeout_ms).await
+            }
+            VoidIn::UploadBegin { id, total_size } => {
+                handle_upload_begin(&context, id, total_size).await
+            }
+            VoidIn::UploadPart {
+                id,
+                part_number,
+                data,
+            } => handle_upload_part(&context, id, part_number, data).await,
+            VoidIn::UploadFinish { id, part_count } => {
+                handle_upload_finish(&context, id, part_count).await
+            }
+            VoidIn::DownloadRange { id, offset, length } => {
+                handle_download_range(&context, id, offset, length).await
             }
         };
 
@@ -457,6 +510,208 @@ async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<
             error!(error = %e, "put_object failed");
             VoidOut::Error {
                 message: format!("upload failed: {e}"),
+            }
+        }
+    }
+}
+
+async fn handle_upload_begin(
+    context: &VoidContext,
+    id: Option<uuid::Uuid>,
+    total_size: u64,
+) -> VoidOut {
+    let id = id.unwrap_or_else(uuid::Uuid::new_v4);
+
+    {
+        let uploads = context.multipart_uploads.lock().await;
+        if uploads.contains_key(&id) {
+            return VoidOut::Error {
+                message: format!("multipart upload already in flight for {id}"),
+            };
+        }
+    }
+
+    let key = id.to_string();
+    match context.object_store.begin_multipart(&key).await {
+        Ok(store_session_id) => {
+            context
+                .multipart_uploads
+                .lock()
+                .await
+                .insert(
+                    id,
+                    MultipartSession {
+                        store_session_id,
+                        parts: std::collections::BTreeMap::new(),
+                        total_size: 0,
+                    },
+                );
+            info!(%id, total_size, "multipart upload begun");
+            VoidOut::Uploaded { id }
+        }
+        Err(e) => {
+            error!(error = %e, "begin_multipart failed");
+            VoidOut::Error {
+                message: format!("failed to begin multipart upload: {e}"),
+            }
+        }
+    }
+}
+
+async fn handle_upload_part(
+    context: &VoidContext,
+    id: uuid::Uuid,
+    part_number: u32,
+    data: Vec<u8>,
+) -> VoidOut {
+    if part_number == 0 || part_number > MAX_MULTIPART_PARTS {
+        return VoidOut::Error {
+            message: format!(
+                "part_number must be in 1..={MAX_MULTIPART_PARTS}, got {part_number}"
+            ),
+        };
+    }
+
+    let key = id.to_string();
+    let data_len = data.len() as u64;
+    let store_session_id = {
+        let uploads = context.multipart_uploads.lock().await;
+        match uploads.get(&id) {
+            Some(session) => session.store_session_id.clone(),
+            None => {
+                return VoidOut::Error {
+                    message: format!("no multipart upload in flight for {id}"),
+                }
+            }
+        }
+    };
+
+    match context
+        .object_store
+        .upload_part(&key, &store_session_id, part_number, data)
+        .await
+    {
+        Ok(token) => {
+            let mut uploads = context.multipart_uploads.lock().await;
+            if let Some(session) = uploads.get_mut(&id) {
+                session.parts.insert(part_number, token);
+                session.total_size = session.total_size.saturating_add(data_len);
+            }
+            VoidOut::Ack
+        }
+        Err(e) => {
+            error!(error = %e, part_number, "upload_part failed");
+            // Drop the session so a retry can begin a fresh upload.
+            let mut uploads = context.multipart_uploads.lock().await;
+            if let Some(session) = uploads.remove(&id) {
+                let _ = context
+                    .object_store
+                    .abort_multipart(&key, &session.store_session_id)
+                    .await;
+            }
+            VoidOut::Error {
+                message: format!("failed to upload part {part_number}: {e}"),
+            }
+        }
+    }
+}
+
+async fn handle_upload_finish(
+    context: &VoidContext,
+    id: uuid::Uuid,
+    part_count: u32,
+) -> VoidOut {
+    if part_count == 0 || part_count > MAX_MULTIPART_PARTS {
+        return VoidOut::Error {
+            message: format!("part_count must be in 1..={MAX_MULTIPART_PARTS}, got {part_count}"),
+        };
+    }
+
+    let key = id.to_string();
+    let Some(session) = context.multipart_uploads.lock().await.remove(&id) else {
+        return VoidOut::Error {
+            message: format!("no multipart upload in flight for {id}"),
+        };
+    };
+
+    // Parts must be exactly 1..=part_count with no gaps or duplicates.
+    let expected: std::collections::BTreeSet<u32> = (1..=part_count).collect();
+    if session.parts.keys().copied().collect::<std::collections::BTreeSet<_>>() != expected {
+        let _ = context
+            .object_store
+            .abort_multipart(&key, &session.store_session_id)
+            .await;
+        return VoidOut::Error {
+            message: format!(
+                "multipart upload for {id} has {} parts, expected exactly 1..={part_count}",
+                session.parts.len()
+            ),
+        };
+    }
+
+    let parts: Vec<(u32, String)> = session.parts.into_iter().collect();
+    let total_size = session.total_size;
+
+    if let Err(e) = context
+        .object_store
+        .finish_multipart(&key, &session.store_session_id, &parts)
+        .await
+    {
+        error!(error = %e, "finish_multipart failed");
+        return VoidOut::Error {
+            message: format!("failed to finish multipart upload: {e}"),
+        };
+    }
+
+    // Persist the object metadata (same as single-shot uploads).
+    if let Err(e) = context
+        .store
+        .insert_object(id, context.object_namespace.clone(), key.clone(), total_size as i64)
+        .await
+    {
+        warn!(error = %e, "failed to persist object metadata");
+    }
+    if let Err(e) = context.store.publish_upload_notification(id).await {
+        warn!(error = %e, "failed to publish upload notification");
+    }
+
+    info!(%id, bytes = total_size, parts = part_count, "multipart upload finished");
+    context.wait_registry.notify_upload(id).await;
+    VoidOut::Uploaded { id }
+}
+
+async fn handle_download_range(
+    context: &VoidContext,
+    id: uuid::Uuid,
+    offset: u64,
+    length: u64,
+) -> VoidOut {
+    if length == 0 {
+        return VoidOut::Downloaded { data: Vec::new() };
+    }
+
+    let record = match context.store.get_object(id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => return VoidOut::Error {
+            message: format!("object not found: {id}"),
+        },
+        Err(e) => {
+            error!(%id, error = %e, "failed to look up object");
+            return VoidOut::Error {
+                message: format!("lookup failed: {e}"),
+            };
+        }
+    };
+
+    match context.object_store.get_range(&record.key, offset, length).await {
+        Ok(data) => {
+            debug!(%id, offset, bytes = data.len(), "downloaded range");
+            VoidOut::Downloaded { data }
+        }
+        Err(e) => {
+            warn!(%id, error = %e, "range download failed");
+            VoidOut::Error {
+                message: format!("not found: {e}"),
             }
         }
     }

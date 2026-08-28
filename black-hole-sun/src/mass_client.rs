@@ -112,6 +112,29 @@ impl MassClient {
         }
     }
 
+    /// Fuse the current weights of a running model instance with a
+    /// void-stored checkpoint using task arithmetic. Returns the void object
+    /// ID of the fused weights.
+    pub async fn fuse_weights(
+        &self,
+        model_id: ObjectId,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    ) -> Result<ObjectId, String> {
+        let resp = self
+            .request(&MassIn::FuseWeights {
+                model_id,
+                checkpoint_id,
+                contribution,
+            })
+            .await?;
+        match resp {
+            MassOut::FusedWeights { fused_id } => Ok(fused_id),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for fuse_weights".to_string()),
+        }
+    }
+
     pub async fn optimize(
         &self,
         model_id: ObjectId,
