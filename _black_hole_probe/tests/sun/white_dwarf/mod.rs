@@ -366,6 +366,15 @@ impl VoidInferOps for WhiteDwarfJungle {
         self.mass_client.checkpoint(model_id).await
     }
 
+    async fn fuse_weights(
+        &self,
+        model_id: Uuid,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    ) -> Result<ObjectId, String> {
+        self.mass_client.fuse_weights(model_id, checkpoint_id, contribution).await
+    }
+
     fn darken(&self, prompt: &str) -> Result<Vec<DarkToken>, String> {
         let tokenizer_result = self.tokenizer.get_or_init(Tokenizer::try_init);
         let tokenizer = tokenizer_result

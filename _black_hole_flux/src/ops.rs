@@ -101,6 +101,19 @@ pub trait VoidInferOps: Send + Sync {
     /// Upload current model weights to void and return the checkpoint object ID.
     async fn checkpoint_model(&self, model_id: uuid::Uuid) -> Result<ObjectId, String>;
 
+    /// Fuse the current weights of a running model instance with a checkpoint
+    /// stored in void using task arithmetic. Returns the void object ID of the
+    /// fused weights.
+    ///
+    /// The instance must be idle (no perturbation in flight); the running
+    /// instance itself is left unmodified.
+    async fn fuse_weights(
+        &self,
+        model_id: uuid::Uuid,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    ) -> Result<ObjectId, String>;
+
     /// Convert text into dark-tokenized inputs for dark inference flows.
     fn darken(&self, prompt: &str) -> Result<Vec<DarkToken>, String>;
 
@@ -415,6 +428,15 @@ mod tests {
         }
 
         async fn checkpoint_model(&self, _model_id: uuid::Uuid) -> Result<ObjectId, String> {
+            Err("unsupported in tests".to_string())
+        }
+
+        async fn fuse_weights(
+            &self,
+            _model_id: uuid::Uuid,
+            _checkpoint_id: ObjectId,
+            _contribution: f32,
+        ) -> Result<ObjectId, String> {
             Err("unsupported in tests".to_string())
         }
 

@@ -407,6 +407,15 @@ impl VoidInferOps for ProbeSpaceJungle {
         Err("checkpointing is not used by TestCell".to_string())
     }
 
+    async fn fuse_weights(
+        &self,
+        _model_id: Uuid,
+        _checkpoint_id: ObjectId,
+        _contribution: f32,
+    ) -> Result<ObjectId, String> {
+        Err("weight fusion is not used by TestCell".to_string())
+    }
+
     async fn perturb_up(&self, _model_id: Uuid, _seed: u64) -> Result<(), String> {
         Err("perturbation is not used by TestCell".to_string())
     }

@@ -157,6 +157,15 @@ impl VoidInferOps for RedDwarfJungle {
         self.mass_client.checkpoint(model_id).await
     }
 
+    async fn fuse_weights(
+        &self,
+        model_id: Uuid,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    ) -> Result<ObjectId, String> {
+        self.mass_client.fuse_weights(model_id, checkpoint_id, contribution).await
+    }
+
     fn darken(&self, _prompt: &str) -> Result<Vec<black_hole_sun::DarkToken>, String> {
         Err("darken is not used by red_dwarf".to_string())
     }

@@ -147,6 +147,15 @@ impl VoidInferOps for SpaceJungle {
         self.mass_client.checkpoint(model_id).await
     }
 
+    async fn fuse_weights(
+        &self,
+        model_id: Uuid,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    ) -> Result<ObjectId, String> {
+        self.mass_client.fuse_weights(model_id, checkpoint_id, contribution).await
+    }
+
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
         self.mass_client.perturb_up(model_id, seed).await
     }

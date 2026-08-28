@@ -430,6 +430,20 @@ impl VoidInferOps for SpaceJungle {
         result
     }
 
+    async fn fuse_weights(
+        &self,
+        model_id: Uuid,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    ) -> Result<ObjectId, String> {
+        let result = self
+            .mass_client
+            .fuse_weights(model_id, checkpoint_id, contribution)
+            .await;
+        self.record_model_error("fuse weights", &result);
+        result
+    }
+
     fn darken(&self, prompt: &str) -> Result<Vec<black_hole_sun::DarkToken>, String> {
         let tokenizer_result = self.tokenizer.get_or_init(Tokenizer::try_init);
         let tokenizer = tokenizer_result
