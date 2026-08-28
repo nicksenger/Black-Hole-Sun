@@ -326,13 +326,30 @@ async fn tunnel_worker_retries_parent_registration_until_root_starts() {
         .query_model_capacity()
         .await
         .expect("capacity query should succeed");
+
+    // Feature-gated builds compile in an architecture, so even a server that
+    // has never loaded a model advertises per-architecture capacity. The root
+    // allows 0 instances here; the worker's limit of 1 dominates.
+    let mut expected_per_architecture = Vec::new();
+    if let Some(architecture) = black_hole_sun::black_hole_mass::COMPILED_ARCHITECTURE {
+        expected_per_architecture.push((
+            architecture,
+            MassModelCapacity {
+                total: Some(1),
+                available: Some(1),
+                occupied: 0,
+                per_architecture: Vec::new(),
+            },
+        ));
+    }
+
     assert_eq!(
         capacity,
         MassModelCapacity {
             total: Some(1),
             available: Some(1),
             occupied: 0,
-            per_architecture: vec![],
+            per_architecture: expected_per_architecture,
         }
     );
 
@@ -1256,10 +1273,9 @@ async fn mass_void_client_multipart_roundtrip() {
 // FuseWeights
 // ---------------------------------------------------------------------------
 
-// Multi-thread flavor: fusion takes minutes, and paramecia's actor writes
-// checkpoint files synchronously; a current-thread runtime can starve the
-// QUIC keep-alive past quinn's 30s idle timeout under load.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Current-thread flavor (like every other model test): paramecia's model
+// actor must stay pinned to one OS thread or CUDA loses its device context.
+#[tokio::test]
 async fn fuse_weights_with_checkpoint() {
     init_tracing();
 
