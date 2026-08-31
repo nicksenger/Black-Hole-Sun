@@ -1,0 +1,895 @@
+//! Compile-time tensor contracts and the backend-neutral v1 wire codec.
+//!
+//! The contract side depends on glowstick for shape identity, but neither the
+//! wire schema nor the codec depends on Candle (or any other tensor backend).
+
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    marker::PhantomData,
+};
+
+use black_hole_spec::{
+    ContractDescriptor, ContractHash, ContractId, ContractSide, DimensionDescriptor,
+    DtypeConstraint, EncodingId, LayoutConstraint, TensorDtype, TensorEnvelope,
+    TensorPortDescriptor,
+};
+use glowstick::Shape;
+use postcard::{from_bytes, to_allocvec};
+use safetensors::{
+    tensor::{Dtype, SafeTensors, TensorView},
+    SafeTensorError,
+};
+use serde::{de::DeserializeOwned, Serialize};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+pub use glowstick;
+
+const FRAME_MAGIC: &[u8; 8] = b"BHSTEN01";
+const FRAME_PREFIX_LEN: usize = FRAME_MAGIC.len() + size_of::<u32>();
+
+/// One named, glowstick-shaped port in a tensor bundle.
+///
+/// Implementors provide runtime dimension descriptors explicitly. This is
+/// intentional: glowstick's numeric shape iterator cannot preserve the label
+/// of `Dyn<Label>`, while the distributed contract must preserve symbolic
+/// identity in order to verify repeated bindings.
+pub trait TensorPortSpec {
+    type Shape: glowstick::Shape;
+
+    const NAME: &'static str;
+    const LAYOUT: LayoutConstraint = LayoutConstraint::Contiguous;
+
+    fn dimensions() -> Vec<DimensionDescriptor>;
+    fn dtype() -> DtypeConstraint;
+
+    fn descriptor() -> TensorPortDescriptor {
+        let dimensions = Self::dimensions();
+        assert_eq!(
+            dimensions.len(),
+            Self::Shape::RANK,
+            "runtime descriptor rank does not match glowstick shape rank for {}",
+            Self::NAME,
+        );
+        for (axis, (compile_time, runtime)) in
+            Self::Shape::iter().zip(dimensions.iter()).enumerate()
+        {
+            if compile_time != 0 {
+                assert_eq!(
+                    runtime,
+                    &DimensionDescriptor::Static(compile_time as u64),
+                    "static glowstick dimension {axis} does not match the runtime descriptor for {}",
+                    Self::NAME,
+                );
+            }
+        }
+        TensorPortDescriptor {
+            name: Self::NAME.to_owned(),
+            dimensions,
+            dtype: Self::dtype(),
+            layout: Self::LAYOUT,
+        }
+    }
+}
+
+/// Type-level list of named tensor ports.
+pub trait PortList {
+    fn descriptors() -> Vec<TensorPortDescriptor>;
+}
+
+macro_rules! port_list {
+    ($($name:ident),+) => {
+        impl<$($name: TensorPortSpec),+> PortList for ($($name,)+) {
+            fn descriptors() -> Vec<TensorPortDescriptor> {
+                vec![$($name::descriptor()),+]
+            }
+        }
+    };
+}
+
+port_list!(A);
+port_list!(A, B);
+port_list!(A, B, C);
+port_list!(A, B, C, D);
+port_list!(A, B, C, D, E);
+port_list!(A, B, C, D, E, F);
+port_list!(A, B, C, D, E, F, G);
+port_list!(A, B, C, D, E, F, G, H);
+
+/// A named bundle of one or more tensor ports.
+pub struct TensorBundleSpec<Ports>(PhantomData<Ports>);
+
+/// Compile-time tensor bundle used as a contract input or output.
+pub trait TensorSpec {
+    fn descriptor() -> Vec<TensorPortDescriptor>;
+}
+
+impl<Ports: PortList> TensorSpec for TensorBundleSpec<Ports> {
+    fn descriptor() -> Vec<TensorPortDescriptor> {
+        Ports::descriptors()
+    }
+}
+
+/// Convenience alias for the common one-tensor bundle.
+pub type SingleTensorSpec<Port> = TensorBundleSpec<(Port,)>;
+
+/// Compile-time half of a distributed tensor operation contract.
+pub trait TensorContract {
+    type Input: TensorSpec;
+    type Output: TensorSpec;
+    type Metadata;
+
+    const ID: ContractId;
+    const VERSION: u32;
+
+    fn descriptor() -> ContractDescriptor {
+        ContractDescriptor {
+            id: Self::ID,
+            version: Self::VERSION,
+            inputs: Self::Input::descriptor(),
+            outputs: Self::Output::descriptor(),
+        }
+    }
+}
+
+/// Owned backend-neutral dense tensor value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTensor {
+    pub name: String,
+    pub dtype: TensorDtype,
+    pub shape: Vec<usize>,
+    /// Little-endian, contiguous row-major element bytes.
+    pub data: Vec<u8>,
+}
+
+/// Validated decoded tensor artifact, tagged with its compile-time spec.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedTensorBundle<S, M> {
+    pub envelope: TensorEnvelope,
+    pub metadata: M,
+    pub tensors: Vec<RawTensor>,
+    marker: PhantomData<S>,
+}
+
+/// Fail-closed validation or encoding error.
+#[derive(Debug, Error)]
+pub enum CodecError {
+    #[error("tensor frame is truncated")]
+    Truncated,
+    #[error("invalid tensor frame magic")]
+    InvalidMagic,
+    #[error("unsupported envelope version {0}")]
+    UnsupportedEnvelopeVersion(u16),
+    #[error("unsupported tensor encoding {0:?}")]
+    UnsupportedTensorEncoding(EncodingId),
+    #[error("unsupported metadata encoding {0:?}")]
+    UnsupportedMetadataEncoding(EncodingId),
+    #[error("contract id mismatch")]
+    ContractIdMismatch,
+    #[error("contract version mismatch: expected {expected}, got {actual}")]
+    ContractVersionMismatch { expected: u32, actual: u32 },
+    #[error("contract descriptor hash mismatch")]
+    ContractHashMismatch,
+    #[error("artifact is for the {actual:?} side, not {expected:?}")]
+    ContractSideMismatch {
+        expected: ContractSide,
+        actual: ContractSide,
+    },
+    #[error("frame length does not match its envelope")]
+    LengthMismatch,
+    #[error("contract contains duplicate tensor port {0:?}")]
+    DuplicatePort(String),
+    #[error("tensor bundle contains duplicate tensor {0:?}")]
+    DuplicateTensor(String),
+    #[error("missing tensor {0:?}")]
+    MissingTensor(String),
+    #[error("unexpected tensor {0:?}")]
+    UnexpectedTensor(String),
+    #[error("dtype mismatch for {name:?}: expected {expected:?}, got {actual:?}")]
+    DtypeMismatch {
+        name: String,
+        expected: DtypeConstraint,
+        actual: TensorDtype,
+    },
+    #[error("rank mismatch for {name:?}: expected {expected}, got {actual}")]
+    RankMismatch {
+        name: String,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("dimension mismatch for {name:?} axis {axis}: expected {expected}, got {actual}")]
+    DimensionMismatch {
+        name: String,
+        axis: usize,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("symbolic dimension {label:?} was bound to both {first} and {second}")]
+    SymbolicDimensionMismatch {
+        label: String,
+        first: usize,
+        second: usize,
+    },
+    #[error("safetensors dtype {0:?} is not supported by the v1 contract schema")]
+    UnsupportedDtype(Dtype),
+    #[error("integer length does not fit on this platform")]
+    LengthOverflow,
+    #[error("safetensors: {0}")]
+    Safetensors(#[from] SafeTensorError),
+    #[error("postcard: {0}")]
+    Postcard(#[from] postcard::Error),
+}
+
+/// Stable hash of a contract's canonical postcard representation.
+pub fn descriptor_hash(descriptor: &ContractDescriptor) -> ContractHash {
+    let bytes = to_allocvec(descriptor).expect("ContractDescriptor serialization is infallible");
+    ContractHash(Sha256::digest(bytes).into())
+}
+
+/// Encode a contract input bundle with postcard metadata and safetensors data.
+pub fn encode_input<C>(tensors: &[RawTensor], metadata: &C::Metadata) -> Result<Vec<u8>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: Serialize,
+{
+    encode::<C>(ContractSide::Input, tensors, metadata)
+}
+
+/// Encode a contract output bundle with postcard metadata and safetensors data.
+pub fn encode_output<C>(
+    tensors: &[RawTensor],
+    metadata: &C::Metadata,
+) -> Result<Vec<u8>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: Serialize,
+{
+    encode::<C>(ContractSide::Output, tensors, metadata)
+}
+
+/// Decode and validate a contract input bundle.
+pub fn decode_input<C>(
+    frame: &[u8],
+) -> Result<DecodedTensorBundle<C::Input, C::Metadata>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: DeserializeOwned,
+{
+    decode::<C, C::Input>(ContractSide::Input, frame)
+}
+
+/// Decode and validate a contract output bundle.
+pub fn decode_output<C>(
+    frame: &[u8],
+) -> Result<DecodedTensorBundle<C::Output, C::Metadata>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: DeserializeOwned,
+{
+    decode::<C, C::Output>(ContractSide::Output, frame)
+}
+
+fn encode<C>(
+    side: ContractSide,
+    tensors: &[RawTensor],
+    metadata: &C::Metadata,
+) -> Result<Vec<u8>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: Serialize,
+{
+    let descriptor = C::descriptor();
+    let ports = ports_for(&descriptor, side);
+    validate_schema(ports)?;
+    validate_tensors(ports, tensors)?;
+
+    let mut views = BTreeMap::new();
+    for tensor in tensors {
+        let view = TensorView::new(
+            to_safetensors_dtype(tensor.dtype),
+            tensor.shape.clone(),
+            &tensor.data,
+        )?;
+        if views.insert(tensor.name.as_str(), view).is_some() {
+            return Err(CodecError::DuplicateTensor(tensor.name.clone()));
+        }
+    }
+    let tensor_bytes = safetensors::tensor::serialize(views, None)?;
+    let metadata_bytes = to_allocvec(metadata)?;
+    let envelope = TensorEnvelope {
+        envelope_version: TensorEnvelope::VERSION,
+        contract_id: descriptor.id,
+        contract_version: descriptor.version,
+        contract_hash: descriptor_hash(&descriptor),
+        side,
+        tensor_encoding: EncodingId::SAFETENSORS_V1,
+        metadata_encoding: EncodingId::POSTCARD_V1,
+        metadata_len: metadata_bytes
+            .len()
+            .try_into()
+            .map_err(|_| CodecError::LengthOverflow)?,
+        tensor_len: tensor_bytes
+            .len()
+            .try_into()
+            .map_err(|_| CodecError::LengthOverflow)?,
+    };
+    let envelope_bytes = to_allocvec(&envelope)?;
+    let envelope_len: u32 = envelope_bytes
+        .len()
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+
+    let mut frame = Vec::with_capacity(
+        FRAME_PREFIX_LEN + envelope_bytes.len() + metadata_bytes.len() + tensor_bytes.len(),
+    );
+    frame.extend_from_slice(FRAME_MAGIC);
+    frame.extend_from_slice(&envelope_len.to_le_bytes());
+    frame.extend_from_slice(&envelope_bytes);
+    frame.extend_from_slice(&metadata_bytes);
+    frame.extend_from_slice(&tensor_bytes);
+    Ok(frame)
+}
+
+fn decode<C, S>(
+    expected_side: ContractSide,
+    frame: &[u8],
+) -> Result<DecodedTensorBundle<S, C::Metadata>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: DeserializeOwned,
+{
+    if frame.len() < FRAME_PREFIX_LEN {
+        return Err(CodecError::Truncated);
+    }
+    if &frame[..FRAME_MAGIC.len()] != FRAME_MAGIC {
+        return Err(CodecError::InvalidMagic);
+    }
+    let envelope_len = u32::from_le_bytes(
+        frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+            .try_into()
+            .expect("fixed-size prefix"),
+    ) as usize;
+    let envelope_end = FRAME_PREFIX_LEN
+        .checked_add(envelope_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let envelope_bytes = frame
+        .get(FRAME_PREFIX_LEN..envelope_end)
+        .ok_or(CodecError::Truncated)?;
+    let envelope: TensorEnvelope = from_bytes(envelope_bytes)?;
+
+    validate_envelope::<C>(&envelope, expected_side)?;
+
+    let metadata_len: usize = envelope
+        .metadata_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let tensor_len: usize = envelope
+        .tensor_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let metadata_end = envelope_end
+        .checked_add(metadata_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let tensor_end = metadata_end
+        .checked_add(tensor_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    if tensor_end != frame.len() {
+        return Err(CodecError::LengthMismatch);
+    }
+    let metadata_bytes = frame
+        .get(envelope_end..metadata_end)
+        .ok_or(CodecError::Truncated)?;
+    let tensor_bytes = frame
+        .get(metadata_end..tensor_end)
+        .ok_or(CodecError::Truncated)?;
+    let metadata = from_bytes(metadata_bytes)?;
+    let safetensors = SafeTensors::deserialize(tensor_bytes)?;
+    let mut tensors = Vec::with_capacity(safetensors.len());
+    for (name, view) in safetensors.tensors() {
+        tensors.push(RawTensor {
+            name,
+            dtype: from_safetensors_dtype(view.dtype())?,
+            shape: view.shape().to_vec(),
+            data: view.data().to_vec(),
+        });
+    }
+
+    let descriptor = C::descriptor();
+    let ports = ports_for(&descriptor, expected_side);
+    validate_schema(ports)?;
+    validate_tensors(ports, &tensors)?;
+    tensors.sort_by_key(|tensor| {
+        ports
+            .iter()
+            .position(|port| port.name == tensor.name)
+            .expect("validated tensor has a matching port")
+    });
+    Ok(DecodedTensorBundle {
+        envelope,
+        metadata,
+        tensors,
+        marker: PhantomData,
+    })
+}
+
+fn validate_envelope<C: TensorContract>(
+    envelope: &TensorEnvelope,
+    expected_side: ContractSide,
+) -> Result<(), CodecError> {
+    if envelope.envelope_version != TensorEnvelope::VERSION {
+        return Err(CodecError::UnsupportedEnvelopeVersion(
+            envelope.envelope_version,
+        ));
+    }
+    if envelope.tensor_encoding != EncodingId::SAFETENSORS_V1 {
+        return Err(CodecError::UnsupportedTensorEncoding(
+            envelope.tensor_encoding,
+        ));
+    }
+    if envelope.metadata_encoding != EncodingId::POSTCARD_V1 {
+        return Err(CodecError::UnsupportedMetadataEncoding(
+            envelope.metadata_encoding,
+        ));
+    }
+    let descriptor = C::descriptor();
+    if envelope.contract_id != descriptor.id {
+        return Err(CodecError::ContractIdMismatch);
+    }
+    if envelope.contract_version != descriptor.version {
+        return Err(CodecError::ContractVersionMismatch {
+            expected: descriptor.version,
+            actual: envelope.contract_version,
+        });
+    }
+    if envelope.contract_hash != descriptor_hash(&descriptor) {
+        return Err(CodecError::ContractHashMismatch);
+    }
+    if envelope.side != expected_side {
+        return Err(CodecError::ContractSideMismatch {
+            expected: expected_side,
+            actual: envelope.side,
+        });
+    }
+    Ok(())
+}
+
+fn ports_for(descriptor: &ContractDescriptor, side: ContractSide) -> &[TensorPortDescriptor] {
+    match side {
+        ContractSide::Input => &descriptor.inputs,
+        ContractSide::Output => &descriptor.outputs,
+    }
+}
+
+fn validate_schema(ports: &[TensorPortDescriptor]) -> Result<(), CodecError> {
+    let mut names = HashSet::with_capacity(ports.len());
+    for port in ports {
+        if !names.insert(port.name.as_str()) {
+            return Err(CodecError::DuplicatePort(port.name.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_tensors(
+    ports: &[TensorPortDescriptor],
+    tensors: &[RawTensor],
+) -> Result<(), CodecError> {
+    let mut actual = HashMap::with_capacity(tensors.len());
+    for tensor in tensors {
+        if actual.insert(tensor.name.as_str(), tensor).is_some() {
+            return Err(CodecError::DuplicateTensor(tensor.name.clone()));
+        }
+    }
+    for tensor in tensors {
+        if !ports.iter().any(|port| port.name == tensor.name) {
+            return Err(CodecError::UnexpectedTensor(tensor.name.clone()));
+        }
+    }
+
+    let mut bindings = HashMap::<&str, usize>::new();
+    for port in ports {
+        let tensor = actual
+            .get(port.name.as_str())
+            .ok_or_else(|| CodecError::MissingTensor(port.name.clone()))?;
+        if !port.dtype.accepts(tensor.dtype) {
+            return Err(CodecError::DtypeMismatch {
+                name: port.name.clone(),
+                expected: port.dtype.clone(),
+                actual: tensor.dtype,
+            });
+        }
+        if port.layout != LayoutConstraint::Any && port.layout != LayoutConstraint::Contiguous {
+            unreachable!("all current layout variants are handled")
+        }
+        if port.dimensions.len() != tensor.shape.len() {
+            return Err(CodecError::RankMismatch {
+                name: port.name.clone(),
+                expected: port.dimensions.len(),
+                actual: tensor.shape.len(),
+            });
+        }
+        for (axis, (rule, &actual)) in port.dimensions.iter().zip(&tensor.shape).enumerate() {
+            match rule {
+                DimensionDescriptor::Static(expected) => {
+                    let expected: usize = (*expected)
+                        .try_into()
+                        .map_err(|_| CodecError::LengthOverflow)?;
+                    if expected != actual {
+                        return Err(CodecError::DimensionMismatch {
+                            name: port.name.clone(),
+                            axis,
+                            expected,
+                            actual,
+                        });
+                    }
+                }
+                DimensionDescriptor::Symbolic(label) => {
+                    if let Some(&first) = bindings.get(label.as_str()) {
+                        if first != actual {
+                            return Err(CodecError::SymbolicDimensionMismatch {
+                                label: label.clone(),
+                                first,
+                                second: actual,
+                            });
+                        }
+                    } else {
+                        bindings.insert(label, actual);
+                    }
+                }
+                DimensionDescriptor::Dynamic => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn to_safetensors_dtype(dtype: TensorDtype) -> Dtype {
+    match dtype {
+        TensorDtype::Bool => Dtype::BOOL,
+        TensorDtype::U8 => Dtype::U8,
+        TensorDtype::U16 => Dtype::U16,
+        TensorDtype::U32 => Dtype::U32,
+        TensorDtype::U64 => Dtype::U64,
+        TensorDtype::I8 => Dtype::I8,
+        TensorDtype::I16 => Dtype::I16,
+        TensorDtype::I32 => Dtype::I32,
+        TensorDtype::I64 => Dtype::I64,
+        TensorDtype::F8E4M3 => Dtype::F8_E4M3,
+        TensorDtype::F8E5M2 => Dtype::F8_E5M2,
+        TensorDtype::F16 => Dtype::F16,
+        TensorDtype::BF16 => Dtype::BF16,
+        TensorDtype::F32 => Dtype::F32,
+        TensorDtype::F64 => Dtype::F64,
+        TensorDtype::F4 => Dtype::F4,
+        TensorDtype::F6E2M3 => Dtype::F6_E2M3,
+        TensorDtype::F6E3M2 => Dtype::F6_E3M2,
+        TensorDtype::F8E8M0 => Dtype::F8_E8M0,
+        TensorDtype::C64 => Dtype::C64,
+    }
+}
+
+fn from_safetensors_dtype(dtype: Dtype) -> Result<TensorDtype, CodecError> {
+    match dtype {
+        Dtype::BOOL => Ok(TensorDtype::Bool),
+        Dtype::U8 => Ok(TensorDtype::U8),
+        Dtype::U16 => Ok(TensorDtype::U16),
+        Dtype::U32 => Ok(TensorDtype::U32),
+        Dtype::U64 => Ok(TensorDtype::U64),
+        Dtype::I8 => Ok(TensorDtype::I8),
+        Dtype::I16 => Ok(TensorDtype::I16),
+        Dtype::I32 => Ok(TensorDtype::I32),
+        Dtype::I64 => Ok(TensorDtype::I64),
+        Dtype::F8_E4M3 => Ok(TensorDtype::F8E4M3),
+        Dtype::F8_E5M2 => Ok(TensorDtype::F8E5M2),
+        Dtype::F16 => Ok(TensorDtype::F16),
+        Dtype::BF16 => Ok(TensorDtype::BF16),
+        Dtype::F32 => Ok(TensorDtype::F32),
+        Dtype::F64 => Ok(TensorDtype::F64),
+        Dtype::F4 => Ok(TensorDtype::F4),
+        Dtype::F6_E2M3 => Ok(TensorDtype::F6E2M3),
+        Dtype::F6_E3M2 => Ok(TensorDtype::F6E3M2),
+        Dtype::F8_E8M0 => Ok(TensorDtype::F8E8M0),
+        Dtype::C64 => Ok(TensorDtype::C64),
+        other => Err(CodecError::UnsupportedDtype(other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glowstick::{num::U3, Dyn, Shape1, Shape2};
+    use serde::{Deserialize, Serialize};
+
+    struct Batch;
+    struct Width;
+
+    struct Image;
+    impl TensorPortSpec for Image {
+        type Shape = Shape2<Dyn<Batch>, U3>;
+        const NAME: &'static str = "image";
+        fn dimensions() -> Vec<DimensionDescriptor> {
+            vec![
+                DimensionDescriptor::Symbolic("batch".into()),
+                DimensionDescriptor::Static(3),
+            ]
+        }
+        fn dtype() -> DtypeConstraint {
+            DtypeConstraint::Exact(TensorDtype::F32)
+        }
+    }
+
+    struct Mask;
+    impl TensorPortSpec for Mask {
+        type Shape = Shape1<Dyn<Batch>>;
+        const NAME: &'static str = "mask";
+        fn dimensions() -> Vec<DimensionDescriptor> {
+            vec![DimensionDescriptor::Symbolic("batch".into())]
+        }
+        fn dtype() -> DtypeConstraint {
+            DtypeConstraint::Exact(TensorDtype::U8)
+        }
+    }
+
+    struct Scores;
+    impl TensorPortSpec for Scores {
+        type Shape = Shape2<Dyn<Batch>, Dyn<Width>>;
+        const NAME: &'static str = "scores";
+        fn dimensions() -> Vec<DimensionDescriptor> {
+            vec![
+                DimensionDescriptor::Symbolic("batch".into()),
+                DimensionDescriptor::Dynamic,
+            ]
+        }
+        fn dtype() -> DtypeConstraint {
+            DtypeConstraint::Exact(TensorDtype::F32)
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct Metadata {
+        request: u32,
+    }
+
+    struct ExampleContract;
+    impl TensorContract for ExampleContract {
+        type Input = TensorBundleSpec<(Image, Mask)>;
+        type Output = SingleTensorSpec<Scores>;
+        type Metadata = Metadata;
+        const ID: ContractId = ContractId::from_u128(0x112233445566778899aabbccddeeff00);
+        const VERSION: u32 = 7;
+    }
+
+    struct OtherContract;
+    impl TensorContract for OtherContract {
+        type Input = TensorBundleSpec<(Image, Mask)>;
+        type Output = SingleTensorSpec<Scores>;
+        type Metadata = Metadata;
+        const ID: ContractId = ContractId::from_u128(0xff2233445566778899aabbccddeeff00);
+        const VERSION: u32 = 7;
+    }
+
+    fn input_tensors() -> Vec<RawTensor> {
+        vec![
+            RawTensor {
+                name: "image".into(),
+                dtype: TensorDtype::F32,
+                shape: vec![2, 3],
+                data: vec![0; 2 * 3 * 4],
+            },
+            RawTensor {
+                name: "mask".into(),
+                dtype: TensorDtype::U8,
+                shape: vec![2],
+                data: vec![1, 0],
+            },
+        ]
+    }
+
+    fn rewrite_envelope(mut frame: Vec<u8>, update: impl FnOnce(&mut TensorEnvelope)) -> Vec<u8> {
+        let envelope_len = u32::from_le_bytes(
+            frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let end = FRAME_PREFIX_LEN + envelope_len;
+        let mut envelope: TensorEnvelope = from_bytes(&frame[FRAME_PREFIX_LEN..end]).unwrap();
+        let payload = frame[end..].to_vec();
+        update(&mut envelope);
+        let encoded = to_allocvec(&envelope).unwrap();
+        let encoded_len = u32::try_from(encoded.len()).unwrap();
+        frame.truncate(FRAME_MAGIC.len());
+        frame.extend_from_slice(&encoded_len.to_le_bytes());
+        frame.extend_from_slice(&encoded);
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    fn replace_safetensors(frame: Vec<u8>, tensor_bytes: &[u8]) -> Vec<u8> {
+        let envelope_len = u32::from_le_bytes(
+            frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let envelope_end = FRAME_PREFIX_LEN + envelope_len;
+        let mut envelope: TensorEnvelope =
+            from_bytes(&frame[FRAME_PREFIX_LEN..envelope_end]).unwrap();
+        let metadata_end = envelope_end + envelope.metadata_len as usize;
+        envelope.tensor_len = tensor_bytes.len() as u64;
+        let encoded = to_allocvec(&envelope).unwrap();
+        let encoded_len = u32::try_from(encoded.len()).unwrap();
+        let mut replaced = Vec::new();
+        replaced.extend_from_slice(FRAME_MAGIC);
+        replaced.extend_from_slice(&encoded_len.to_le_bytes());
+        replaced.extend_from_slice(&encoded);
+        replaced.extend_from_slice(&frame[envelope_end..metadata_end]);
+        replaced.extend_from_slice(tensor_bytes);
+        replaced
+    }
+
+    fn unchecked_safetensors(tensors: &[RawTensor]) -> Vec<u8> {
+        let views = tensors.iter().map(|tensor| {
+            (
+                tensor.name.as_str(),
+                TensorView::new(
+                    to_safetensors_dtype(tensor.dtype),
+                    tensor.shape.clone(),
+                    &tensor.data,
+                )
+                .unwrap(),
+            )
+        });
+        safetensors::tensor::serialize(views, None).unwrap()
+    }
+
+    fn corrupt_first_data_offset(mut frame: Vec<u8>) -> Vec<u8> {
+        let envelope_len = u32::from_le_bytes(
+            frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let envelope_end = FRAME_PREFIX_LEN + envelope_len;
+        let envelope: TensorEnvelope = from_bytes(&frame[FRAME_PREFIX_LEN..envelope_end]).unwrap();
+        let tensor_start = envelope_end + envelope.metadata_len as usize;
+        let needle = b"data_offsets\":[0,";
+        let relative = frame[tensor_start..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("safetensors header contains data offsets");
+        let value_start = tensor_start + relative + needle.len();
+        let closing = frame[value_start..]
+            .iter()
+            .position(|byte| *byte == b']')
+            .map(|index| value_start + index)
+            .unwrap();
+        frame[closing - 1] = if frame[closing - 1] == b'9' {
+            b'8'
+        } else {
+            b'9'
+        };
+        frame
+    }
+
+    #[test]
+    fn round_trip_named_bundle_and_metadata() {
+        let tensors = input_tensors();
+        let frame = encode_input::<ExampleContract>(&tensors, &Metadata { request: 42 }).unwrap();
+        let decoded = decode_input::<ExampleContract>(&frame).unwrap();
+        assert_eq!(decoded.metadata, Metadata { request: 42 });
+        assert_eq!(decoded.tensors, tensors);
+        assert_eq!(decoded.envelope.tensor_encoding, EncodingId::SAFETENSORS_V1);
+    }
+
+    #[test]
+    fn contract_descriptor_serialization_and_hash_are_golden() {
+        let descriptor = ExampleContract::descriptor();
+        assert_eq!(
+            to_allocvec(&descriptor).unwrap(),
+            vec![
+                17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255, 0, 7, 2, 5,
+                105, 109, 97, 103, 101, 2, 1, 5, 98, 97, 116, 99, 104, 0, 3, 1, 13, 1, 4, 109, 97,
+                115, 107, 1, 1, 5, 98, 97, 116, 99, 104, 1, 1, 1, 1, 6, 115, 99, 111, 114, 101,
+                115, 2, 1, 5, 98, 97, 116, 99, 104, 2, 1, 13, 1,
+            ]
+        );
+        assert_eq!(
+            descriptor_hash(&descriptor),
+            ContractHash([
+                140, 202, 10, 193, 124, 163, 45, 96, 88, 107, 115, 122, 226, 166, 170, 1, 44, 143,
+                97, 93, 61, 249, 101, 234, 87, 253, 54, 254, 126, 237, 93, 222,
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_contract_and_version() {
+        let frame =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 1 }).unwrap();
+        assert!(matches!(
+            decode_input::<OtherContract>(&frame),
+            Err(CodecError::ContractIdMismatch)
+        ));
+
+        let frame = rewrite_envelope(frame, |envelope| envelope.contract_version += 1);
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::ContractVersionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_wrong_dtype_rank_and_static_dimension() {
+        let base =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 1 }).unwrap();
+
+        let mut wrong_dtype = input_tensors();
+        wrong_dtype[0].dtype = TensorDtype::I32;
+        let frame = replace_safetensors(base.clone(), &unchecked_safetensors(&wrong_dtype));
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::DtypeMismatch { .. })
+        ));
+
+        let mut wrong_rank = input_tensors();
+        wrong_rank[0].shape = vec![6];
+        let frame = replace_safetensors(base.clone(), &unchecked_safetensors(&wrong_rank));
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::RankMismatch { .. })
+        ));
+
+        let mut wrong_dimension = input_tensors();
+        wrong_dimension[0].shape = vec![3, 2];
+        let frame = replace_safetensors(base, &unchecked_safetensors(&wrong_dimension));
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::DimensionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_inconsistent_symbolic_bindings() {
+        let base =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 1 }).unwrap();
+        let mut tensors = input_tensors();
+        tensors[1].shape = vec![3];
+        tensors[1].data = vec![1, 0, 1];
+        let frame = replace_safetensors(base, &unchecked_safetensors(&tensors));
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::SymbolicDimensionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_offsets_and_unknown_encodings() {
+        let frame =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 1 }).unwrap();
+        let malformed = corrupt_first_data_offset(frame.clone());
+        assert!(matches!(
+            decode_input::<ExampleContract>(&malformed),
+            Err(CodecError::Safetensors(_))
+        ));
+
+        let unknown = rewrite_envelope(frame.clone(), |envelope| {
+            envelope.tensor_encoding = EncodingId(999)
+        });
+        assert!(matches!(
+            decode_input::<ExampleContract>(&unknown),
+            Err(CodecError::UnsupportedTensorEncoding(EncodingId(999)))
+        ));
+
+        let unknown = rewrite_envelope(frame.clone(), |envelope| {
+            envelope.metadata_encoding = EncodingId(998)
+        });
+        assert!(matches!(
+            decode_input::<ExampleContract>(&unknown),
+            Err(CodecError::UnsupportedMetadataEncoding(EncodingId(998)))
+        ));
+
+        let unknown = rewrite_envelope(frame, |envelope| envelope.envelope_version = 2);
+        assert!(matches!(
+            decode_input::<ExampleContract>(&unknown),
+            Err(CodecError::UnsupportedEnvelopeVersion(2))
+        ));
+    }
+}

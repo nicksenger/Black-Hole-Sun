@@ -13,6 +13,145 @@ pub const THINK_CLOSE: u32 = 248069;
 pub type ObjectId = Uuid;
 
 // ---------------------------------------------------------------------------
+// Tensor operation contract and artifact wire format
+// ---------------------------------------------------------------------------
+
+/// Stable, application-assigned identity for a tensor operation contract.
+///
+/// Contract IDs are deliberately explicit rather than derived from Rust type
+/// names, which are not stable across compilers or builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ContractId(pub [u8; 16]);
+
+impl ContractId {
+    pub const fn from_u128(value: u128) -> Self {
+        Self(value.to_be_bytes())
+    }
+}
+
+/// SHA-256 digest of the canonical postcard representation of a contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ContractHash(pub [u8; 32]);
+
+/// Concrete data types understood by the v1 dense tensor codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TensorDtype {
+    Bool,
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    F8E4M3,
+    F8E5M2,
+    F16,
+    BF16,
+    F32,
+    F64,
+    F4,
+    F6E2M3,
+    F6E3M2,
+    F8E8M0,
+    C64,
+}
+
+/// Dtype constraint for a named tensor port.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DtypeConstraint {
+    Any,
+    Exact(TensorDtype),
+    OneOf(Vec<TensorDtype>),
+}
+
+impl DtypeConstraint {
+    pub fn accepts(&self, dtype: TensorDtype) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Exact(expected) => *expected == dtype,
+            Self::OneOf(expected) => expected.contains(&dtype),
+        }
+    }
+}
+
+/// Runtime dimension rule for a tensor port.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DimensionDescriptor {
+    /// A dimension whose concrete size is fixed by the contract.
+    Static(u64),
+    /// A runtime dimension shared by every occurrence of this label.
+    Symbolic(String),
+    /// An unconstrained runtime dimension.
+    Dynamic,
+}
+
+/// Memory-layout constraint for a tensor port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LayoutConstraint {
+    Any,
+    /// Dense row-major storage. This is the only layout emitted by the v1
+    /// safetensors codec.
+    Contiguous,
+}
+
+/// Descriptor for one named tensor in an input or output bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TensorPortDescriptor {
+    pub name: String,
+    pub dimensions: Vec<DimensionDescriptor>,
+    pub dtype: DtypeConstraint,
+    pub layout: LayoutConstraint,
+}
+
+/// Complete distributed identity and schema for an operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractDescriptor {
+    pub id: ContractId,
+    pub version: u32,
+    pub inputs: Vec<TensorPortDescriptor>,
+    pub outputs: Vec<TensorPortDescriptor>,
+}
+
+/// Extensible identifier for an on-wire encoding.
+///
+/// Unknown values deserialize successfully so protocol implementations can
+/// reject them explicitly instead of coupling wire compatibility to an enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EncodingId(pub u16);
+
+impl EncodingId {
+    pub const SAFETENSORS_V1: Self = Self(1);
+    pub const POSTCARD_V1: Self = Self(2);
+}
+
+/// Identifies which half of a contract a tensor bundle inhabits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ContractSide {
+    Input,
+    Output,
+}
+
+/// Authoritative Black Hole Sun header surrounding an encoded tensor bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TensorEnvelope {
+    pub envelope_version: u16,
+    pub contract_id: ContractId,
+    pub contract_version: u32,
+    pub contract_hash: ContractHash,
+    pub side: ContractSide,
+    pub tensor_encoding: EncodingId,
+    pub metadata_encoding: EncodingId,
+    pub metadata_len: u64,
+    pub tensor_len: u64,
+}
+
+impl TensorEnvelope {
+    pub const VERSION: u16 = 1;
+}
+
+// ---------------------------------------------------------------------------
 // Mass wire protocol (black-hole-mass <-> client)
 // ---------------------------------------------------------------------------
 

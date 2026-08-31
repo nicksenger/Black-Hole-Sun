@@ -893,6 +893,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "black-hole-contract"
+version = "0.1.0"
+dependencies = [
+ "black-hole-spec",
+ "glowstick 0.3.0",
+ "postcard",
+ "safetensors",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "black-hole-flux"
 version = "0.1.0"
 dependencies = [
@@ -907,7 +920,7 @@ dependencies = [
  "tokio",
  "tracing",
  "typenum",
- "typosaurus",
+ "typosaurus 0.2.0",
  "uuid",
 ]
 
@@ -947,7 +960,7 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "typosaurus",
+ "typosaurus 0.2.0",
  "uuid",
 ]
 
@@ -964,6 +977,7 @@ name = "black-hole-sun"
 version = "0.1.0"
 dependencies = [
  "black-hole-beam",
+ "black-hole-contract",
  "black-hole-flux",
  "black-hole-mass",
  "black-hole-spec",
@@ -2958,7 +2972,16 @@ name = "glowstick"
 version = "0.2.0"
 source = "git+https://github.com/nicksenger/glowstick.git?branch=blackholesun#13b81ed678776d9380c407ea78eeb3951a8a703b"
 dependencies = [
- "typosaurus",
+ "typosaurus 0.2.0",
+]
+
+[[package]]
+name = "glowstick"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b7ff93cb01da9753fb1718c12e708da5c5481dbef89e607b8aeff125291da3b"
+dependencies = [
+ "typosaurus 0.3.0",
 ]
 
 [[package]]
@@ -3149,6 +3172,8 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.2.0",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -4068,7 +4093,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
- "typosaurus",
+ "typosaurus 0.2.0",
  "uuid",
 ]
 
@@ -4085,7 +4110,7 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "typosaurus",
+ "typosaurus 0.2.0",
  "uuid",
 ]
 
@@ -4104,7 +4129,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
- "typosaurus",
+ "typosaurus 0.2.0",
  "uuid",
 ]
 
@@ -4159,7 +4184,7 @@ dependencies = [
  "jungle-macros",
  "jungle-server",
  "jungle-types",
- "typosaurus",
+ "typosaurus 0.2.0",
 ]
 
 [[package]]
@@ -4196,7 +4221,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.19",
  "tokio",
- "typosaurus",
+ "typosaurus 0.2.0",
  "uuid",
 ]
 
@@ -5472,11 +5497,11 @@ name = "paramecia-arrow"
 version = "0.1.0"
 source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c66e8dce19ad6b179ef68872dcecfdcc0ebd4a74"
 dependencies = [
- "glowstick",
+ "glowstick 0.2.0",
  "inception",
  "thiserror 2.0.19",
  "tracing",
- "typosaurus",
+ "typosaurus 0.2.0",
 ]
 
 [[package]]
@@ -5558,7 +5583,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "crossbeam",
- "glowstick",
+ "glowstick 0.2.0",
  "half",
  "inception",
  "paramecia-arrow",
@@ -5571,7 +5596,7 @@ dependencies = [
  "serde_json",
  "tokenizers",
  "tracing",
- "typosaurus",
+ "typosaurus 0.2.0",
 ]
 
 [[package]]
@@ -5613,14 +5638,14 @@ name = "paramecia-tensor"
 version = "0.1.0"
 source = "git+https://github.com/nicksenger/paramecia.git?branch=blackholesun#c66e8dce19ad6b179ef68872dcecfdcc0ebd4a74"
 dependencies = [
- "glowstick",
+ "glowstick 0.2.0",
  "inception",
  "paramecia-arrow",
  "paramecia-core",
  "paramecia-nn",
  "thiserror 2.0.19",
  "tracing",
- "typosaurus",
+ "typosaurus 0.2.0",
 ]
 
 [[package]]
@@ -6608,6 +6633,17 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safetensors"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "675656c1eabb620b921efea4f9199f97fc86e36dd6ffd1fbbe48d0f59a4987f5"
+dependencies = [
+ "hashbrown 0.16.1",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "same-file"
@@ -8058,6 +8094,15 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 name = "typosaurus"
 version = "0.2.0"
 source = "git+https://github.com/nicksenger/typosaurus.git?branch=jungle#a5b04c149c5429ebf8937d1968bd196e88dcc43f"
+dependencies = [
+ "typenum",
+]
+
+[[package]]
+name = "typosaurus"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a531866b5880213c9309710882559bc13defd7ff063048a8e579f25ab365a66c"
 dependencies = [
  "typenum",
 ]
