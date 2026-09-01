@@ -10,8 +10,8 @@ use std::{
 
 use black_hole_spec::{
     ContractDescriptor, ContractHash, ContractId, ContractSide, DimensionDescriptor,
-    DtypeConstraint, EncodingId, LayoutConstraint, TensorDtype, TensorEnvelope,
-    TensorPortDescriptor,
+    DtypeConstraint, EncodingId, LayoutConstraint, OperationCapability, TensorDtype,
+    TensorEnvelope, TensorPortDescriptor,
 };
 use glowstick::Shape;
 use postcard::{from_bytes, to_allocvec};
@@ -244,6 +244,17 @@ pub struct DecodedTensorBundle<S, M> {
     marker: PhantomData<S>,
 }
 
+/// Runtime-validated artifact used by type-erased operation hosts.
+///
+/// Metadata stays encoded because an injected operation, rather than the Mass
+/// router, owns its concrete type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidatedArtifact {
+    pub envelope: TensorEnvelope,
+    pub metadata: Vec<u8>,
+    pub tensors: Vec<RawTensor>,
+}
+
 /// Fail-closed validation or encoding error.
 #[derive(Debug, Error)]
 pub enum CodecError {
@@ -319,6 +330,17 @@ pub fn descriptor_hash(descriptor: &ContractDescriptor) -> ContractHash {
     ContractHash(Sha256::digest(bytes).into())
 }
 
+/// V1 runtime capability declaration for a compile-time contract.
+pub fn operation_capability<C: TensorContract>() -> OperationCapability {
+    let descriptor = C::descriptor();
+    OperationCapability {
+        descriptor_hash: descriptor_hash(&descriptor),
+        descriptor,
+        tensor_encodings: vec![EncodingId::SAFETENSORS_V1],
+        metadata_encodings: vec![EncodingId::POSTCARD_V1],
+    }
+}
+
 /// Encode a contract input bundle with postcard metadata and safetensors data.
 pub fn encode_input<C>(tensors: &[RawTensor], metadata: &C::Metadata) -> Result<Vec<u8>, CodecError>
 where
@@ -360,6 +382,87 @@ where
     C::Metadata: DeserializeOwned,
 {
     decode::<C, C::Output>(ContractSide::Output, frame)
+}
+
+/// Decode and validate a tensor artifact against a runtime contract.
+///
+/// This is the distributed counterpart to `decode_input::<C>`: Mass can
+/// validate an injected operation's actual payload after Rust types have been
+/// erased at the process boundary.
+pub fn validate_artifact(
+    descriptor: &ContractDescriptor,
+    expected_side: ContractSide,
+    frame: &[u8],
+) -> Result<ValidatedArtifact, CodecError> {
+    if frame.len() < FRAME_PREFIX_LEN {
+        return Err(CodecError::Truncated);
+    }
+    if &frame[..FRAME_MAGIC.len()] != FRAME_MAGIC {
+        return Err(CodecError::InvalidMagic);
+    }
+    let envelope_len = u32::from_le_bytes(
+        frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+            .try_into()
+            .expect("fixed-size prefix"),
+    ) as usize;
+    let envelope_end = FRAME_PREFIX_LEN
+        .checked_add(envelope_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let envelope_bytes = frame
+        .get(FRAME_PREFIX_LEN..envelope_end)
+        .ok_or(CodecError::Truncated)?;
+    let envelope: TensorEnvelope = from_bytes(envelope_bytes)?;
+    validate_runtime_envelope(&envelope, descriptor, expected_side)?;
+
+    let metadata_len: usize = envelope
+        .metadata_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let tensor_len: usize = envelope
+        .tensor_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let metadata_end = envelope_end
+        .checked_add(metadata_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let tensor_end = metadata_end
+        .checked_add(tensor_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    if tensor_end != frame.len() {
+        return Err(CodecError::LengthMismatch);
+    }
+    let metadata = frame
+        .get(envelope_end..metadata_end)
+        .ok_or(CodecError::Truncated)?
+        .to_vec();
+    let tensor_bytes = frame
+        .get(metadata_end..tensor_end)
+        .ok_or(CodecError::Truncated)?;
+    let safetensors = SafeTensors::deserialize(tensor_bytes)?;
+    let mut tensors = Vec::with_capacity(safetensors.len());
+    for (name, view) in safetensors.tensors() {
+        tensors.push(RawTensor {
+            name,
+            dtype: from_safetensors_dtype(view.dtype())?,
+            shape: view.shape().to_vec(),
+            data: view.data().to_vec(),
+        });
+    }
+
+    let ports = ports_for(descriptor, expected_side);
+    validate_schema(ports)?;
+    validate_tensors(ports, &tensors)?;
+    tensors.sort_by_key(|tensor| {
+        ports
+            .iter()
+            .position(|port| port.name == tensor.name)
+            .expect("validated tensor has a matching port")
+    });
+    Ok(ValidatedArtifact {
+        envelope,
+        metadata,
+        tensors,
+    })
 }
 
 fn encode<C>(
@@ -509,6 +612,14 @@ fn validate_envelope<C: TensorContract>(
     envelope: &TensorEnvelope,
     expected_side: ContractSide,
 ) -> Result<(), CodecError> {
+    validate_runtime_envelope(&envelope, &C::descriptor(), expected_side)
+}
+
+fn validate_runtime_envelope(
+    envelope: &TensorEnvelope,
+    descriptor: &ContractDescriptor,
+    expected_side: ContractSide,
+) -> Result<(), CodecError> {
     if envelope.envelope_version != TensorEnvelope::VERSION {
         return Err(CodecError::UnsupportedEnvelopeVersion(
             envelope.envelope_version,
@@ -524,7 +635,6 @@ fn validate_envelope<C: TensorContract>(
             envelope.metadata_encoding,
         ));
     }
-    let descriptor = C::descriptor();
     if envelope.contract_id != descriptor.id {
         return Err(CodecError::ContractIdMismatch);
     }
@@ -534,7 +644,7 @@ fn validate_envelope<C: TensorContract>(
             actual: envelope.contract_version,
         });
     }
-    if envelope.contract_hash != descriptor_hash(&descriptor) {
+    if envelope.contract_hash != descriptor_hash(descriptor) {
         return Err(CodecError::ContractHashMismatch);
     }
     if envelope.side != expected_side {

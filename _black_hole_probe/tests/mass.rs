@@ -3,14 +3,156 @@
 mod common;
 
 use black_hole_sun::{
-    DarkToken, InferenceInput, InferenceRequest, LogitEntry, MassClient, MassModelCapacity,
-    MassModelConfig, TestMassServer, TestVoidServer, Tokenizer, VoidClient,
+    decode_output, encode_input, encode_output, operation_capability, ArtifactRef, ContractId,
+    DarkToken, DimensionDescriptor, DtypeConstraint, InferenceInput, InferenceRequest, LogitEntry,
+    MassClient, MassModelCapacity, MassModelConfig, OperationCapability, OperationImplementation,
+    RawTensor, SingleTensorSpec, TensorContract, TensorDtype, TensorPortSpec, TestMassServer,
+    TestVoidServer, Tokenizer, VoidClient,
 };
 use postcard::{from_bytes, to_allocvec};
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use uuid::Uuid;
 
 use common::*;
+
+struct FakeValues;
+struct FakeLength;
+struct DeterministicFakeContract;
+
+impl TensorPortSpec for FakeValues {
+    type Shape = black_hole_sun::black_hole_contract::glowstick::Shape1<
+        black_hole_sun::black_hole_contract::glowstick::Dyn<FakeLength>,
+    >;
+
+    const NAME: &'static str = "values";
+
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![DimensionDescriptor::Symbolic("length".into())]
+    }
+
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::U32)
+    }
+}
+
+impl TensorContract for DeterministicFakeContract {
+    type Input = SingleTensorSpec<FakeValues>;
+    type Output = SingleTensorSpec<FakeValues>;
+    type Metadata = ();
+
+    const ID: ContractId = ContractId::from_u128(0x6465_7465_726d_696e_6973_7469_632d_6f70);
+    const VERSION: u32 = 1;
+}
+
+#[derive(Default)]
+struct DeterministicFakeOperation {
+    instances: Mutex<HashSet<Uuid>>,
+}
+
+#[async_trait::async_trait]
+impl OperationImplementation for DeterministicFakeOperation {
+    fn capability(&self) -> OperationCapability {
+        operation_capability::<DeterministicFakeContract>()
+    }
+
+    async fn start(&self, instance_id: Uuid) -> Result<(), String> {
+        if !self.instances.lock().unwrap().insert(instance_id) {
+            return Err("fake instance already started".into());
+        }
+        Ok(())
+    }
+
+    async fn forward(&self, instance_id: Uuid, input: Vec<u8>) -> Result<Vec<u8>, String> {
+        if !self.instances.lock().unwrap().contains(&instance_id) {
+            return Err("fake instance is not running".into());
+        }
+        let decoded =
+            black_hole_sun::black_hole_contract::decode_input::<DeterministicFakeContract>(&input)
+                .map_err(|error| error.to_string())?;
+        let mut tensor = decoded.tensors.into_iter().next().unwrap();
+        for bytes in tensor.data.chunks_exact_mut(4) {
+            let value = u32::from_le_bytes(bytes.try_into().unwrap()).wrapping_add(1);
+            bytes.copy_from_slice(&value.to_le_bytes());
+        }
+        encode_output::<DeterministicFakeContract>(&[tensor], &())
+            .map_err(|error| error.to_string())
+    }
+
+    async fn shutdown(&self, instance_id: Uuid) -> Result<(), String> {
+        if !self.instances.lock().unwrap().remove(&instance_id) {
+            return Err("fake instance is not running".into());
+        }
+        Ok(())
+    }
+}
+
+fn fake_input(values: &[u32]) -> Vec<u8> {
+    let tensor = RawTensor {
+        name: "values".into(),
+        dtype: TensorDtype::U32,
+        shape: vec![values.len()],
+        data: values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect(),
+    };
+    encode_input::<DeterministicFakeContract>(&[tensor], &()).unwrap()
+}
+
+fn fake_output_values(bytes: &[u8]) -> Vec<u32> {
+    decode_output::<DeterministicFakeContract>(bytes)
+        .unwrap()
+        .tensors[0]
+        .data
+        .chunks_exact(4)
+        .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+        .collect()
+}
+
+#[tokio::test]
+async fn generic_mass_hosts_injected_operation_and_validates_payloads() {
+    init_tracing();
+    let void_server = TestVoidServer::new().tcp().serve().await.unwrap();
+    let operation = Arc::new(DeterministicFakeOperation::default());
+    let mass_server = TestMassServer::new("unused-by-generic-operation")
+        .tcp()
+        .void_addr(void_server.local_addr())
+        .operation(operation)
+        .serve()
+        .await
+        .unwrap();
+    let void_client = VoidClient::new_tcp(void_server.local_addr());
+    let mass_client =
+        MassClient::<DeterministicFakeContract>::new_tcp_typed(mass_server.local_addr());
+    let instance_id = Uuid::new_v4();
+
+    mass_client.start_operation(instance_id).await.unwrap();
+    let input_id = void_client.upload(fake_input(&[1, 7, 41])).await.unwrap();
+    let output = mass_client
+        .forward(instance_id, ArtifactRef::from_object_id(input_id))
+        .await
+        .unwrap();
+    let output_bytes = void_client.download(output.object_id()).await.unwrap();
+    assert_eq!(fake_output_values(&output_bytes), vec![2, 8, 42]);
+
+    let malformed_id = void_client
+        .upload(b"not a tensor envelope".to_vec())
+        .await
+        .unwrap();
+    let error = mass_client
+        .forward(instance_id, ArtifactRef::from_object_id(malformed_id))
+        .await
+        .expect_err("Mass must validate the actual input before calling the operation");
+    assert!(error.contains("payload validation failed"), "{error}");
+
+    mass_client.shutdown_operation(instance_id).await.unwrap();
+    mass_server.abort();
+    void_server.abort();
+}
 
 #[tokio::test]
 async fn rejects_requests_for_unknown_model_instance() {

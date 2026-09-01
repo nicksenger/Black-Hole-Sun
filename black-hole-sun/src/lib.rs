@@ -41,15 +41,17 @@ pub use black_hole_spec::{
     DimensionDescriptor, DtypeConstraint, Emission, EmissionId, EncodingId, InferenceInput,
     InferenceOutput, InferenceOutputId, InferenceRequest, LayoutConstraint, LogitEntry,
     MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn, MassModelCapacity, MassModelConfig,
-    MassModelParams, MassOut, MassPerturbationMode, ObjectId, ObjectRef, Potentiation,
-    SequenceOutput, TensorDtype, TensorEnvelope, TensorPortDescriptor, Transmission,
+    MassModelParams, MassOut, MassPerturbationMode, ObjectId, ObjectRef, OperationArtifactRef,
+    OperationCapability, Potentiation, SequenceOutput, TensorDtype, TensorEnvelope,
+    TensorPortDescriptor, Transmission,
 };
 
 // Convenience re-exports — typed operation contracts and tensor codec
 pub use black_hole_contract::{
-    decode_input, decode_output, descriptor_hash, encode_input, encode_output, CodecError,
-    DecodedTensorBundle, PortList, QwenDarkInference, RawTensor, SingleTensorSpec,
-    TensorBundleSpec, TensorContract, TensorPortSpec, TensorSpec,
+    decode_input, decode_output, descriptor_hash, encode_input, encode_output,
+    operation_capability, validate_artifact, CodecError, DecodedTensorBundle, PortList,
+    QwenDarkInference, RawTensor, SingleTensorSpec, TensorBundleSpec, TensorContract,
+    TensorPortSpec, TensorSpec, ValidatedArtifact,
 };
 
 // Convenience re-exports — void types
@@ -58,7 +60,7 @@ pub use black_hole_void::{
 };
 
 // Convenience re-exports — mass types
-pub use black_hole_mass::ServerBuilder as MassServerBuilder;
+pub use black_hole_mass::{OperationImplementation, ServerBuilder as MassServerBuilder};
 
 // The beam crate; its `piano` feature (score text format, piano event
 // types) is enabled by this crate's `piano` feature.

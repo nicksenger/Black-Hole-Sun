@@ -10,6 +10,8 @@ pub const IM_END: u32 = 248046;
 pub const PAD: u32 = 248044;
 pub const THINK_OPEN: u32 = 248068;
 pub const THINK_CLOSE: u32 = 248069;
+/// Current generic Mass start/forward protocol version.
+pub const MASS_OPERATION_PROTOCOL_VERSION: u16 = 1;
 
 /// Opaque identifier for objects stored in void.
 pub type ObjectId = Uuid;
@@ -311,6 +313,41 @@ pub struct TensorEnvelope {
     pub tensor_len: u64,
 }
 
+/// Runtime contract and codec declaration used by Mass discovery and start.
+///
+/// The hash covers `descriptor`'s canonical postcard representation. Keeping
+/// both values on the wire lets a receiver reject descriptors that were
+/// corrupted or paired with the wrong distributed identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationCapability {
+    pub descriptor: ContractDescriptor,
+    pub descriptor_hash: ContractHash,
+    pub tensor_encodings: Vec<EncodingId>,
+    pub metadata_encodings: Vec<EncodingId>,
+}
+
+/// Location-erased artifact reference used by the generic Mass wire protocol.
+///
+/// Operation-typed clients convert this to and from `ArtifactRef<Op::Input>`
+/// and `ArtifactRef<Op::Output>`. Future transfer and stream locations can be
+/// added without changing the generic start/forward variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OperationArtifactRef {
+    Committed(ObjectId),
+}
+
+impl OperationArtifactRef {
+    pub const fn committed(id: ObjectId) -> Self {
+        Self::Committed(id)
+    }
+
+    pub const fn object_id(self) -> ObjectId {
+        match self {
+            Self::Committed(id) => id,
+        }
+    }
+}
+
 impl TensorEnvelope {
     pub const VERSION: u16 = 1;
 }
@@ -391,6 +428,20 @@ pub enum MassIn {
         /// (0.5 = plain average of live and checkpoint weights).
         contribution: f32,
     },
+    /// Start a generic tensor-operation instance.
+    StartOperation {
+        protocol_version: u16,
+        instance_id: Uuid,
+        capability: OperationCapability,
+    },
+    /// Run a generic forward operation on a typed artifact.
+    ForwardOperation {
+        protocol_version: u16,
+        instance_id: Uuid,
+        input: OperationArtifactRef,
+    },
+    /// Shut down a generic tensor-operation instance.
+    ShutdownOperation { instance_id: Uuid },
 }
 
 /// Response sent by the mass server to the client.
@@ -412,6 +463,8 @@ pub enum MassOut {
     FusedWeights { fused_id: ObjectId },
     /// Error from any operation.
     Error { message: String },
+    /// Generic forward complete; contains the output artifact reference.
+    Forwarded { output: OperationArtifactRef },
 }
 
 /// Runtime model parameters resolved for a running mass model instance.
@@ -507,6 +560,9 @@ pub struct WorkerCapabilities {
     /// without an architecture feature); such workers only receive starts
     /// that carry no architecture requirement.
     pub architectures: Vec<MassArchitecture>,
+    /// Complete operation contracts and codecs this worker can host.
+    #[serde(default)]
+    pub operations: Vec<OperationCapability>,
 }
 
 /// Forwardable model operation used for root->worker tunnel requests.
@@ -548,6 +604,19 @@ pub enum TunnelRequest {
         model_id: Uuid,
         checkpoint_id: ObjectId,
         contribution: f32,
+    },
+    StartOperation {
+        protocol_version: u16,
+        instance_id: Uuid,
+        capability: OperationCapability,
+    },
+    ForwardOperation {
+        protocol_version: u16,
+        instance_id: Uuid,
+        input: OperationArtifactRef,
+    },
+    ShutdownOperation {
+        instance_id: Uuid,
     },
 }
 

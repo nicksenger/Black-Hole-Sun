@@ -213,6 +213,7 @@ pub struct TestMassServer {
     training_lr: Option<f64>,
     training_epsilon: Option<f64>,
     frozen: bool,
+    operation: Option<Arc<dyn black_hole_mass::OperationImplementation>>,
 }
 
 impl TestMassServer {
@@ -235,6 +236,7 @@ impl TestMassServer {
             training_lr: None,
             training_epsilon: None,
             frozen: false,
+            operation: None,
         }
     }
 
@@ -334,6 +336,14 @@ impl TestMassServer {
         self
     }
 
+    pub fn operation(
+        mut self,
+        operation: Arc<dyn black_hole_mass::OperationImplementation>,
+    ) -> Self {
+        self.operation = Some(operation);
+        self
+    }
+
     pub async fn serve(self) -> Result<RunningTestMassServer, black_hole_mass::ServerError> {
         let mut builder = MassServerBuilder::new(self.model_path)
             .transport_mode(self.transport_mode)
@@ -341,6 +351,9 @@ impl TestMassServer {
             .kv_cache_quant(self.kv_cache_quant);
         if self.frozen {
             builder = builder.frozen();
+        }
+        if let Some(operation) = self.operation {
+            builder = builder.operation_shared(operation);
         }
         if let Some(void_addr) = self.void_addr {
             builder = builder.void_addr(void_addr);

@@ -1,9 +1,10 @@
 use std::{marker::PhantomData, net::SocketAddr};
 
-use black_hole_contract::{QwenDarkInference, TensorContract};
+use black_hole_contract::{operation_capability, QwenDarkInference, TensorContract};
 use black_hole_flux::ops::{CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, ResetOps};
 use black_hole_spec::{
     ArtifactRef, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut, ObjectId,
+    OperationArtifactRef, MASS_OPERATION_PROTOCOL_VERSION,
 };
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
@@ -267,13 +268,14 @@ impl<Op> MassClient<Op>
 where
     Op: TensorContract,
 {
-    /// Start a generic operation instance using the compatibility start
-    /// protocol. Stage 3 replaces this wire request with the full descriptor.
+    /// Start a generic operation instance with its full runtime contract and
+    /// supported v1 codecs.
     pub async fn start_operation(&self, instance_id: ObjectId) -> Result<(), String> {
         match self
-            .request(&MassIn::Start {
-                model_id: instance_id,
-                model_config: None,
+            .request(&MassIn::StartOperation {
+                protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
+                instance_id,
+                capability: operation_capability::<Op>(),
             })
             .await?
         {
@@ -283,21 +285,22 @@ where
         }
     }
 
-    /// Forward a typed artifact through Mass. The type relationship is
-    /// enforced now; descriptor validation is added by the Stage 3 protocol.
+    /// Forward a typed artifact through Mass. The host validates the concrete
+    /// tensor envelope against the start contract before execution.
     pub async fn forward(
         &self,
         instance_id: ObjectId,
         input: ArtifactRef<Op::Input>,
     ) -> Result<ArtifactRef<Op::Output>, String> {
         match self
-            .request(&MassIn::Infer {
-                model_id: instance_id,
-                input_id: input.object_id(),
+            .request(&MassIn::ForwardOperation {
+                protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
+                instance_id,
+                input: OperationArtifactRef::committed(input.object_id()),
             })
             .await?
         {
-            MassOut::Inferred { output_id } => Ok(ArtifactRef::from_object_id(output_id)),
+            MassOut::Forwarded { output } => Ok(ArtifactRef::from_object_id(output.object_id())),
             MassOut::Error { message } => Err(message),
             _ => Err("unexpected mass response for operation forward".to_string()),
         }
@@ -305,9 +308,7 @@ where
 
     pub async fn shutdown_operation(&self, instance_id: ObjectId) -> Result<(), String> {
         match self
-            .request(&MassIn::Shutdown {
-                model_id: instance_id,
-            })
+            .request(&MassIn::ShutdownOperation { instance_id })
             .await?
         {
             MassOut::Ack => Ok(()),

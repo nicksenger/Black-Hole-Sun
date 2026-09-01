@@ -929,6 +929,8 @@ dependencies = [
 name = "black-hole-mass"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "black-hole-contract",
  "black-hole-spec",
  "clap",
  "directories-next",
