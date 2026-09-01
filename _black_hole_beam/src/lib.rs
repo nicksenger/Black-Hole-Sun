@@ -71,8 +71,9 @@ mod tests {
     #[cfg(feature = "piano")]
     use crate::piano::PianoPointerSource;
     use crate::visual::{
-        lerp_color, node_style_colors, warp_node_style_colors, CellVisualState, NodeProgress,
-        NodeStateVisual, COLOR_FADE_DURATION, MAX_PENDING_PHASES, MIN_COLOR_STATE_DURATION,
+        lerp_color, node_style_colors, operational_node_style_colors, warp_node_style_colors,
+        CellVisualState, NodeProgress, NodeStateVisual, COLOR_FADE_DURATION, MAX_PENDING_PHASES,
+        MIN_COLOR_STATE_DURATION,
     };
 
     use black_hole_flux::sun::{
@@ -200,6 +201,18 @@ mod tests {
     }
 
     #[test]
+    fn forward_program_statuses_have_distinct_colors() {
+        let queued = operational_node_style_colors(SunOperationalState::Queued);
+        let running = operational_node_style_colors(SunOperationalState::Running);
+        let succeeded = operational_node_style_colors(SunOperationalState::Succeeded);
+        let failed = operational_node_style_colors(SunOperationalState::Failed);
+
+        assert_ne!(queued.body, running.body);
+        assert_ne!(running.body, succeeded.body);
+        assert_ne!(succeeded.body, failed.body);
+    }
+
+    #[test]
     fn registers_unique_subpanel_animals() {
         let config = BeamBuilder::new()
             .register_subpanel_animal::<TestCell>()
@@ -218,6 +231,15 @@ mod tests {
         assert_eq!(config.subpanel_animals[1].title, "GenericCell<String>");
         assert_eq!(config.subpanel_animals[2].animal_label, "GenericCell<u8>");
         assert_eq!(config.subpanel_animals[2].title, "GenericCell<u8>");
+    }
+
+    #[test]
+    fn registers_static_subpanel_animals() {
+        let config = BeamBuilder::new()
+            .register_static_subpanel_animal::<TestCell>()
+            .into_config();
+
+        assert!(config.subpanel_animals[0].prefer_static);
     }
 
     #[test]
@@ -439,6 +461,22 @@ mod tests {
         app.model.cells.push(cell);
 
         let _task = app.open_subpanel_for_node(3);
+        assert!(app.subpanel.is_some());
+        assert_eq!(app.subpanel_notice, None);
+    }
+
+    #[test]
+    fn static_node_click_opens_an_inspectable_subpanel() {
+        let config = BeamBuilder::new()
+            .register_subpanel_animal::<TestCell>()
+            .into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+        app.model
+            .cells
+            .push(CellDefinition::new::<TestCell>(3, vec![0], vec![]));
+
+        let _task = app.open_subpanel_for_node(3);
+
         assert!(app.subpanel.is_some());
         assert_eq!(app.subpanel_notice, None);
     }

@@ -18,7 +18,7 @@ use crate::model::BeamModel;
 use crate::piano::score_text::BhsScore;
 #[cfg(feature = "piano")]
 use crate::piano::PianoEvent;
-use crate::subpanel::{build_subpanel_viewer, SubpanelConfig};
+use crate::subpanel::{build_static_subpanel_viewer, build_subpanel_viewer, SubpanelConfig};
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 900.0;
@@ -165,7 +165,29 @@ impl BeamBuilder {
     /// Warp nodes are labeled `Warp<WarpAnimal, BoundaryAnimal>` and run
     /// the boundary animal's journey, so registering a warp node's boundary
     /// animal opens its subpanel on that boundary's live journey.
-    pub fn register_subpanel_animal<A>(mut self) -> Self
+    pub fn register_subpanel_animal<A>(self) -> Self
+    where
+        A: Animal + 'static,
+        A::Flow: JourneyAstSource,
+    {
+        self.register_subpanel::<A>(false)
+    }
+
+    /// Register an animal whose node-click subpanel always shows its static
+    /// flow structure.
+    ///
+    /// This is useful for self-contained visual examples: the main Beam can
+    /// display a simulated or remote Sun appearance while each child panel
+    /// remains inspectable without a live Jungle journey.
+    pub fn register_static_subpanel_animal<A>(self) -> Self
+    where
+        A: Animal + 'static,
+        A::Flow: JourneyAstSource,
+    {
+        self.register_subpanel::<A>(true)
+    }
+
+    fn register_subpanel<A>(mut self, prefer_static: bool) -> Self
     where
         A: Animal + 'static,
         A::Flow: JourneyAstSource,
@@ -179,6 +201,8 @@ impl BeamBuilder {
             self.subpanel_animals.push(SubpanelConfig {
                 animal_label: animal_label.clone(),
                 title: animal_label,
+                prefer_static,
+                build_static_viewer: build_static_subpanel_viewer::<A>,
                 build_viewer: build_subpanel_viewer::<A>,
             });
         }

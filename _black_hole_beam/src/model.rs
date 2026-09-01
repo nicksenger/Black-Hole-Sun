@@ -427,6 +427,8 @@ pub(crate) fn model_display_changed(current: &BeamModel, next: &BeamModel) -> bo
                 current.id != next.id
                     || current.journey_id != next.journey_id
                     || current.animal_name != next.animal_name
+                    || current.operational_state != next.operational_state
+                    || current.phase_annotation != next.phase_annotation
                     || current.grad_step != next.grad_step
                     || current.grad_steps != next.grad_steps
                     || current.frozen != next.frozen

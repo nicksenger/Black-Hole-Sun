@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use black_hole_flux::sun::SunNodeState;
+use black_hole_flux::sun::{SunNodeState, SunOperationalState};
 use iced::Color;
 
 use crate::style::black_hole_text;
@@ -107,6 +107,35 @@ pub(crate) fn node_style_colors(
             (body, fire_red)
         }
         SunNodeState::Optimization => unreachable!("optimization is handled above"),
+    };
+    NodeStyleColors {
+        body,
+        border,
+        text: contrasting_text(body),
+    }
+}
+
+/// Program-neutral status colors used when a Sun program publishes a phase
+/// annotation (for example, a forward-only pass) instead of a legacy
+/// two-sided optimization phase.
+pub(crate) fn operational_node_style_colors(state: SunOperationalState) -> NodeStyleColors {
+    let (body, border) = match state {
+        SunOperationalState::Queued => {
+            let body = Color::from_rgb8(66, 78, 96);
+            (body, lighten(body, 0.2))
+        }
+        SunOperationalState::Running => {
+            let body = Color::from_rgb8(228, 108, 30);
+            (body, Color::from_rgb8(255, 190, 80))
+        }
+        SunOperationalState::Succeeded => {
+            let body = Color::from_rgb8(36, 156, 92);
+            (body, Color::from_rgb8(101, 232, 160))
+        }
+        SunOperationalState::Failed => {
+            let body = Color::from_rgb8(195, 24, 41);
+            (body, Color::from_rgb8(255, 104, 116))
+        }
     };
     NodeStyleColors {
         body,

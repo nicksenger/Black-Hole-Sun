@@ -15,7 +15,17 @@ type JungleSubpanelViewer = EjectedViewer<DefaultTheme, AnyAnimal>;
 pub(crate) struct SubpanelConfig {
     pub(crate) animal_label: String,
     pub(crate) title: String,
+    pub(crate) prefer_static: bool,
+    pub(crate) build_static_viewer: fn() -> JungleSubpanelViewer,
     pub(crate) build_viewer: fn(SharedJungleClient, Uuid) -> JungleSubpanelViewer,
+}
+
+pub(crate) fn build_static_subpanel_viewer<A>() -> JungleSubpanelViewer
+where
+    A: Animal + 'static,
+    A::Flow: JourneyAstSource,
+{
+    JungleViewerBuilder::new().eject_animal_with_theme::<A, _, AnyAnimal>(subpanel_theme())
 }
 
 pub(crate) fn build_subpanel_viewer<A>(
@@ -26,13 +36,18 @@ where
     A: Animal + 'static,
     A::Flow: JourneyAstSource,
 {
-    let theme = DefaultTheme::default().with_cluster_expansion_config(ClusterExpansionConfig {
+    JungleViewerBuilder::new().eject_live_animal_with_theme::<A, SharedJungleClient, _, AnyAnimal>(
+        client,
+        journey_id,
+        subpanel_theme(),
+    )
+}
+
+fn subpanel_theme() -> DefaultTheme {
+    DefaultTheme::default().with_cluster_expansion_config(ClusterExpansionConfig {
         while_clusters: ClusterExpansionMode::AlwaysExpanded,
         transparent_clusters: ClusterExpansionMode::AlwaysExpanded,
-    });
-    JungleViewerBuilder::new().eject_live_animal_with_theme::<A, SharedJungleClient, _, AnyAnimal>(
-        client, journey_id, theme,
-    )
+    })
 }
 
 pub(crate) struct SubpanelState {

@@ -34,8 +34,8 @@ use crate::style::{
 };
 use crate::subpanel::{SubpanelConfig, SubpanelState};
 use crate::visual::{
-    displayed_grad_step, node_style_colors, warp_node_style_colors, CellVisualState,
-    NodeStateVisual, NodeStyleColors,
+    displayed_grad_step, node_style_colors, operational_node_style_colors, warp_node_style_colors,
+    CellVisualState, NodeStateVisual, NodeStyleColors,
 };
 
 #[cfg(feature = "piano")]
@@ -513,9 +513,8 @@ impl BeamApp {
         } else {
             self.cell_graph()
         };
-        let show_subpanel_overlay = self.live.is_some()
-            && !self.config.subpanel_animals.is_empty()
-            && self.subpanel.is_some();
+        let show_subpanel_overlay =
+            !self.config.subpanel_animals.is_empty() && self.subpanel.is_some();
         let main_layer: Element<'_, Message> = if let Some(notice) = &self.subpanel_notice {
             column![
                 container(text(notice).size(13))
@@ -724,27 +723,37 @@ impl BeamApp {
                 // A warp cell whose subgraph is merged into the main graph is
                 // colored like a regular node rather than as a warp boundary.
                 let warp = !cell.warp_journey_id.is_nil() && !self.is_warp_merged(cell.id);
-                let style = self
-                    .visuals
-                    .get(&cell.id)
-                    .map(|visual| visual.style(cell.grad_steps, cell.frozen, warp, self.color_now))
-                    .unwrap_or_else(|| {
-                        if warp {
-                            warp_node_style_colors(
-                                cell.state,
-                                cell.grad_step,
-                                cell.grad_steps,
-                                cell.frozen,
-                            )
-                        } else {
-                            node_style_colors(
-                                cell.state,
-                                cell.grad_step,
-                                cell.grad_steps,
-                                cell.frozen,
-                            )
-                        }
-                    });
+                let style = if cell.phase_annotation.is_some() {
+                    let mut style = operational_node_style_colors(cell.operational_state);
+                    if warp {
+                        style.body = iced::Color::BLACK;
+                        style.text = iced::Color::WHITE;
+                    }
+                    style
+                } else {
+                    self.visuals
+                        .get(&cell.id)
+                        .map(|visual| {
+                            visual.style(cell.grad_steps, cell.frozen, warp, self.color_now)
+                        })
+                        .unwrap_or_else(|| {
+                            if warp {
+                                warp_node_style_colors(
+                                    cell.state,
+                                    cell.grad_step,
+                                    cell.grad_steps,
+                                    cell.frozen,
+                                )
+                            } else {
+                                node_style_colors(
+                                    cell.state,
+                                    cell.grad_step,
+                                    cell.grad_steps,
+                                    cell.frozen,
+                                )
+                            }
+                        })
+                };
                 (cell.id, style)
             })
             .collect()
@@ -753,10 +762,6 @@ impl BeamApp {
     /// Opens the child-flow subpanel for a node. Clicking a warp cell also
     /// toggles its nested sun in and out of the main graph.
     pub(crate) fn open_subpanel_for_node(&mut self, node_id: u32) -> Task<Message> {
-        let Some(client) = self.live.as_ref().map(|live| live.client.clone()) else {
-            return Task::none();
-        };
-
         let Some(cell) = self.model.cells.iter().find(|cell| cell.id == node_id) else {
             return Task::none();
         };
@@ -765,13 +770,6 @@ impl BeamApp {
         let is_warp = !cell.warp_journey_id.is_nil();
 
         self.subpanel_notice = None;
-        if journey_id.is_nil() {
-            self.subpanel_notice = Some(format!(
-                "Cell {node_id} does not have an active journey yet."
-            ));
-            return Task::none();
-        }
-
         let Some(subpanel_config) = self.resolve_subpanel_config(&animal_name) else {
             self.subpanel_notice = Some(format!(
                 "No registered subpanel animal for {}.",
@@ -779,13 +777,19 @@ impl BeamApp {
             ));
             return Task::none();
         };
+        let static_subpanel = self.live.is_none() || subpanel_config.prefer_static;
+        if !static_subpanel && journey_id.is_nil() {
+            self.subpanel_notice = Some(format!(
+                "Cell {node_id} does not have an active journey yet."
+            ));
+            return Task::none();
+        }
 
         // The requested child flow is already on display; clicking the same
         // node again closes it and collapses any warp subgraph it expanded.
-        let closing = self
-            .subpanel
-            .as_ref()
-            .is_some_and(|subpanel| subpanel.journey_id == journey_id);
+        let closing = self.subpanel.as_ref().is_some_and(|subpanel| {
+            subpanel.node_id == node_id && (static_subpanel || subpanel.journey_id == journey_id)
+        });
         if is_warp {
             let path = self.model.warp_paths.get(&node_id).cloned();
             if let Some(path) = path {
@@ -816,7 +820,17 @@ impl BeamApp {
                 node_id,
                 title: subpanel_config.title,
                 journey_id,
-                viewer: (subpanel_config.build_viewer)(SharedJungleClient::new(client), journey_id),
+                viewer: if static_subpanel {
+                    (subpanel_config.build_static_viewer)()
+                } else {
+                    let client = self
+                        .live
+                        .as_ref()
+                        .expect("a live subpanel requires a live Beam")
+                        .client
+                        .clone();
+                    (subpanel_config.build_viewer)(SharedJungleClient::new(client), journey_id)
+                },
             });
         }
 
