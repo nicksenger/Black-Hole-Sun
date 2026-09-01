@@ -874,7 +874,9 @@ name = "black-hole-beam"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "black-hole-contract",
  "black-hole-flux",
+ "black-hole-spec",
  "clap",
  "cpal",
  "hound",
