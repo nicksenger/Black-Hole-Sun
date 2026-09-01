@@ -222,6 +222,17 @@ impl VoidClient {
         {
             return Err("transfer descriptor does not match the tensor envelope".to_string());
         }
+        let declared_len = black_hole_contract::validate_tensor_stream_header(
+            &descriptor,
+            envelope.side,
+            &tensor_header,
+        )
+        .map_err(|error| format!("invalid tensor stream header: {error}"))?;
+        if declared_len != expected_len {
+            return Err(format!(
+                "tensor stream header declares {declared_len} bytes, but transfer declares {expected_len}"
+            ));
+        }
         if lease.is_zero() {
             return Err("transfer lease must be non-zero".to_string());
         }
@@ -318,6 +329,7 @@ impl VoidClient {
     /// interrupted, resolution waits for and validates the committed Void
     /// manifest instead.
     pub async fn receive_stream(&self, ticket: &TransferTicket) -> Result<Vec<u8>, String> {
+        validate_ticket(ticket)?;
         let live = match &self.transport {
             VoidTransport::Quic {
                 endpoint,
@@ -375,10 +387,11 @@ impl VoidClient {
             }
         };
         match live {
-            Ok(bytes) => Ok(bytes),
+            Ok(bytes) => validate_received_tensor(ticket, bytes),
             Err(live_error) if ticket.durability == DurabilityPolicy::ReplayRequired => self
                 .wait_for_committed_transfer(ticket)
                 .await
+                .and_then(|bytes| validate_received_tensor(ticket, bytes))
                 .map_err(|fallback_error| {
                     format!(
                         "live stream failed ({live_error}); durable fallback failed ({fallback_error})"
@@ -681,6 +694,7 @@ where
 }
 
 fn validate_stream_begin(begin: &TransferBegin, ticket: &TransferTicket) -> Result<(), String> {
+    validate_ticket(ticket)?;
     if begin.transfer_id != ticket.transfer_id
         || begin.envelope != ticket.envelope
         || begin.tensor_header != ticket.tensor_header
@@ -692,6 +706,43 @@ fn validate_stream_begin(begin: &TransferBegin, ticket: &TransferTicket) -> Resu
         return Err("live stream begin frame does not match its ticket".to_string());
     }
     Ok(())
+}
+
+fn validate_ticket(ticket: &TransferTicket) -> Result<(), String> {
+    if ticket.descriptor.id != ticket.envelope.contract_id
+        || ticket.descriptor.version != ticket.envelope.contract_version
+        || black_hole_contract::descriptor_hash(&ticket.descriptor) != ticket.envelope.contract_hash
+    {
+        return Err("transfer ticket descriptor does not match its tensor envelope".to_string());
+    }
+    if ticket.eventual_void_id != ticket.transfer_id {
+        return Err("transfer ticket durable object does not match its transfer ID".to_string());
+    }
+    let declared_len = black_hole_contract::validate_tensor_stream_header(
+        &ticket.descriptor,
+        ticket.envelope.side,
+        &ticket.tensor_header,
+    )
+    .map_err(|error| format!("invalid tensor stream header: {error}"))?;
+    if declared_len != ticket.expected_len {
+        return Err(format!(
+            "tensor stream header declares {declared_len} bytes, but ticket declares {}",
+            ticket.expected_len
+        ));
+    }
+    Ok(())
+}
+
+fn validate_received_tensor(ticket: &TransferTicket, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    if bytes.len() as u64 != ticket.expected_len
+        || hash_bytes(&bytes) != ticket.expected_hash
+        || !bytes.starts_with(&ticket.tensor_header)
+    {
+        return Err("received tensor does not match its transfer ticket".to_string());
+    }
+    black_hole_contract::validate_artifact(&ticket.descriptor, ticket.envelope.side, &bytes)
+        .map_err(|error| format!("received tensor payload is invalid: {error}"))?;
+    Ok(bytes)
 }
 
 fn apply_incoming_frame(
@@ -723,6 +774,19 @@ fn apply_incoming_frame(
             }
             if hash_bytes(&data) != hash {
                 return Err(format!("transfer stream chunk {index} failed validation"));
+            }
+            let prefix_start = output.len().min(ticket.tensor_header.len());
+            let prefix_end = output
+                .len()
+                .saturating_add(data.len())
+                .min(ticket.tensor_header.len());
+            if prefix_start < prefix_end
+                && data[..prefix_end - prefix_start]
+                    != ticket.tensor_header[prefix_start..prefix_end]
+            {
+                return Err(format!(
+                    "transfer stream chunk {index} does not match the authenticated tensor header"
+                ));
             }
             *next_index = next_index.saturating_add(1);
             aggregate.update(&data);
@@ -879,7 +943,43 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use black_hole_spec::{ContractId, ContractSide, EncodingId, TransferRecord};
+    use black_hole_contract::{
+        decode_input, encode_input,
+        glowstick::{Dyn, Shape1},
+        tensor_stream_header, RawTensor, SingleTensorSpec, TensorContract, TensorPortSpec,
+    };
+    use black_hole_spec::{
+        ContractId, ContractSide, DimensionDescriptor, DtypeConstraint, EncodingId, TensorDtype,
+        TransferRecord,
+    };
+
+    struct ByteAxis;
+    struct BytePort;
+
+    impl TensorPortSpec for BytePort {
+        type Shape = Shape1<Dyn<ByteAxis>>;
+
+        const NAME: &'static str = "bytes";
+
+        fn dimensions() -> Vec<DimensionDescriptor> {
+            vec![DimensionDescriptor::Dynamic]
+        }
+
+        fn dtype() -> DtypeConstraint {
+            DtypeConstraint::Exact(TensorDtype::U8)
+        }
+    }
+
+    struct StreamContract;
+
+    impl TensorContract for StreamContract {
+        type Input = SingleTensorSpec<BytePort>;
+        type Output = SingleTensorSpec<BytePort>;
+        type Metadata = ();
+
+        const ID: ContractId = ContractId::from_u128(8);
+        const VERSION: u32 = 1;
+    }
 
     struct RunningVoid {
         client: VoidClient,
@@ -944,6 +1044,50 @@ mod tests {
             expected_hash: hash_bytes(data),
             deadline_unix_ms: unix_time_ms().saturating_add(lease_ms),
             authorization_hash: hash_bytes(&authorization),
+        }
+    }
+
+    fn tensor_frame(payload: &[u8]) -> Vec<u8> {
+        encode_input::<StreamContract>(
+            &[RawTensor {
+                name: "bytes".to_string(),
+                dtype: TensorDtype::U8,
+                shape: vec![payload.len()],
+                data: payload.to_vec(),
+            }],
+            &(),
+        )
+        .unwrap()
+    }
+
+    fn stream_declaration(frame: &[u8], expected_chunks: u32, lease_ms: u64) -> TransferBegin {
+        let authorization = [4; 32];
+        TransferBegin {
+            protocol_version: TRANSFER_PROTOCOL_VERSION,
+            transfer_id: ObjectId::new_v4(),
+            envelope: decode_input::<StreamContract>(frame).unwrap().envelope,
+            tensor_header: tensor_stream_header(frame).unwrap(),
+            expected_chunks,
+            expected_len: frame.len() as u64,
+            expected_hash: hash_bytes(frame),
+            deadline_unix_ms: unix_time_ms().saturating_add(lease_ms),
+            authorization_hash: hash_bytes(&authorization),
+        }
+    }
+
+    fn ticket_for(client: &VoidClient, declaration: &TransferBegin) -> TransferTicket {
+        TransferTicket {
+            descriptor: StreamContract::descriptor(),
+            envelope: declaration.envelope.clone(),
+            tensor_header: declaration.tensor_header.clone(),
+            transfer_id: declaration.transfer_id,
+            source: client.source_authority(),
+            authorization: [4; 32],
+            expected_len: declaration.expected_len,
+            expected_hash: declaration.expected_hash,
+            deadline_unix_ms: declaration.deadline_unix_ms,
+            durability: DurabilityPolicy::ReplayRequired,
+            eventual_void_id: declaration.transfer_id,
         }
     }
 
@@ -1090,13 +1234,15 @@ mod tests {
     async fn live_stream_commits_and_interruption_falls_back_to_void() {
         let running = running_void().await;
         let client = &running.client;
-        let chunks = vec![b"safe".to_vec(), b"tensor".to_vec()];
-        let all = chunks.concat();
+        let all = tensor_frame(b"safe-tensor");
+        let split = all.len() / 2;
+        let chunks = vec![all[..split].to_vec(), all[split..].to_vec()];
+        let decoded = decode_input::<StreamContract>(&all).unwrap();
         let prepared = client
             .prepare_stream_transfer::<Vec<u8>>(
-                descriptor(),
-                envelope(all.len() as u64),
-                b"safetensors-header".to_vec(),
+                StreamContract::descriptor(),
+                decoded.envelope,
+                tensor_stream_header(&all).unwrap(),
                 all.len() as u64,
                 hash_bytes(&all),
                 chunks.len() as u32,
@@ -1114,26 +1260,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_preparation_rejects_an_invalid_tensor_header() {
+        let running = running_void().await;
+        let client = &running.client;
+        let frame = tensor_frame(b"payload");
+        let decoded = decode_input::<StreamContract>(&frame).unwrap();
+        let mut header = tensor_stream_header(&frame).unwrap();
+        let dtype = header
+            .windows(2)
+            .position(|window| window == b"U8")
+            .expect("header contains the declared dtype");
+        header[dtype..dtype + 2].copy_from_slice(b"I8");
+
+        let error = client
+            .prepare_stream_transfer::<Vec<u8>>(
+                StreamContract::descriptor(),
+                decoded.envelope,
+                header,
+                frame.len() as u64,
+                hash_bytes(&frame),
+                1,
+                Duration::from_secs(5),
+                DurabilityPolicy::ReplayRequired,
+            )
+            .await
+            .err()
+            .expect("invalid tensor header must be rejected");
+        assert!(error.contains("dtype mismatch"));
+    }
+
+    #[tokio::test]
     async fn streamed_result_stays_uncommitted_until_delayed_commit() {
         let running = running_void().await;
         let client = &running.client;
-        let authorization = [4; 32];
-        let chunks = [b"header".to_vec(), b"body".to_vec()];
-        let all = chunks.concat();
-        let declaration = begin(&all, chunks.len() as u32, 5_000);
-        let ticket = TransferTicket {
-            descriptor: descriptor(),
-            envelope: declaration.envelope.clone(),
-            tensor_header: declaration.tensor_header.clone(),
-            transfer_id: declaration.transfer_id,
-            source: client.source_authority(),
-            authorization,
-            expected_len: declaration.expected_len,
-            expected_hash: declaration.expected_hash,
-            deadline_unix_ms: declaration.deadline_unix_ms,
-            durability: DurabilityPolicy::ReplayRequired,
-            eventual_void_id: declaration.transfer_id,
-        };
+        let all = tensor_frame(b"header-body");
+        let split = all.len() / 2;
+        let chunks = [all[..split].to_vec(), all[split..].to_vec()];
+        let declaration = stream_declaration(&all, chunks.len() as u32, 5_000);
+        let ticket = ticket_for(client, &declaration);
 
         let receiver_client = client.clone();
         let receiver_ticket = ticket.clone();
@@ -1177,25 +1341,13 @@ mod tests {
     async fn receiver_cancellation_does_not_abort_durable_transfer() {
         let running = running_void().await;
         let client = &running.client;
-        let data = b"durable".to_vec();
-        let declaration = begin(&data, 1, 5_000);
+        let data = tensor_frame(b"durable");
+        let declaration = stream_declaration(&data, 1, 5_000);
         let transfer = client
             .begin_transfer::<Vec<u8>>(declaration.clone())
             .await
             .unwrap();
-        let ticket = TransferTicket {
-            descriptor: descriptor(),
-            envelope: declaration.envelope.clone(),
-            tensor_header: declaration.tensor_header.clone(),
-            transfer_id: declaration.transfer_id,
-            source: client.source_authority(),
-            authorization: [4; 32],
-            expected_len: declaration.expected_len,
-            expected_hash: declaration.expected_hash,
-            deadline_unix_ms: declaration.deadline_unix_ms,
-            durability: DurabilityPolicy::ReplayRequired,
-            eventual_void_id: declaration.transfer_id,
-        };
+        let ticket = ticket_for(client, &declaration);
         let receiver_client = client.clone();
         let receiver = tokio::spawn(async move { receiver_client.receive_stream(&ticket).await });
         tokio::time::sleep(Duration::from_millis(10)).await;

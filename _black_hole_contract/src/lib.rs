@@ -16,7 +16,7 @@ use black_hole_spec::{
 use glowstick::Shape;
 use postcard::{from_bytes, to_allocvec};
 use safetensors::{
-    tensor::{Dtype, SafeTensors, TensorView},
+    tensor::{Dtype, Metadata as SafeTensorMetadata, SafeTensors, TensorInfo, TensorView},
     SafeTensorError,
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -334,6 +334,8 @@ pub enum CodecError {
     Safetensors(#[from] SafeTensorError),
     #[error("postcard: {0}")]
     Postcard(#[from] postcard::Error),
+    #[error("safetensors header JSON: {0}")]
+    HeaderJson(#[from] serde_json::Error),
 }
 
 /// Stable hash of a contract's canonical postcard representation.
@@ -528,6 +530,113 @@ pub fn tensor_stream_header(frame: &[u8]) -> Result<Vec<u8>, CodecError> {
         .get(..header_end)
         .ok_or(CodecError::Truncated)?
         .to_vec())
+}
+
+/// Validate a streamed tensor's complete header before any payload bytes are
+/// accepted or a destination tensor is allocated.
+///
+/// `header` contains the Black Hole envelope, metadata, and the safetensors
+/// header, but no tensor data. The returned length is the exact full frame
+/// length declared by those headers.
+pub fn validate_tensor_stream_header(
+    descriptor: &ContractDescriptor,
+    expected_side: ContractSide,
+    header: &[u8],
+) -> Result<u64, CodecError> {
+    if header.len() < FRAME_PREFIX_LEN {
+        return Err(CodecError::Truncated);
+    }
+    if &header[..FRAME_MAGIC.len()] != FRAME_MAGIC {
+        return Err(CodecError::InvalidMagic);
+    }
+    let envelope_len = u32::from_le_bytes(
+        header[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+            .try_into()
+            .expect("fixed-size prefix"),
+    ) as usize;
+    let envelope_end = FRAME_PREFIX_LEN
+        .checked_add(envelope_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let envelope: TensorEnvelope = from_bytes(
+        header
+            .get(FRAME_PREFIX_LEN..envelope_end)
+            .ok_or(CodecError::Truncated)?,
+    )?;
+    validate_runtime_envelope(&envelope, descriptor, expected_side)?;
+
+    let metadata_len: usize = envelope
+        .metadata_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let tensor_start = envelope_end
+        .checked_add(metadata_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let safetensors_len_end = tensor_start
+        .checked_add(size_of::<u64>())
+        .ok_or(CodecError::LengthOverflow)?;
+    let safetensors_header_len = u64::from_le_bytes(
+        header
+            .get(tensor_start..safetensors_len_end)
+            .ok_or(CodecError::Truncated)?
+            .try_into()
+            .expect("fixed-size safetensors header length"),
+    );
+    let safetensors_header_len: usize = safetensors_header_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let header_end = safetensors_len_end
+        .checked_add(safetensors_header_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    if header_end != header.len() {
+        return Err(CodecError::LengthMismatch);
+    }
+
+    let mut entries: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&header[safetensors_len_end..header_end])?;
+    let metadata = entries
+        .remove("__metadata__")
+        .map(serde_json::from_value)
+        .transpose()?;
+    let mut infos = entries
+        .into_iter()
+        .map(|(name, value)| serde_json::from_value::<TensorInfo>(value).map(|info| (name, info)))
+        .collect::<Result<Vec<_>, _>>()?;
+    infos.sort_by_key(|(_, info)| info.data_offsets.0);
+    let metadata = SafeTensorMetadata::new(metadata, infos)?;
+
+    let safetensors_len = size_of::<u64>()
+        .checked_add(safetensors_header_len)
+        .and_then(|len| len.checked_add(metadata.data_len()))
+        .ok_or(CodecError::LengthOverflow)?;
+    if u64::try_from(safetensors_len).map_err(|_| CodecError::LengthOverflow)?
+        != envelope.tensor_len
+    {
+        return Err(CodecError::LengthMismatch);
+    }
+
+    let tensors = metadata
+        .offset_keys()
+        .into_iter()
+        .map(|name| {
+            let info = metadata
+                .info(&name)
+                .expect("offset key always identifies tensor metadata");
+            Ok(RawTensor {
+                name,
+                dtype: from_safetensors_dtype(info.dtype)?,
+                shape: info.shape.clone(),
+                data: Vec::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, CodecError>>()?;
+    let ports = ports_for(descriptor, expected_side);
+    validate_schema(ports)?;
+    validate_tensors(ports, &tensors)?;
+
+    let full_frame_len = tensor_start
+        .checked_add(safetensors_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    u64::try_from(full_frame_len).map_err(|_| CodecError::LengthOverflow)
 }
 
 fn encode<C>(
@@ -1095,6 +1204,46 @@ mod tests {
             header.len(),
             tensor_start + size_of::<u64>() + safe_header_len
         );
+        assert_eq!(
+            validate_tensor_stream_header(
+                &ExampleContract::descriptor(),
+                ContractSide::Input,
+                &header,
+            )
+            .unwrap(),
+            frame.len() as u64,
+        );
+    }
+
+    #[test]
+    fn streaming_prefix_rejects_invalid_schema_before_tensor_data_arrives() {
+        let frame =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 42 }).unwrap();
+        let mut header = tensor_stream_header(&frame).unwrap();
+        let dtype = header
+            .windows(b"F32".len())
+            .position(|window| window == b"F32")
+            .expect("header contains the image dtype");
+        header[dtype..dtype + 3].copy_from_slice(b"I32");
+        assert!(matches!(
+            validate_tensor_stream_header(
+                &ExampleContract::descriptor(),
+                ContractSide::Input,
+                &header,
+            ),
+            Err(CodecError::DtypeMismatch { .. })
+        ));
+
+        let malformed = corrupt_first_data_offset(frame);
+        let header = tensor_stream_header(&malformed).unwrap();
+        assert!(matches!(
+            validate_tensor_stream_header(
+                &ExampleContract::descriptor(),
+                ContractSide::Input,
+                &header,
+            ),
+            Err(CodecError::Safetensors(_))
+        ));
     }
 
     #[test]
