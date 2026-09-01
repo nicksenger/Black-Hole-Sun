@@ -10,11 +10,166 @@ const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
 // ---------------------------------------------------------------------------
 
 pub use black_hole_spec::{
-    DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    MassModelConfig, MassModelParams, ObjectId, Transmission,
+    ArtifactRef, DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId,
+    InferenceRequest, MassModelConfig, MassModelParams, ObjectId, ObjectRef, Transmission,
 };
 
+use black_hole_contract::{QwenDarkInference, TensorContract};
+
 use crate::AtomError;
+
+// ---------------------------------------------------------------------------
+// Generic Stage 2 capabilities
+// ---------------------------------------------------------------------------
+
+/// Persistence and resolution of raw or typed committed artifacts.
+#[async_trait::async_trait]
+pub trait VoidOps: Send + Sync {
+    async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String>;
+
+    async fn download_raw_wait(
+        &self,
+        id: ObjectId,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        use tokio::time::{sleep, Duration, Instant};
+
+        if timeout_ms == 0 {
+            return Ok(None);
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            match self.download_raw(id).await {
+                Ok(data) => return Ok(Some(data)),
+                Err(error) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        tracing::debug!(?id, error = %error, "download wait timed out");
+                        return Ok(None);
+                    }
+                    sleep(
+                        deadline
+                            .saturating_duration_since(now)
+                            .min(Duration::from_secs(1)),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String>;
+
+    async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String>;
+
+    async fn persist<T>(&self, value: &T) -> Result<ObjectRef<T>, String>
+    where
+        T: Serialize + Sync,
+    {
+        let bytes = postcard::to_allocvec(value).map_err(|error| error.to_string())?;
+        self.upload_to_void(bytes).await.map(ObjectRef::new)
+    }
+
+    async fn resolve<T>(&self, reference: ObjectRef<T>) -> Result<T, String>
+    where
+        T: DeserializeOwned + Send,
+    {
+        let bytes = self.download_raw(reference.id()).await?;
+        postcard::from_bytes(&bytes).map_err(|error| error.to_string())
+    }
+
+    async fn persist_artifact<T>(&self, value: &T) -> Result<ArtifactRef<T>, String>
+    where
+        T: Serialize + Sync,
+    {
+        self.persist(value).await.map(ArtifactRef::committed)
+    }
+
+    async fn resolve_artifact<T>(&self, reference: &ArtifactRef<T>) -> Result<T, String>
+    where
+        T: DeserializeOwned + Send,
+    {
+        self.resolve(reference.object_ref()).await
+    }
+
+    async fn download_emission<M, T>(&self, id: EmissionId<T>) -> Result<Emission<M, T>, String>
+    where
+        M: Serialize + DeserializeOwned + Send,
+        T: Send,
+    {
+        let bytes = self.download_raw(id.id()).await?;
+        postcard::from_bytes(&bytes).map_err(|error| format!("postcard deserialize: {error}"))
+    }
+}
+
+/// Start, forward, and shutdown capabilities for one tensor operation
+/// contract. Input and output artifact types are derived from `Op`.
+#[async_trait::async_trait]
+pub trait MassOps<Op>: Send + Sync
+where
+    Op: TensorContract,
+{
+    async fn start_operation(&self, instance_id: ObjectId) -> Result<(), String>;
+
+    async fn forward(
+        &self,
+        instance_id: ObjectId,
+        input: ArtifactRef<Op::Input>,
+    ) -> Result<ArtifactRef<Op::Output>, String>;
+
+    async fn shutdown_operation(&self, instance_id: ObjectId) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+pub trait ResetOps<Op: TensorContract>: Send + Sync {
+    async fn reset_operation(&self, instance_id: ObjectId) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+pub trait PerturbOps<Op: TensorContract>: Send + Sync {
+    async fn perturb_up_operation(&self, instance_id: ObjectId, seed: u64) -> Result<(), String>;
+    async fn perturb_down_operation(&self, instance_id: ObjectId) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+pub trait OptimizeOps<Op: TensorContract>: Send + Sync {
+    async fn optimize_operation(
+        &self,
+        instance_id: ObjectId,
+        loss_up: f32,
+        loss_down: f32,
+    ) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+pub trait CheckpointOps<Op: TensorContract>: Send + Sync {
+    async fn checkpoint_operation(&self, instance_id: ObjectId) -> Result<ObjectId, String>;
+}
+
+#[async_trait::async_trait]
+pub trait FuseOps<Op: TensorContract>: Send + Sync {
+    async fn fuse_operation(
+        &self,
+        instance_id: ObjectId,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    ) -> Result<ObjectId, String>;
+}
+
+/// Qwen/LLM-specific compatibility surface. Tokenization and postcard
+/// conversion deliberately live outside the generic tensor capabilities.
+#[async_trait::async_trait]
+pub trait QwenAdapterOps: Send + Sync {
+    fn darken(&self, prompt: &str) -> Result<Vec<DarkToken>, String>;
+    fn decode(&self, tokens: &[DarkToken]) -> String;
+
+    async fn qwen_forward(
+        &self,
+        instance_id: ObjectId,
+        request: InferenceRequest,
+    ) -> Result<ObjectRef<InferenceOutput>, String>;
+}
 
 /// Capability trait that guarantees a Jungle can talk to void and mass.
 ///
@@ -180,6 +335,149 @@ pub trait VoidInferOps: Send + Sync {
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String>;
 }
 
+// Existing Jungle implementations remain valid during the staged migration.
+// Their monolithic implementation is projected into the new, narrow
+// capability traits; new generic code can depend only on what it uses.
+#[async_trait::async_trait]
+impl<T> VoidOps for T
+where
+    T: VoidInferOps,
+{
+    async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
+        <T as VoidInferOps>::download_raw(self, id).await
+    }
+
+    async fn download_raw_wait(
+        &self,
+        id: ObjectId,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        <T as VoidInferOps>::download_raw_wait(self, id, timeout_ms).await
+    }
+
+    async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
+        <T as VoidInferOps>::upload_to_void(self, data).await
+    }
+
+    async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
+        <T as VoidInferOps>::upload_to_void_with(self, id, data).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<T> MassOps<QwenDarkInference> for T
+where
+    T: VoidInferOps,
+{
+    async fn start_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        <T as VoidInferOps>::start_model(self, instance_id, None).await
+    }
+
+    async fn forward(
+        &self,
+        instance_id: ObjectId,
+        input: ArtifactRef<<QwenDarkInference as TensorContract>::Input>,
+    ) -> Result<ArtifactRef<<QwenDarkInference as TensorContract>::Output>, String> {
+        let bytes = <T as VoidInferOps>::download_raw(self, input.object_id()).await?;
+        let request = postcard::from_bytes(&bytes)
+            .map_err(|error| format!("postcard deserialize: {error}"))?;
+        let output_id = <T as VoidInferOps>::infer(self, instance_id, request).await?;
+        Ok(ArtifactRef::from_object_id(output_id))
+    }
+
+    async fn shutdown_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        <T as VoidInferOps>::shutdown_model(self, instance_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<T> ResetOps<QwenDarkInference> for T
+where
+    T: VoidInferOps,
+{
+    async fn reset_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        <T as VoidInferOps>::reset_model(self, instance_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<T> PerturbOps<QwenDarkInference> for T
+where
+    T: VoidInferOps,
+{
+    async fn perturb_up_operation(&self, instance_id: ObjectId, seed: u64) -> Result<(), String> {
+        <T as VoidInferOps>::perturb_up(self, instance_id, seed).await
+    }
+
+    async fn perturb_down_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        <T as VoidInferOps>::perturb_down(self, instance_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<T> OptimizeOps<QwenDarkInference> for T
+where
+    T: VoidInferOps,
+{
+    async fn optimize_operation(
+        &self,
+        instance_id: ObjectId,
+        loss_up: f32,
+        loss_down: f32,
+    ) -> Result<(), String> {
+        <T as VoidInferOps>::optimize(self, instance_id, loss_up, loss_down).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<T> CheckpointOps<QwenDarkInference> for T
+where
+    T: VoidInferOps,
+{
+    async fn checkpoint_operation(&self, instance_id: ObjectId) -> Result<ObjectId, String> {
+        <T as VoidInferOps>::checkpoint_model(self, instance_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<T> FuseOps<QwenDarkInference> for T
+where
+    T: VoidInferOps,
+{
+    async fn fuse_operation(
+        &self,
+        instance_id: ObjectId,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    ) -> Result<ObjectId, String> {
+        <T as VoidInferOps>::fuse_weights(self, instance_id, checkpoint_id, contribution).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<T> QwenAdapterOps for T
+where
+    T: VoidInferOps,
+{
+    fn darken(&self, prompt: &str) -> Result<Vec<DarkToken>, String> {
+        <T as VoidInferOps>::darken(self, prompt)
+    }
+
+    fn decode(&self, tokens: &[DarkToken]) -> String {
+        <T as VoidInferOps>::decode(self, tokens)
+    }
+
+    async fn qwen_forward(
+        &self,
+        instance_id: ObjectId,
+        request: InferenceRequest,
+    ) -> Result<ObjectRef<InferenceOutput>, String> {
+        <T as VoidInferOps>::infer(self, instance_id, request)
+            .await
+            .map(ObjectRef::new)
+    }
+}
+
 #[async_trait::async_trait]
 pub trait InferenceOutputOps: Sized {
     /// Download an [`Emission`] and then its referenced [`InferenceOutput`],
@@ -267,12 +565,12 @@ impl InferenceOutputOps for InferenceOutput {
         M: Serialize + DeserializeOwned + Send,
     {
         let emission: Emission<M> = jungle
-            .download_emission(emission_id.0)
+            .download_emission(emission_id.id())
             .await
             .map_err(AtomError::Download)?;
 
         let output_bytes = jungle
-            .download_raw(emission.output_id.0)
+            .download_raw(emission.output_id.object_id())
             .await
             .map_err(AtomError::Download)?;
         let output = postcard::from_bytes(&output_bytes).map_err(AtomError::from)?;
@@ -311,7 +609,7 @@ impl TransmissionOps for Transmission {
 
         let emission = Emission {
             metadata,
-            output_id: InferenceOutputId(output_id),
+            output_id: InferenceOutputId::new(output_id).into(),
         };
         let emission_bytes = postcard::to_allocvec(&emission)?;
         let emission_id = jungle
@@ -320,7 +618,7 @@ impl TransmissionOps for Transmission {
             .map_err(AtomError::Upload)?;
 
         Ok(Transmission::Propagation {
-            emission_id: EmissionId(emission_id),
+            emission_id: EmissionId::new(emission_id),
             recv: ObjectId::nil(),
             send: ObjectId::nil(),
         })
@@ -355,11 +653,7 @@ pub trait SunOps: Send + Sync {
         Ap: DeserializeOwned + Send;
 
     /// Perturb one spawned animal by journey id with a typed stimulus payload.
-    async fn perturb_animal<S>(
-        &self,
-        journey_id: uuid::Uuid,
-        stimulus: &S,
-    ) -> Result<(), String>
+    async fn perturb_animal<S>(&self, journey_id: uuid::Uuid, stimulus: &S) -> Result<(), String>
     where
         S: Serialize + Sync + Send;
 }
@@ -420,7 +714,14 @@ mod tests {
             _model_id: uuid::Uuid,
             _request: InferenceRequest,
         ) -> Result<ObjectId, String> {
-            Err("unsupported in tests".to_string())
+            let id = ObjectId::new_v4();
+            let bytes =
+                postcard::to_allocvec(&sample_output(99)).map_err(|error| error.to_string())?;
+            self.objects
+                .lock()
+                .map_err(|error| format!("mutex lock failed: {error}"))?
+                .insert(id, bytes);
+            Ok(id)
         }
 
         async fn reset_model(&self, _model_id: uuid::Uuid) -> Result<(), String> {
@@ -507,13 +808,19 @@ mod tests {
             let jungle = TestJungle::default();
             let output = sample_output(7);
             let output_bytes = postcard::to_allocvec(&output).unwrap();
-            let output_id = jungle.upload_to_void(output_bytes).await.unwrap();
+            let output_id = VoidInferOps::upload_to_void(&jungle, output_bytes)
+                .await
+                .unwrap();
             let emission = Emission {
                 metadata: "cell-a".to_string(),
-                output_id: InferenceOutputId(output_id),
+                output_id: InferenceOutputId::new(output_id).into(),
             };
             let emission_bytes = postcard::to_allocvec(&emission).unwrap();
-            let emission_id = EmissionId(jungle.upload_to_void(emission_bytes).await.unwrap());
+            let emission_id = EmissionId::new(
+                VoidInferOps::upload_to_void(&jungle, emission_bytes)
+                    .await
+                    .unwrap(),
+            );
 
             let (resolved_output, metadata) =
                 InferenceOutput::from_emission_with_metadata::<_, String>(&jungle, emission_id)
@@ -532,13 +839,19 @@ mod tests {
             let jungle = TestJungle::default();
             let output = sample_output(11);
             let output_bytes = postcard::to_allocvec(&output).unwrap();
-            let output_id = jungle.upload_to_void(output_bytes).await.unwrap();
+            let output_id = VoidInferOps::upload_to_void(&jungle, output_bytes)
+                .await
+                .unwrap();
             let emission = Emission {
                 metadata: vec!["left".to_string(), "right".to_string()],
-                output_id: InferenceOutputId(output_id),
+                output_id: InferenceOutputId::new(output_id).into(),
             };
             let emission_bytes = postcard::to_allocvec(&emission).unwrap();
-            let emission_id = EmissionId(jungle.upload_to_void(emission_bytes).await.unwrap());
+            let emission_id = EmissionId::new(
+                VoidInferOps::upload_to_void(&jungle, emission_bytes)
+                    .await
+                    .unwrap(),
+            );
             let transmission = Transmission::Propagation {
                 emission_id,
                 recv: ObjectId::nil(),
@@ -574,9 +887,61 @@ mod tests {
 
             let emission_id = transmission.propagation_emission_id().unwrap();
             let uploaded: Emission<(String, u32)> =
-                jungle.download_emission(emission_id.0).await.unwrap();
+                VoidInferOps::download_emission(&jungle, emission_id.id())
+                    .await
+                    .unwrap();
 
             assert_eq!(uploaded.metadata, ("black-hole".to_string(), 2_u32));
+        });
+    }
+
+    #[test]
+    fn legacy_implementation_projects_into_typed_void_ops() {
+        block_on(async {
+            let jungle = TestJungle::default();
+            let reference = VoidOps::persist(&jungle, &vec![1_u32, 2, 3]).await.unwrap();
+            let resolved: Vec<u32> = VoidOps::resolve(&jungle, reference).await.unwrap();
+            assert_eq!(resolved, vec![1, 2, 3]);
+        });
+    }
+
+    #[test]
+    fn qwen_adapter_projects_legacy_postcard_forward_into_mass_ops() {
+        block_on(async {
+            fn assert_capabilities<T>()
+            where
+                T: MassOps<QwenDarkInference>
+                    + ResetOps<QwenDarkInference>
+                    + PerturbOps<QwenDarkInference>
+                    + OptimizeOps<QwenDarkInference>
+                    + CheckpointOps<QwenDarkInference>
+                    + FuseOps<QwenDarkInference>
+                    + QwenAdapterOps,
+            {
+            }
+            assert_capabilities::<TestJungle>();
+
+            let jungle = TestJungle::default();
+            let request = InferenceRequest::Sequences {
+                sequences: Vec::new(),
+                limit: Some(1),
+            };
+            let request_bytes = postcard::to_allocvec(&request).unwrap();
+            let request_id = VoidInferOps::upload_to_void(&jungle, request_bytes)
+                .await
+                .unwrap();
+            let input = ArtifactRef::<<QwenDarkInference as TensorContract>::Input>::from_object_id(
+                request_id,
+            );
+
+            let output = MassOps::<QwenDarkInference>::forward(&jungle, ObjectId::new_v4(), input)
+                .await
+                .unwrap();
+            let bytes = VoidInferOps::download_raw(&jungle, output.object_id())
+                .await
+                .unwrap();
+            let decoded: InferenceOutput = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(decoded.results[0].0[0].predicted, 99);
         });
     }
 }

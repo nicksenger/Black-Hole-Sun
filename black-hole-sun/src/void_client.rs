@@ -1,5 +1,6 @@
 use std::{fs, net::SocketAddr, path::Path};
 
+use black_hole_flux::ops::VoidOps;
 use black_hole_spec::ObjectId;
 use black_hole_void::{VoidIn, VoidOut};
 use postcard::{from_bytes, to_allocvec};
@@ -224,6 +225,29 @@ impl VoidClient {
                 read_frame_io(&mut stream).await
             }
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl VoidOps for VoidClient {
+    async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
+        self.download(id).await
+    }
+
+    async fn download_raw_wait(
+        &self,
+        id: ObjectId,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.download_wait(id, timeout_ms).await
+    }
+
+    async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
+        self.upload(data).await
+    }
+
+    async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
+        self.upload_with(id, data).await.map(|_| ())
     }
 }
 

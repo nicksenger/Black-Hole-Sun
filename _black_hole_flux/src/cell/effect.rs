@@ -206,7 +206,7 @@ impl<J: VoidInferOps> Effect<J> for WaitForPropagationEffect {
                     recv,
                     send,
                 } => {
-                    debug!(emission_id = %emission_id.0, recv = %recv, send = %send, "propagation received");
+                    debug!(emission_id = %emission_id.id(), recv = %recv, send = %send, "propagation received");
                     Ok(Propagation {
                         emission_id,
                         recv_id: recv,
@@ -289,7 +289,7 @@ impl<J: VoidInferOps> Effect<J> for Transmit {
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             let (emission_id, send_id) = input;
-            debug!(emission_id = %emission_id.0, %send_id, "transmitting emission to next cell");
+            debug!(emission_id = %emission_id.id(), %send_id, "transmitting emission to next cell");
             jungle
                 .transmit(emission_id, send_id)
                 .await

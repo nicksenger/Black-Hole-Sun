@@ -65,7 +65,7 @@ impl Action for MarkRight {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_| Failure::Message("mark right emission failed".to_string()))?;
-        Ok(EmissionId(Uuid::from_u128(RIGHT_EMISSION)))
+        Ok(EmissionId::new(Uuid::from_u128(RIGHT_EMISSION)))
     }
 }
 

@@ -328,12 +328,12 @@ async fn cell() {
     let inference_output_id_4 = void_client.upload(inference_output_bytes_4).await.unwrap();
     let emission_4 = Emission {
         metadata: (),
-        output_id: InferenceOutputId(inference_output_id_4),
+        output_id: InferenceOutputId::new(inference_output_id_4).into(),
     };
     let emission_bytes_4 = to_allocvec(&emission_4).expect("serialize emission 4");
     let emission_void_id_4 = void_client.upload(emission_bytes_4).await.unwrap();
     let propagation_4 = Transmission::Propagation {
-        emission_id: EmissionId(emission_void_id_4),
+        emission_id: EmissionId::new(emission_void_id_4),
         recv: ObjectId::nil(),
         send: listen_4,
     };
@@ -352,12 +352,12 @@ async fn cell() {
     let inference_output_id_3 = void_client.upload(inference_output_bytes_3).await.unwrap();
     let emission_3 = Emission {
         metadata: (),
-        output_id: InferenceOutputId(inference_output_id_3),
+        output_id: InferenceOutputId::new(inference_output_id_3).into(),
     };
     let emission_bytes_3 = to_allocvec(&emission_3).expect("serialize emission 3");
     let emission_void_id_3 = void_client.upload(emission_bytes_3).await.unwrap();
     let propagation_3 = Transmission::Propagation {
-        emission_id: EmissionId(emission_void_id_3),
+        emission_id: EmissionId::new(emission_void_id_3),
         recv: propagation_void_id_4,
         send: listen_3,
     };
@@ -388,12 +388,12 @@ async fn cell() {
     let inference_output_id_2 = void_client.upload(inference_output_bytes_2).await.unwrap();
     let emission_2 = Emission {
         metadata: (),
-        output_id: InferenceOutputId(inference_output_id_2),
+        output_id: InferenceOutputId::new(inference_output_id_2).into(),
     };
     let emission_bytes_2 = to_allocvec(&emission_2).expect("serialize emission 2");
     let emission_void_id_2 = void_client.upload(emission_bytes_2).await.unwrap();
     let propagation_2 = Transmission::Propagation {
-        emission_id: EmissionId(emission_void_id_2),
+        emission_id: EmissionId::new(emission_void_id_2),
         recv: potentiation_void_id,
         send: listen_2,
     };
@@ -412,12 +412,12 @@ async fn cell() {
     let inference_output_id = void_client.upload(inference_output_bytes).await.unwrap();
     let emission = Emission {
         metadata: (),
-        output_id: InferenceOutputId(inference_output_id),
+        output_id: InferenceOutputId::new(inference_output_id).into(),
     };
     let emission_bytes = to_allocvec(&emission).expect("serialize emission");
     let emission_void_id = void_client.upload(emission_bytes).await.unwrap();
     let propagation = Transmission::Propagation {
-        emission_id: EmissionId(emission_void_id),
+        emission_id: EmissionId::new(emission_void_id),
         recv: propagation_void_id_2,
         send: listen_1,
     };
@@ -476,10 +476,10 @@ async fn cell() {
             },
         )) => {
             println!("Flux flow completed through full cell optimization loop:");
-            println!("  propagation 1 emitted {}", e1.0);
-            println!("  propagation 2 emitted {}", e2.0);
-            println!("  propagation 3 emitted {}", e3.0);
-            println!("  propagation 4 emitted {}", e4.0);
+            println!("  propagation 1 emitted {e1}");
+            println!("  propagation 2 emitted {e2}");
+            println!("  propagation 3 emitted {e3}");
+            println!("  propagation 4 emitted {e4}");
         }
         Ok((t1, t2, t3, t4)) => {
             panic!(

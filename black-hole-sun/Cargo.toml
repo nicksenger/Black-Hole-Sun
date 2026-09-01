@@ -18,6 +18,7 @@ qwen36_27b = ["black-hole-mass/qwen35_27b"]
 qwen38_27b = ["black-hole-mass/qwen38_27b"]
 
 [dependencies]
+async-trait = "0.1"
 black-hole-beam = { path = "../_black_hole_beam" }
 black-hole-contract = { path = "../_black_hole_contract" }
 black-hole-flux = { path = "../_black_hole_flux" }

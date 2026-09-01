@@ -2,7 +2,9 @@ use std::future::Future;
 use std::marker::PhantomData;
 
 use black_hole_sun::ops::{InferenceOutputOps, TransmissionOps, VoidInferOps};
-use black_hole_sun::{AtomError, Emission, InferenceOutput, InferenceOutputId, SequenceOutput};
+use black_hole_sun::{
+    ArtifactRef, AtomError, Emission, InferenceOutput, InferenceOutputId, SequenceOutput,
+};
 use postcard::to_allocvec;
 use rand::random;
 use serde::de::DeserializeOwned;
@@ -143,7 +145,7 @@ impl<J: VoidInferOps + FusionConcatOps> Effect<J> for ConcatFusionOutputsEffect 
                 .map_err(AtomError::Upload)?;
             let merged_emission = Emission {
                 metadata: (),
-                output_id: InferenceOutputId(merged_output_id),
+                output_id: InferenceOutputId::new(merged_output_id).into(),
             };
             let merged_emission_bytes = to_allocvec(&merged_emission)?;
             let merged_emission_id = jungle
@@ -152,7 +154,7 @@ impl<J: VoidInferOps + FusionConcatOps> Effect<J> for ConcatFusionOutputsEffect 
                 .map_err(AtomError::Upload)?;
 
             jungle.record_fusion_concat();
-            Ok(EmissionId(merged_emission_id))
+            Ok(EmissionId::new(merged_emission_id))
         }
     }
 }
@@ -164,13 +166,13 @@ impl<J: VoidInferOps + FusionConcatOps> Effect<J> for ConcatFusionOutputsEffect 
 
 async fn download_output<J>(
     jungle: &J,
-    output_id: InferenceOutputId,
+    output_id: ArtifactRef<InferenceOutput>,
 ) -> Result<InferenceOutput, AtomError>
 where
     J: VoidInferOps,
 {
     let output_bytes = jungle
-        .download_raw(output_id.0)
+        .download_raw(output_id.object_id())
         .await
         .map_err(AtomError::Download)?;
     postcard::from_bytes(&output_bytes).map_err(AtomError::from)
@@ -193,7 +195,7 @@ where
 
     let emission = Emission {
         metadata,
-        output_id: InferenceOutputId(output_id),
+        output_id: InferenceOutputId::new(output_id).into(),
     };
     let emission_bytes = postcard::to_allocvec(&emission)?;
     let emission_id = jungle
@@ -201,7 +203,7 @@ where
         .await
         .map_err(AtomError::Upload)?;
 
-    Ok(EmissionId(emission_id))
+    Ok(EmissionId::new(emission_id))
 }
 
 fn stack_dark_tokens(
@@ -250,11 +252,11 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             let left_emission: Emission<M> = jungle
-                .download_emission(left_id.0)
+                .download_emission(left_id.id())
                 .await
                 .map_err(AtomError::Download)?;
             let right_emission: Emission<M> = jungle
-                .download_emission(right_id.0)
+                .download_emission(right_id.id())
                 .await
                 .map_err(AtomError::Download)?;
 
@@ -263,8 +265,8 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J
             let left_output = stack_dark_tokens("left", "right", left_output, right_output)?;
 
             debug!(
-                left = %left_id.0,
-                right = %right_id.0,
+                left = %left_id,
+                right = %right_id,
                 sequence_count = left_output.results.len(),
                 combined_dark_tokens = total_dark_tokens(&left_output),
                 "stacked twin emissions with left metadata"
@@ -293,11 +295,11 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             let left_emission: Emission<M> = jungle
-                .download_emission(left_id.0)
+                .download_emission(left_id.id())
                 .await
                 .map_err(AtomError::Download)?;
             let right_emission: Emission<M> = jungle
-                .download_emission(right_id.0)
+                .download_emission(right_id.id())
                 .await
                 .map_err(AtomError::Download)?;
 
@@ -306,8 +308,8 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J
             let right_output = stack_dark_tokens("right", "left", right_output, left_output)?;
 
             debug!(
-                left = %left_id.0,
-                right = %right_id.0,
+                left = %left_id,
+                right = %right_id,
                 sequence_count = right_output.results.len(),
                 combined_dark_tokens = total_dark_tokens(&right_output),
                 "stacked twin emissions with right metadata"
@@ -336,11 +338,11 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             let left_emission: Emission<M> = jungle
-                .download_emission(left_id.0)
+                .download_emission(left_id.id())
                 .await
                 .map_err(AtomError::Download)?;
             let right_emission: Emission<M> = jungle
-                .download_emission(right_id.0)
+                .download_emission(right_id.id())
                 .await
                 .map_err(AtomError::Download)?;
 
@@ -351,8 +353,8 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J
             if choose_left {
                 left_output = stack_dark_tokens("left", "right", left_output, right_output)?;
                 debug!(
-                    left = %left_id.0,
-                    right = %right_id.0,
+                    left = %left_id,
+                    right = %right_id,
                     picked = "left",
                     sequence_count = left_output.results.len(),
                     combined_dark_tokens = total_dark_tokens(&left_output),
@@ -362,8 +364,8 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, J: VoidInferOps> Effect<J
             } else {
                 right_output = stack_dark_tokens("right", "left", right_output, left_output)?;
                 debug!(
-                    left = %left_id.0,
-                    right = %right_id.0,
+                    left = %left_id,
+                    right = %right_id,
                     picked = "right",
                     sequence_count = right_output.results.len(),
                     combined_dark_tokens = total_dark_tokens(&right_output),

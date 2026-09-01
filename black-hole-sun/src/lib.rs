@@ -28,26 +28,28 @@ pub use void_client::VoidClient;
 // Convenience re-exports — flux modules and core sun types
 pub use black_hole_flux::{
     atom, cell, fusion, ops, sun, warp, AtomError, Boundary, BoundaryInit, BoundaryInner,
-    BoundaryMicrostep, BoundaryState, CellInit, DefaultConfig, ErrorFeedbackPolicy, Fusion,
-    FusionSeed, FusionState, InitBoundaryRecvId, ModelConfig, NoErrorFeedback, NoModelBoundary,
-    NoOscillation, OscillationSchedule, QuzoFusion, QuzoFusionWithModelConfig, Ray, Warp,
+    BoundaryMicrostep, BoundaryState, CellInit, CheckpointOps, DefaultConfig, ErrorFeedbackPolicy,
+    FuseOps, Fusion, FusionSeed, FusionState, InitBoundaryRecvId, MassOps, ModelConfig,
+    NoErrorFeedback, NoModelBoundary, NoOscillation, OptimizeOps, OscillationSchedule, PerturbOps,
+    QuzoFusion, QuzoFusionWithModelConfig, QwenAdapterOps, Ray, ResetOps, VoidInferOps, VoidOps,
+    Warp,
 };
 
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
-    ContractDescriptor, ContractHash, ContractId, ContractSide, DarkToken, DimensionDescriptor,
-    DtypeConstraint, Emission, EmissionId, EncodingId, InferenceInput, InferenceOutput,
-    InferenceOutputId, InferenceRequest, LayoutConstraint, LogitEntry, MassErrorFeedbackConfig,
-    MassErrorFeedbackMode, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut,
-    MassPerturbationMode, ObjectId, Potentiation, SequenceOutput, TensorDtype, TensorEnvelope,
-    TensorPortDescriptor, Transmission,
+    ArtifactRef, ContractDescriptor, ContractHash, ContractId, ContractSide, DarkToken,
+    DimensionDescriptor, DtypeConstraint, Emission, EmissionId, EncodingId, InferenceInput,
+    InferenceOutput, InferenceOutputId, InferenceRequest, LayoutConstraint, LogitEntry,
+    MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn, MassModelCapacity, MassModelConfig,
+    MassModelParams, MassOut, MassPerturbationMode, ObjectId, ObjectRef, Potentiation,
+    SequenceOutput, TensorDtype, TensorEnvelope, TensorPortDescriptor, Transmission,
 };
 
 // Convenience re-exports — typed operation contracts and tensor codec
 pub use black_hole_contract::{
     decode_input, decode_output, descriptor_hash, encode_input, encode_output, CodecError,
-    DecodedTensorBundle, PortList, RawTensor, SingleTensorSpec, TensorBundleSpec, TensorContract,
-    TensorPortSpec, TensorSpec,
+    DecodedTensorBundle, PortList, QwenDarkInference, RawTensor, SingleTensorSpec,
+    TensorBundleSpec, TensorContract, TensorPortSpec, TensorSpec,
 };
 
 // Convenience re-exports — void types

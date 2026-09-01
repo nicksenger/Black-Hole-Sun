@@ -2026,7 +2026,7 @@ mod tests {
 
     fn propagation(seed: u128) -> Transmission {
         Transmission::Propagation {
-            emission_id: black_hole_spec::EmissionId(Uuid::from_u128(seed)),
+            emission_id: black_hole_spec::EmissionId::new(Uuid::from_u128(seed)),
             recv: Uuid::new_v4(),
             send: Uuid::new_v4(),
         }

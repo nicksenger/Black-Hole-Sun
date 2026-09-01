@@ -63,10 +63,10 @@ pub mod sun;
 pub mod warp;
 
 pub use black_hole_spec::{
-    DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput, InferenceOutputId,
-    InferenceRequest, LogitEntry, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn,
-    MassModelConfig, MassModelParams, MassOut, MassPerturbationMode, ObjectId, SequenceOutput,
-    Transmission,
+    ArtifactRef, DarkToken, Emission, EmissionId, InferenceInput, InferenceOutput,
+    InferenceOutputId, InferenceRequest, LogitEntry, MassErrorFeedbackConfig,
+    MassErrorFeedbackMode, MassIn, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode,
+    ObjectId, ObjectRef, SequenceOutput, Transmission,
 };
 
 pub use atom::effect::MassInfer;
@@ -87,7 +87,10 @@ pub use mass::{
     DefaultConfig, ErrorFeedbackPolicy, ModelConfig, NoErrorFeedback, NoOscillation,
     OscillationSchedule,
 };
-pub use ops::VoidInferOps;
+pub use ops::{
+    CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, QwenAdapterOps, ResetOps,
+    VoidInferOps, VoidOps,
+};
 pub use ray::Ray;
 pub use warp::action::{InitRecvId as InitBoundaryRecvId, ObserveWarp, PerturbWarp};
 pub use warp::effect::{ObserveWarpEffect, PerturbWarpEffect};

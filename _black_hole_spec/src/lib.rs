@@ -1,6 +1,8 @@
 //! Shared types for the black-hole workspace.
 
-use serde::{Deserialize, Serialize};
+use std::{fmt, marker::PhantomData};
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 pub const IM_START: u32 = 248045;
@@ -11,6 +13,168 @@ pub const THINK_CLOSE: u32 = 248069;
 
 /// Opaque identifier for objects stored in void.
 pub type ObjectId = Uuid;
+
+/// A zero-cost, typed reference to an object stored in void.
+///
+/// Only the UUID is serialized. The payload type exists solely to prevent an
+/// object containing one kind of value from being used where another kind is
+/// expected.
+#[repr(transparent)]
+pub struct ObjectRef<T> {
+    id: ObjectId,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T> ObjectRef<T> {
+    pub const fn new(id: ObjectId) -> Self {
+        Self {
+            id,
+            marker: PhantomData,
+        }
+    }
+
+    pub const fn id(&self) -> ObjectId {
+        self.id
+    }
+
+    pub const fn into_id(self) -> ObjectId {
+        self.id
+    }
+}
+
+impl<T> Clone for ObjectRef<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for ObjectRef<T> {}
+
+impl<T> PartialEq for ObjectRef<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<T> Eq for ObjectRef<T> {}
+
+impl<T> std::hash::Hash for ObjectRef<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl<T> fmt::Debug for ObjectRef<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_tuple("ObjectRef").field(&self.id).finish()
+    }
+}
+
+impl<T> fmt::Display for ObjectRef<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.id.fmt(formatter)
+    }
+}
+
+impl<T> From<ObjectId> for ObjectRef<T> {
+    fn from(id: ObjectId) -> Self {
+        Self::new(id)
+    }
+}
+
+impl<T> From<ObjectRef<T>> for ObjectId {
+    fn from(reference: ObjectRef<T>) -> Self {
+        reference.id
+    }
+}
+
+impl<T> Serialize for ObjectRef<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.id.serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for ObjectRef<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        ObjectId::deserialize(deserializer).map(Self::new)
+    }
+}
+
+/// Location-independent reference carried between typed flows.
+///
+/// Stage 2 supports committed void objects. Keeping that location behind an
+/// enum allows later stages to add in-progress transfers and live streams
+/// without changing operation-facing APIs.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub enum ArtifactRef<T> {
+    Committed(ObjectRef<T>),
+}
+
+impl<T> ArtifactRef<T> {
+    pub const fn committed(reference: ObjectRef<T>) -> Self {
+        Self::Committed(reference)
+    }
+
+    pub const fn from_object_id(id: ObjectId) -> Self {
+        Self::Committed(ObjectRef::new(id))
+    }
+
+    pub const fn object_ref(&self) -> ObjectRef<T> {
+        match self {
+            Self::Committed(reference) => *reference,
+        }
+    }
+
+    pub const fn object_id(&self) -> ObjectId {
+        self.object_ref().id()
+    }
+}
+
+impl<T> Clone for ArtifactRef<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Committed(reference) => Self::Committed(*reference),
+        }
+    }
+}
+
+impl<T> Copy for ArtifactRef<T> {}
+
+impl<T> PartialEq for ArtifactRef<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.object_ref() == other.object_ref()
+    }
+}
+
+impl<T> Eq for ArtifactRef<T> {}
+
+impl<T> std::hash::Hash for ArtifactRef<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.object_ref().hash(state);
+    }
+}
+
+impl<T> fmt::Debug for ArtifactRef<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ArtifactRef::Committed")
+            .field(&self.object_ref())
+            .finish()
+    }
+}
+
+impl<T> From<ObjectRef<T>> for ArtifactRef<T> {
+    fn from(reference: ObjectRef<T>) -> Self {
+        Self::committed(reference)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tensor operation contract and artifact wire format
@@ -507,20 +671,51 @@ pub struct InferenceOutput {
     pub results: Vec<SequenceOutput>,
 }
 
-/// Void ID for an InferenceOutput
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InferenceOutputId(pub ObjectId);
+/// Typed void reference for a legacy Qwen inference output.
+pub type InferenceOutputId = ObjectRef<InferenceOutput>;
 
-/// Input / Output from a Atom
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Emission<M> {
+/// Input / Output from an Atom.
+///
+/// The payload type is independent from metadata. It defaults to the legacy
+/// Qwen output so existing `Emission<M>` users remain source-compatible while
+/// generic paths can use `Emission<M, Op::Output>`.
+#[derive(Serialize, Deserialize)]
+#[serde(bound(serialize = "M: Serialize", deserialize = "M: Deserialize<'de>"))]
+pub struct Emission<M, T = InferenceOutput> {
     pub metadata: M,
-    pub output_id: InferenceOutputId,
+    pub output_id: ArtifactRef<T>,
 }
 
-/// Void ID for an Emission
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmissionId(pub ObjectId);
+impl<M: Clone, T> Clone for Emission<M, T> {
+    fn clone(&self) -> Self {
+        Self {
+            metadata: self.metadata.clone(),
+            output_id: self.output_id,
+        }
+    }
+}
+
+impl<M: fmt::Debug, T> fmt::Debug for Emission<M, T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Emission")
+            .field("metadata", &self.metadata)
+            .field("output_id", &self.output_id)
+            .finish()
+    }
+}
+
+/// Type marker for a persisted emission whose output is `T`.
+pub enum EmissionArtifact<T> {
+    #[doc(hidden)]
+    __Marker(std::convert::Infallible, PhantomData<fn() -> T>),
+}
+
+/// Typed void ID for an emission.
+///
+/// Metadata remains independently generic and is intentionally not part of
+/// this reference yet; Stage 4 carries the full operation type through Flux.
+pub type EmissionId<T = InferenceOutput> = ObjectRef<EmissionArtifact<T>>;
 
 /// Input / Output from a Cell
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -541,4 +736,57 @@ pub struct Potentiation {
     pub loss_up: f32,
     pub loss_down: f32,
     pub seed: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Input;
+    struct Output;
+
+    #[test]
+    fn object_refs_are_zero_cost_and_serialize_as_the_uuid() {
+        assert_eq!(size_of::<ObjectRef<Input>>(), size_of::<ObjectId>());
+        assert_eq!(size_of::<ArtifactRef<Input>>(), size_of::<ObjectId>());
+
+        let id = ObjectId::from_u128(7);
+        let reference = ObjectRef::<Input>::new(id);
+        assert_eq!(
+            postcard::to_allocvec(&reference).unwrap(),
+            postcard::to_allocvec(&id).unwrap()
+        );
+        let decoded: ObjectRef<Input> =
+            postcard::from_bytes(&postcard::to_allocvec(&reference).unwrap()).unwrap();
+        assert_eq!(decoded.id(), id);
+    }
+
+    #[test]
+    fn artifact_and_emission_references_retain_payload_types() {
+        fn accepts_input(_: ArtifactRef<Input>) {}
+        fn accepts_output_emission(_: EmissionId<Output>) {}
+
+        let input = ArtifactRef::from_object_id(ObjectId::from_u128(11));
+        let output = EmissionId::<Output>::new(ObjectId::from_u128(12));
+        accepts_input(input);
+        accepts_output_emission(output);
+    }
+
+    #[test]
+    fn legacy_inference_id_uses_the_typed_reference_wire_format() {
+        let id = ObjectId::from_u128(13);
+        let request = InferenceRequest::VoidId {
+            id: InferenceOutputId::new(id),
+            limit: Some(4),
+        };
+        let decoded: InferenceRequest =
+            postcard::from_bytes(&postcard::to_allocvec(&request).unwrap()).unwrap();
+        match decoded {
+            InferenceRequest::VoidId { id: decoded, limit } => {
+                assert_eq!(decoded.id(), id);
+                assert_eq!(limit, Some(4));
+            }
+            InferenceRequest::Sequences { .. } => panic!("wrong request variant"),
+        }
+    }
 }

@@ -8,5 +8,8 @@ edition = "2021"
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+[dev-dependencies]
+postcard = { version = "1", features = ["alloc"] }
+
 [lints]
 workspace = true

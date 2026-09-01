@@ -70,7 +70,7 @@ impl<J: VoidInferOps> Effect<J> for InitializeEffect {
 
             let emission = Emission {
                 metadata: (),
-                output_id: InferenceOutputId(inference_output_id),
+                output_id: InferenceOutputId::new(inference_output_id).into(),
             };
             let emission_bytes = postcard::to_allocvec(&emission)?;
             let emission_id = jungle
@@ -79,7 +79,7 @@ impl<J: VoidInferOps> Effect<J> for InitializeEffect {
                 .map_err(AtomError::Upload)?;
 
             let propagation = Transmission::Propagation {
-                emission_id: EmissionId(emission_id),
+                emission_id: EmissionId::new(emission_id),
                 recv: ObjectId::nil(),
                 send: ObjectId::nil(),
             };

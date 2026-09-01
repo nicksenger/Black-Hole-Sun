@@ -132,6 +132,99 @@ pub trait TensorContract {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Legacy Qwen compatibility contract
+// ---------------------------------------------------------------------------
+
+/// Stable operation contract for the existing dark-token Qwen path.
+///
+/// The compatibility adapter continues to encode `InferenceRequest` and
+/// `InferenceOutput` with postcard. These port specs define the tensor bundle
+/// that the adapter will expose when the generic Mass protocol lands in Stage
+/// 3: predicted tokens plus their top-k dark-knowledge distribution. Input
+/// and output deliberately use the same bundle because the legacy path feeds
+/// an `InferenceOutput` back as the next operation's dark input.
+pub struct QwenDarkInference;
+
+pub struct QwenPredictions;
+pub struct QwenDarkTokenIds;
+pub struct QwenDarkLogProbs;
+
+pub struct QwenBatch;
+pub struct QwenSequence;
+pub struct QwenTopK;
+
+impl TensorPortSpec for QwenPredictions {
+    type Shape = glowstick::Shape2<glowstick::Dyn<QwenBatch>, glowstick::Dyn<QwenSequence>>;
+
+    const NAME: &'static str = "predictions";
+
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![
+            DimensionDescriptor::Symbolic("batch".into()),
+            DimensionDescriptor::Symbolic("sequence".into()),
+        ]
+    }
+
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::U32)
+    }
+}
+
+impl TensorPortSpec for QwenDarkTokenIds {
+    type Shape = glowstick::Shape3<
+        glowstick::Dyn<QwenBatch>,
+        glowstick::Dyn<QwenSequence>,
+        glowstick::Dyn<QwenTopK>,
+    >;
+
+    const NAME: &'static str = "dark_token_ids";
+
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![
+            DimensionDescriptor::Symbolic("batch".into()),
+            DimensionDescriptor::Symbolic("sequence".into()),
+            DimensionDescriptor::Symbolic("top_k".into()),
+        ]
+    }
+
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::U32)
+    }
+}
+
+impl TensorPortSpec for QwenDarkLogProbs {
+    type Shape = glowstick::Shape3<
+        glowstick::Dyn<QwenBatch>,
+        glowstick::Dyn<QwenSequence>,
+        glowstick::Dyn<QwenTopK>,
+    >;
+
+    const NAME: &'static str = "dark_log_probs";
+
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![
+            DimensionDescriptor::Symbolic("batch".into()),
+            DimensionDescriptor::Symbolic("sequence".into()),
+            DimensionDescriptor::Symbolic("top_k".into()),
+        ]
+    }
+
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::F32)
+    }
+}
+
+impl TensorContract for QwenDarkInference {
+    type Input = TensorBundleSpec<(QwenPredictions, QwenDarkTokenIds, QwenDarkLogProbs)>;
+    type Output = TensorBundleSpec<(QwenPredictions, QwenDarkTokenIds, QwenDarkLogProbs)>;
+    type Metadata = ();
+
+    // Application-assigned, stable ID; never derived from the Rust type name.
+    const ID: ContractId = ContractId::from_u128(0x7177_656e_2d64_6172_6b2d_696e_6665_7231);
+    const VERSION: u32 = 1;
+}
+
 /// Owned backend-neutral dense tensor value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTensor {
@@ -666,6 +759,29 @@ mod tests {
         type Metadata = Metadata;
         const ID: ContractId = ContractId::from_u128(0xff2233445566778899aabbccddeeff00);
         const VERSION: u32 = 7;
+    }
+
+    #[test]
+    fn qwen_compatibility_contract_has_stable_dark_token_ports() {
+        let descriptor = QwenDarkInference::descriptor();
+        assert_eq!(descriptor.id, QwenDarkInference::ID);
+        assert_eq!(descriptor.version, 1);
+        assert_eq!(
+            descriptor
+                .inputs
+                .iter()
+                .map(|port| port.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["predictions", "dark_token_ids", "dark_log_probs"]
+        );
+        assert_eq!(
+            descriptor
+                .outputs
+                .iter()
+                .map(|port| port.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["predictions", "dark_token_ids", "dark_log_probs"]
+        );
     }
 
     fn input_tensors() -> Vec<RawTensor> {

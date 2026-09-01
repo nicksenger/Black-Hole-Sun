@@ -35,17 +35,17 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, H, J: VoidInferOps> Effec
         (model_id, input_id): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let obj_id = input_id.0;
+            let obj_id = input_id.id();
 
             let emission: Emission<M> = jungle
                 .download_emission(obj_id)
                 .await
                 .map_err(AtomError::Download)?;
-            let input_output_id = emission.output_id.0;
+            let input_output_id = emission.output_id.object_id();
             debug!(emission_id = %obj_id, "downloaded emission for inference");
 
             let request = InferenceRequest::VoidId {
-                id: InferenceOutputId(input_output_id),
+                id: InferenceOutputId::new(input_output_id),
                 limit: None,
             };
             let output_id = jungle
@@ -62,7 +62,7 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, H, J: VoidInferOps> Effec
 
             let output_emission = Emission {
                 metadata: emission.metadata,
-                output_id: InferenceOutputId(output_id),
+                output_id: InferenceOutputId::new(output_id).into(),
             };
             let result_bytes = postcard::to_allocvec(&output_emission)?;
             let result_id = jungle
@@ -71,7 +71,7 @@ impl<M: Serialize + DeserializeOwned + Send + 'static, H, J: VoidInferOps> Effec
                 .map_err(AtomError::Upload)?;
             debug!(result_id = %result_id, "uploaded inference result emission");
 
-            Ok(EmissionId(result_id))
+            Ok(EmissionId::new(result_id))
         }
     }
 }

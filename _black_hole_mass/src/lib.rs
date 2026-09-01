@@ -3299,7 +3299,7 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &MassContext) -> 
         }
         InferenceRequest::VoidId { id, limit } => {
             // Download the InferenceOutput and convert to dark input sequences.
-            let output_bytes = void.download(id.0).await?;
+            let output_bytes = void.download(id.id()).await?;
             let inference_output: InferenceOutput =
                 from_bytes(&output_bytes).map_err(ServerError::DecodeFrame)?;
 

@@ -16,7 +16,7 @@ impl<J> Effect<J> for DelayedLeftEffect {
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            Ok(EmissionId(Uuid::from_u128(LEFT_EMISSION)))
+            Ok(EmissionId::new(Uuid::from_u128(LEFT_EMISSION)))
         }
     }
 }
@@ -31,7 +31,7 @@ impl<J: FusionProbeOps> Effect<J> for RecordFusionInputsEffect {
         jungle: &J,
         (transform_id, (p1, p2)): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        jungle.record_fusion_inputs(transform_id, p1.0, p2.0);
-        std::future::ready(Ok(EmissionId(Uuid::from_u128(FUSED_EMISSION))))
+        jungle.record_fusion_inputs(transform_id, p1.id(), p2.id());
+        std::future::ready(Ok(EmissionId::new(Uuid::from_u128(FUSED_EMISSION))))
     }
 }
