@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use paramecia_engine::{
@@ -18,6 +18,7 @@ use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -31,7 +32,8 @@ use black_hole_spec::{
     ContractId, ContractSide, DarkToken, InferenceInput, InferenceOutput, InferenceRequest,
     LogitEntry, MassArchitecture, MassErrorFeedbackConfig, MassIn, MassModelCapacity,
     MassModelConfig, MassModelParams, MassOut, MassPerturbationMode, ObjectId,
-    OperationArtifactRef, OperationCapability, SequenceOutput, TunnelRequest, WorkerCapabilities,
+    OperationArtifactRef, OperationCapability, SequenceOutput, TransferBegin, TransferChunk,
+    TransferHash, TransferRecord, TunnelRequest, WorkerCapabilities,
     MASS_OPERATION_PROTOCOL_VERSION,
 };
 pub use paramecia_engine::KvCacheQuantization;
@@ -220,6 +222,34 @@ enum VoidIn {
         offset: u64,
         length: u64,
     },
+    TransferBegin {
+        begin: TransferBegin,
+    },
+    TransferChunk {
+        transfer_id: ObjectId,
+        index: u32,
+        data: Vec<u8>,
+        hash: TransferHash,
+    },
+    TransferInspect {
+        transfer_id: ObjectId,
+    },
+    TransferCommit {
+        transfer_id: ObjectId,
+        aggregate_hash: TransferHash,
+    },
+    TransferAbort {
+        transfer_id: ObjectId,
+        reason: String,
+    },
+    TransferStreamUpload {
+        begin: TransferBegin,
+        authorization: [u8; 32],
+    },
+    TransferStreamDownload {
+        transfer_id: ObjectId,
+        authorization: [u8; 32],
+    },
 }
 
 /// Wire response from the void service.
@@ -240,6 +270,12 @@ enum VoidOut {
     Ack,
     Error {
         message: String,
+    },
+    Transfer {
+        record: TransferRecord,
+    },
+    TransferChunkStored {
+        chunk: TransferChunk,
     },
 }
 
@@ -382,6 +418,97 @@ impl VoidClient {
             _ => Err(ServerError::VoidError(
                 "unexpected void response for download".into(),
             )),
+        }
+    }
+
+    /// Resolve only authoritative operation inputs. Transfer and stream
+    /// references both replay from the committed Void manifest, which
+    /// prevents an operation result from being published before its durable
+    /// input commits.
+    pub async fn download_artifact(&self, reference: OperationArtifactRef) -> Result<Vec<u8>> {
+        match reference {
+            OperationArtifactRef::Committed(id) => self.download(id).await,
+            OperationArtifactRef::Transfer(id)
+            | OperationArtifactRef::Stream {
+                fallback_transfer_id: id,
+                ..
+            } => self.download_committed_transfer(id).await,
+        }
+    }
+
+    async fn download_committed_transfer(&self, transfer_id: ObjectId) -> Result<Vec<u8>> {
+        let mut staged = HashMap::<u32, Vec<u8>>::new();
+        loop {
+            let record = match self.call(VoidIn::TransferInspect { transfer_id }).await? {
+                VoidOut::Transfer { record } => record,
+                VoidOut::Error { message } => return Err(ServerError::VoidError(message)),
+                _ => {
+                    return Err(ServerError::VoidError(
+                        "unexpected void response for transfer inspect".into(),
+                    ))
+                }
+            };
+            let (begin, chunks, committed) = match record {
+                TransferRecord::InProgress { begin, chunks, .. } => (begin, chunks, false),
+                TransferRecord::Committed(manifest) => (manifest.begin, manifest.chunks, true),
+                TransferRecord::Aborted(abort) => {
+                    return Err(ServerError::VoidError(format!(
+                        "transfer {transfer_id} aborted: {}",
+                        abort.reason
+                    )))
+                }
+            };
+            for chunk in &chunks {
+                if staged.contains_key(&chunk.index) {
+                    continue;
+                }
+                let data = self.download(chunk.object_id).await?;
+                if data.len() as u64 != chunk.len
+                    || TransferHash(Sha256::digest(&data).into()) != chunk.hash
+                {
+                    return Err(ServerError::VoidError(format!(
+                        "transfer {transfer_id} chunk {} failed validation",
+                        chunk.index
+                    )));
+                }
+                staged.insert(chunk.index, data);
+            }
+            if committed {
+                if chunks.len() != begin.expected_chunks as usize {
+                    return Err(ServerError::VoidError(format!(
+                        "transfer {transfer_id} has an invalid manifest"
+                    )));
+                }
+                let mut output = Vec::new();
+                let mut aggregate = Sha256::new();
+                for index in 0..begin.expected_chunks {
+                    let data = staged.remove(&index).ok_or_else(|| {
+                        ServerError::VoidError(format!(
+                            "transfer {transfer_id} is missing chunk {index}"
+                        ))
+                    })?;
+                    aggregate.update(&data);
+                    output.extend_from_slice(&data);
+                }
+                if output.len() as u64 != begin.expected_len
+                    || TransferHash(aggregate.finalize().into()) != begin.expected_hash
+                {
+                    return Err(ServerError::VoidError(format!(
+                        "transfer {transfer_id} failed aggregate validation"
+                    )));
+                }
+                return Ok(output);
+            }
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            if now_ms >= begin.deadline_unix_ms {
+                return Err(ServerError::VoidError(format!(
+                    "transfer {transfer_id} lease expired before commit"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -3016,7 +3143,7 @@ async fn handle_operation_forward_local(
     let operation = operation.ok_or(ServerError::OperationNotConfigured)?;
     let capability = operation.capability();
     let void = require_void_client(ctx, "generic operation forward")?;
-    let input_bytes = void.download(input.object_id()).await?;
+    let input_bytes = void.download_artifact(input).await?;
     black_hole_contract::validate_artifact(
         &capability.descriptor,
         ContractSide::Input,
@@ -3048,7 +3175,7 @@ async fn handle_qwen_operation_forward(
     use black_hole_contract::{decode_input, encode_output, QwenDarkInference, RawTensor};
 
     let void = require_void_client(ctx, "generic Qwen forward")?;
-    let input_bytes = void.download(input.object_id()).await?;
+    let input_bytes = void.download_artifact(input).await?;
     let decoded = decode_input::<QwenDarkInference>(&input_bytes)
         .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
     let predictions = &decoded.tensors[0];

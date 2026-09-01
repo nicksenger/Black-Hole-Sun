@@ -62,13 +62,13 @@ pub mod ray;
 pub mod sun;
 pub mod warp;
 
-pub use black_hole_contract::{QwenDarkInference, TensorContract};
+pub use black_hole_contract::{QwenDarkInference, StreamingTensorOp, TensorContract};
 
 pub use black_hole_spec::{
     ArtifactDelivery, ArtifactRef, ContractId, DarkToken, Emission, EmissionId, InferenceInput,
     InferenceOutput, InferenceOutputId, InferenceRequest, LogitEntry, MassErrorFeedbackConfig,
     MassErrorFeedbackMode, MassIn, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode,
-    ObjectId, ObjectRef, OperationalControl, SequenceOutput, Transmission,
+    ObjectId, ObjectRef, OperationalControl, SequenceOutput, StreamRef, TransferRef, Transmission,
 };
 
 pub use atom::effect::MassInfer;

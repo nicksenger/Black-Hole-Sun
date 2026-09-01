@@ -10,8 +10,8 @@ use std::{
 
 use black_hole_spec::{
     ContractDescriptor, ContractHash, ContractId, ContractSide, DimensionDescriptor,
-    DtypeConstraint, EncodingId, LayoutConstraint, OperationCapability, TensorDtype,
-    TensorEnvelope, TensorPortDescriptor,
+    DtypeConstraint, EncodingId, LayoutConstraint, OperationCapability, StreamingChunkOrder,
+    StreamingFinalization, TensorDtype, TensorEnvelope, TensorPortDescriptor,
 };
 use glowstick::Shape;
 use postcard::{from_bytes, to_allocvec};
@@ -130,6 +130,18 @@ pub trait TensorContract {
             outputs: Self::Output::descriptor(),
         }
     }
+}
+
+/// Explicit opt-in contract for operators that can execute before a complete
+/// tensor artifact has arrived.
+///
+/// Ordinary [`TensorContract`] implementations remain full-artifact
+/// operations. Implementing this trait declares the chunk axis, required
+/// ordering, and finalization boundary that a streaming runtime must enforce.
+pub trait StreamingTensorOp: TensorContract {
+    const CHUNK_AXIS: usize;
+    const CHUNK_ORDER: StreamingChunkOrder;
+    const FINALIZATION: StreamingFinalization;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +475,59 @@ pub fn validate_artifact(
         metadata,
         tensors,
     })
+}
+
+/// Return the Black Hole envelope, metadata, and safetensors header prefix
+/// that must lead a live stream. A receiver can validate the concrete tensor
+/// names, dtypes, shapes, and offsets from this prefix before payload bytes
+/// arrive.
+pub fn tensor_stream_header(frame: &[u8]) -> Result<Vec<u8>, CodecError> {
+    if frame.len() < FRAME_PREFIX_LEN {
+        return Err(CodecError::Truncated);
+    }
+    if &frame[..FRAME_MAGIC.len()] != FRAME_MAGIC {
+        return Err(CodecError::InvalidMagic);
+    }
+    let envelope_len = u32::from_le_bytes(
+        frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+            .try_into()
+            .expect("fixed-size prefix"),
+    ) as usize;
+    let envelope_end = FRAME_PREFIX_LEN
+        .checked_add(envelope_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let envelope: TensorEnvelope = from_bytes(
+        frame
+            .get(FRAME_PREFIX_LEN..envelope_end)
+            .ok_or(CodecError::Truncated)?,
+    )?;
+    let metadata_len: usize = envelope
+        .metadata_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let tensor_start = envelope_end
+        .checked_add(metadata_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let safetensors_len_end = tensor_start
+        .checked_add(size_of::<u64>())
+        .ok_or(CodecError::LengthOverflow)?;
+    let safetensors_header_len = u64::from_le_bytes(
+        frame
+            .get(tensor_start..safetensors_len_end)
+            .ok_or(CodecError::Truncated)?
+            .try_into()
+            .expect("fixed-size safetensors header length"),
+    );
+    let safetensors_header_len: usize = safetensors_header_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let header_end = safetensors_len_end
+        .checked_add(safetensors_header_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    Ok(frame
+        .get(..header_end)
+        .ok_or(CodecError::Truncated)?
+        .to_vec())
 }
 
 fn encode<C>(
@@ -1003,6 +1068,33 @@ mod tests {
         assert_eq!(decoded.metadata, Metadata { request: 42 });
         assert_eq!(decoded.tensors, tensors);
         assert_eq!(decoded.envelope.tensor_encoding, EncodingId::SAFETENSORS_V1);
+    }
+
+    #[test]
+    fn streaming_prefix_contains_the_complete_safetensors_header() {
+        let frame =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 42 }).unwrap();
+        let header = tensor_stream_header(&frame).unwrap();
+        assert!(frame.starts_with(&header));
+        assert!(header.len() < frame.len());
+
+        let envelope_len = u32::from_le_bytes(
+            header[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let envelope_end = FRAME_PREFIX_LEN + envelope_len;
+        let envelope: TensorEnvelope = from_bytes(&header[FRAME_PREFIX_LEN..envelope_end]).unwrap();
+        let tensor_start = envelope_end + envelope.metadata_len as usize;
+        let safe_header_len = u64::from_le_bytes(
+            header[tensor_start..tensor_start + size_of::<u64>()]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        assert_eq!(
+            header.len(),
+            tensor_start + size_of::<u64>() + safe_header_len
+        );
     }
 
     #[test]

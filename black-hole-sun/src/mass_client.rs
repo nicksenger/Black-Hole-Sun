@@ -4,7 +4,7 @@ use black_hole_contract::{operation_capability, QwenDarkInference, TensorContrac
 use black_hole_flux::ops::{CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, ResetOps};
 use black_hole_spec::{
     ArtifactRef, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut, ObjectId,
-    OperationArtifactRef, MASS_OPERATION_PROTOCOL_VERSION,
+    MASS_OPERATION_PROTOCOL_VERSION,
 };
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
@@ -296,11 +296,11 @@ where
             .request(&MassIn::ForwardOperation {
                 protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
                 instance_id,
-                input: OperationArtifactRef::committed(input.object_id()),
+                input: input.into(),
             })
             .await?
         {
-            MassOut::Forwarded { output } => Ok(ArtifactRef::from_object_id(output.object_id())),
+            MassOut::Forwarded { output } => Ok(output.into_typed()),
             MassOut::Error { message } => Err(message),
             _ => Err("unexpected mass response for operation forward".to_string()),
         }

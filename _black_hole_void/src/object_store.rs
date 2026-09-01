@@ -32,6 +32,10 @@ pub trait ObjectStore: Send + Sync {
     /// Retrieve an object by key.
     async fn get(&self, key: &str) -> Result<Vec<u8>>;
 
+    /// Delete an object by key. Missing objects are treated as already
+    /// deleted so transfer cleanup is idempotent.
+    async fn delete(&self, key: &str) -> Result<()>;
+
     /// Retrieve a byte range of an object. The default implementation reads
     /// the whole object and slices; backends with native range support (S3)
     /// override this to stream.
@@ -118,6 +122,17 @@ impl ObjectStore for S3Store {
             .map_err(|e| ObjectStoreError::Message(format!("failed to read s3 body: {e}")))?;
 
         Ok(body.into_bytes().to_vec())
+    }
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| ObjectStoreError::S3(e.to_string()))?;
+        Ok(())
     }
 
     async fn get_range(&self, key: &str, offset: u64, length: u64) -> Result<Vec<u8>> {
@@ -261,6 +276,11 @@ impl ObjectStore for InMemoryObjectStore {
             .ok_or_else(|| ObjectStoreError::NotFound(key.to_string()))
     }
 
+    async fn delete(&self, key: &str) -> Result<()> {
+        self.map.write().await.remove(key);
+        Ok(())
+    }
+
     async fn begin_multipart(&self, key: &str) -> Result<String> {
         let session_id = uuid::Uuid::new_v4().to_string();
         self.multipart
@@ -392,6 +412,19 @@ impl ObjectStore for FilesystemObjectStore {
                 path.display()
             )),
         })
+    }
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        let path = self.object_path(key)?;
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(ObjectStoreError::Message(format!(
+                "failed to delete object {} from {}: {error}",
+                key,
+                path.display()
+            ))),
+        }
     }
 
     async fn begin_multipart(&self, _key: &str) -> Result<String> {

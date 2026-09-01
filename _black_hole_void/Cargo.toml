@@ -10,6 +10,7 @@ postgres = ["dep:sqlx"]
 
 [dependencies]
 aws-sdk-s3 = "1.140"
+black-hole-spec = { path = "../_black_hole_spec" }
 clap = { version = "4", features = ["derive"] }
 directories-next = "2"
 futures = "0.3"
@@ -19,6 +20,7 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time", "sync"] }
 tracing = "0.1"

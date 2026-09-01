@@ -30,8 +30,9 @@ postcard = { version = "1", features = ["alloc"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 serde = "1"
+sha2 = "0.10"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-tokio = { version = "1", features = ["io-util", "fs"] }
+tokio = { version = "1", features = ["io-util", "fs", "macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

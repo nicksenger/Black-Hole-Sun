@@ -23,7 +23,7 @@ pub use test_utils::{
     TestMassServer, TestVoidServer,
 };
 pub use tokenizer::{Tokenizer, TokenizerBuilder};
-pub use void_client::VoidClient;
+pub use void_client::{PreparedTransfer, VoidClient};
 
 // Convenience re-exports — flux modules and core sun types
 pub use black_hole_flux::{
@@ -39,20 +39,23 @@ pub use black_hole_flux::{
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
     ArtifactDelivery, ArtifactRef, ContractDescriptor, ContractHash, ContractId, ContractSide,
-    DarkToken, DimensionDescriptor, DtypeConstraint, Emission, EmissionId, EncodingId,
-    InferenceInput, InferenceOutput, InferenceOutputId, InferenceRequest, LayoutConstraint,
-    LogitEntry, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn, MassModelCapacity,
-    MassModelConfig, MassModelParams, MassOut, MassPerturbationMode, ObjectId, ObjectRef,
-    OperationArtifactRef, OperationCapability, OperationalControl, Potentiation, SequenceOutput,
-    TensorDtype, TensorEnvelope, TensorPortDescriptor, Transmission,
+    DarkToken, DimensionDescriptor, DtypeConstraint, DurabilityPolicy, Emission, EmissionId,
+    EncodingId, InferenceInput, InferenceOutput, InferenceOutputId, InferenceRequest,
+    LayoutConstraint, LogitEntry, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn,
+    MassModelCapacity, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode, ObjectId,
+    ObjectRef, OperationArtifactRef, OperationCapability, OperationalControl, Potentiation,
+    SequenceOutput, StreamRef, StreamingChunkOrder, StreamingFinalization, TensorDtype,
+    TensorEnvelope, TensorPortDescriptor, TransferAbort, TransferBegin, TransferChunk,
+    TransferHash, TransferManifest, TransferRecord, TransferRef, TransferStreamFrame,
+    TransferTicket, Transmission, TRANSFER_PROTOCOL_VERSION,
 };
 
 // Convenience re-exports — typed operation contracts and tensor codec
 pub use black_hole_contract::{
     decode_input, decode_output, descriptor_hash, encode_input, encode_output,
-    operation_capability, validate_artifact, CodecError, DecodedTensorBundle, PortList,
-    QwenDarkInference, RawTensor, SingleTensorSpec, TensorBundleSpec, TensorContract,
-    TensorPortSpec, TensorSpec, ValidatedArtifact,
+    operation_capability, tensor_stream_header, validate_artifact, CodecError, DecodedTensorBundle,
+    PortList, QwenDarkInference, RawTensor, SingleTensorSpec, StreamingTensorOp, TensorBundleSpec,
+    TensorContract, TensorPortSpec, TensorSpec, ValidatedArtifact,
 };
 
 // Convenience re-exports — void types

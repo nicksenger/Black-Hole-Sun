@@ -1,9 +1,21 @@
-use std::{collections::HashMap, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fs, io,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
+use black_hole_spec::{
+    TransferAbort, TransferBegin, TransferChunk, TransferHash, TransferManifest, TransferRecord,
+    TransferStreamFrame, TRANSFER_PROTOCOL_VERSION,
+};
 use postcard::{from_bytes, to_allocvec};
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -23,6 +35,9 @@ const S3_MAX_FRAME_SIZE: usize = 1024 * 1024 * 1024; // 1 GB
 const MAX_DOWNLOAD_WAIT_TIMEOUT_MS: u64 = 30_000;
 /// Maximum number of parts in one multipart upload (matches the S3 limit).
 const MAX_MULTIPART_PARTS: u32 = 10_000;
+const TRANSFER_CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
+const IMMUTABLE_TRANSFER_CHUNK_PREFIX: &str = "transfer-chunk-";
+const TRANSFER_RECORD_PREFIX: &str = "transfer-record-";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportMode {
@@ -70,6 +85,41 @@ pub enum VoidIn {
         offset: u64,
         length: u64,
     },
+    /// Begin a progressive transfer. The transfer record is durable but its
+    /// artifact is not authoritative until `TransferCommit`.
+    TransferBegin { begin: TransferBegin },
+    /// Persist one immutable, independently readable transfer chunk.
+    TransferChunk {
+        transfer_id: uuid::Uuid,
+        index: u32,
+        data: Vec<u8>,
+        hash: TransferHash,
+    },
+    /// Read current transfer state so a receiver can stage available chunks.
+    TransferInspect { transfer_id: uuid::Uuid },
+    /// Atomically publish a complete transfer manifest after validating every
+    /// chunk and the aggregate hash.
+    TransferCommit {
+        transfer_id: uuid::Uuid,
+        aggregate_hash: TransferHash,
+    },
+    /// Abort a transfer and remove all of its chunks.
+    TransferAbort {
+        transfer_id: uuid::Uuid,
+        reason: String,
+    },
+    /// Switch this QUIC/TCP channel into producer streaming mode. Bytes are
+    /// persisted as immutable chunks while they are received.
+    TransferStreamUpload {
+        begin: TransferBegin,
+        authorization: [u8; 32],
+    },
+    /// Switch this channel into receiver streaming mode. Already-persisted
+    /// and newly arriving chunks are sent in order until commit or abort.
+    TransferStreamDownload {
+        transfer_id: uuid::Uuid,
+        authorization: [u8; 32],
+    },
 }
 
 /// Wire response sent by the server.
@@ -85,6 +135,10 @@ pub enum VoidOut {
     Ack,
     /// Error message for any failure.
     Error { message: String },
+    /// Current state of a progressive transfer.
+    Transfer { record: TransferRecord },
+    /// One chunk was persisted and is now independently readable.
+    TransferChunkStored { chunk: TransferChunk },
 }
 
 pub struct ServerBuilder {
@@ -228,7 +282,10 @@ impl ServerBuilder {
             store: self.store,
             wait_registry: WaitRegistry::default(),
             multipart_uploads: tokio::sync::Mutex::new(HashMap::new()),
+            transfer_mutation: tokio::sync::Mutex::new(()),
+            active_transfers: tokio::sync::Mutex::new(HashSet::new()),
         });
+        spawn_transfer_cleanup(&context);
 
         Ok((listener, local_addr, context))
     }
@@ -318,6 +375,10 @@ struct VoidContext {
     store: Box<dyn persist::VoidStore>,
     wait_registry: WaitRegistry,
     multipart_uploads: tokio::sync::Mutex<HashMap<uuid::Uuid, MultipartSession>>,
+    /// Serializes transfer record read-modify-write updates. Chunks remain
+    /// independently downloadable while a different transfer is updated.
+    transfer_mutation: tokio::sync::Mutex<()>,
+    active_transfers: tokio::sync::Mutex<HashSet<uuid::Uuid>>,
 }
 
 #[derive(Default)]
@@ -396,6 +457,58 @@ async fn handle_stream(
         }
     };
 
+    match request {
+        VoidIn::TransferStreamUpload {
+            begin,
+            authorization,
+        } => {
+            if let Err(error) = handle_transfer_stream_upload_quic(
+                &mut send,
+                &mut recv,
+                &context,
+                begin,
+                authorization,
+            )
+            .await
+            {
+                debug!(%error, "transfer upload stream ended");
+            }
+            return;
+        }
+        VoidIn::TransferStreamDownload {
+            transfer_id,
+            authorization,
+        } => {
+            if let Err(error) = handle_transfer_stream_download_quic(
+                &mut send,
+                &context,
+                transfer_id,
+                authorization,
+            )
+            .await
+            {
+                debug!(%error, "transfer download stream ended");
+            }
+            return;
+        }
+        request => {
+            let response = handle_request(request, &context).await;
+            if let Err(e) = write_frame_quic(&mut send, &response).await {
+                match &e {
+                    // High-throughput flows can cancel in-flight requests while this server
+                    // is preparing a response. Treat those disconnects as expected churn.
+                    ServerError::WriteFrame(quinn::WriteError::ConnectionLost(_)) => {
+                        debug!("client disconnected before response frame write completed")
+                    }
+                    _ => error!("failed to write response frame: {e}"),
+                }
+            }
+            return;
+        }
+    }
+}
+
+async fn handle_request(request: VoidIn, context: &VoidContext) -> VoidOut {
     let response = match request {
         VoidIn::Upload { data } => handle_upload(&context, None, data).await,
         VoidIn::UploadWith { id, data } => handle_upload(&context, Some(id), data).await,
@@ -417,18 +530,31 @@ async fn handle_stream(
         VoidIn::DownloadRange { id, offset, length } => {
             handle_download_range(&context, id, offset, length).await
         }
-    };
-
-    if let Err(e) = write_frame_quic(&mut send, &response).await {
-        match &e {
-            // High-throughput flows can cancel in-flight requests while this server
-            // is preparing a response. Treat those disconnects as expected churn.
-            ServerError::WriteFrame(quinn::WriteError::ConnectionLost(_)) => {
-                debug!("client disconnected before response frame write completed")
-            }
-            _ => error!("failed to write response frame: {e}"),
+        VoidIn::TransferBegin { begin } => handle_transfer_begin(&context, begin).await,
+        VoidIn::TransferChunk {
+            transfer_id,
+            index,
+            data,
+            hash,
+        } => handle_transfer_chunk(&context, transfer_id, index, data, hash).await,
+        VoidIn::TransferInspect { transfer_id } => {
+            handle_transfer_inspect(&context, transfer_id).await
         }
-    }
+        VoidIn::TransferCommit {
+            transfer_id,
+            aggregate_hash,
+        } => handle_transfer_commit(&context, transfer_id, aggregate_hash).await,
+        VoidIn::TransferAbort {
+            transfer_id,
+            reason,
+        } => handle_transfer_abort(&context, transfer_id, reason).await,
+        VoidIn::TransferStreamUpload { .. } | VoidIn::TransferStreamDownload { .. } => {
+            VoidOut::Error {
+                message: "stream transfer request requires a dedicated channel".to_string(),
+            }
+        }
+    };
+    response
 }
 
 async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<VoidContext>) {
@@ -442,42 +568,330 @@ async fn handle_tcp_connection(mut stream: TcpStream, context: Arc<VoidContext>)
             }
         };
 
-        let response = match request {
-            VoidIn::Upload { data } => handle_upload(&context, None, data).await,
-            VoidIn::UploadWith { id, data } => handle_upload(&context, Some(id), data).await,
-            VoidIn::Download { id } => handle_download(&context, id).await,
-            VoidIn::DownloadWait { id, timeout_ms } => {
-                handle_download_wait(&context, id, timeout_ms).await
+        match request {
+            VoidIn::TransferStreamUpload {
+                begin,
+                authorization,
+            } => {
+                if let Err(error) =
+                    handle_transfer_stream_upload_io(&mut stream, &context, begin, authorization)
+                        .await
+                {
+                    debug!(%error, "TCP transfer upload stream ended");
+                }
+                return;
             }
-            VoidIn::UploadBegin { id, total_size } => {
-                handle_upload_begin(&context, id, total_size).await
+            VoidIn::TransferStreamDownload {
+                transfer_id,
+                authorization,
+            } => {
+                if let Err(error) = handle_transfer_stream_download_io(
+                    &mut stream,
+                    &context,
+                    transfer_id,
+                    authorization,
+                )
+                .await
+                {
+                    debug!(%error, "TCP transfer download stream ended");
+                }
+                return;
             }
-            VoidIn::UploadPart {
-                id,
-                part_number,
-                data,
-            } => handle_upload_part(&context, id, part_number, data).await,
-            VoidIn::UploadFinish { id, part_count } => {
-                handle_upload_finish(&context, id, part_count).await
-            }
-            VoidIn::DownloadRange { id, offset, length } => {
-                handle_download_range(&context, id, offset, length).await
+            request => {
+                let response = handle_request(request, &context).await;
+                if let Err(error) = write_frame_io(&mut stream, &response).await {
+                    if matches!(error, ServerError::WriteFrameIo(ref err) if matches!(
+                        err.kind(),
+                        io::ErrorKind::BrokenPipe
+                            | io::ErrorKind::ConnectionAborted
+                            | io::ErrorKind::ConnectionReset
+                    )) {
+                        debug!("tcp client disconnected before response frame write completed");
+                    } else {
+                        error!("failed to write tcp response frame: {error}");
+                    }
+                    return;
+                }
             }
         };
+    }
+}
 
-        if let Err(error) = write_frame_io(&mut stream, &response).await {
-            if matches!(error, ServerError::WriteFrameIo(ref err) if matches!(
-                err.kind(),
-                io::ErrorKind::BrokenPipe
-                    | io::ErrorKind::ConnectionAborted
-                    | io::ErrorKind::ConnectionReset
-            )) {
-                debug!("tcp client disconnected before response frame write completed");
-            } else {
-                error!("failed to write tcp response frame: {error}");
+fn valid_transfer_authorization(begin: &TransferBegin, authorization: &[u8; 32]) -> bool {
+    TransferHash(Sha256::digest(authorization).into()) == begin.authorization_hash
+}
+
+async fn handle_stream_upload_frame(
+    context: &VoidContext,
+    transfer_id: uuid::Uuid,
+    expected_index: &mut u32,
+    frame: TransferStreamFrame,
+) -> VoidOut {
+    match frame {
+        TransferStreamFrame::Chunk { index, data, hash } => {
+            if index != *expected_index {
+                return VoidOut::Error {
+                    message: format!(
+                        "stream chunk index {index} is out of order; expected {}",
+                        *expected_index
+                    ),
+                };
             }
-            return;
+            let response = handle_transfer_chunk(context, transfer_id, index, data, hash).await;
+            if matches!(response, VoidOut::TransferChunkStored { .. }) {
+                *expected_index = expected_index.saturating_add(1);
+            }
+            response
         }
+        TransferStreamFrame::Commit { aggregate_hash } => {
+            handle_transfer_commit(context, transfer_id, aggregate_hash).await
+        }
+        TransferStreamFrame::Abort { reason } => {
+            handle_transfer_abort(context, transfer_id, reason).await
+        }
+        TransferStreamFrame::Begin(_) => VoidOut::Error {
+            message: "duplicate begin frame on transfer upload stream".to_string(),
+        },
+    }
+}
+
+async fn handle_transfer_stream_upload_quic(
+    send: &mut quinn::SendStream,
+    recv: &mut quinn::RecvStream,
+    context: &VoidContext,
+    begin: TransferBegin,
+    authorization: [u8; 32],
+) -> Result<()> {
+    if !valid_transfer_authorization(&begin, &authorization) {
+        return write_frame_quic(
+            send,
+            &VoidOut::Error {
+                message: "invalid transfer authorization".to_string(),
+            },
+        )
+        .await;
+    }
+    let transfer_id = begin.transfer_id;
+    let response = handle_transfer_begin(context, begin).await;
+    let accepted = matches!(
+        &response,
+        VoidOut::Transfer {
+            record: TransferRecord::InProgress { .. }
+        }
+    );
+    write_frame_quic(send, &response).await?;
+    if !accepted {
+        return Ok(());
+    }
+
+    let mut expected_index = 0;
+    loop {
+        let frame: TransferStreamFrame = match read_frame_quic(recv).await {
+            Ok(frame) => frame,
+            Err(ServerError::UnexpectedEof) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let terminal = matches!(
+            &frame,
+            TransferStreamFrame::Commit { .. } | TransferStreamFrame::Abort { .. }
+        );
+        let response =
+            handle_stream_upload_frame(context, transfer_id, &mut expected_index, frame).await;
+        let failed = matches!(&response, VoidOut::Error { .. });
+        if terminal || failed {
+            write_frame_quic(send, &response).await?;
+            return Ok(());
+        }
+    }
+}
+
+async fn handle_transfer_stream_upload_io<S>(
+    stream: &mut S,
+    context: &VoidContext,
+    begin: TransferBegin,
+    authorization: [u8; 32],
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    if !valid_transfer_authorization(&begin, &authorization) {
+        return write_frame_io(
+            stream,
+            &VoidOut::Error {
+                message: "invalid transfer authorization".to_string(),
+            },
+        )
+        .await;
+    }
+    let transfer_id = begin.transfer_id;
+    let response = handle_transfer_begin(context, begin).await;
+    let accepted = matches!(
+        &response,
+        VoidOut::Transfer {
+            record: TransferRecord::InProgress { .. }
+        }
+    );
+    write_frame_io(stream, &response).await?;
+    if !accepted {
+        return Ok(());
+    }
+
+    let mut expected_index = 0;
+    loop {
+        let frame: TransferStreamFrame = match read_frame_io(stream).await {
+            Ok(frame) => frame,
+            Err(ServerError::UnexpectedEof) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let terminal = matches!(
+            &frame,
+            TransferStreamFrame::Commit { .. } | TransferStreamFrame::Abort { .. }
+        );
+        let response =
+            handle_stream_upload_frame(context, transfer_id, &mut expected_index, frame).await;
+        let failed = matches!(&response, VoidOut::Error { .. });
+        if terminal || failed {
+            write_frame_io(stream, &response).await?;
+            return Ok(());
+        }
+    }
+}
+
+async fn transfer_stream_snapshot(
+    context: &VoidContext,
+    transfer_id: uuid::Uuid,
+) -> std::result::Result<TransferRecord, String> {
+    match handle_transfer_inspect(context, transfer_id).await {
+        VoidOut::Transfer { record } => Ok(record),
+        VoidOut::Error { message } => Err(message),
+        _ => Err("unexpected transfer inspection response".to_string()),
+    }
+}
+
+async fn read_transfer_chunk_frame(
+    context: &VoidContext,
+    chunk: &TransferChunk,
+) -> std::result::Result<TransferStreamFrame, String> {
+    let data = match try_download(context, chunk.object_id).await {
+        DownloadAttempt::Found(data) => data,
+        DownloadAttempt::Missing => {
+            return Err(format!("transfer chunk {} is missing", chunk.object_id))
+        }
+        DownloadAttempt::Failed(message) => return Err(message),
+    };
+    if data.len() as u64 != chunk.len || transfer_hash(&data) != chunk.hash {
+        return Err(format!(
+            "transfer chunk {} failed validation",
+            chunk.object_id
+        ));
+    }
+    Ok(TransferStreamFrame::Chunk {
+        index: chunk.index,
+        data,
+        hash: chunk.hash,
+    })
+}
+
+async fn handle_transfer_stream_download_quic(
+    send: &mut quinn::SendStream,
+    context: &VoidContext,
+    transfer_id: uuid::Uuid,
+    authorization: [u8; 32],
+) -> Result<()> {
+    let initial = transfer_stream_snapshot(context, transfer_id)
+        .await
+        .map_err(|message| ServerError::Transfer(message))?;
+    if !valid_transfer_authorization(initial.begin(), &authorization) {
+        return Err(ServerError::Transfer(
+            "invalid transfer authorization".to_string(),
+        ));
+    }
+    write_frame_quic(send, &TransferStreamFrame::Begin(initial.begin().clone())).await?;
+    let mut next_index = 0usize;
+    loop {
+        let record = transfer_stream_snapshot(context, transfer_id)
+            .await
+            .map_err(ServerError::Transfer)?;
+        let (chunks, terminal) = match &record {
+            TransferRecord::InProgress { chunks, .. } => (chunks.as_slice(), None),
+            TransferRecord::Committed(manifest) => (
+                manifest.chunks.as_slice(),
+                Some(TransferStreamFrame::Commit {
+                    aggregate_hash: manifest.begin.expected_hash,
+                }),
+            ),
+            TransferRecord::Aborted(abort) => (
+                &[][..],
+                Some(TransferStreamFrame::Abort {
+                    reason: abort.reason.clone(),
+                }),
+            ),
+        };
+        while let Some(chunk) = chunks.get(next_index) {
+            let frame = read_transfer_chunk_frame(context, chunk)
+                .await
+                .map_err(ServerError::Transfer)?;
+            write_frame_quic(send, &frame).await?;
+            next_index += 1;
+        }
+        if let Some(terminal) = terminal {
+            write_frame_quic(send, &terminal).await?;
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn handle_transfer_stream_download_io<S>(
+    stream: &mut S,
+    context: &VoidContext,
+    transfer_id: uuid::Uuid,
+    authorization: [u8; 32],
+) -> Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    let initial = transfer_stream_snapshot(context, transfer_id)
+        .await
+        .map_err(ServerError::Transfer)?;
+    if !valid_transfer_authorization(initial.begin(), &authorization) {
+        return Err(ServerError::Transfer(
+            "invalid transfer authorization".to_string(),
+        ));
+    }
+    write_frame_io(stream, &TransferStreamFrame::Begin(initial.begin().clone())).await?;
+    let mut next_index = 0usize;
+    loop {
+        let record = transfer_stream_snapshot(context, transfer_id)
+            .await
+            .map_err(ServerError::Transfer)?;
+        let (chunks, terminal) = match &record {
+            TransferRecord::InProgress { chunks, .. } => (chunks.as_slice(), None),
+            TransferRecord::Committed(manifest) => (
+                manifest.chunks.as_slice(),
+                Some(TransferStreamFrame::Commit {
+                    aggregate_hash: manifest.begin.expected_hash,
+                }),
+            ),
+            TransferRecord::Aborted(abort) => (
+                &[][..],
+                Some(TransferStreamFrame::Abort {
+                    reason: abort.reason.clone(),
+                }),
+            ),
+        };
+        while let Some(chunk) = chunks.get(next_index) {
+            let frame = read_transfer_chunk_frame(context, chunk)
+                .await
+                .map_err(ServerError::Transfer)?;
+            write_frame_io(stream, &frame).await?;
+            next_index += 1;
+        }
+        if let Some(terminal) = terminal {
+            write_frame_io(stream, &terminal).await?;
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -493,6 +907,22 @@ async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<
     }
 
     let id = id.unwrap_or_else(uuid::Uuid::new_v4);
+    match context.store.get_object(id).await {
+        Ok(Some(existing))
+            if existing.key.starts_with(IMMUTABLE_TRANSFER_CHUNK_PREFIX)
+                || existing.key.starts_with(TRANSFER_RECORD_PREFIX) =>
+        {
+            return VoidOut::Error {
+                message: format!("object {id} is managed by the transfer protocol"),
+            };
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return VoidOut::Error {
+                message: format!("failed to check existing object {id}: {error}"),
+            }
+        }
+    }
     let key = id.to_string();
     let size_bytes = i64::try_from(data.len()).unwrap_or(i64::MAX);
 
@@ -526,6 +956,62 @@ async fn handle_upload(context: &VoidContext, id: Option<uuid::Uuid>, data: Vec<
             }
         }
     }
+}
+
+async fn handle_transfer_chunk_upload(
+    context: &VoidContext,
+    id: uuid::Uuid,
+    data: Vec<u8>,
+) -> VoidOut {
+    if data.len() > S3_MAX_FRAME_SIZE {
+        return VoidOut::Error {
+            message: format!(
+                "upload size {} exceeds maximum {}",
+                data.len(),
+                S3_MAX_FRAME_SIZE
+            ),
+        };
+    }
+    match context.store.get_object(id).await {
+        Ok(Some(_)) => {
+            return VoidOut::Error {
+                message: format!("object already exists: {id}"),
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return VoidOut::Error {
+                message: format!("failed to check transfer chunk object {id}: {error}"),
+            }
+        }
+    }
+    let key = format!("{IMMUTABLE_TRANSFER_CHUNK_PREFIX}{id}");
+    let size_bytes = i64::try_from(data.len()).unwrap_or(i64::MAX);
+    if let Err(error) = context.object_store.put(key.clone(), data).await {
+        return VoidOut::Error {
+            message: format!("transfer chunk upload failed: {error}"),
+        };
+    }
+    if let Err(error) = context
+        .store
+        .insert_object(
+            id,
+            context.object_namespace.clone(),
+            key.clone(),
+            size_bytes,
+        )
+        .await
+    {
+        let _ = context.object_store.delete(&key).await;
+        return VoidOut::Error {
+            message: format!("failed to persist transfer chunk metadata: {error}"),
+        };
+    }
+    if let Err(error) = context.store.publish_upload_notification(id).await {
+        warn!(%id, %error, "failed to publish transfer chunk notification");
+    }
+    context.wait_registry.notify_upload(id).await;
+    VoidOut::Uploaded { id }
 }
 
 async fn handle_upload_begin(
@@ -692,6 +1178,441 @@ async fn handle_upload_finish(context: &VoidContext, id: uuid::Uuid, part_count:
     info!(%id, bytes = total_size, parts = part_count, "multipart upload finished");
     context.wait_registry.notify_upload(id).await;
     VoidOut::Uploaded { id }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn transfer_hash(data: &[u8]) -> TransferHash {
+    TransferHash(Sha256::digest(data).into())
+}
+
+async fn persist_transfer_record(
+    context: &VoidContext,
+    transfer_id: uuid::Uuid,
+    record: &TransferRecord,
+) -> std::result::Result<(), String> {
+    let bytes = to_allocvec(record).map_err(|error| format!("encode transfer record: {error}"))?;
+    let key = format!("{TRANSFER_RECORD_PREFIX}{transfer_id}");
+    let size_bytes = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+    let existed = context
+        .store
+        .get_object(transfer_id)
+        .await
+        .map_err(|error| format!("failed to inspect transfer record metadata: {error}"))?
+        .is_some();
+    context
+        .object_store
+        .put(key.clone(), bytes)
+        .await
+        .map_err(|error| format!("failed to persist transfer record: {error}"))?;
+    if let Err(error) = context
+        .store
+        .insert_object(
+            transfer_id,
+            context.object_namespace.clone(),
+            key.clone(),
+            size_bytes,
+        )
+        .await
+    {
+        if !existed {
+            let _ = context.object_store.delete(&key).await;
+            return Err(format!(
+                "failed to persist transfer record metadata: {error}"
+            ));
+        }
+        warn!(
+            %transfer_id,
+            %error,
+            "failed to refresh existing transfer record metadata"
+        );
+    }
+    if let Err(error) = context.store.publish_upload_notification(transfer_id).await {
+        warn!(%transfer_id, %error, "failed to publish transfer update");
+    }
+    context.wait_registry.notify_upload(transfer_id).await;
+    Ok(())
+}
+
+async fn load_transfer_record(
+    context: &VoidContext,
+    transfer_id: uuid::Uuid,
+) -> std::result::Result<TransferRecord, String> {
+    match try_download(context, transfer_id).await {
+        DownloadAttempt::Found(bytes) => from_bytes(&bytes)
+            .map_err(|error| format!("invalid transfer record {transfer_id}: {error}")),
+        DownloadAttempt::Missing => Err(format!("transfer not found: {transfer_id}")),
+        DownloadAttempt::Failed(message) => Err(message),
+    }
+}
+
+async fn delete_object(context: &VoidContext, id: uuid::Uuid) -> std::result::Result<(), String> {
+    let record = context
+        .store
+        .get_object(id)
+        .await
+        .map_err(|error| format!("failed to look up object {id} for deletion: {error}"))?;
+    if let Some(record) = record {
+        context
+            .object_store
+            .delete(&record.key)
+            .await
+            .map_err(|error| format!("failed to delete object {id}: {error}"))?;
+        context
+            .store
+            .delete_object(id)
+            .await
+            .map_err(|error| format!("failed to delete object metadata {id}: {error}"))?;
+    }
+    Ok(())
+}
+
+async fn abort_transfer_locked(
+    context: &VoidContext,
+    begin: TransferBegin,
+    chunks: Vec<TransferChunk>,
+    reason: String,
+) -> std::result::Result<TransferRecord, String> {
+    for chunk in chunks {
+        if let Err(error) = delete_object(context, chunk.object_id).await {
+            warn!(
+                transfer_id = %begin.transfer_id,
+                chunk_id = %chunk.object_id,
+                %error,
+                "failed to clean up transfer chunk"
+            );
+        }
+    }
+    let transfer_id = begin.transfer_id;
+    let record = TransferRecord::Aborted(TransferAbort {
+        begin,
+        reason,
+        aborted_unix_ms: unix_time_ms(),
+    });
+    persist_transfer_record(context, transfer_id, &record).await?;
+    context.active_transfers.lock().await.remove(&transfer_id);
+    Ok(record)
+}
+
+async fn expire_transfer_locked(
+    context: &VoidContext,
+    record: TransferRecord,
+) -> std::result::Result<TransferRecord, String> {
+    match record {
+        TransferRecord::InProgress {
+            begin,
+            chunks,
+            revision: _,
+        } if unix_time_ms() >= begin.deadline_unix_ms => {
+            abort_transfer_locked(context, begin, chunks, "transfer lease expired".to_string())
+                .await
+        }
+        record => Ok(record),
+    }
+}
+
+fn spawn_transfer_cleanup(context: &Arc<VoidContext>) {
+    let context = Arc::downgrade(context);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(TRANSFER_CLEANUP_INTERVAL).await;
+            let Some(context) = context.upgrade() else {
+                break;
+            };
+            let transfer_ids: Vec<_> = context
+                .active_transfers
+                .lock()
+                .await
+                .iter()
+                .copied()
+                .collect();
+            for transfer_id in transfer_ids {
+                let _mutation = context.transfer_mutation.lock().await;
+                let Ok(record) = load_transfer_record(&context, transfer_id).await else {
+                    context.active_transfers.lock().await.remove(&transfer_id);
+                    continue;
+                };
+                if let Err(error) = expire_transfer_locked(&context, record).await {
+                    warn!(%transfer_id, %error, "failed to expire transfer");
+                }
+            }
+        }
+    });
+}
+
+async fn handle_transfer_begin(context: &VoidContext, begin: TransferBegin) -> VoidOut {
+    let _mutation = context.transfer_mutation.lock().await;
+    if begin.protocol_version != TRANSFER_PROTOCOL_VERSION {
+        return VoidOut::Error {
+            message: format!(
+                "unsupported transfer protocol version {}, expected {TRANSFER_PROTOCOL_VERSION}",
+                begin.protocol_version
+            ),
+        };
+    }
+    if begin.transfer_id.is_nil() {
+        return VoidOut::Error {
+            message: "transfer ID cannot be nil".to_string(),
+        };
+    }
+    if begin.expected_chunks > MAX_MULTIPART_PARTS {
+        return VoidOut::Error {
+            message: format!(
+                "expected_chunks must be <= {MAX_MULTIPART_PARTS}, got {}",
+                begin.expected_chunks
+            ),
+        };
+    }
+    if (begin.expected_chunks == 0) != (begin.expected_len == 0) {
+        return VoidOut::Error {
+            message: "zero-length transfers must declare zero chunks, and vice versa".to_string(),
+        };
+    }
+    if begin.deadline_unix_ms <= unix_time_ms() {
+        return VoidOut::Error {
+            message: "transfer deadline has already expired".to_string(),
+        };
+    }
+    match context.store.get_object(begin.transfer_id).await {
+        Ok(Some(_)) => {
+            return VoidOut::Error {
+                message: format!("transfer already exists: {}", begin.transfer_id),
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return VoidOut::Error {
+                message: format!("failed to check transfer ID: {error}"),
+            }
+        }
+    }
+
+    let transfer_id = begin.transfer_id;
+    let record = TransferRecord::InProgress {
+        begin,
+        chunks: Vec::new(),
+        revision: 0,
+    };
+    if let Err(message) = persist_transfer_record(context, transfer_id, &record).await {
+        return VoidOut::Error { message };
+    }
+    context.active_transfers.lock().await.insert(transfer_id);
+    VoidOut::Transfer { record }
+}
+
+async fn handle_transfer_chunk(
+    context: &VoidContext,
+    transfer_id: uuid::Uuid,
+    index: u32,
+    data: Vec<u8>,
+    hash: TransferHash,
+) -> VoidOut {
+    let _mutation = context.transfer_mutation.lock().await;
+    let record = match load_transfer_record(context, transfer_id).await {
+        Ok(record) => match expire_transfer_locked(context, record).await {
+            Ok(record) => record,
+            Err(message) => return VoidOut::Error { message },
+        },
+        Err(message) => return VoidOut::Error { message },
+    };
+    let TransferRecord::InProgress {
+        begin,
+        mut chunks,
+        revision,
+    } = record
+    else {
+        return VoidOut::Error {
+            message: format!("transfer {transfer_id} is not in progress"),
+        };
+    };
+    if index >= begin.expected_chunks {
+        return VoidOut::Error {
+            message: format!(
+                "chunk index {index} is outside expected range 0..{}",
+                begin.expected_chunks
+            ),
+        };
+    }
+    if chunks.iter().any(|chunk| chunk.index == index) {
+        return VoidOut::Error {
+            message: format!("duplicate chunk index {index} for transfer {transfer_id}"),
+        };
+    }
+    let actual_hash = transfer_hash(&data);
+    if actual_hash != hash {
+        return VoidOut::Error {
+            message: format!("chunk {index} hash mismatch for transfer {transfer_id}"),
+        };
+    }
+    let prospective_len = chunks
+        .iter()
+        .map(|chunk| chunk.len)
+        .sum::<u64>()
+        .saturating_add(data.len() as u64);
+    if prospective_len > begin.expected_len {
+        return VoidOut::Error {
+            message: format!(
+                "transfer {transfer_id} exceeds declared length {}",
+                begin.expected_len
+            ),
+        };
+    }
+
+    let object_id = uuid::Uuid::new_v4();
+    match handle_transfer_chunk_upload(context, object_id, data).await {
+        VoidOut::Uploaded { .. } => {}
+        VoidOut::Error { message } => return VoidOut::Error { message },
+        _ => {
+            return VoidOut::Error {
+                message: "unexpected response while storing transfer chunk".to_string(),
+            }
+        }
+    }
+    let chunk = TransferChunk {
+        index,
+        object_id,
+        len: prospective_len - chunks.iter().map(|chunk| chunk.len).sum::<u64>(),
+        hash,
+    };
+    chunks.push(chunk.clone());
+    chunks.sort_by_key(|chunk| chunk.index);
+    let updated = TransferRecord::InProgress {
+        begin,
+        chunks,
+        revision: revision.saturating_add(1),
+    };
+    if let Err(message) = persist_transfer_record(context, transfer_id, &updated).await {
+        let _ = delete_object(context, object_id).await;
+        return VoidOut::Error { message };
+    }
+    VoidOut::TransferChunkStored { chunk }
+}
+
+async fn handle_transfer_inspect(context: &VoidContext, transfer_id: uuid::Uuid) -> VoidOut {
+    let _mutation = context.transfer_mutation.lock().await;
+    let record = match load_transfer_record(context, transfer_id).await {
+        Ok(record) => match expire_transfer_locked(context, record).await {
+            Ok(record) => record,
+            Err(message) => return VoidOut::Error { message },
+        },
+        Err(message) => return VoidOut::Error { message },
+    };
+    VoidOut::Transfer { record }
+}
+
+async fn handle_transfer_commit(
+    context: &VoidContext,
+    transfer_id: uuid::Uuid,
+    aggregate_hash: TransferHash,
+) -> VoidOut {
+    let _mutation = context.transfer_mutation.lock().await;
+    let record = match load_transfer_record(context, transfer_id).await {
+        Ok(record) => match expire_transfer_locked(context, record).await {
+            Ok(record) => record,
+            Err(message) => return VoidOut::Error { message },
+        },
+        Err(message) => return VoidOut::Error { message },
+    };
+    let TransferRecord::InProgress { begin, chunks, .. } = record else {
+        return VoidOut::Error {
+            message: format!("transfer {transfer_id} is not in progress"),
+        };
+    };
+    if aggregate_hash != begin.expected_hash {
+        return VoidOut::Error {
+            message: format!("commit hash does not match declaration for transfer {transfer_id}"),
+        };
+    }
+    if chunks.len() != begin.expected_chunks as usize
+        || chunks
+            .iter()
+            .enumerate()
+            .any(|(index, chunk)| chunk.index as usize != index)
+    {
+        return VoidOut::Error {
+            message: format!(
+                "transfer {transfer_id} has {} chunks, expected exactly 0..{}",
+                chunks.len(),
+                begin.expected_chunks
+            ),
+        };
+    }
+    let total_len = chunks.iter().map(|chunk| chunk.len).sum::<u64>();
+    if total_len != begin.expected_len {
+        return VoidOut::Error {
+            message: format!(
+                "transfer {transfer_id} length {total_len} does not match expected {}",
+                begin.expected_len
+            ),
+        };
+    }
+
+    let mut aggregate = Sha256::new();
+    for chunk in &chunks {
+        let data = match try_download(context, chunk.object_id).await {
+            DownloadAttempt::Found(data) => data,
+            DownloadAttempt::Missing => {
+                return VoidOut::Error {
+                    message: format!("transfer chunk {} is missing", chunk.object_id),
+                }
+            }
+            DownloadAttempt::Failed(message) => return VoidOut::Error { message },
+        };
+        if data.len() as u64 != chunk.len || transfer_hash(&data) != chunk.hash {
+            return VoidOut::Error {
+                message: format!(
+                    "transfer chunk {} failed length or hash validation",
+                    chunk.object_id
+                ),
+            };
+        }
+        aggregate.update(&data);
+    }
+    if TransferHash(aggregate.finalize().into()) != aggregate_hash {
+        return VoidOut::Error {
+            message: format!("aggregate hash mismatch for transfer {transfer_id}"),
+        };
+    }
+
+    let manifest = TransferManifest {
+        begin,
+        chunks,
+        committed_unix_ms: unix_time_ms(),
+    };
+    let committed = TransferRecord::Committed(manifest);
+    if let Err(message) = persist_transfer_record(context, transfer_id, &committed).await {
+        return VoidOut::Error { message };
+    }
+    context.active_transfers.lock().await.remove(&transfer_id);
+    VoidOut::Transfer { record: committed }
+}
+
+async fn handle_transfer_abort(
+    context: &VoidContext,
+    transfer_id: uuid::Uuid,
+    reason: String,
+) -> VoidOut {
+    let _mutation = context.transfer_mutation.lock().await;
+    let record = match load_transfer_record(context, transfer_id).await {
+        Ok(record) => record,
+        Err(message) => return VoidOut::Error { message },
+    };
+    let TransferRecord::InProgress { begin, chunks, .. } = record else {
+        return VoidOut::Error {
+            message: format!("transfer {transfer_id} is not in progress"),
+        };
+    };
+    match abort_transfer_locked(context, begin, chunks, reason).await {
+        Ok(record) => VoidOut::Transfer { record },
+        Err(message) => VoidOut::Error { message },
+    }
 }
 
 async fn handle_download_range(
@@ -1059,6 +1980,8 @@ pub enum ServerError {
     WriteFrame(quinn::WriteError),
     #[error("failed to write frame: {0}")]
     WriteFrameIo(io::Error),
+    #[error("transfer error: {0}")]
+    Transfer(String),
     #[error("persistence error: {0}")]
     Store(#[source] persist::PersistenceError),
 }

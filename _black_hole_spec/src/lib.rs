@@ -12,6 +12,8 @@ pub const THINK_OPEN: u32 = 248068;
 pub const THINK_CLOSE: u32 = 248069;
 /// Current generic Mass start/forward protocol version.
 pub const MASS_OPERATION_PROTOCOL_VERSION: u16 = 1;
+/// Current progressive artifact-transfer protocol version.
+pub const TRANSFER_PROTOCOL_VERSION: u16 = 1;
 
 /// Opaque identifier for objects stored in void.
 pub type ObjectId = Uuid;
@@ -108,15 +110,159 @@ impl<'de, T> Deserialize<'de> for ObjectRef<T> {
     }
 }
 
+/// Typed handle for an artifact assembled from immutable Void chunks.
+#[repr(transparent)]
+pub struct TransferRef<T> {
+    id: ObjectId,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T> TransferRef<T> {
+    pub const fn new(id: ObjectId) -> Self {
+        Self {
+            id,
+            marker: PhantomData,
+        }
+    }
+
+    pub const fn id(&self) -> ObjectId {
+        self.id
+    }
+}
+
+impl<T> Clone for TransferRef<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for TransferRef<T> {}
+
+impl<T> PartialEq for TransferRef<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<T> Eq for TransferRef<T> {}
+
+impl<T> std::hash::Hash for TransferRef<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl<T> fmt::Debug for TransferRef<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("TransferRef")
+            .field(&self.id)
+            .finish()
+    }
+}
+
+impl<T> Serialize for TransferRef<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.id.serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for TransferRef<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        ObjectId::deserialize(deserializer).map(Self::new)
+    }
+}
+
+/// Typed live-stream location with a durable chunk-transfer fallback.
+///
+/// The ticket is persisted separately so the location remains compact enough
+/// to pass through schedulers while still carrying everything needed to
+/// reconnect to the source.
+pub struct StreamRef<T> {
+    pub ticket_id: ObjectId,
+    pub fallback_transfer_id: ObjectId,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T> StreamRef<T> {
+    pub const fn new(ticket_id: ObjectId, fallback_transfer_id: ObjectId) -> Self {
+        Self {
+            ticket_id,
+            fallback_transfer_id,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Clone for StreamRef<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for StreamRef<T> {}
+
+impl<T> PartialEq for StreamRef<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ticket_id == other.ticket_id && self.fallback_transfer_id == other.fallback_transfer_id
+    }
+}
+
+impl<T> Eq for StreamRef<T> {}
+
+impl<T> std::hash::Hash for StreamRef<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.ticket_id.hash(state);
+        self.fallback_transfer_id.hash(state);
+    }
+}
+
+impl<T> fmt::Debug for StreamRef<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StreamRef")
+            .field("ticket_id", &self.ticket_id)
+            .field("fallback_transfer_id", &self.fallback_transfer_id)
+            .finish()
+    }
+}
+
+impl<T> Serialize for StreamRef<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (self.ticket_id, self.fallback_transfer_id).serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for StreamRef<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let (ticket_id, fallback_transfer_id) = <(ObjectId, ObjectId)>::deserialize(deserializer)?;
+        Ok(Self::new(ticket_id, fallback_transfer_id))
+    }
+}
+
 /// Location-independent reference carried between typed flows.
 ///
-/// Stage 2 supports committed void objects. Keeping that location behind an
-/// enum allows later stages to add in-progress transfers and live streams
-/// without changing operation-facing APIs.
+/// A normal resolver accepts only committed data. `Transfer` resolves a
+/// committed transfer manifest and its immutable chunks; `Stream` may use the
+/// live source but always retains the transfer fallback for replay.
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub enum ArtifactRef<T> {
     Committed(ObjectRef<T>),
+    Transfer(TransferRef<T>),
+    Stream(StreamRef<T>),
 }
 
 impl<T> ArtifactRef<T> {
@@ -128,14 +274,35 @@ impl<T> ArtifactRef<T> {
         Self::Committed(ObjectRef::new(id))
     }
 
-    pub const fn object_ref(&self) -> ObjectRef<T> {
+    pub const fn transfer(reference: TransferRef<T>) -> Self {
+        Self::Transfer(reference)
+    }
+
+    pub const fn stream(reference: StreamRef<T>) -> Self {
+        Self::Stream(reference)
+    }
+
+    pub const fn committed_object_ref(&self) -> Option<ObjectRef<T>> {
         match self {
-            Self::Committed(reference) => *reference,
+            Self::Committed(reference) => Some(*reference),
+            Self::Transfer(_) | Self::Stream(_) => None,
         }
     }
 
+    /// Durable object or transfer ID used to resolve this artifact.
+    pub const fn durable_id(&self) -> ObjectId {
+        match self {
+            Self::Committed(reference) => reference.id(),
+            Self::Transfer(reference) => reference.id(),
+            Self::Stream(reference) => reference.fallback_transfer_id,
+        }
+    }
+
+    /// Compatibility accessor for callers that can consume only committed
+    /// objects. New generic code should branch on the location or use
+    /// `durable_id`.
     pub const fn object_id(&self) -> ObjectId {
-        self.object_ref().id()
+        self.durable_id()
     }
 }
 
@@ -143,6 +310,8 @@ impl<T> Clone for ArtifactRef<T> {
     fn clone(&self) -> Self {
         match self {
             Self::Committed(reference) => Self::Committed(*reference),
+            Self::Transfer(reference) => Self::Transfer(*reference),
+            Self::Stream(reference) => Self::Stream(*reference),
         }
     }
 }
@@ -151,7 +320,12 @@ impl<T> Copy for ArtifactRef<T> {}
 
 impl<T> PartialEq for ArtifactRef<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.object_ref() == other.object_ref()
+        match (self, other) {
+            (Self::Committed(left), Self::Committed(right)) => left == right,
+            (Self::Transfer(left), Self::Transfer(right)) => left == right,
+            (Self::Stream(left), Self::Stream(right)) => left == right,
+            _ => false,
+        }
     }
 }
 
@@ -159,16 +333,31 @@ impl<T> Eq for ArtifactRef<T> {}
 
 impl<T> std::hash::Hash for ArtifactRef<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.object_ref().hash(state);
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Committed(reference) => reference.hash(state),
+            Self::Transfer(reference) => reference.hash(state),
+            Self::Stream(reference) => reference.hash(state),
+        }
     }
 }
 
 impl<T> fmt::Debug for ArtifactRef<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("ArtifactRef::Committed")
-            .field(&self.object_ref())
-            .finish()
+        match self {
+            Self::Committed(reference) => formatter
+                .debug_tuple("ArtifactRef::Committed")
+                .field(reference)
+                .finish(),
+            Self::Transfer(reference) => formatter
+                .debug_tuple("ArtifactRef::Transfer")
+                .field(reference)
+                .finish(),
+            Self::Stream(reference) => formatter
+                .debug_tuple("ArtifactRef::Stream")
+                .field(reference)
+                .finish(),
+        }
     }
 }
 
@@ -334,6 +523,11 @@ pub struct OperationCapability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OperationArtifactRef {
     Committed(ObjectId),
+    Transfer(ObjectId),
+    Stream {
+        ticket_id: ObjectId,
+        fallback_transfer_id: ObjectId,
+    },
 }
 
 impl OperationArtifactRef {
@@ -344,12 +538,183 @@ impl OperationArtifactRef {
     pub const fn object_id(self) -> ObjectId {
         match self {
             Self::Committed(id) => id,
+            Self::Transfer(id) => id,
+            Self::Stream {
+                fallback_transfer_id,
+                ..
+            } => fallback_transfer_id,
+        }
+    }
+
+    pub const fn durable_id(self) -> ObjectId {
+        self.object_id()
+    }
+
+    pub const fn into_typed<T>(self) -> ArtifactRef<T> {
+        match self {
+            Self::Committed(id) => ArtifactRef::Committed(ObjectRef::new(id)),
+            Self::Transfer(id) => ArtifactRef::Transfer(TransferRef::new(id)),
+            Self::Stream {
+                ticket_id,
+                fallback_transfer_id,
+            } => ArtifactRef::Stream(StreamRef::new(ticket_id, fallback_transfer_id)),
+        }
+    }
+}
+
+impl<T> From<ArtifactRef<T>> for OperationArtifactRef {
+    fn from(reference: ArtifactRef<T>) -> Self {
+        match reference {
+            ArtifactRef::Committed(reference) => Self::Committed(reference.id()),
+            ArtifactRef::Transfer(reference) => Self::Transfer(reference.id()),
+            ArtifactRef::Stream(reference) => Self::Stream {
+                ticket_id: reference.ticket_id,
+                fallback_transfer_id: reference.fallback_transfer_id,
+            },
         }
     }
 }
 
 impl TensorEnvelope {
     pub const VERSION: u16 = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Progressive artifact transfer protocol
+// ---------------------------------------------------------------------------
+
+/// SHA-256 digest used for individual chunks and complete transfers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TransferHash(pub [u8; 32]);
+
+/// Immutable declaration written before any transfer chunks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferBegin {
+    pub protocol_version: u16,
+    pub transfer_id: ObjectId,
+    pub envelope: TensorEnvelope,
+    /// Safetensors header bytes sent before payload frames so receivers can
+    /// validate concrete names, dtypes, and dimensions before allocation.
+    pub tensor_header: Vec<u8>,
+    pub expected_chunks: u32,
+    pub expected_len: u64,
+    pub expected_hash: TransferHash,
+    /// Unix timestamp in milliseconds. An uncommitted transfer is aborted
+    /// after this lease expires.
+    pub deadline_unix_ms: u64,
+    /// SHA-256 digest of the bearer token in a [`TransferTicket`].
+    pub authorization_hash: TransferHash,
+}
+
+/// Descriptor for one immutable Void object in a progressive transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferChunk {
+    pub index: u32,
+    pub object_id: ObjectId,
+    pub len: u64,
+    pub hash: TransferHash,
+}
+
+/// Durable manifest that makes all chunks authoritative and replayable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferManifest {
+    pub begin: TransferBegin,
+    pub chunks: Vec<TransferChunk>,
+    pub committed_unix_ms: u64,
+}
+
+/// Terminal record for an explicitly aborted or expired transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferAbort {
+    pub begin: TransferBegin,
+    pub reason: String,
+    pub aborted_unix_ms: u64,
+}
+
+/// Durable transfer state stored under `TransferBegin::transfer_id`.
+///
+/// Replay resolvers accept only `Committed`; begin/chunk state is observable
+/// for progressive staging but never authoritative.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransferRecord {
+    InProgress {
+        begin: TransferBegin,
+        chunks: Vec<TransferChunk>,
+        revision: u64,
+    },
+    Committed(TransferManifest),
+    Aborted(TransferAbort),
+}
+
+impl TransferRecord {
+    pub fn begin(&self) -> &TransferBegin {
+        match self {
+            Self::InProgress { begin, .. } => begin,
+            Self::Committed(manifest) => &manifest.begin,
+            Self::Aborted(abort) => &abort.begin,
+        }
+    }
+}
+
+/// Durability required before a streamed operation may publish its result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DurabilityPolicy {
+    /// The stream is a latency optimization; the transfer must commit to Void
+    /// before dependent externally visible output can commit.
+    ReplayRequired,
+    /// The stream may be consumed without a durable replay artifact.
+    Ephemeral,
+}
+
+/// Ordering guarantee an operation requires for progressive tensor chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StreamingChunkOrder {
+    Sequential,
+    Unordered,
+}
+
+/// Point at which a streaming operation may finalize its output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StreamingFinalization {
+    WholeArtifact,
+    EndOfAxis,
+}
+
+/// Authorization and routing information for a live QUIC tensor stream.
+///
+/// `source` is an authority string (`ip:port`) rather than a socket type so
+/// tickets remain stable across IPv4 and IPv6 deployments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferTicket {
+    pub descriptor: ContractDescriptor,
+    pub envelope: TensorEnvelope,
+    pub tensor_header: Vec<u8>,
+    pub transfer_id: ObjectId,
+    pub source: String,
+    pub authorization: [u8; 32],
+    pub expected_len: u64,
+    pub expected_hash: TransferHash,
+    pub deadline_unix_ms: u64,
+    pub durability: DurabilityPolicy,
+    pub eventual_void_id: ObjectId,
+}
+
+/// Frames carried on a live transfer stream. The begin descriptor is always
+/// sent first, so a receiver can validate and allocate before tensor bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransferStreamFrame {
+    Begin(TransferBegin),
+    Chunk {
+        index: u32,
+        data: Vec<u8>,
+        hash: TransferHash,
+    },
+    Commit {
+        aggregate_hash: TransferHash,
+    },
+    Abort {
+        reason: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -858,7 +1223,7 @@ mod tests {
     #[test]
     fn object_refs_are_zero_cost_and_serialize_as_the_uuid() {
         assert_eq!(size_of::<ObjectRef<Input>>(), size_of::<ObjectId>());
-        assert_eq!(size_of::<ArtifactRef<Input>>(), size_of::<ObjectId>());
+        assert_eq!(size_of::<TransferRef<Input>>(), size_of::<ObjectId>());
 
         let id = ObjectId::from_u128(7);
         let reference = ObjectRef::<Input>::new(id);
@@ -880,6 +1245,28 @@ mod tests {
         let output = EmissionId::<Output>::new(ObjectId::from_u128(12));
         accepts_input(input);
         accepts_output_emission(output);
+    }
+
+    #[test]
+    fn artifact_locations_round_trip_through_erased_mass_references() {
+        let transfer = ArtifactRef::<Input>::transfer(TransferRef::new(ObjectId::from_u128(21)));
+        let erased: OperationArtifactRef = transfer.into();
+        assert!(matches!(
+            erased,
+            OperationArtifactRef::Transfer(id) if id == ObjectId::from_u128(21)
+        ));
+        assert!(matches!(
+            erased.into_typed::<Input>(),
+            ArtifactRef::Transfer(reference) if reference.id() == ObjectId::from_u128(21)
+        ));
+
+        let stream = ArtifactRef::<Input>::stream(StreamRef::new(
+            ObjectId::from_u128(22),
+            ObjectId::from_u128(23),
+        ));
+        let encoded = postcard::to_allocvec(&stream).unwrap();
+        let decoded: ArtifactRef<Input> = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, stream);
     }
 
     #[test]

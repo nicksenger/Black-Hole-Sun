@@ -2,6 +2,7 @@
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
 
@@ -11,7 +12,8 @@ const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
 
 pub use black_hole_spec::{
     ArtifactRef, DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId,
-    InferenceRequest, MassModelConfig, MassModelParams, ObjectId, ObjectRef, Transmission,
+    InferenceRequest, MassModelConfig, MassModelParams, ObjectId, ObjectRef, StreamRef,
+    TransferHash, TransferRecord, TransferRef, Transmission,
 };
 
 use black_hole_contract::{QwenDarkInference, TensorContract};
@@ -90,7 +92,62 @@ pub trait VoidOps: Send + Sync {
     where
         T: DeserializeOwned + Send,
     {
-        self.resolve(reference.object_ref()).await
+        let bytes = match reference {
+            ArtifactRef::Committed(reference) => self.download_raw(reference.id()).await?,
+            ArtifactRef::Transfer(reference) => self.resolve_transfer_raw(reference.id()).await?,
+            ArtifactRef::Stream(reference) => {
+                self.resolve_transfer_raw(reference.fallback_transfer_id)
+                    .await?
+            }
+        };
+        postcard::from_bytes(&bytes).map_err(|error| error.to_string())
+    }
+
+    /// Resolve a replayable progressive transfer. In-progress and aborted
+    /// records are deliberately rejected: only a committed manifest makes the
+    /// chunk set authoritative.
+    async fn resolve_transfer_raw(&self, transfer_id: ObjectId) -> Result<Vec<u8>, String> {
+        let record_bytes = self.download_raw(transfer_id).await?;
+        let record: TransferRecord =
+            postcard::from_bytes(&record_bytes).map_err(|error| error.to_string())?;
+        let TransferRecord::Committed(manifest) = record else {
+            return Err(format!("transfer {transfer_id} is not committed"));
+        };
+        if manifest.chunks.len() != manifest.begin.expected_chunks as usize
+            || manifest
+                .chunks
+                .iter()
+                .enumerate()
+                .any(|(index, chunk)| chunk.index as usize != index)
+        {
+            return Err(format!(
+                "transfer {transfer_id} has an invalid chunk manifest"
+            ));
+        }
+        let mut bytes =
+            Vec::with_capacity(usize::try_from(manifest.begin.expected_len).unwrap_or(usize::MAX));
+        let mut aggregate = Sha256::new();
+        for chunk in manifest.chunks {
+            let data = self.download_raw(chunk.object_id).await?;
+            if data.len() as u64 != chunk.len
+                || TransferHash(Sha256::digest(&data).into()) != chunk.hash
+            {
+                return Err(format!(
+                    "transfer {transfer_id} chunk {} failed validation",
+                    chunk.index
+                ));
+            }
+            aggregate.update(&data);
+            bytes.extend_from_slice(&data);
+        }
+        if bytes.len() as u64 != manifest.begin.expected_len
+            || TransferHash(aggregate.finalize().into()) != manifest.begin.expected_hash
+        {
+            return Err(format!(
+                "transfer {transfer_id} failed aggregate validation"
+            ));
+        }
+        Ok(bytes)
     }
 
     /// Wait for one operation-typed artifact delivery.
