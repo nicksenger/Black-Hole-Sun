@@ -48,7 +48,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use black_hole_flux::sun::{SunAppearance, SunNodeState};
+    use black_hole_flux::sun::{SunAppearance, SunNodeState, SunOperationalState};
     use black_hole_flux::{FusionSeed, FusionState, Ray};
     #[cfg(feature = "piano")]
     use iced::keyboard;
@@ -76,9 +76,13 @@ mod tests {
     };
 
     use black_hole_flux::sun::{
-        Binary, BlackHole, Manifest, StatelessManifest, SunEdgeAppearance, SunNodeAppearance, Unary,
+        Binary, BlackHole, ForwardOnly, Manifest, OperationNode, SunEdgeAppearance,
+        SunNodeAppearance, TwoSidedZo, TwoSidedZoManifest, Unary,
     };
-    use black_hole_flux::{CellState, Fusion, Primordium};
+    use black_hole_flux::{
+        CellState, ContractId, ForwardOperationPrimordium, Fusion, Primordium, QwenDarkInference,
+        TensorContract,
+    };
     use jungle_sdk::typosaurus::collections::list::{Empty, List};
     use jungle_sdk::Id;
     use typenum::{U0, U1, U2};
@@ -103,6 +107,29 @@ mod tests {
         type Flow = Fusion<Primordium>;
     }
 
+    struct IdentityQwenArtifacts;
+
+    impl TensorContract for IdentityQwenArtifacts {
+        type Input = <QwenDarkInference as TensorContract>::Input;
+        type Output = <QwenDarkInference as TensorContract>::Input;
+        type Metadata = ();
+
+        const ID: ContractId = ContractId::from_u128(0x5355_4e35);
+        const VERSION: u32 = 1;
+    }
+
+    struct TestForwardCell;
+
+    impl Animal for TestForwardCell {
+        type Id = Id<U1>;
+        type Generation = U0;
+        type State = CellState;
+        type Seed = black_hole_flux::CellInit;
+        type Flow = ForwardOperationPrimordium<IdentityQwenArtifacts>;
+    }
+
+    impl OperationNode<IdentityQwenArtifacts> for TestForwardCell {}
+
     struct GenericCell<T>(std::marker::PhantomData<T>);
 
     impl<T> Animal for GenericCell<T> {
@@ -124,11 +151,26 @@ mod tests {
         type State = (String, String);
     }
 
-    type TestSun = <TestGraph as BlackHole>::Sun<StatelessManifest<Primordium, Primordium>, 1>;
-    type TestSunWithCustomState = <TestGraph as BlackHole>::Sun<CustomStateManifest, 1>;
+    type TestSun = <TestGraph as BlackHole>::Sun<TwoSidedZo<Primordium, Primordium, 1>>;
+    type TestSunWithCustomState =
+        <TestGraph as BlackHole>::Sun<TwoSidedZoManifest<CustomStateManifest, 1>>;
     type TestBinaryGraph = List<(Binary<U0, U1, TestFusion, Empty>, Empty)>;
-    type TestBinarySun =
-        <TestBinaryGraph as BlackHole>::Sun<StatelessManifest<Primordium, Primordium>, 1>;
+    type TestBinarySun = <TestBinaryGraph as BlackHole>::Sun<TwoSidedZo<Primordium, Primordium, 1>>;
+    type TestServingGraph = List<(
+        Unary<U0, TestForwardCell, Empty, IdentityQwenArtifacts>,
+        Empty,
+    )>;
+    type TestServingSun =
+        <TestServingGraph as BlackHole>::Sun<ForwardOnly<Primordium, IdentityQwenArtifacts>>;
+
+    #[test]
+    fn black_hole_compiles_training_and_serving_at_canonical_entrypoint() {
+        let training = BeamModel::build::<TestSun>();
+        let serving = BeamModel::build::<TestServingSun>();
+        assert_eq!(training.cells.len(), 2);
+        assert_eq!(serving.cells.len(), 1);
+        assert!(serving.errors.is_empty());
+    }
 
     #[test]
     fn uses_black_hole_sun_title_and_grad_step_palette() {
@@ -262,6 +304,8 @@ mod tests {
                 warp_journey_id: Uuid::nil(),
                 label: "NestedRoot".to_string(),
                 input_ports: vec![0],
+                operational_state: SunOperationalState::Queued,
+                phase_annotation: None,
                 state: SunNodeState::Idle,
                 state_sequence: 0,
                 grad_step: 1,
@@ -291,6 +335,8 @@ mod tests {
                 warp_journey_id: warp_journey,
                 label: "Warp<OtherAnimal, TestCell>".to_string(),
                 input_ports: vec![0],
+                operational_state: SunOperationalState::Queued,
+                phase_annotation: None,
                 state: SunNodeState::Idle,
                 state_sequence: 0,
                 grad_step: 1,
@@ -409,6 +455,8 @@ mod tests {
                     warp_journey_id: Uuid::nil(),
                     label: "Root".to_string(),
                     input_ports: vec![0],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -419,6 +467,8 @@ mod tests {
                     warp_journey_id: Uuid::new_v4(),
                     label: "Warp<A, B>".to_string(),
                     input_ports: vec![1],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -429,6 +479,8 @@ mod tests {
                     warp_journey_id: Uuid::new_v4(),
                     label: "Warp<C, D>".to_string(),
                     input_ports: vec![2],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -468,6 +520,8 @@ mod tests {
                 warp_journey_id: Uuid::new_v4(),
                 label: "Warp<A, B>".to_string(),
                 input_ports: vec![0],
+                operational_state: SunOperationalState::Queued,
+                phase_annotation: None,
                 state: SunNodeState::Idle,
                 state_sequence: 0,
                 grad_step: 1,
@@ -486,6 +540,8 @@ mod tests {
                     warp_journey_id: Uuid::nil(),
                     label: "NestedRoot".to_string(),
                     input_ports: vec![0],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -496,6 +552,8 @@ mod tests {
                     warp_journey_id: Uuid::new_v4(),
                     label: "Warp<C, D>".to_string(),
                     input_ports: vec![1],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -555,6 +613,8 @@ mod tests {
                 warp_journey_id: Uuid::new_v4(),
                 label: "Warp<OtherAnimal, TestCell>".to_string(),
                 input_ports: vec![0],
+                operational_state: SunOperationalState::Queued,
+                phase_annotation: None,
                 state: SunNodeState::Idle,
                 state_sequence: 0,
                 grad_step: 1,
@@ -573,6 +633,8 @@ mod tests {
                     warp_journey_id: Uuid::nil(),
                     label: "NestedRoot".to_string(),
                     input_ports: vec![0],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -583,6 +645,8 @@ mod tests {
                     warp_journey_id: Uuid::new_v4(),
                     label: "Warp<InnerAnimal, TestCell>".to_string(),
                     input_ports: vec![1],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -693,6 +757,8 @@ mod tests {
                 warp_journey_id: Uuid::new_v4(),
                 label: "Warp<OtherAnimal, TestCell>".to_string(),
                 input_ports: vec![0],
+                operational_state: SunOperationalState::Queued,
+                phase_annotation: None,
                 state: SunNodeState::Idle,
                 state_sequence: 0,
                 grad_step: 1,
@@ -1738,6 +1804,8 @@ loop_ticks 19200
                     warp_journey_id: Uuid::nil(),
                     label: "Fusion".to_string(),
                     input_ports: vec![2, 3],
+                    operational_state: SunOperationalState::Running,
+                    phase_annotation: None,
                     state: SunNodeState::Optimization,
                     state_sequence: 3,
                     grad_step: 4,
@@ -1748,6 +1816,8 @@ loop_ticks 19200
                     warp_journey_id: Uuid::nil(),
                     label: "Root".to_string(),
                     input_ports: vec![0],
+                    operational_state: SunOperationalState::Running,
+                    phase_annotation: None,
                     state: SunNodeState::Propagation1,
                     state_sequence: 1,
                     grad_step: 1,
@@ -1799,6 +1869,8 @@ loop_ticks 19200
                 warp_journey_id: Uuid::nil(),
                 label: "Root".to_string(),
                 input_ports: vec![0],
+                operational_state: SunOperationalState::Running,
+                phase_annotation: None,
                 state: SunNodeState::Optimization,
                 state_sequence: 4,
                 grad_step: 1,
@@ -1822,6 +1894,8 @@ loop_ticks 19200
                     warp_journey_id: Uuid::nil(),
                     label: "Root".to_string(),
                     input_ports: vec![0],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -1832,6 +1906,8 @@ loop_ticks 19200
                     warp_journey_id: Uuid::nil(),
                     label: "Sink".to_string(),
                     input_ports: vec![1],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -1873,6 +1949,8 @@ loop_ticks 19200
                 warp_journey_id: Uuid::nil(),
                 label: "RootAnimal<Result<String, Vec<u8>>>".to_string(),
                 input_ports: vec![0],
+                operational_state: SunOperationalState::Queued,
+                phase_annotation: None,
                 state: SunNodeState::Idle,
                 state_sequence: 0,
                 grad_step: 1,
@@ -1955,13 +2033,28 @@ loop_ticks 19200
             "the subpanel matches the violet frozen style captured at propagation1 -> propagation2"
         );
     }
+
+    #[test]
+    fn subpanel_renders_program_phase_annotation_with_operational_status() {
+        let config = BeamBuilder::new().into_config();
+        let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
+        let mut cell = CellDefinition::new::<TestCell>(1, vec![0], vec![]);
+        cell.phase_annotation = Some("forward".to_string());
+        cell.operational_state = SunOperationalState::Succeeded;
+        app.model.cells.push(cell);
+
+        assert_eq!(
+            app.subpanel_phase(1).as_deref(),
+            Some("forward [succeeded]")
+        );
+    }
 }
 
 #[cfg(test)]
 mod warp_fetch_diagnostics {
     use std::sync::Arc;
 
-    use black_hole_flux::sun::{SunAppearance, SunNodeState};
+    use black_hole_flux::sun::{SunAppearance, SunNodeState, SunOperationalState};
     use uuid::Uuid;
 
     use crate::live::{fetch_warp_appearances, LiveConfig};
@@ -1978,6 +2071,8 @@ mod warp_fetch_diagnostics {
                 warp_journey_id: Uuid::nil(),
                 label: "NestedRoot".to_string(),
                 input_ports: vec![0],
+                operational_state: SunOperationalState::Queued,
+                phase_annotation: None,
                 state: SunNodeState::Idle,
                 state_sequence: 0,
                 grad_step: 1,
@@ -2026,6 +2121,8 @@ mod warp_fetch_diagnostics {
                     warp_journey_id: missing,
                     label: "Warp<A, B>".to_string(),
                     input_ports: vec![0],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -2036,6 +2133,8 @@ mod warp_fetch_diagnostics {
                     warp_journey_id: foreign,
                     label: "Warp<C, D>".to_string(),
                     input_ports: vec![0],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,
@@ -2046,6 +2145,8 @@ mod warp_fetch_diagnostics {
                     warp_journey_id: valid,
                     label: "Warp<E, F>".to_string(),
                     input_ports: vec![0],
+                    operational_state: SunOperationalState::Queued,
+                    phase_annotation: None,
                     state: SunNodeState::Idle,
                     state_sequence: 0,
                     grad_step: 1,

@@ -65,7 +65,7 @@ pub mod warp;
 pub use black_hole_contract::{QwenDarkInference, TensorContract};
 
 pub use black_hole_spec::{
-    ArtifactDelivery, ArtifactRef, DarkToken, Emission, EmissionId, InferenceInput,
+    ArtifactDelivery, ArtifactRef, ContractId, DarkToken, Emission, EmissionId, InferenceInput,
     InferenceOutput, InferenceOutputId, InferenceRequest, LogitEntry, MassErrorFeedbackConfig,
     MassErrorFeedbackMode, MassIn, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode,
     ObjectId, ObjectRef, OperationalControl, SequenceOutput, Transmission,
@@ -108,24 +108,29 @@ pub use warp::{
 pub use atom::Atom;
 pub use atom::NoBackoffAtom;
 pub use atom::OperationAtom;
-pub use cell::{Cell, OperationCell, OperationPrimordium, Primordium};
+pub use cell::{
+    Cell, ForwardOperationCell, ForwardOperationPrimordium, OperationCell, OperationPrimordium,
+    Primordium,
+};
 
 pub use sun::{
     action::{
         BroadcastPotentiation, BroadcastPotentiationInput, DeclaredEdges, InitializePropagation,
-        NodeIdsFromList, ProcessNextNode, PropagationState, SendRootPropagation, Spawn,
-        SpawnWarpAnimal, SpawnWarpBoundary,
+        NodeIdsFromList, PrepareForwardPass, ProcessForwardNode, ProcessNextNode, PropagationState,
+        SendForwardRoots, SendRootPropagation, Spawn, SpawnWarpAnimal, SpawnWarpBoundary,
     },
     effect::{
         BroadcastPotentiationEffect, BroadcastPotentiationResult, NodeTransmission,
-        SchedulerDelivery, SendRootPropagationEffect, SendRootPropagationInput,
-        WaitForNodeArtifactDeliveryEffect, WaitForNodeArtifactDeliveryInput,
-        WaitForNodeTransmissionEffect, WaitForNodeTransmissionInput,
+        SchedulerDelivery, SendRootArtifactDeliveryEffect, SendRootArtifactDeliveryInput,
+        SendRootPropagationEffect, SendRootPropagationInput, WaitForNodeArtifactDeliveryEffect,
+        WaitForNodeArtifactDeliveryInput, WaitForNodeTransmissionEffect,
+        WaitForNodeTransmissionInput,
     },
-    Binary, BlackHole, BoundaryInit, DeclaredEdge, Edge, Epoch, Manifest, OperationNode,
-    PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow, PropagationFlows, PropagationLoop,
-    SpawnAnimal, StatelessManifest, SunAppearance, SunEdgeAppearance, SunInner, SunNodeAppearance,
-    SunNodeState, SunState, TypedEdges, Unary, Warp,
+    Binary, BlackHole, BoundaryInit, DeclaredEdge, Edge, Epoch, ForwardOnly, ForwardPass,
+    LegacySun, Manifest, OperationNode, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
+    PropagationFlows, PropagationLoop, ServeFlow, SpawnAnimal, StatelessManifest, SunAppearance,
+    SunEdgeAppearance, SunInner, SunNodeAppearance, SunNodeState, SunProgram, SunState, TwoSidedZo,
+    TwoSidedZoManifest, TwoSidedZoWithState, TypedEdges, Unary, Warp,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]

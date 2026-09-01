@@ -7,9 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use black_hole_sun::cell::{CellState, Primordium};
 use black_hole_sun::ops::{SunOps, VoidInferOps};
-use black_hole_sun::sun::{
-    BlackHole, StatelessManifest, SunAppearance, SunNodeState, SunState, Unary,
-};
+use black_hole_sun::sun::{BlackHole, SunAppearance, SunNodeState, SunState, TwoSidedZo, Unary};
 use black_hole_sun::{
     EmissionId, InferenceRequest, MassClient, MassModelConfig, MassModelParams, ObjectId, Ray,
     TestMassServer, TestVoidServer, Transmission, VoidClient,
@@ -71,7 +69,7 @@ struct RedDwarfBlackHoleAnimal;
 impl Animal for RedDwarfBlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <RedDwarfSun as BlackHole>::Sun<StatelessManifest<Generator, Policy>, 1>;
+    type Flow = <RedDwarfSun as BlackHole>::Sun<TwoSidedZo<Generator, Policy, 1>>;
 }
 
 impl Observe for RedDwarfBlackHoleAnimal {

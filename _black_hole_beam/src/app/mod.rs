@@ -657,7 +657,17 @@ impl BeamApp {
                 let grad_step = visual
                     .map(|state| displayed_grad_step(activity, state.current, grad_steps))
                     .unwrap_or_else(|| cell.grad_step.clamp(1, grad_steps));
-                let phase_label = if matches!(activity, SunNodeState::Idle) {
+                let phase_label = if let Some(annotation) = &cell.phase_annotation {
+                    format!(
+                        "{annotation} · {}",
+                        match cell.operational_state {
+                            black_hole_flux::sun::SunOperationalState::Queued => "queued",
+                            black_hole_flux::sun::SunOperationalState::Running => "running",
+                            black_hole_flux::sun::SunOperationalState::Succeeded => "succeeded",
+                            black_hole_flux::sun::SunOperationalState::Failed => "failed",
+                        }
+                    )
+                } else if matches!(activity, SunNodeState::Idle) {
                     activity.label().to_string()
                 } else {
                     format!("{} · step {grad_step}/{grad_steps}", activity.label())
@@ -965,6 +975,15 @@ impl BeamApp {
 
     pub(crate) fn subpanel_phase(&self, node_id: u32) -> Option<String> {
         let cell = self.model.cells.iter().find(|cell| cell.id == node_id)?;
+        if let Some(annotation) = &cell.phase_annotation {
+            let status = match cell.operational_state {
+                black_hole_flux::sun::SunOperationalState::Queued => "queued",
+                black_hole_flux::sun::SunOperationalState::Running => "running",
+                black_hole_flux::sun::SunOperationalState::Succeeded => "succeeded",
+                black_hole_flux::sun::SunOperationalState::Failed => "failed",
+            };
+            return Some(format!("{annotation} [{status}]"));
+        }
         let (state, grad_step) = self
             .visuals
             .get(&node_id)

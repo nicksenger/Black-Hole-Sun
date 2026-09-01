@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use black_hole_sun::cell::action::Potentiation;
 use black_hole_sun::cell::{CellState, Primordium};
 use black_hole_sun::ops::{InferenceOutputOps, SunOps, TransmissionOps, VoidInferOps};
-use black_hole_sun::sun::{BlackHole, Manifest, SunAppearance, SunNodeState, SunState, Unary};
+use black_hole_sun::sun::{
+    BlackHole, Manifest, SunAppearance, SunNodeState, SunState, TwoSidedZoManifest, Unary,
+};
 use black_hole_sun::{
     AtomError, CellInit, DarkToken, EmissionId, ErrorFeedbackPolicy, InferenceOutput,
     InferenceRequest, MassClient, MassErrorFeedbackMode, MassModelConfig, MassModelParams,
@@ -274,8 +276,7 @@ impl Animal for WhiteDwarfBlackHole {
     type State = WhiteDwarfState;
     type Seed = ();
     type Flow = <WhiteDwarfSun as BlackHole>::Sun<
-        WhiteDwarfManifest,
-        WHITE_DWARF_GRADIENT_ACCUMULATION_STEPS,
+        TwoSidedZoManifest<WhiteDwarfManifest, WHITE_DWARF_GRADIENT_ACCUMULATION_STEPS>,
     >;
 }
 

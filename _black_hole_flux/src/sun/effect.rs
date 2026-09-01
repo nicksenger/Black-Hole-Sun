@@ -146,6 +146,17 @@ pub struct SendRootPropagationEffect;
 /// Sends many root propagations where each target can use a different payload.
 pub struct SendRootTaskPropagationsEffect;
 
+/// Typed root delivery for one neutral forward pass.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(bound = "")]
+pub struct SendRootArtifactDeliveryInput<T> {
+    pub targets: Vec<PropagationTarget>,
+    pub delivery: black_hole_spec::ArtifactDelivery<T>,
+}
+
+/// Sends an operation-typed input to every root port.
+pub struct SendRootArtifactDeliveryEffect<T>(PhantomData<fn() -> T>);
+
 /// Input for [`WaitForNodeTransmissionEffect`]: ready rx endpoints plus
 /// downstream forwarding targets keyed by source node id.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -296,6 +307,31 @@ impl<J: VoidInferOps> Effect<J> for SendRootTaskPropagationsEffect {
                     input_id = %send.target.input_id,
                     "sent root task propagation"
                 );
+            }
+            Ok(sent_node_ids.into_iter().collect())
+        }
+    }
+}
+
+#[jungle::effect(id = 84)]
+impl<T, J> Effect<J> for SendRootArtifactDeliveryEffect<T>
+where
+    T: Send + 'static,
+    J: VoidOps,
+{
+    type In = SendRootArtifactDeliveryInput<T>;
+    type Out = Vec<u32>;
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let mut sent_node_ids = BTreeSet::new();
+            for target in input.targets {
+                send_artifact_delivery(jungle, &target, input.delivery).await?;
+                sent_node_ids.insert(target.node_id);
             }
             Ok(sent_node_ids.into_iter().collect())
         }

@@ -15,7 +15,7 @@ use black_hole_sun::cell::action::{
 };
 use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::sun::{
-    Binary, BlackHole, StatelessManifest, SunAppearance, SunNodeState, SunState, Unary,
+    Binary, BlackHole, SunAppearance, SunNodeState, SunState, TwoSidedZo, Unary,
 };
 use black_hole_sun::{
     AtomError, EmissionId, InferenceRequest, MassModelConfig, MassModelParams, ObjectId, Ray,
@@ -252,8 +252,7 @@ impl Animal for BlackHoleAnimal {
     type State = SunState;
     type Seed = ();
     type Flow = <DiamondSun as BlackHole>::Sun<
-        StatelessManifest<Generator, DiamondPolicy>,
-        DIAMOND_GRADIENT_ACCUMULATION_STEPS,
+        TwoSidedZo<Generator, DiamondPolicy, DIAMOND_GRADIENT_ACCUMULATION_STEPS>,
     >;
 }
 
@@ -272,7 +271,7 @@ pub(super) struct ExpandedBlackHoleAnimal;
 impl Animal for ExpandedBlackHoleAnimal {
     type State = SunState;
     type Seed = ();
-    type Flow = <ExpandedDiamondSun as BlackHole>::Sun<StatelessManifest<Generator, Policy>, 1>;
+    type Flow = <ExpandedDiamondSun as BlackHole>::Sun<TwoSidedZo<Generator, Policy, 1>>;
 }
 
 impl Observe for ExpandedBlackHoleAnimal {

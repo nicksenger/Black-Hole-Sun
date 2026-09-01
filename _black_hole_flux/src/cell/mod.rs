@@ -129,6 +129,25 @@ pub struct OperationCellWithState<
 
 pub type OperationCell<N, Op, S = ()> = OperationCellWithState<N, Op, S>;
 
+/// Forward-only operation host.
+///
+/// Unlike [`OperationCell`], this flow starts the operation and repeatedly
+/// processes typed artifact deliveries without perturbation, optimization, or
+/// any other QuZO lifecycle capability.
+#[derive(Flow)]
+pub struct ForwardOperationCellWithState<
+    N,
+    Op: TensorContract<Input: Send, Output: Send> + Send + Sync + 'static,
+    S,
+>(
+    Step<InitRecvId_<S>>,
+    Step<GenerateModelId_<S>>,
+    Step<StartOperation_<Op, S>>,
+    While<Always<CellState<S>, ()>, OperationPropagationMicrostepWithState<N, Op, S>>,
+);
+
+pub type ForwardOperationCell<N, Op, S = ()> = ForwardOperationCellWithState<N, Op, S>;
+
 /// The body of one iteration of a [`Cell`] loop.
 #[derive(Flow)]
 pub struct InnerWithState<N, S>(
@@ -200,6 +219,19 @@ pub type Primordium<S = (), H = DefaultConfig> = Cell<
 
 /// Bare operation-typed Cell with no input or output transforms.
 pub type OperationPrimordium<Op, S = ()> = OperationCell<
+    OperationAtom<
+        Step<Noop<CellState<S>, (Uuid, EmissionId<<Op as TensorContract>::Input>)>>,
+        Step<Noop<CellState<S>, EmissionId<<Op as TensorContract>::Output>>>,
+        (),
+        Op,
+        S,
+    >,
+    Op,
+    S,
+>;
+
+/// Bare forward-only operation node with no input or output transforms.
+pub type ForwardOperationPrimordium<Op, S = ()> = ForwardOperationCell<
     OperationAtom<
         Step<Noop<CellState<S>, (Uuid, EmissionId<<Op as TensorContract>::Input>)>>,
         Step<Noop<CellState<S>, EmissionId<<Op as TensorContract>::Output>>>,

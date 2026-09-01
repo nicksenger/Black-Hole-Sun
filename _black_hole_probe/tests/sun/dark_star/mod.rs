@@ -13,7 +13,7 @@ use black_hole_sun::cell::action::{
 };
 use black_hole_sun::cell::Primordium;
 use black_hole_sun::ops::{SunOps, VoidInferOps};
-use black_hole_sun::sun::{Binary, BlackHole, StatelessManifest, SunAppearance, SunState, Unary};
+use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, TwoSidedZo, Unary};
 use black_hole_sun::{
     EmissionId, InferenceRequest, MassClient, MassModelConfig, MassModelParams, ObjectId, Ray,
     TestMassServer, TestVoidServer, Tokenizer, Transmission, VoidClient,
@@ -245,7 +245,7 @@ pub(super) struct ProgenitorBlackHole;
 impl Animal for ProgenitorBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<StatelessManifest<Generator, Policy>, 1>;
+    type Flow = <ThreeProgenitorSun as BlackHole>::Sun<TwoSidedZo<Generator, Policy, 1>>;
 }
 
 impl Observe for ProgenitorBlackHole {
@@ -262,8 +262,7 @@ pub(super) struct DarkStarBlackHole;
 impl Animal for DarkStarBlackHole {
     type State = SunState;
     type Seed = ();
-    type Flow =
-        <DarkStarSun as BlackHole>::Sun<StatelessManifest<DarkStarGenerator, DarkStarPolicy>, 1>;
+    type Flow = <DarkStarSun as BlackHole>::Sun<TwoSidedZo<DarkStarGenerator, DarkStarPolicy, 1>>;
 }
 
 impl Observe for DarkStarBlackHole {
@@ -281,8 +280,7 @@ impl Animal for BlackDwarfBlackHole {
     type State = SunState;
     type Seed = ();
     type Flow = <ThreeProgenitorSun as BlackHole>::Sun<
-        StatelessManifest<BlackDwarfGenerator, BlackDwarfPolicy>,
-        1,
+        TwoSidedZo<BlackDwarfGenerator, BlackDwarfPolicy, 1>,
     >;
 }
 

@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use black_hole_flux::sun::{SunAppearance, SunNodeState};
+use black_hole_flux::sun::{SunAppearance, SunNodeState, SunOperationalState};
 use black_hole_flux::Ray;
 use iced_sugiyama::Graph;
 use jungle_sdk::Animal;
@@ -21,6 +21,8 @@ pub(crate) struct CellDefinition {
     pub(crate) ports: Vec<u32>,
     pub(crate) outgoing_ports: Vec<u32>,
     pub(crate) animal_name: String,
+    pub(crate) operational_state: SunOperationalState,
+    pub(crate) phase_annotation: Option<String>,
     pub(crate) state: SunNodeState,
     pub(crate) state_sequence: u64,
     pub(crate) grad_step: usize,
@@ -40,6 +42,8 @@ impl CellDefinition {
             ports,
             outgoing_ports,
             animal_name: short_type_name::<A>(),
+            operational_state: SunOperationalState::Queued,
+            phase_annotation: None,
             state: SunNodeState::Idle,
             state_sequence: 0,
             grad_step: 1,
@@ -206,6 +210,8 @@ impl BeamModel {
                 ports: node.input_ports.clone(),
                 outgoing_ports: Vec::new(),
                 animal_name: animal_label_key(&node.label),
+                operational_state: node.operational_state,
+                phase_annotation: node.phase_annotation.clone(),
                 state: node.state,
                 state_sequence: node.state_sequence,
                 grad_step: node.grad_step.clamp(1, grad_steps),

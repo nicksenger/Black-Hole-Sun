@@ -7,9 +7,10 @@ use crate::sun::effect::{GenFusionSeedEffect, GenUuidEffect};
 use crate::{FusionSeed, FusionState};
 
 use super::effect::{
-    BroadcastPotentiationEffect, PropagationTarget, RootPropagationSend, SendRootPropagationEffect,
-    SendRootPropagationInput, SendRootTaskPropagationsEffect, WaitForNodeTransmissionEffect,
-    WaitForNodeTransmissionInput,
+    BroadcastPotentiationEffect, PropagationTarget, RootPropagationSend,
+    SendRootArtifactDeliveryEffect, SendRootArtifactDeliveryInput, SendRootPropagationEffect,
+    SendRootPropagationInput, SendRootTaskPropagationsEffect, WaitForNodeArtifactDeliveryEffect,
+    WaitForNodeArtifactDeliveryInput, WaitForNodeTransmissionEffect, WaitForNodeTransmissionInput,
 };
 use black_hole_contract::{QwenDarkInference, TensorContract};
 use black_hole_spec::{ObjectId, Transmission};
@@ -145,6 +146,10 @@ fn register_vertex<S>(
     }
     inner.node_labels.entry(vertex_id).or_insert(node_label);
     inner.node_states.entry(vertex_id).or_default();
+    inner
+        .node_operational_states
+        .entry(vertex_id)
+        .or_insert(super::SunOperationalState::Queued);
     inner.node_state_sequences.entry(vertex_id).or_default();
     inner
         .node_grad_steps
@@ -1206,56 +1211,308 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// ForwardPass — phase-neutral typed graph execution
+// ---------------------------------------------------------------------------
+
+/// Initializes one dependency-aware forward pass and provisions the next set
+/// of node inboxes. The artifact itself is carried unchanged to root seeding.
+pub struct PrepareForwardPass<S, T>(PhantomData<fn() -> (S, T)>);
+
+#[jungle::action(carry = black_hole_spec::ArtifactDelivery<T>)]
+impl<S, T> Action for PrepareForwardPass<S, T>
+where
+    S: PropagationState,
+    T: Send + 'static,
+{
+    type Effect = NoEffect;
+    type Input = black_hole_spec::ArtifactDelivery<T>;
+    type Output = black_hole_spec::ArtifactDelivery<T>;
+
+    fn emit(_state: &S, input: Self::Input) -> ((), black_hole_spec::ArtifactDelivery<T>) {
+        ((), input)
+    }
+
+    fn absorb(
+        state: &mut S,
+        output: EffectCompletion<Self::Effect>,
+        carry: black_hole_spec::ArtifactDelivery<T>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("prepare forward pass failed".to_string()))?;
+
+        let mut inner = state.get_shared().lock().unwrap();
+        let pending = pending_dependency_counts(&inner);
+        let ready = initial_ready_nodes(&pending);
+        let ports = port_ids(&inner);
+        let nodes = vertex_ids(&inner);
+
+        inner.next_p1_tx = ports
+            .into_iter()
+            .map(|port_id| (port_id, Uuid::new_v4()))
+            .collect();
+        inner.p1_rx = nodes
+            .iter()
+            .copied()
+            .map(|node_id| (node_id, Uuid::new_v4()))
+            .collect();
+        for node_id in nodes {
+            inner
+                .node_operational_states
+                .insert(node_id, super::SunOperationalState::Queued);
+            inner.node_phase_annotations.remove(&node_id);
+        }
+        inner.active_micro_step = 0;
+        drop(inner);
+
+        let (state_pending, state_ready) = state.scheduler_mut();
+        *state_pending = pending;
+        *state_ready = ready;
+        Ok(carry)
+    }
+}
+
+/// Sends the typed input artifact to every root of a forward pass.
+pub struct SendForwardRoots<S, T>(PhantomData<fn() -> (S, T)>);
+
+#[jungle::action(carry = black_hole_spec::ArtifactDelivery<T>)]
+impl<S, T> Action for SendForwardRoots<S, T>
+where
+    S: PropagationState,
+    T: Send + 'static,
+{
+    type Effect = SendRootArtifactDeliveryEffect<T>;
+    type Input = black_hole_spec::ArtifactDelivery<T>;
+    type Output = black_hole_spec::ArtifactDelivery<T>;
+
+    fn emit(
+        state: &S,
+        input: Self::Input,
+    ) -> (
+        SendRootArtifactDeliveryInput<T>,
+        black_hole_spec::ArtifactDelivery<T>,
+    ) {
+        let inner = state.get_shared().lock().unwrap();
+        let mut targets = Vec::new();
+        for (&node_id, ports) in &inner.vertex_ports {
+            if !inner
+                .incoming
+                .get(&node_id)
+                .is_none_or(|sources| sources.is_empty())
+            {
+                continue;
+            }
+            for &port_id in ports {
+                let (Some(&input_id), Some(&next_input_id), Some(&output_id)) = (
+                    inner.p1_tx.get(&port_id),
+                    inner.next_p1_tx.get(&port_id),
+                    inner.p1_rx.get(&node_id),
+                ) else {
+                    continue;
+                };
+                targets.push(PropagationTarget {
+                    node_id,
+                    port_id,
+                    input_id,
+                    next_input_id,
+                    output_id,
+                });
+            }
+        }
+        targets.sort_by_key(|target| (target.node_id, target.port_id));
+
+        (
+            SendRootArtifactDeliveryInput {
+                targets,
+                delivery: input,
+            },
+            input,
+        )
+    }
+
+    fn absorb(
+        state: &mut S,
+        output: EffectCompletion<Self::Effect>,
+        carry: black_hole_spec::ArtifactDelivery<T>,
+    ) -> Result<Self::Output, Failure> {
+        let sent = output
+            .map_err(|error| Failure::Message(format!("send forward roots failed: {error}")))?;
+        state
+            .get_shared()
+            .lock()
+            .unwrap()
+            .record_forward_started(sent);
+        Ok(carry)
+    }
+}
+
+/// Waits for one ready typed node, forwards its output, and advances the
+/// dependency frontier.
+pub struct ProcessForwardNode<S, T>(PhantomData<fn() -> (S, T)>);
+
+#[jungle::action]
+impl<S, T> Action for ProcessForwardNode<S, T>
+where
+    S: PropagationState,
+    T: Send + 'static,
+{
+    type Effect = WaitForNodeArtifactDeliveryEffect<T>;
+    type Input = black_hole_spec::ArtifactDelivery<T>;
+    type Output = black_hole_spec::ArtifactDelivery<T>;
+
+    fn emit(state: &S, _input: Self::Input) -> WaitForNodeArtifactDeliveryInput<T> {
+        let ready = sorted_node_ids(state.ready());
+        let inner = state.get_shared().lock().unwrap();
+        let rx_endpoints = ready
+            .iter()
+            .filter_map(|node_id| inner.p1_rx.get(node_id).map(|id| (*node_id, *id)))
+            .collect();
+        let mut downstream = HashMap::new();
+
+        for node_id in ready {
+            let targets = inner
+                .outgoing
+                .get(&node_id)
+                .into_iter()
+                .flatten()
+                .filter_map(|target| {
+                    Some(PropagationTarget {
+                        node_id: target.vertex_id,
+                        port_id: target.port_id,
+                        input_id: *inner.p1_tx.get(&target.port_id)?,
+                        next_input_id: *inner.next_p1_tx.get(&target.port_id)?,
+                        output_id: *inner.p1_rx.get(&target.vertex_id)?,
+                    })
+                })
+                .collect();
+            downstream.insert(node_id, targets);
+        }
+
+        WaitForNodeArtifactDeliveryInput::new(rx_endpoints, downstream)
+    }
+
+    fn absorb(
+        state: &mut S,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let completion = output
+            .map_err(|error| Failure::Message(format!("process forward node failed: {error}")))?;
+        let outgoing = state
+            .get_shared()
+            .lock()
+            .unwrap()
+            .outgoing
+            .get(&completion.node_id)
+            .cloned()
+            .unwrap_or_default();
+        let (pending, ready) = state.scheduler_mut();
+        advance_frontier(pending, ready, completion.node_id, &outgoing)?;
+        let mut inner = state.get_shared().lock().unwrap();
+        inner.record_forward_completed(completion.node_id);
+        inner.record_forward_started(completion.sent_node_ids);
+        Ok(completion.delivery)
+    }
+}
+
+/// Rotates each node to the inbox provisioned for the next serving request.
+pub struct CompleteForwardPass<S, T>(PhantomData<fn() -> (S, T)>);
+
+#[jungle::action(carry = black_hole_spec::ArtifactDelivery<T>)]
+impl<S, T> Action for CompleteForwardPass<S, T>
+where
+    S: PropagationState,
+    T: Send + 'static,
+{
+    type Effect = NoEffect;
+    type Input = black_hole_spec::ArtifactDelivery<T>;
+    type Output = black_hole_spec::ArtifactDelivery<T>;
+
+    fn emit(_state: &S, input: Self::Input) -> ((), black_hole_spec::ArtifactDelivery<T>) {
+        ((), input)
+    }
+
+    fn absorb(
+        state: &mut S,
+        output: EffectCompletion<Self::Effect>,
+        carry: black_hole_spec::ArtifactDelivery<T>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("complete forward pass failed".to_string()))?;
+        let mut inner = state.get_shared().lock().unwrap();
+        inner.p1_tx = std::mem::take(&mut inner.next_p1_tx);
+        inner.p1_rx.clear();
+        Ok(carry)
+    }
+}
+
+/// Default serving sink used when the caller only needs the durable artifact
+/// emitted by the final node.
+pub struct DiscardForwardOutput<S, T>(PhantomData<fn() -> (S, T)>);
+
+#[jungle::action]
+impl<S, T> Action for DiscardForwardOutput<S, T>
+where
+    T: Send + 'static,
+{
+    type Effect = NoEffect;
+    type Input = black_hole_spec::ArtifactDelivery<T>;
+    type Output = ();
+
+    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
+
+    fn absorb(
+        _state: &mut super::SunState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("discard forward output failed".to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GenUuid
 // ---------------------------------------------------------------------------
 
 /// Generates the initial inbox used to seed one spawned cell journey.
-pub struct GenUuid<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(PhantomData<fn() -> S>);
+///
+/// The selected [`SunProgram`](super::SunProgram) owns the accumulation
+/// setting so deployment no longer needs a universal const generic.
+pub struct GenUuid<P: super::SunProgram>(PhantomData<fn() -> P>);
 
 #[jungle::action]
-impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
-    for GenUuid<S, GRADIENT_ACCUMULATION_STEPS>
-{
+impl<P: super::SunProgram> Action for GenUuid<P> {
     type Effect = GenUuidEffect;
     type Input = ();
     type Output = crate::cell::action::Init;
 
-    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
+    fn emit(_state: &super::SunState<P::State>, _input: Self::Input) {}
     fn absorb(
-        _state: &mut super::SunState<S>,
+        _state: &mut super::SunState<P::State>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         let recv_id =
             output.map_err(|_e| Failure::Message("failed to generate a uuid...".to_string()))?;
         Ok(crate::cell::action::Init {
             recv_id,
-            grad_steps: GRADIENT_ACCUMULATION_STEPS.max(1),
+            grad_steps: P::ACCUM_STEPS.max(1),
         })
     }
 }
 
 /// Generates the two independent initial inboxes for a binary vertex.
-pub struct GenFusionSeed<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
-    PhantomData<fn() -> S>,
-);
+pub struct GenFusionSeed<P: super::SunProgram>(PhantomData<fn() -> P>);
 
 #[jungle::action]
-impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
-    for GenFusionSeed<S, GRADIENT_ACCUMULATION_STEPS>
-{
+impl<P: super::SunProgram> Action for GenFusionSeed<P> {
     type Effect = GenFusionSeedEffect;
     type Input = ();
     type Output = FusionSeed;
 
-    fn emit(_state: &super::SunState<S>, _input: Self::Input) {}
+    fn emit(_state: &super::SunState<P::State>, _input: Self::Input) {}
 
     fn absorb(
-        _state: &mut super::SunState<S>,
+        _state: &mut super::SunState<P::State>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         let mut seed =
             output.map_err(|_| Failure::Message("failed to generate fusion seed".to_string()))?;
-        seed.grad_steps = GRADIENT_ACCUMULATION_STEPS.max(1);
+        seed.grad_steps = P::ACCUM_STEPS.max(1);
         Ok(seed)
     }
 }
@@ -1297,6 +1554,12 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         state.sink_id = None;
         let mut inner = state.a.shared.lock().unwrap();
         inner.active_micro_step = 0;
+        for node_id in vertex_ids(&inner) {
+            inner
+                .node_operational_states
+                .insert(node_id, super::SunOperationalState::Queued);
+            inner.node_phase_annotations.remove(&node_id);
+        }
         Ok(())
     }
 }
@@ -2081,6 +2344,16 @@ mod tests {
         type Flow = ();
     }
 
+    struct TestForwardAnimal;
+
+    impl Animal for TestForwardAnimal {
+        type Id = ();
+        type Generation = ();
+        type State = super::super::PropA;
+        type Seed = ();
+        type Flow = ();
+    }
+
     struct TestUnaryChildAnimal;
 
     impl Animal for TestUnaryChildAnimal {
@@ -2206,11 +2479,12 @@ mod tests {
 
         let state = super::super::SunState::<Payload>::default();
 
-        type GenUuidBound = <GenUuid<Payload, 1> as Action>::Bind<TestSunAnimalWithPayload>;
+        type Program = super::super::DeploymentProgram<Payload, 1>;
+        type GenUuidBound = <GenUuid<Program> as Action>::Bind<TestSunAnimalWithPayload>;
         <GenUuidBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
 
         type GenFusionSeedBound =
-            <GenFusionSeed<Payload, 1> as Action>::Bind<TestSunAnimalWithPayload>;
+            <GenFusionSeed<Program> as Action>::Bind<TestSunAnimalWithPayload>;
         <GenFusionSeedBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
 
         type FinalizeBound = <FinalizeGraph<Payload, 1> as Action>::Bind<TestSunAnimalWithPayload>;
@@ -2423,6 +2697,92 @@ mod tests {
         // all of the old topological layer to complete.
         advance_frontier(&mut pending, &mut ready, 1, &inner.outgoing[&1]).unwrap();
         assert_eq!(sorted_node_ids(&ready), vec![2, 3]);
+    }
+
+    #[test]
+    fn neutral_forward_pass_routes_typed_artifacts_and_rotates_inboxes() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[1]);
+        add_vertex(&mut state, 1, &[1], &[]);
+        finalize(&mut state).unwrap();
+
+        let delivery = black_hole_spec::ArtifactDelivery::<()> {
+            emission_id: black_hole_spec::EmissionId::new(Uuid::new_v4()),
+            recv: Uuid::new_v4(),
+            send: Uuid::new_v4(),
+        };
+
+        type Prepare =
+            <PrepareForwardPass<super::super::PropA, ()> as Action>::Bind<TestForwardAnimal>;
+        <Prepare as BoundAction<TestForwardAnimal>>::emit(&state.a, delivery);
+        let prepared = <Prepare as BoundAction<TestForwardAnimal>>::absorb_with_carry(
+            &mut state.a,
+            Ok(()),
+            delivery,
+        )
+        .unwrap();
+        assert_eq!(sorted_node_ids(&state.a.ready), vec![0]);
+
+        type Send = <SendForwardRoots<super::super::PropA, ()> as Action>::Bind<TestForwardAnimal>;
+        let root_input = <Send as BoundAction<TestForwardAnimal>>::emit(&state.a, prepared);
+        assert_eq!(root_input.targets.len(), 1);
+        assert_eq!(root_input.targets[0].node_id, 0);
+        let routed = <Send as BoundAction<TestForwardAnimal>>::absorb_with_carry(
+            &mut state.a,
+            Ok(vec![0]),
+            prepared,
+        )
+        .unwrap();
+
+        type Process =
+            <ProcessForwardNode<super::super::PropA, ()> as Action>::Bind<TestForwardAnimal>;
+        let routed = <Process as BoundAction<TestForwardAnimal>>::absorb(
+            &mut state.a,
+            Ok(super::super::effect::SchedulerDelivery {
+                node_id: 0,
+                delivery: routed,
+                sent_node_ids: vec![1],
+            }),
+        )
+        .unwrap();
+        assert_eq!(sorted_node_ids(&state.a.ready), vec![1]);
+
+        let completed = <Process as BoundAction<TestForwardAnimal>>::absorb(
+            &mut state.a,
+            Ok(super::super::effect::SchedulerDelivery {
+                node_id: 1,
+                delivery: routed,
+                sent_node_ids: vec![],
+            }),
+        )
+        .unwrap();
+        assert!(state.a.pending.is_empty());
+
+        let next_inboxes = state.a.shared.lock().unwrap().next_p1_tx.clone();
+        type Complete =
+            <CompleteForwardPass<super::super::PropA, ()> as Action>::Bind<TestForwardAnimal>;
+        <Complete as BoundAction<TestForwardAnimal>>::emit(&state.a, completed);
+        <Complete as BoundAction<TestForwardAnimal>>::absorb_with_carry(
+            &mut state.a,
+            Ok(()),
+            completed,
+        )
+        .unwrap();
+
+        let inner = state.a.shared.lock().unwrap();
+        assert_eq!(inner.p1_tx, next_inboxes);
+        assert_eq!(
+            inner.node_operational_states.get(&0),
+            Some(&super::super::SunOperationalState::Succeeded)
+        );
+        assert_eq!(
+            inner.node_operational_states.get(&1),
+            Some(&super::super::SunOperationalState::Succeeded)
+        );
+        assert_eq!(
+            inner.node_phase_annotations.get(&1).map(String::as_str),
+            Some("forward")
+        );
     }
 
     #[test]

@@ -2,8 +2,8 @@
 //! rendered as Black Hole Sun views.
 
 use black_hole_flux::sun::{
-    BinarySunStep, NodeIdsFromList, OperationNode, Sun, SunAppearance, SunNode, SunState,
-    UnarySunStep,
+    BinarySunStepWithProgram, NodeIdsFromList, OperationNode, ServeFlow, Sun, SunAppearance,
+    SunNode, SunProgram, SunState, UnarySunStepWithProgram,
 };
 use black_hole_flux::{DeclaredEdges, TensorContract};
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState};
@@ -27,9 +27,7 @@ pub(crate) mod private {
 }
 
 /// Marker for the structural flow produced by
-/// `<Graph as BlackHole>::Sun<M, N>`, where `M` is a
-/// [`Manifest`](black_hole_flux::sun::Manifest) bundling generator, policy,
-/// and state.
+/// `<Graph as BlackHole>::Sun<Program>`.
 ///
 /// The trait is sealed and is only implemented for the `SunNode<…>` chain
 /// emitted by [`BlackHole`](black_hole_flux::sun::BlackHole).
@@ -44,9 +42,14 @@ impl<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::De
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
 
-impl<Port, A, Edges, Tail, S, Op, const GRADIENT_ACCUMULATION_STEPS: usize> private::DescribeSun
-    for SunNode<UnarySunStep<Port, A, Edges, S, GRADIENT_ACCUMULATION_STEPS, Op>, Tail>
+impl<Source, T: Send + 'static, S> private::DescribeSun for ServeFlow<Source, T, S> {
+    fn append_cells(_cells: &mut Vec<CellDefinition>) {}
+}
+
+impl<Program, Port, A, Edges, Tail, Op> private::DescribeSun
+    for SunNode<UnarySunStepWithProgram<Program, Port, A, Edges, Op>, Tail>
 where
+    Program: SunProgram,
     Port: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = black_hole_flux::CellInit> + 'static,
     A: OperationNode<Op>,
@@ -64,10 +67,10 @@ where
     }
 }
 
-impl<PortA, PortB, A, Edges, Tail, S, Op, const GRADIENT_ACCUMULATION_STEPS: usize>
-    private::DescribeSun
-    for SunNode<BinarySunStep<PortA, PortB, A, Edges, S, GRADIENT_ACCUMULATION_STEPS, Op>, Tail>
+impl<Program, PortA, PortB, A, Edges, Tail, Op> private::DescribeSun
+    for SunNode<BinarySunStepWithProgram<Program, PortA, PortB, A, Edges, Op>, Tail>
 where
+    Program: SunProgram,
     PortA: Unsigned,
     PortB: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>

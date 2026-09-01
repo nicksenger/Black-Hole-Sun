@@ -160,6 +160,16 @@ pub enum SunNodeState {
     Optimization,
 }
 
+/// Program-independent execution status for an observable topology node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SunOperationalState {
+    #[default]
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
 /// One node in the observable Sun topology.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SunNodeAppearance {
@@ -172,12 +182,20 @@ pub struct SunNodeAppearance {
     pub warp_journey_id: Uuid,
     pub label: String,
     pub input_ports: Vec<u32>,
+    /// Legacy two-sided phase retained during the compatibility migration.
     pub state: SunNodeState,
     /// Monotonic logical phase position, including phases crossed between snapshots.
     pub state_sequence: u64,
     /// 1-based gradient accumulation step currently associated with this node.
     #[serde(default = "default_gradient_accumulation_steps")]
     pub grad_step: usize,
+    /// Neutral execution state shared by training and serving programs.
+    #[serde(default)]
+    pub operational_state: SunOperationalState,
+    /// Optional strategy-selected phase label (for example `propagation 1`,
+    /// `potentiation`, or `forward`).
+    #[serde(default)]
+    pub phase_annotation: Option<String>,
 }
 
 /// One port-aware directed edge in the observable Sun topology.
@@ -338,6 +356,12 @@ impl<S> SunStateWithInner<S> {
                     .cloned()
                     .unwrap_or_else(|| format!("cell {id}")),
                 input_ports: inner.vertex_ports.get(&id).cloned().unwrap_or_default(),
+                operational_state: inner
+                    .node_operational_states
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_default(),
+                phase_annotation: inner.node_phase_annotations.get(&id).cloned(),
                 state: inner.node_states.get(&id).copied().unwrap_or_default(),
                 state_sequence: inner
                     .node_state_sequences
@@ -389,6 +413,10 @@ pub struct SunInner {
     pub node_labels: HashMap<u32, String>,
     /// Latest observable orchestration phase reached by each internal vertex.
     pub node_states: HashMap<u32, SunNodeState>,
+    /// Program-independent execution state for each vertex.
+    pub node_operational_states: HashMap<u32, SunOperationalState>,
+    /// Optional program-selected phase labels rendered by Beam.
+    pub node_phase_annotations: HashMap<u32, String>,
     /// Logical phase position for each vertex, used to recover skipped observations.
     pub node_state_sequences: HashMap<u32, u64>,
     /// 1-based gradient accumulation step currently associated with each vertex.
@@ -460,6 +488,18 @@ impl SunInner {
     fn record_state_sent(&mut self, node_id: u32, phase: SunNodeState) {
         let grad_step = self.grad_step_for_phase(phase);
         let current = self.node_states.get(&node_id).copied().unwrap_or_default();
+        self.node_operational_states
+            .insert(node_id, SunOperationalState::Running);
+        self.node_phase_annotations.insert(
+            node_id,
+            match phase {
+                SunNodeState::Idle => "idle",
+                SunNodeState::Propagation1 => "propagation 1",
+                SunNodeState::Propagation2 => "propagation 2",
+                SunNodeState::Optimization => "potentiation",
+            }
+            .to_string(),
+        );
         if current == phase {
             self.node_grad_steps.insert(node_id, grad_step);
             return;
@@ -509,6 +549,8 @@ impl SunInner {
     }
 
     pub(crate) fn record_propagation_completed(&mut self, node_id: u32, phase: SunNodeState) {
+        self.node_operational_states
+            .insert(node_id, SunOperationalState::Succeeded);
         if phase == SunNodeState::Propagation1 {
             self.p1_completed.insert(node_id);
             if self.p2_sent.contains(&node_id) {
@@ -524,6 +566,21 @@ impl SunInner {
             self.p2_sent.remove(&node_id);
         }
     }
+
+    pub(crate) fn record_forward_started(&mut self, node_ids: impl IntoIterator<Item = u32>) {
+        for node_id in node_ids {
+            self.node_operational_states
+                .insert(node_id, SunOperationalState::Running);
+            self.node_phase_annotations
+                .insert(node_id, "forward".to_string());
+            *self.node_state_sequences.entry(node_id).or_default() += 1;
+        }
+    }
+
+    pub(crate) fn record_forward_completed(&mut self, node_id: u32) {
+        self.node_operational_states
+            .insert(node_id, SunOperationalState::Succeeded);
+    }
 }
 
 /// A resolved edge target. `port_id` identifies the destination mailbox while
@@ -534,20 +591,32 @@ pub struct PortTarget {
     pub vertex_id: u32,
 }
 
-/// Generate a unary seed, then spawn and register its animal.
+/// Generate a program-selected unary seed, then spawn and register its animal.
 #[derive(Flow)]
-pub struct UnarySunStepWithState<
+pub struct UnarySunStepWithProgram<
+    Program: SunProgram,
     P: Unsigned,
     AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>
         + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract,
-    S,
-    const GRADIENT_ACCUMULATION_STEPS: usize,
 >(
-    Step<GenUuid<S, GRADIENT_ACCUMULATION_STEPS>>,
-    Step<action::SpawnUnary<P, AnimalT, E, S, Op>>,
+    Step<GenUuid<Program>>,
+    Step<action::SpawnUnary<P, AnimalT, E, Program::State, Op>>,
 );
+
+/// Compatibility program used by the descriptor-step aliases.
+pub struct DeploymentProgram<S, const ACCUM_STEPS: usize>(PhantomData<fn() -> S>);
+
+impl<S, const ACCUM_STEPS: usize> SunProgram for DeploymentProgram<S, ACCUM_STEPS> {
+    type State = S;
+    type Driver = ();
+
+    const ACCUM_STEPS: usize = ACCUM_STEPS;
+}
+
+pub type UnarySunStepWithState<P, AnimalT, E, Op, S, const ACCUM_STEPS: usize> =
+    UnarySunStepWithProgram<DeploymentProgram<S, ACCUM_STEPS>, P, AnimalT, E, Op>;
 
 pub type UnarySunStep<
     P,
@@ -560,7 +629,8 @@ pub type UnarySunStep<
 
 /// Generate a two-port seed, then spawn and register one binary animal.
 #[derive(Flow)]
-pub struct BinarySunStepWithState<
+pub struct BinarySunStepWithProgram<
+    Program: SunProgram,
     P1: Unsigned,
     P2: Unsigned,
     AnimalT: Animal<
@@ -572,12 +642,13 @@ pub struct BinarySunStepWithState<
         > + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract,
-    S,
-    const GRADIENT_ACCUMULATION_STEPS: usize,
 >(
-    Step<action::GenFusionSeed<S, GRADIENT_ACCUMULATION_STEPS>>,
-    Step<action::SpawnBinary<P1, P2, AnimalT, E, S, Op>>,
+    Step<action::GenFusionSeed<Program>>,
+    Step<action::SpawnBinary<P1, P2, AnimalT, E, Program::State, Op>>,
 );
+
+pub type BinarySunStepWithState<P1, P2, AnimalT, E, Op, S, const ACCUM_STEPS: usize> =
+    BinarySunStepWithProgram<DeploymentProgram<S, ACCUM_STEPS>, P1, P2, AnimalT, E, Op>;
 
 pub type BinarySunStep<
     P1,
@@ -592,7 +663,8 @@ pub type BinarySunStep<
 /// Generate boundary mailboxes, spawn the nested warp animal, then spawn and
 /// register the boundary animal in the parent topology.
 #[derive(Flow)]
-pub struct WarpSunStepWithState<
+pub struct WarpSunStepWithProgram<
+    Program: SunProgram,
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
     BoundaryAnimalT: Animal<
@@ -603,13 +675,21 @@ pub struct WarpSunStepWithState<
         > + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract,
-    S,
-    const GRADIENT_ACCUMULATION_STEPS: usize,
 >(
-    Step<GenUuid<S, GRADIENT_ACCUMULATION_STEPS>>,
-    Step<action::SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S, Op>>,
-    Step<action::SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S, Op>>,
+    Step<GenUuid<Program>>,
+    Step<action::SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, Program::State, Op>>,
+    Step<action::SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, Program::State, Op>>,
 );
+
+pub type WarpSunStepWithState<P, WarpAnimalT, BoundaryAnimalT, E, Op, S, const ACCUM_STEPS: usize> =
+    WarpSunStepWithProgram<
+        DeploymentProgram<S, ACCUM_STEPS>,
+        P,
+        WarpAnimalT,
+        BoundaryAnimalT,
+        E,
+        Op,
+    >;
 
 pub type WarpSunStep<
     P,
@@ -625,28 +705,20 @@ pub type WarpSunStep<
 #[derive(Flow)]
 pub struct SunNode<S, U>(S, U);
 
-/// Maps a type-level graph to its orchestration flow.
+/// Compiles a type-level topology into the executable driver selected by `P`.
 ///
-/// The [`Manifest`] bundles the epoch's flow parameters: a `Generator` (a
-/// Jungle flow from `()` to `(Transmission, Transmission)`), a `Policy` that
-/// receives an array with shape
-/// `[(Transmission, Transmission); ACCUM_STEPS]` and returns
-/// [`black_hole_spec::Potentiation`], and the `State` threaded through
-/// `SunState<S>::inner`. The Sun runs the generator `ACCUM_STEPS` times, then
-/// drives a dependency-aware per-node scheduler that allows nodes to advance
-/// to later microsteps as soon as their required inputs are available. Keeping
-/// these as manifest parameters lets callers compose arbitrary generation and
-/// policy pipelines around the fixed graph propagation machinery. Use
-/// [`StatelessManifest`] when your generator/policy does not need access to
-/// `SunState<S>::inner`.
+/// `<Topology as BlackHole>::Sun<Program>` is the canonical application
+/// point. The recursive fold still emits the topology-specific deployment
+/// steps; the terminal case now attaches `Program::Driver` instead of a fixed
+/// QuZO epoch.
 pub trait BlackHole {
-    type Sun<M: Manifest, const ACCUM_STEPS: usize>;
+    type Sun<P: SunProgram>;
 }
 impl<U> BlackHole for List<(Empty, U)>
 where
     U: BlackHole,
 {
-    type Sun<M: Manifest, const ACCUM_STEPS: usize> = <U as BlackHole>::Sun<M, ACCUM_STEPS>;
+    type Sun<P: SunProgram> = <U as BlackHole>::Sun<P>;
 }
 impl<T1, T2, U> BlackHole for List<(List<(T1, T2)>, U)>
 where
@@ -655,8 +727,7 @@ where
     (List<(T1, T2)>, U): Mappend,
     <(List<(T1, T2)>, U) as Mappend>::Out: BlackHole,
 {
-    type Sun<M: Manifest, const ACCUM_STEPS: usize> =
-        <<(List<(T1, T2)>, U) as Mappend>::Out as BlackHole>::Sun<M, ACCUM_STEPS>;
+    type Sun<P: SunProgram> = <<(List<(T1, T2)>, U) as Mappend>::Out as BlackHole>::Sun<P>;
 }
 impl<P, A, E, Op, U> BlackHole for List<(Unary<P, A, E, Op>, U)>
 where
@@ -667,10 +738,8 @@ where
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     U: BlackHole,
 {
-    type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
-        UnarySunStep<P, A, E, <M as Manifest>::State, ACCUM_STEPS, Op>,
-        <U as BlackHole>::Sun<M, ACCUM_STEPS>,
-    >;
+    type Sun<Program: SunProgram> =
+        SunNode<UnarySunStepWithProgram<Program, P, A, E, Op>, <U as BlackHole>::Sun<Program>>;
 }
 impl<P1, P2, A, E, Op, U> BlackHole for List<(Binary<P1, P2, A, E, Op>, U)>
 where
@@ -683,9 +752,9 @@ where
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     U: BlackHole,
 {
-    type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
-        BinarySunStep<P1, P2, A, E, M::State, ACCUM_STEPS, Op>,
-        <U as BlackHole>::Sun<M, ACCUM_STEPS>,
+    type Sun<Program: SunProgram> = SunNode<
+        BinarySunStepWithProgram<Program, P1, P2, A, E, Op>,
+        <U as BlackHole>::Sun<Program>,
     >;
 }
 impl<P, WarpAnimalT, BoundaryAnimalT, E, Op, U> BlackHole
@@ -703,30 +772,73 @@ where
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     U: BlackHole,
 {
-    type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
-        WarpSunStep<P, WarpAnimalT, BoundaryAnimalT, E, M::State, ACCUM_STEPS, Op>,
-        <U as BlackHole>::Sun<M, ACCUM_STEPS>,
+    type Sun<Program: SunProgram> = SunNode<
+        WarpSunStepWithProgram<Program, P, WarpAnimalT, BoundaryAnimalT, E, Op>,
+        <U as BlackHole>::Sun<Program>,
     >;
 }
 impl BlackHole for Empty {
-    type Sun<M: Manifest, const ACCUM_STEPS: usize> =
-        Sun<M::Generator, M::Policy, M::State, ACCUM_STEPS>;
+    type Sun<P: SunProgram> = P::Driver;
 }
 
+/// Selects the state, deployment settings, and executable driver for a Sun.
+pub trait SunProgram {
+    type State;
+    type Driver;
+
+    /// Number of operation microsteps provisioned in each spawned node.
+    const ACCUM_STEPS: usize;
+}
+
+/// Legacy generator/policy/state bundle accepted by [`TwoSidedZoManifest`].
 pub trait Manifest {
     type Generator;
     type Policy;
     type State;
 }
+
+/// The existing two-sided zeroth-order training schedule as a Sun program.
+pub struct TwoSidedZoWithState<Generator, Policy, S, const ACCUM_STEPS: usize = 1>(
+    PhantomData<Generator>,
+    PhantomData<Policy>,
+    PhantomData<fn() -> S>,
+);
+
+impl<G, P, S, const A: usize> SunProgram for TwoSidedZoWithState<G, P, S, A> {
+    type State = S;
+    type Driver = Sun<G, P, S, A>;
+
+    const ACCUM_STEPS: usize = A;
+}
+
+pub type TwoSidedZo<Generator, Policy, const ACCUM_STEPS: usize = 1> =
+    TwoSidedZoWithState<Generator, Policy, (), ACCUM_STEPS>;
+
+/// Adapts the former manifest shape to the new program-based entrypoint.
+pub struct TwoSidedZoManifest<M: Manifest, const ACCUM_STEPS: usize = 1>(PhantomData<M>);
+
+impl<M: Manifest, const A: usize> SunProgram for TwoSidedZoManifest<M, A> {
+    type State = M::State;
+    type Driver = Sun<M::Generator, M::Policy, M::State, A>;
+
+    const ACCUM_STEPS: usize = A;
+}
+
+/// Legacy stateless generator/policy bundle.
 pub struct StatelessManifest<Generator, Policy, const ACCUM_STEPS: usize = 1>(
     PhantomData<Generator>,
     PhantomData<Policy>,
 );
+
 impl<G, P, const A: usize> Manifest for StatelessManifest<G, P, A> {
     type Generator = G;
     type Policy = P;
     type State = ();
 }
+
+/// Compatibility alias for code that still defines a legacy [`Manifest`].
+pub type LegacySun<T, M, const ACCUM_STEPS: usize> =
+    <T as BlackHole>::Sun<TwoSidedZoManifest<M, ACCUM_STEPS>>;
 
 // ---------------------------------------------------------------------------
 // Predicates — loop continuation conditions
@@ -796,6 +908,18 @@ impl<S> Predicate<(&SunState<S>, &())> for PendingPipelineWork<S> {
     }
 }
 
+/// Predicate for a neutral dependency-aware forward pass.
+pub struct PendingForwardWork<S, T>(PhantomData<fn() -> (S, T)>);
+
+impl<S, T> Predicate<(&S, &black_hole_spec::ArtifactDelivery<T>)> for PendingForwardWork<S, T>
+where
+    S: PropagationState,
+{
+    fn eval((state, _): &(&S, &black_hole_spec::ArtifactDelivery<T>)) -> bool {
+        !state.pending().is_empty()
+    }
+}
+
 /// One generator emission pair capture step.
 #[derive(Flow)]
 pub struct CollectPropagationInputsStep<Generator, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
@@ -809,6 +933,65 @@ pub struct PipelineProgressStep<S, const GRADIENT_ACCUMULATION_STEPS: usize>(
     Step<action::SendReadyRootTasks<S, GRADIENT_ACCUMULATION_STEPS>>,
     Step<action::ProcessReadyPipelineNode<S, GRADIENT_ACCUMULATION_STEPS>>,
 );
+
+/// One completion step in a neutral typed forward pass.
+#[derive(Flow)]
+pub struct ForwardPassLoop<S: PropagationState, T: Send + 'static>(
+    Step<action::ProcessForwardNode<S, T>>,
+);
+
+/// Dependency-aware, operation-typed graph execution primitive.
+///
+/// This primitive has no perturbation, up/down, policy, or potentiation
+/// semantics. Programs provide one typed root artifact; the scheduler runs
+/// every ready node once and routes the sink completion.
+#[derive(Flow)]
+#[jungle(focus = PropA)]
+pub struct ForwardPass<T: Send + 'static>(
+    Step<action::PrepareForwardPass<PropA, T>>,
+    Step<action::SendForwardRoots<PropA, T>>,
+    While<FocusedLoopCondition<PendingForwardWork<PropA, T>, PropA>, ForwardPassLoop<PropA, T>>,
+    Step<action::CompleteForwardPass<PropA, T>>,
+);
+
+/// One forward-only serving request.
+#[derive(Flow)]
+pub struct ServeRequest<Source, T: Send + 'static, S>(
+    Source,
+    ForwardPass<T>,
+    Step<action::DiscardForwardOutput<S, T>>,
+);
+
+/// Minimal serving driver: finalize once, then execute one neutral forward
+/// pass for every artifact emitted by `Source`.
+#[derive(Flow)]
+pub struct ServeFlow<Source, T: Send + 'static, S>(
+    Step<action::BuildAddrs<S, 1>>,
+    While<Always<SunState<S>, ()>, ServeRequest<Source, T, S>>,
+);
+
+/// Forward-only Sun program for a homogeneous operation topology.
+///
+/// Nodes used with this program can run [`crate::ForwardOperationCell`] and
+/// therefore require only `MassOps<Op>`; no perturb or optimize capability is
+/// part of the driver.
+pub struct ForwardOnly<Source, Op: TensorContract, S = (), T = <Op as TensorContract>::Input>(
+    PhantomData<Source>,
+    PhantomData<Op>,
+    PhantomData<fn() -> S>,
+    PhantomData<fn() -> T>,
+);
+
+impl<Source, Op, S, T> SunProgram for ForwardOnly<Source, Op, S, T>
+where
+    Op: TensorContract<Input = T, Output = T>,
+    T: Send + 'static,
+{
+    type State = S;
+    type Driver = ServeFlow<Source, T, S>;
+
+    const ACCUM_STEPS: usize = 1;
+}
 
 // ---------------------------------------------------------------------------
 // BlackHole — the top-level orchestration flow
