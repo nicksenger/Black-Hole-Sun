@@ -104,8 +104,8 @@ impl VoidClient {
             .map_err(|e| format!("failed to read file metadata for {}: {e}", path.display()))?;
 
         if size.len() <= 64 * 1024 * 1024 {
-            let data =
-                fs::read(path).map_err(|e| format!("failed to read file {}: {e}", path.display()))?;
+            let data = fs::read(path)
+                .map_err(|e| format!("failed to read file {}: {e}", path.display()))?;
             return self.upload(data).await;
         }
 

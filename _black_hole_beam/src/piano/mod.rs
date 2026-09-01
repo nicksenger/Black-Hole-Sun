@@ -26,7 +26,12 @@ const BLACK_KEY_HEIGHT: f32 = PIANO_HEIGHT * 0.63;
 /// The piano canvas height for a given label state: the key row plus the
 /// keybind label row when labels are enabled.
 pub(crate) fn piano_height(labels_enabled: bool) -> f32 {
-    PIANO_HEIGHT + if labels_enabled { PIANO_LABEL_ROW_HEIGHT } else { 0.0 }
+    PIANO_HEIGHT
+        + if labels_enabled {
+            PIANO_LABEL_ROW_HEIGHT
+        } else {
+            0.0
+        }
 }
 
 /// A piano note in equal temperament with A4 tuned to 440 Hz.
@@ -339,7 +344,10 @@ impl canvas::Program<PianoMessage> for PianoKeyboard {
 fn draw_white_key(frame: &mut canvas::Frame, bounds: Rectangle, appearance: PianoKeyAppearance) {
     let intensity = appearance.intensity.clamp(0.0, 1.0);
     let face = Path::rectangle(bounds.position(), bounds.size());
-    frame.fill(&face, mix_color(Color::WHITE, Color::from_rgb8(255, 220, 142), intensity));
+    frame.fill(
+        &face,
+        mix_color(Color::WHITE, Color::from_rgb8(255, 220, 142), intensity),
+    );
     frame.stroke(
         &face,
         canvas::Stroke::default()
@@ -374,10 +382,20 @@ fn draw_black_key(frame: &mut canvas::Frame, bounds: Rectangle, appearance: Pian
     )
     .add_stop(
         0.0,
-        mix_color(Color::from_rgb8(42, 42, 42), Color::from_rgb8(105, 50, 16), intensity),
+        mix_color(
+            Color::from_rgb8(42, 42, 42),
+            Color::from_rgb8(105, 50, 16),
+            intensity,
+        ),
     )
-    .add_stop(0.10, mix_color(Color::BLACK, Color::from_rgb8(90, 42, 12), intensity))
-    .add_stop(1.0, mix_color(Color::BLACK, Color::from_rgb8(90, 42, 12), intensity));
+    .add_stop(
+        0.10,
+        mix_color(Color::BLACK, Color::from_rgb8(90, 42, 12), intensity),
+    )
+    .add_stop(
+        1.0,
+        mix_color(Color::BLACK, Color::from_rgb8(90, 42, 12), intensity),
+    );
     frame.fill(&face, fill);
 
     // Thin highlight lines run down the key face between its bands.
@@ -409,7 +427,10 @@ fn draw_black_key(frame: &mut canvas::Frame, bounds: Rectangle, appearance: Pian
             0.0,
             mix_color(Color::WHITE, Color::from_rgb8(255, 220, 142), intensity),
         )
-        .add_stop(1.0, mix_color(Color::BLACK, Color::from_rgb8(80, 38, 10), intensity));
+        .add_stop(
+            1.0,
+            mix_color(Color::BLACK, Color::from_rgb8(80, 38, 10), intensity),
+        );
     frame.fill(&lip, lip_fill);
     frame.stroke(
         &lip,
@@ -433,7 +454,11 @@ fn draw_black_key(frame: &mut canvas::Frame, bounds: Rectangle, appearance: Pian
     });
     frame.fill(
         &bullet,
-        mix_color(Color::from_rgb8(99, 99, 99), Color::from_rgb8(150, 84, 26), intensity),
+        mix_color(
+            Color::from_rgb8(99, 99, 99),
+            Color::from_rgb8(150, 84, 26),
+            intensity,
+        ),
     );
 
     // The lower band: a diagonal white-to-black sheen.
@@ -450,7 +475,10 @@ fn draw_black_key(frame: &mut canvas::Frame, bounds: Rectangle, appearance: Pian
             0.0,
             mix_color(Color::WHITE, Color::from_rgb8(255, 220, 142), intensity),
         )
-        .add_stop(1.0, mix_color(Color::BLACK, Color::from_rgb8(80, 38, 10), intensity));
+        .add_stop(
+            1.0,
+            mix_color(Color::BLACK, Color::from_rgb8(80, 38, 10), intensity),
+        );
     frame.fill(&sheen, sheen_fill);
 }
 
@@ -573,7 +601,7 @@ const MAPPED_KEY_LABELS: [(char, &str); 22] = [
     ('k', "k"),
     ('l', "l"),
     (';', ";"),
-    ('\'' , "'"),
+    ('\'', "'"),
     ('\r', "↵"),
     ('q', "q"),
     ('w', "w"),
@@ -592,8 +620,9 @@ const MAPPED_KEY_LABELS: [(char, &str); 22] = [
 /// in their slot and black keys on the boundary between two white keys.
 fn key_center_x(midi_note: u8, width: f32) -> f32 {
     let white_width = width / WHITE_KEY_COUNT;
-    let whites_before =
-        (FIRST_MIDI_NOTE..midi_note).filter(|note| !is_black(*note)).count() as u8;
+    let whites_before = (FIRST_MIDI_NOTE..midi_note)
+        .filter(|note| !is_black(*note))
+        .count() as u8;
     if is_black(midi_note) {
         f32::from(whites_before) * white_width
     } else {
@@ -654,11 +683,7 @@ mod tests {
         // The row walks the white keys from A of the selected octave: a is
         // A4, s is B4, d wraps to C5, and so on.
         let expected = [69, 71, 72, 74, 76, 77, 79, 81, 83, 84, 86];
-        for (key, midi_note) in "asd fg hjkl;'"
-            .chars()
-            .filter(|c| *c != ' ')
-            .zip(expected)
-        {
+        for (key, midi_note) in "asd fg hjkl;'".chars().filter(|c| *c != ' ').zip(expected) {
             assert_eq!(computer_key_note(key, 4, 0), Some(midi_note));
         }
         // The row is case-insensitive and the mapping reaches both ends of
@@ -669,7 +694,7 @@ mod tests {
         assert_eq!(computer_key_note('d', 7, 0), Some(108));
         // Notes outside the keyboard are not struck.
         assert_eq!(computer_key_note('a', -1, 0), None);
-        assert_eq!(computer_key_note('\'' , 8, 0), None);
+        assert_eq!(computer_key_note('\'', 8, 0), None);
         // Unmapped letters are ignored.
         assert_eq!(computer_key_note('z', 4, 0), None);
         assert_eq!(computer_key_note('e', 4, 0), None);
@@ -698,7 +723,7 @@ mod tests {
         // Shifted notes are range-checked like natural ones.
         assert_eq!(computer_key_note('a', 0, -1), None);
         assert_eq!(computer_key_note('a', 8, 1), None);
-        assert_eq!(computer_key_note('\'' , 8, 1), None);
+        assert_eq!(computer_key_note('\'', 8, 1), None);
     }
 
     #[test]
@@ -718,8 +743,7 @@ mod tests {
         let letters = "asdfghjkl;'qwrtuiop[\\\r";
         for midi_note in FIRST_MIDI_NOTE..=LAST_MIDI_NOTE {
             let reachable = letters.chars().any(|key| {
-                (0i8..=7)
-                    .any(|octave| computer_key_note(key, octave, 0) == Some(midi_note))
+                (0i8..=7).any(|octave| computer_key_note(key, octave, 0) == Some(midi_note))
             });
             assert!(reachable, "MIDI note {midi_note} is unreachable");
         }

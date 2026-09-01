@@ -216,7 +216,8 @@ pub struct SpawnUnary<P, A, E, S = (), Op = QwenDarkInference>(
 impl<P, A, E, S, Op> Action for SpawnUnary<P, A, E, S, Op>
 where
     P: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>
+        + super::OperationNode<Op>,
     Op: TensorContract,
     E: NodeIdsFromList + DeclaredEdges<Op>,
 {
@@ -268,7 +269,8 @@ impl<P1, P2, A, E, S, Op> Action for SpawnBinary<P1, P2, A, E, S, Op>
 where
     P1: Unsigned,
     P2: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
+        + super::OperationNode<Op>,
     A::Flow: crate::fusion::FusionFlow,
     Op: TensorContract,
     E: NodeIdsFromList + DeclaredEdges<Op>,
@@ -323,11 +325,11 @@ where
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
     BoundaryAnimalT: Animal<
-        Id: AnimalIdValue,
-        Generation: Unsigned,
-        Seed = super::BoundaryInit,
-        State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
-    >,
+            Id: AnimalIdValue,
+            Generation: Unsigned,
+            Seed = super::BoundaryInit,
+            State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
+        > + super::OperationNode<Op>,
     Op: TensorContract,
     E: NodeIdsFromList + DeclaredEdges<Op>,
 {
@@ -362,11 +364,11 @@ where
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
     BoundaryAnimalT: Animal<
-        Id: AnimalIdValue,
-        Generation: Unsigned,
-        Seed = super::BoundaryInit,
-        State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
-    >,
+            Id: AnimalIdValue,
+            Generation: Unsigned,
+            Seed = super::BoundaryInit,
+            State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
+        > + super::OperationNode<Op>,
     Op: TensorContract,
     E: NodeIdsFromList + DeclaredEdges<Op>,
 {

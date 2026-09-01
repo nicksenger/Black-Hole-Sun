@@ -13,6 +13,12 @@ use jungle_vision::EjectedViewerMessage;
 
 #[cfg(feature = "piano")]
 use self::piano::{ActivePianoNote, PianoInputId, PianoStrikeVisual};
+use crate::builder::BeamConfig;
+use crate::client::SharedJungleClient;
+use crate::graph::build_sun_graph;
+use crate::labels::{animal_label_key, warp_boundary_label};
+use crate::live::{appearance_task, LiveAppearanceSnapshot, LiveConfig};
+use crate::model::{model_display_changed, BeamModel};
 #[cfg(feature = "piano")]
 use crate::piano::piano_audio::PianoAudioEngine;
 #[cfg(feature = "piano")]
@@ -21,16 +27,10 @@ use crate::piano::piano_score::{load_score_document, PianoScorePlayback, SCORE_T
 use crate::piano::score_text::BhsScore;
 #[cfg(feature = "piano")]
 use crate::piano::PianoMessage;
-use crate::builder::BeamConfig;
-use crate::client::SharedJungleClient;
-use crate::graph::build_sun_graph;
-use crate::labels::{animal_label_key, warp_boundary_label};
-use crate::live::{appearance_task, LiveAppearanceSnapshot, LiveConfig};
-use crate::model::{model_display_changed, BeamModel};
 use crate::style::{
-    app_background_style, beam_theme, black_hole_text, cell_node_style,
-    graph_node_button_style, subpanel_child_canvas_style, subpanel_close_button_style,
-    subpanel_left_edge_style, subpanel_notice_style, subpanel_overlay_style, subpanel_style,
+    app_background_style, beam_theme, black_hole_text, cell_node_style, graph_node_button_style,
+    subpanel_child_canvas_style, subpanel_close_button_style, subpanel_left_edge_style,
+    subpanel_notice_style, subpanel_overlay_style, subpanel_style,
 };
 use crate::subpanel::{SubpanelConfig, SubpanelState};
 use crate::visual::{
@@ -75,62 +75,66 @@ pub(crate) struct BeamApp {
     /// local cell ids from the top level (e.g. `[7]` or `[7, 3]`). Toggled by
     /// clicking the boundary cell; collapsing a path also collapses every
     /// expanded sub-path beneath it.
-    pub(crate) expanded_warp_cells:  HashSet<Vec<u32>>,
+    pub(crate) expanded_warp_cells: HashSet<Vec<u32>>,
     /// Latest polled snapshot; the source for rebuilding the main graph when
     /// warp subgraphs expand or collapse.
-    pub(crate) last_snapshot:  Option<LiveAppearanceSnapshot>,
-    pub(crate) visuals:  HashMap<u32, CellVisualState>,
-    pub(crate) appearance_loading:  bool,
-    pub(crate) appearance_error:  Option<String>,
-    pub(crate) subpanel_notice:  Option<String>,
-    pub(crate) color_now:  Instant,
+    pub(crate) last_snapshot: Option<LiveAppearanceSnapshot>,
+    pub(crate) visuals: HashMap<u32, CellVisualState>,
+    pub(crate) appearance_loading: bool,
+    pub(crate) appearance_error: Option<String>,
+    pub(crate) subpanel_notice: Option<String>,
+    pub(crate) color_now: Instant,
     #[cfg(feature = "piano")]
-    pub(crate) piano_started_at:  Instant,
+    pub(crate) piano_started_at: Instant,
     #[cfg(feature = "piano")]
-    pub(crate) piano_event_sequence:  u64,
+    pub(crate) piano_event_sequence: u64,
     #[cfg(feature = "piano")]
-    pub(crate) piano_voice_sequence:  u64,
+    pub(crate) piano_voice_sequence: u64,
     #[cfg(feature = "piano")]
-    pub(crate) active_piano_notes:  HashMap<PianoInputId, ActivePianoNote>,
+    pub(crate) active_piano_notes: HashMap<PianoInputId, ActivePianoNote>,
     #[cfg(feature = "piano")]
-    pub(crate) piano_strike_visuals:  HashMap<u64, PianoStrikeVisual>,
+    pub(crate) piano_strike_visuals: HashMap<u64, PianoStrikeVisual>,
     #[cfg(feature = "piano")]
-    pub(crate) piano_visual_now:  Instant,
+    pub(crate) piano_visual_now: Instant,
     #[cfg(feature = "piano")]
-    pub(crate) piano_audio:  Option<PianoAudioEngine>,
+    pub(crate) piano_audio: Option<PianoAudioEngine>,
     #[cfg(feature = "piano")]
-    pub(crate) piano_audio_error:  Option<String>,
+    pub(crate) piano_audio_error: Option<String>,
     #[cfg(feature = "piano")]
-    pub(crate) piano_score:  Option<PianoScorePlayback>,
+    pub(crate) piano_score: Option<PianoScorePlayback>,
     #[cfg(feature = "piano")]
-    pub(crate) piano_score_error:  Option<String>,
+    pub(crate) piano_score_error: Option<String>,
     #[cfg(feature = "piano")]
-    pub(crate) piano_score_cycle:  u64,
+    pub(crate) piano_score_cycle: u64,
     /// The skipped intro of a configured score ([`BeamBuilder::score_skip`]),
     /// padded into every time reported by [`Self::piano_log_line`] so the
     /// log's timeline starts at the beginning of the original score.
     #[cfg(feature = "piano")]
-    pub(crate) piano_score_skip:  Duration,
+    pub(crate) piano_score_skip: Duration,
     /// The scientific-pitch octave selected by number keys `0`-`7`; the home
     /// row sounds the white keys from the A in this octave (through E of the
     /// next on Enter), and the top row plays the black keys between them.
     #[cfg(feature = "piano")]
-    pub(crate) piano_octave:  i8,
+    pub(crate) piano_octave: i8,
     /// Whether the left Shift key is currently held for piano input; it
     /// strikes one octave below the mapped note.
     #[cfg(feature = "piano")]
-    pub(crate) piano_shift_left:  bool,
+    pub(crate) piano_shift_left: bool,
     /// Whether the right Shift key is currently held for piano input; it
     /// strikes one octave above the mapped note.
     #[cfg(feature = "piano")]
-    pub(crate) piano_shift_right:  bool,
+    pub(crate) piano_shift_right: bool,
     /// Attacks awaiting release for [`Self::piano_log_line`], keyed by voice
     /// id: the attack timestamp and quantized attack velocity.
     #[cfg(feature = "piano")]
-    pub(crate) piano_log_attacks:  HashMap<u64, (Duration, u8)>,
+    pub(crate) piano_log_attacks: HashMap<u64, (Duration, u8)>,
 }
 
-pub(crate) fn run_beam(config: BeamConfig, model: BeamModel, live: Option<LiveConfig>) -> iced::Result {
+pub(crate) fn run_beam(
+    config: BeamConfig,
+    model: BeamModel,
+    live: Option<LiveConfig>,
+) -> iced::Result {
     let title = config.title.clone();
     let width = config.width;
     let height = config.height;
@@ -192,10 +196,7 @@ impl BeamApp {
             match PianoAudioEngine::new() {
                 Ok(audio) => {
                     // A zero bpm leaves the metronome silent.
-                    if let Some(bpm) = config
-                        .piano_metronome_bpm
-                        .filter(|bpm| *bpm > 0)
-                    {
+                    if let Some(bpm) = config.piano_metronome_bpm.filter(|bpm| *bpm > 0) {
                         audio.enable_metronome(bpm);
                     }
                     (Some(audio), None)
@@ -853,8 +854,7 @@ impl BeamApp {
     /// Whether every level of a warp path is expanded, i.e. the subgraph at
     /// that path joins the main graph.
     fn is_path_expanded(&self, path: &[u32]) -> bool {
-        (1..=path.len())
-            .all(|len| self.expanded_warp_cells.contains(&path[..len].to_vec()))
+        (1..=path.len()).all(|len| self.expanded_warp_cells.contains(&path[..len].to_vec()))
     }
 
     /// Removes a warp path and every expanded sub-path beneath it, so
@@ -894,7 +894,7 @@ impl BeamApp {
         self.last_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.warp_appearances.get(path))
-        .is_some_and(|appearance| appearance.finalized)
+            .is_some_and(|appearance| appearance.finalized)
     }
 
     /// The latest diagnostic explaining why a warp cell's nested sun could

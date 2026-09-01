@@ -891,9 +891,7 @@ impl<R: RngExt> MutantScore<R> {
 /// first and last keys are possible but unlikely.
 fn random_note(rng: &mut impl RngExt) -> u8 {
     let center = (FIRST_MIDI_NOTE as f64 + LAST_MIDI_NOTE as f64) / 2.0;
-    let weight = |note: u8| {
-        (-((note as f64 - center).abs() / MUTATED_NOTE_DECAY_SEMITONES)).exp()
-    };
+    let weight = |note: u8| (-((note as f64 - center).abs() / MUTATED_NOTE_DECAY_SEMITONES)).exp();
     // Walk the cumulative weights; the range is fixed and tiny, so a linear
     // scan is simpler (and faster) than precomputing a table.
     let total: f64 = (FIRST_MIDI_NOTE..=LAST_MIDI_NOTE).map(weight).sum();
@@ -1579,7 +1577,9 @@ loop_ticks 1920
 ",
         )
         .expect("the fixture should parse");
-        let error = score.skip_seconds(3).expect_err("no pairs start after the skip point");
+        let error = score
+            .skip_seconds(3)
+            .expect_err("no pairs start after the skip point");
         assert!(error.contains("leaves no notes"), "{error}");
     }
 
@@ -1602,7 +1602,9 @@ loop_ticks 7680
     fn rescaling_stretches_notes_to_the_same_relative_positions() {
         let mut score = rescale_fixture();
         // The loop is eight seconds; double it to sixteen.
-        score.rescale_to_duration(16.0).expect("the rescale should succeed");
+        score
+            .rescale_to_duration(16.0)
+            .expect("the rescale should succeed");
 
         let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
         assert_eq!(
@@ -1647,7 +1649,9 @@ loop_ticks 7680
     fn rescaling_compresses_notes_and_keeps_them_in_the_loop() {
         let mut score = rescale_fixture();
         // Halve the eight-second loop to four.
-        score.rescale_to_duration(4.0).expect("the rescale should succeed");
+        score
+            .rescale_to_duration(4.0)
+            .expect("the rescale should succeed");
 
         let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
         assert_eq!(
@@ -1699,7 +1703,9 @@ ticks_per_second 960
         .expect("the fixture should parse");
         assert_eq!(score.loop_ticks, None);
         // The implicit loop is the last release: tick 480, half a second.
-        score.rescale_to_duration(2.0).expect("the rescale should succeed");
+        score
+            .rescale_to_duration(2.0)
+            .expect("the rescale should succeed");
 
         let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
         assert_eq!(
@@ -1719,7 +1725,9 @@ ticks_per_second 960
     fn rescaling_by_a_fractional_factor_keeps_relative_positions() {
         let mut score = rescale_fixture();
         // Grow the eight-second loop to twelve (a 1.5x stretch).
-        score.rescale_to_duration(12.0).expect("the rescale should succeed");
+        score
+            .rescale_to_duration(12.0)
+            .expect("the rescale should succeed");
 
         let pairs: Vec<ScoreNotePair> = score.pairs().copied().collect();
         assert_eq!(
@@ -1916,7 +1924,9 @@ loop_ticks 7680
 ",
         )
         .expect("the fixture should parse");
-        score.shift_seconds(-0.25).expect("the shift should succeed");
+        score
+            .shift_seconds(-0.25)
+            .expect("the shift should succeed");
         assert_eq!(score.pairs().next().unwrap().start_tick, 720);
         assert_eq!(score.loop_ticks, Some(7440));
 
@@ -1930,7 +1940,10 @@ ticks_per_second 960
         )
         .expect("the fixture should parse");
         for bad in [f64::NAN, f64::INFINITY, -f64::INFINITY] {
-            assert!(score.shift_seconds(bad).is_err(), "{bad:?} should be rejected");
+            assert!(
+                score.shift_seconds(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
         }
     }
 

@@ -1281,7 +1281,11 @@ async fn roundtrip_file_through_void(
         .unwrap();
     let bytes = std::fs::read(&downloaded_path).unwrap();
     let _ = std::fs::remove_file(&downloaded_path);
-    assert_eq!(written as usize, bytes.len(), "download byte count mismatch");
+    assert_eq!(
+        written as usize,
+        bytes.len(),
+        "download byte count mismatch"
+    );
     Ok(bytes)
 }
 
@@ -1297,10 +1301,8 @@ async fn void_multipart_roundtrip_in_memory_store() {
 
     let void_client = VoidClient::new_tcp(void_server.local_addr());
 
-    let source_path = std::env::temp_dir().join(format!(
-        "bhs-void-multipart-src-{}.bin",
-        Uuid::new_v4()
-    ));
+    let source_path =
+        std::env::temp_dir().join(format!("bhs-void-multipart-src-{}.bin", Uuid::new_v4()));
     std::fs::write(&source_path, patterned_bytes(MULTIPART_TEST_SIZE)).unwrap();
 
     let downloaded = roundtrip_file_through_void(&void_client, &source_path)
@@ -1338,10 +1340,8 @@ async fn void_multipart_roundtrip_filesystem_store() {
 
     let void_client = VoidClient::new_tcp(void_server.local_addr());
 
-    let source_path = std::env::temp_dir().join(format!(
-        "bhs-void-multipart-src-{}.bin",
-        Uuid::new_v4()
-    ));
+    let source_path =
+        std::env::temp_dir().join(format!("bhs-void-multipart-src-{}.bin", Uuid::new_v4()));
     std::fs::write(&source_path, patterned_bytes(MULTIPART_TEST_SIZE)).unwrap();
 
     let downloaded = roundtrip_file_through_void(&void_client, &source_path)
@@ -1382,10 +1382,8 @@ async fn mass_void_client_multipart_roundtrip() {
     .await
     .expect("failed to connect mass void client");
 
-    let source_path = std::env::temp_dir().join(format!(
-        "bhs-mass-void-src-{}.bin",
-        Uuid::new_v4()
-    ));
+    let source_path =
+        std::env::temp_dir().join(format!("bhs-mass-void-src-{}.bin", Uuid::new_v4()));
     std::fs::write(&source_path, patterned_bytes(MULTIPART_TEST_SIZE)).unwrap();
 
     let id = void_client
@@ -1470,7 +1468,10 @@ async fn fuse_weights_with_checkpoint() {
     let _ = std::fs::remove_file(&checkpoint_path);
 
     assert_eq!(written as usize, fused_bytes.len());
-    assert!(fused_bytes.len() >= 4, "fused object is too small to be a GGUF");
+    assert!(
+        fused_bytes.len() >= 4,
+        "fused object is too small to be a GGUF"
+    );
     assert_eq!(
         &fused_bytes[0..4],
         b"GGUF",

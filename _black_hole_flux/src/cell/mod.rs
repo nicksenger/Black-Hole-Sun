@@ -8,11 +8,16 @@ pub use action::CellState;
 use action::{
     AdvanceGradientStep as AdvanceGradientStep_,
     BeginGradientAccumulation as BeginGradientAccumulation_, GenerateModelId as GenerateModelId_,
-    InitRecvId as InitRecvId_, Optimize as Optimize_, PerturbDown as PerturbDown_,
-    PerturbUp as PerturbUp_, Potentiation, PrepareAtomInput as PrepareAtomInput_,
-    StartModel as StartModel_, Transmit as Transmit_, WaitForPotentiation as WaitForPotentiation_,
-    WaitForPropagation as WaitForPropagation_,
+    InitRecvId as InitRecvId_, Optimize as Optimize_, OptimizeOperation as OptimizeOperation_,
+    PerturbDown as PerturbDown_, PerturbOperationDown as PerturbOperationDown_,
+    PerturbOperationUp as PerturbOperationUp_, PerturbUp as PerturbUp_, Potentiation,
+    PrepareAtomInput as PrepareAtomInput_, PrepareOperationInput as PrepareOperationInput_,
+    StartModel as StartModel_, StartOperation as StartOperation_, Transmit as Transmit_,
+    TransmitArtifact as TransmitArtifact_, WaitForArtifact as WaitForArtifact_,
+    WaitForOperationalControl as WaitForOperationalControl_,
+    WaitForPotentiation as WaitForPotentiation_, WaitForPropagation as WaitForPropagation_,
 };
+use black_hole_contract::TensorContract;
 use black_hole_spec::EmissionId;
 use jungle_sdk::prelude::*;
 use jungle_zoo::backoff::Backoff;
@@ -21,7 +26,7 @@ use jungle_zoo::Noop;
 use uuid::Uuid;
 
 use crate::mass::{DefaultConfig, ModelConfig};
-use crate::Atom;
+use crate::{Atom, OperationAtom};
 
 /// Predicate that keeps running cell microsteps until `grad_steps` is reached.
 pub struct HasPendingGradientStep<S>(std::marker::PhantomData<fn() -> S>);
@@ -104,6 +109,26 @@ pub struct CellWithState<N, S, H: ModelConfig>(
 
 pub type Cell<N, S = (), H = DefaultConfig> = CellWithState<N, S, H>;
 
+/// QuZO-compatible Cell whose data plane is typed by an operation contract.
+///
+/// This is the executable generic counterpart to [`Cell`]. It uses
+/// [`ArtifactDelivery`](black_hole_spec::ArtifactDelivery) for inference data
+/// and [`OperationalControl`](black_hole_spec::OperationalControl) for the
+/// strategy-selected optimization command.
+#[derive(Flow)]
+pub struct OperationCellWithState<
+    N,
+    Op: TensorContract<Input: Send, Output: Send> + Send + Sync + 'static,
+    S,
+>(
+    Step<InitRecvId_<S>>,
+    Step<GenerateModelId_<S>>,
+    Step<StartOperation_<Op, S>>,
+    While<Always<CellState<S>, ()>, OperationInnerWithState<N, Op, S>>,
+);
+
+pub type OperationCell<N, Op, S = ()> = OperationCellWithState<N, Op, S>;
+
 /// The body of one iteration of a [`Cell`] loop.
 #[derive(Flow)]
 pub struct InnerWithState<N, S>(
@@ -130,6 +155,37 @@ pub struct InnerPropagationMicrostepWithState<N, S>(
 
 pub type Inner<N, S = ()> = InnerWithState<N, S>;
 
+/// One two-sided optimization iteration over operation-typed artifacts.
+#[derive(Flow)]
+pub struct OperationInnerWithState<
+    N,
+    Op: TensorContract<Input: Send, Output: Send> + Send + Sync + 'static,
+    S,
+>(
+    Step<BeginGradientAccumulation_<S>>,
+    Step<PerturbOperationUp_<Op, S>>,
+    While<HasPendingGradientStep<S>, OperationPropagationMicrostepWithState<N, Op, S>>,
+    Step<BeginGradientAccumulation_<S>>,
+    Step<PerturbOperationDown_<Op, S>>,
+    While<HasPendingGradientStep<S>, OperationPropagationMicrostepWithState<N, Op, S>>,
+    Step<WaitForOperationalControl_<Potentiation, S>>,
+    Step<OptimizeOperation_<Op, S>>,
+);
+
+/// One typed delivery → operation → delivery microstep.
+#[derive(Flow)]
+pub struct OperationPropagationMicrostepWithState<
+    N,
+    Op: TensorContract<Input: Send, Output: Send> + Send + Sync + 'static,
+    S,
+>(
+    Step<WaitForArtifact_<Op::Input, S>>,
+    Step<PrepareOperationInput_<Op::Input, S>>,
+    N,
+    Step<TransmitArtifact_<Op::Output, S>>,
+    Step<AdvanceGradientStep_<S>>,
+);
+
 pub type Primordium<S = (), H = DefaultConfig> = Cell<
     Atom<
         Step<Noop<CellState<S>, (Uuid, EmissionId)>>,
@@ -140,4 +196,17 @@ pub type Primordium<S = (), H = DefaultConfig> = Cell<
     >,
     S,
     H,
+>;
+
+/// Bare operation-typed Cell with no input or output transforms.
+pub type OperationPrimordium<Op, S = ()> = OperationCell<
+    OperationAtom<
+        Step<Noop<CellState<S>, (Uuid, EmissionId<<Op as TensorContract>::Input>)>>,
+        Step<Noop<CellState<S>, EmissionId<<Op as TensorContract>::Output>>>,
+        (),
+        Op,
+        S,
+    >,
+    Op,
+    S,
 >;

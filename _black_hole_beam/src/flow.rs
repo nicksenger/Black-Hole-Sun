@@ -2,7 +2,8 @@
 //! rendered as Black Hole Sun views.
 
 use black_hole_flux::sun::{
-    BinarySunStep, NodeIdsFromList, Sun, SunAppearance, SunNode, SunState, UnarySunStep,
+    BinarySunStep, NodeIdsFromList, OperationNode, Sun, SunAppearance, SunNode, SunState,
+    UnarySunStep,
 };
 use black_hole_flux::{DeclaredEdges, TensorContract};
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState};
@@ -48,6 +49,7 @@ impl<Port, A, Edges, Tail, S, Op, const GRADIENT_ACCUMULATION_STEPS: usize> priv
 where
     Port: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = black_hole_flux::CellInit> + 'static,
+    A: OperationNode<Op>,
     Op: TensorContract,
     Edges: NodeIdsFromList + DeclaredEdges<Op>,
     Tail: private::DescribeSun,
@@ -70,6 +72,7 @@ where
     PortB: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
         + 'static,
+    A: OperationNode<Op>,
     A::Flow: FusionFlow,
     Op: TensorContract,
     Edges: NodeIdsFromList + DeclaredEdges<Op>,

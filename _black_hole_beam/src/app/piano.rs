@@ -31,7 +31,6 @@ fn piano_computer_key(key: &keyboard::Key, physical_key: keyboard::key::Physical
     })
 }
 
-
 /// The tick grid [`BeamBuilder::piano_log`] prints on; the application start
 /// is tick 0.
 #[cfg(feature = "piano")]
@@ -262,8 +261,7 @@ impl BeamApp {
                     key,
                     self.piano_octave,
                     self.piano_shift_offset(),
-                )
-                else {
+                ) else {
                     return;
                 };
                 self.attack_piano_note(
@@ -307,7 +305,9 @@ impl BeamApp {
     /// transpose it like they transpose struck notes.
     #[cfg(feature = "piano")]
     pub(crate) fn piano_label_octave(&self) -> Option<i8> {
-        self.config.piano_labels.then(|| self.piano_octave + self.piano_shift_offset())
+        self.config
+            .piano_labels
+            .then(|| self.piano_octave + self.piano_shift_offset())
     }
 
     /// The octave transposition currently held for piano input: left Shift

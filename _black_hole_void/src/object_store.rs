@@ -152,9 +152,11 @@ impl ObjectStore for S3Store {
             .await
             .map_err(|e| ObjectStoreError::S3(e.to_string()))?;
 
-        output
-            .upload_id
-            .ok_or_else(|| ObjectStoreError::Message("s3 create_multipart_upload returned no upload id".to_string()))
+        output.upload_id.ok_or_else(|| {
+            ObjectStoreError::Message(
+                "s3 create_multipart_upload returned no upload id".to_string(),
+            )
+        })
     }
 
     async fn upload_part(
@@ -413,7 +415,9 @@ impl ObjectStore for FilesystemObjectStore {
     ) -> Result<String> {
         let dir = self.session_dir(session_id)?;
         if !dir.exists() {
-            return Err(ObjectStoreError::NotFound(format!("multipart session {session_id}")));
+            return Err(ObjectStoreError::NotFound(format!(
+                "multipart session {session_id}"
+            )));
         }
         let part_path = dir.join(format!("{part_number:08x}.part"));
         fs::write(&part_path, data).map_err(|e| {
@@ -434,7 +438,9 @@ impl ObjectStore for FilesystemObjectStore {
     ) -> Result<()> {
         let dir = self.session_dir(session_id)?;
         if !dir.exists() {
-            return Err(ObjectStoreError::NotFound(format!("multipart session {session_id}")));
+            return Err(ObjectStoreError::NotFound(format!(
+                "multipart session {session_id}"
+            )));
         }
         let path = self.object_path(key)?;
 

@@ -20,24 +20,24 @@ mod flow;
 mod graph;
 mod labels;
 mod live;
+mod model;
 #[cfg(feature = "piano")]
 mod piano;
-mod model;
 mod style;
 mod subpanel;
 mod visual;
 
-pub use builder::{view, view_live, BeamBuilder};
 #[cfg(feature = "piano")]
 pub use builder::PianoLog;
+pub use builder::{view, view_live, BeamBuilder};
 pub use flow::{BlackHoleSunAnimal, BlackHoleSunFlow};
 
+#[cfg(feature = "piano")]
+pub use piano::piano_audio::{render_piano_score_to_wav, PianoRenderReport};
 #[cfg(feature = "piano")]
 pub use piano::score_text;
 #[cfg(feature = "piano")]
 pub use piano::{PianoAction, PianoEvent, PianoInputSource, PianoNote};
-#[cfg(feature = "piano")]
-pub use piano::piano_audio::{render_piano_score_to_wav, PianoRenderReport};
 
 #[cfg(test)]
 mod tests {
@@ -335,7 +335,11 @@ mod tests {
         ))));
 
         assert_eq!(
-            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            app.model
+                .cells
+                .iter()
+                .map(|cell| cell.id)
+                .collect::<Vec<_>>(),
             vec![7, 8],
             "the nested node joins the main graph under a fresh id"
         );
@@ -359,7 +363,11 @@ mod tests {
         assert!(app.subpanel.is_none());
         assert!(!app.expanded_warp_cells.contains(&vec![7]));
         assert_eq!(
-            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            app.model
+                .cells
+                .iter()
+                .map(|cell| cell.id)
+                .collect::<Vec<_>>(),
             vec![7],
             "collapsing removes the nested nodes from the main graph"
         );
@@ -433,8 +441,8 @@ mod tests {
             (vec![5], nested_sun_appearance(false)),
         ]);
 
-        let model = BeamModel::from_appearance(appearance, &HashMap::new(), &warp_appearances)
-            .unwrap();
+        let model =
+            BeamModel::from_appearance(appearance, &HashMap::new(), &warp_appearances).unwrap();
 
         // The finalized subgraph is merged under fresh ids; the unfinalized
         // one is skipped.
@@ -501,12 +509,8 @@ mod tests {
         };
         let inner = nested_sun_appearance(true);
 
-        let warp_appearances = HashMap::from([
-            (vec![7], middle.clone()),
-            (vec![7, 2], inner),
-        ]);
-        let model = BeamModel::from_appearance(outer, &HashMap::new(), &warp_appearances)
-            .unwrap();
+        let warp_appearances = HashMap::from([(vec![7], middle.clone()), (vec![7, 2], inner)]);
+        let model = BeamModel::from_appearance(outer, &HashMap::new(), &warp_appearances).unwrap();
 
         assert_eq!(
             model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
@@ -602,7 +606,11 @@ mod tests {
         };
         let _task = app.update(Message::AppearanceLoaded(Ok(Some(snapshot))));
         assert_eq!(
-            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            app.model
+                .cells
+                .iter()
+                .map(|cell| cell.id)
+                .collect::<Vec<_>>(),
             vec![7],
             "nothing merges until a warp cell is clicked"
         );
@@ -611,7 +619,11 @@ mod tests {
         let _task = app.update(Message::NodeSelected(7));
         assert_eq!(app.expanded_warp_cells, HashSet::from([vec![7]]));
         assert_eq!(
-            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            app.model
+                .cells
+                .iter()
+                .map(|cell| cell.id)
+                .collect::<Vec<_>>(),
             vec![7, 8, 9]
         );
 
@@ -623,7 +635,11 @@ mod tests {
             "both levels of the warp chain are tracked"
         );
         assert_eq!(
-            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            app.model
+                .cells
+                .iter()
+                .map(|cell| cell.id)
+                .collect::<Vec<_>>(),
             vec![7, 8, 9, 10],
             "the deeper sub-sun joins the main graph"
         );
@@ -646,7 +662,11 @@ mod tests {
             "collapsing the parent also collapses its expanded child subgraphs"
         );
         assert_eq!(
-            app.model.cells.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            app.model
+                .cells
+                .iter()
+                .map(|cell| cell.id)
+                .collect::<Vec<_>>(),
             vec![7],
             "the whole merged chain leaves the main graph"
         );
@@ -859,7 +879,10 @@ mod tests {
 
         // The second call merges into the first instead of replacing it: the
         // first score's grid wins and both scores' notes are present.
-        let merged = config.piano_score.as_ref().expect("the scores should merge");
+        let merged = config
+            .piano_score
+            .as_ref()
+            .expect("the scores should merge");
         assert_eq!(merged.ticks_per_second, 960);
         assert_eq!(merged.pairs().count(), 2);
         // The second score's pair rescales from 1920 to 960 ticks/second.
@@ -871,8 +894,14 @@ mod tests {
     #[cfg(feature = "piano")]
     #[test]
     fn builder_records_score_skip() {
-        assert_eq!(BeamBuilder::new().into_config().piano_score_skip_seconds, None);
-        let config = BeamBuilder::new().score_path("intro.bhs").score_skip(5).into_config();
+        assert_eq!(
+            BeamBuilder::new().into_config().piano_score_skip_seconds,
+            None
+        );
+        let config = BeamBuilder::new()
+            .score_path("intro.bhs")
+            .score_skip(5)
+            .into_config();
         assert_eq!(config.piano_score_skip_seconds, Some(5));
     }
 
@@ -1399,7 +1428,11 @@ loop_ticks 19200
             .score_skip(5)
             .into_config();
         let (mut app, _task) = BeamApp::new(config, BeamModel::empty(), None);
-        assert!(app.piano_score_error.is_none(), "{:?}", app.piano_score_error);
+        assert!(
+            app.piano_score_error.is_none(),
+            "{:?}",
+            app.piano_score_error
+        );
         let start = Instant::now();
 
         // Nothing sounds at the start: the tick-0 note was skipped and the
@@ -1466,7 +1499,10 @@ loop_ticks 19200
             held_for: Duration::from_secs(1),
         };
         release.timestamp = attack.timestamp + Duration::from_secs(1);
-        assert!(app.piano_log_line(&attack).is_none(), "the attack waits for its release");
+        assert!(
+            app.piano_log_line(&attack).is_none(),
+            "the attack waits for its release"
+        );
         let line = app
             .piano_log_line(&release)
             .expect("the release should log a pair");
@@ -1732,8 +1768,7 @@ loop_ticks 19200
         };
         let bytes = postcard::to_allocvec(&appearance).unwrap();
         let decoded = postcard::from_bytes::<SunAppearance>(&bytes).unwrap();
-        let model =
-            BeamModel::from_appearance(decoded, &HashMap::new(), &HashMap::new()).unwrap();
+        let model = BeamModel::from_appearance(decoded, &HashMap::new(), &HashMap::new()).unwrap();
 
         assert_eq!(model.grad_steps, 4);
         assert_eq!(model.graph.nodes, vec![0, 2]);
@@ -1845,8 +1880,8 @@ loop_ticks 19200
             edges: vec![],
         };
 
-        let model = BeamModel::from_appearance(appearance, &HashMap::new(), &HashMap::new())
-            .unwrap();
+        let model =
+            BeamModel::from_appearance(appearance, &HashMap::new(), &HashMap::new()).unwrap();
         assert_eq!(
             model.cells[0].animal_name,
             "RootAnimal<Result<String, Vec<u8>>>"
@@ -2044,4 +2079,3 @@ mod warp_fetch_diagnostics {
         );
     }
 }
-

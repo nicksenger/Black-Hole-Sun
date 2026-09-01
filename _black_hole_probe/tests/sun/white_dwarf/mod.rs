@@ -372,7 +372,9 @@ impl VoidInferOps for WhiteDwarfJungle {
         checkpoint_id: ObjectId,
         contribution: f32,
     ) -> Result<ObjectId, String> {
-        self.mass_client.fuse_weights(model_id, checkpoint_id, contribution).await
+        self.mass_client
+            .fuse_weights(model_id, checkpoint_id, contribution)
+            .await
     }
 
     fn darken(&self, prompt: &str) -> Result<Vec<DarkToken>, String> {

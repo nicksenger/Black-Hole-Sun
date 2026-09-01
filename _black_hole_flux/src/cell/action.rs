@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::mass::{DefaultConfig, ModelConfig};
+use black_hole_contract::TensorContract;
+use black_hole_spec::ObjectId;
 
 // ---------------------------------------------------------------------------
 // CellState — holds the next transmission ID threaded across Cell iterations
@@ -52,7 +54,9 @@ pub use black_hole_spec::Potentiation;
 
 use super::effect::{
     GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown, MassStart,
-    Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
+    OperationMassOptimize, OperationMassPerturbDown, OperationMassPerturbUp, OperationMassStart,
+    Transmit as TransmitEffect, TransmitArtifactEffect, WaitForArtifactDeliveryEffect,
+    WaitForOperationalControlEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
 
 // ---------------------------------------------------------------------------
@@ -248,6 +252,62 @@ impl<S> Action for PrepareAtomInput<S> {
     }
 }
 
+/// Starts an instance of a generic tensor operation and stores its ID.
+pub struct StartOperation<Op, S = ()>(PhantomData<fn() -> (Op, S)>);
+
+#[jungle::action(carry = ObjectId)]
+impl<Op, S> Action for StartOperation<Op, S>
+where
+    Op: TensorContract + Send + Sync + 'static,
+{
+    type Effect = OperationMassStart<Op>;
+    type Input = ObjectId;
+    type Output = ();
+
+    fn emit(_state: &CellState<S>, instance_id: Self::Input) -> (ObjectId, ObjectId) {
+        (instance_id, instance_id)
+    }
+
+    fn absorb(
+        state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+        instance_id: ObjectId,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("start operation failed: {error}")))?;
+        state.model_id = instance_id;
+        Ok(())
+    }
+}
+
+/// Adds the cell's operation instance ID to a typed input emission.
+pub struct PrepareOperationInput<T, S = ()>(PhantomData<fn() -> (T, S)>);
+
+#[jungle::action(carry = black_hole_spec::EmissionId<T>)]
+impl<T, S> Action for PrepareOperationInput<T, S>
+where
+    T: Send + 'static,
+{
+    type Effect = NoEffect;
+    type Input = black_hole_spec::EmissionId<T>;
+    type Output = (ObjectId, black_hole_spec::EmissionId<T>);
+
+    fn emit(
+        _state: &CellState<S>,
+        emission_id: Self::Input,
+    ) -> ((), black_hole_spec::EmissionId<T>) {
+        ((), emission_id)
+    }
+
+    fn absorb(
+        state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+        emission_id: black_hole_spec::EmissionId<T>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|_| Failure::Message("prepare operation input failed".to_string()))?;
+        Ok((state.model_id, emission_id))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Potentiation — payload from a Transmission::Potentiation
 // ---------------------------------------------------------------------------
@@ -317,6 +377,29 @@ impl<S> Action for PerturbUp<S> {
     }
 }
 
+pub struct PerturbOperationUp<Op, S = ()>(PhantomData<fn() -> (Op, S)>);
+
+#[jungle::action]
+impl<Op, S> Action for PerturbOperationUp<Op, S>
+where
+    Op: TensorContract + Send + Sync + 'static,
+{
+    type Effect = OperationMassPerturbUp<Op>;
+    type Input = ();
+    type Output = ();
+
+    fn emit(state: &CellState<S>, _input: Self::Input) -> (ObjectId, u64) {
+        (state.model_id, state.perturbation_seed)
+    }
+
+    fn absorb(
+        _state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("perturb operation up failed: {error}")))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PerturbDown — perturb mass weights downward (no carry)
 // ---------------------------------------------------------------------------
@@ -338,6 +421,29 @@ impl<S> Action for PerturbDown<S> {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("perturb down failed: {e}")))
+    }
+}
+
+pub struct PerturbOperationDown<Op, S = ()>(PhantomData<fn() -> (Op, S)>);
+
+#[jungle::action]
+impl<Op, S> Action for PerturbOperationDown<Op, S>
+where
+    Op: TensorContract + Send + Sync + 'static,
+{
+    type Effect = OperationMassPerturbDown<Op>;
+    type Input = ();
+    type Output = ();
+
+    fn emit(state: &CellState<S>, _input: Self::Input) -> ObjectId {
+        state.model_id
+    }
+
+    fn absorb(
+        _state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("perturb operation down failed: {error}")))
     }
 }
 
@@ -363,6 +469,29 @@ impl<S> Action for Optimize<S> {
     ) -> Result<Self::Output, Failure> {
         state.is_frozen = output.map_err(|e| Failure::Message(format!("optimize failed: {e}")))?;
         Ok(())
+    }
+}
+
+pub struct OptimizeOperation<Op, S = ()>(PhantomData<fn() -> (Op, S)>);
+
+#[jungle::action]
+impl<Op, S> Action for OptimizeOperation<Op, S>
+where
+    Op: TensorContract + Send + Sync + 'static,
+{
+    type Effect = OperationMassOptimize<Op>;
+    type Input = Potentiation;
+    type Output = ();
+
+    fn emit(state: &CellState<S>, input: Self::Input) -> (ObjectId, Potentiation) {
+        (state.model_id, input)
+    }
+
+    fn absorb(
+        _state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("optimize operation failed: {error}")))
     }
 }
 
@@ -400,6 +529,34 @@ impl<S> Action for WaitForPropagation<S> {
     }
 }
 
+/// Waits for a typed artifact delivery and advances the cell mailboxes.
+pub struct WaitForArtifact<T, S = ()>(PhantomData<fn() -> (T, S)>);
+
+#[jungle::action]
+impl<T, S> Action for WaitForArtifact<T, S>
+where
+    T: Send + 'static,
+{
+    type Effect = WaitForArtifactDeliveryEffect<T>;
+    type Input = ();
+    type Output = black_hole_spec::EmissionId<T>;
+
+    fn emit(state: &CellState<S>, _input: Self::Input) -> ObjectId {
+        state.recv_id
+    }
+
+    fn absorb(
+        state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let delivery = output
+            .map_err(|error| Failure::Message(format!("wait for artifact failed: {error}")))?;
+        state.recv_id = delivery.recv;
+        state.send_id = delivery.send;
+        Ok(delivery.emission_id)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WaitForPotentiation — await a Transmission::Potentiation from void
 // ---------------------------------------------------------------------------
@@ -434,6 +591,33 @@ impl<S> Action for WaitForPotentiation<S> {
     }
 }
 
+/// Waits for strategy-selected control without coupling it to the data plane.
+pub struct WaitForOperationalControl<C, S = ()>(PhantomData<fn() -> (C, S)>);
+
+#[jungle::action]
+impl<C, S> Action for WaitForOperationalControl<C, S>
+where
+    C: Serialize + DeserializeOwned + Send + 'static,
+{
+    type Effect = WaitForOperationalControlEffect<C>;
+    type Input = ();
+    type Output = C;
+
+    fn emit(state: &CellState<S>, _input: Self::Input) -> ObjectId {
+        state.recv_id
+    }
+
+    fn absorb(
+        state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let control = output
+            .map_err(|error| Failure::Message(format!("wait for control failed: {error}")))?;
+        state.recv_id = control.recv;
+        Ok(control.control)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Transmit — propagates an emission to the next cell
 // ---------------------------------------------------------------------------
@@ -459,5 +643,32 @@ impl<S> Action for Transmit<S> {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("transmit failed: {e}")))
+    }
+}
+
+/// Publishes a typed output emission for a parent scheduler.
+pub struct TransmitArtifact<T, S = ()>(PhantomData<fn() -> (T, S)>);
+
+#[jungle::action]
+impl<T, S> Action for TransmitArtifact<T, S>
+where
+    T: Send + 'static,
+{
+    type Effect = TransmitArtifactEffect<T>;
+    type Input = black_hole_spec::EmissionId<T>;
+    type Output = ();
+
+    fn emit(
+        state: &CellState<S>,
+        emission_id: Self::Input,
+    ) -> (black_hole_spec::EmissionId<T>, ObjectId) {
+        (emission_id, state.send_id)
+    }
+
+    fn absorb(
+        _state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("transmit artifact failed: {error}")))
     }
 }

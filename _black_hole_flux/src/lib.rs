@@ -74,12 +74,16 @@ pub use black_hole_spec::{
 pub use atom::effect::MassInfer;
 pub use cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
-    InitRecvId, MassInferStep, Optimize, PerturbDown, PerturbUp, Potentiation, PrepareAtomInput,
-    Propagation, ShutdownModel, StartModel, Transmit, WaitForPotentiation, WaitForPropagation,
+    InitRecvId, MassInferStep, Optimize, OptimizeOperation, PerturbDown, PerturbOperationDown,
+    PerturbOperationUp, PerturbUp, Potentiation, PrepareAtomInput, PrepareOperationInput,
+    Propagation, ShutdownModel, StartModel, StartOperation, Transmit, TransmitArtifact,
+    WaitForArtifact, WaitForOperationalControl, WaitForPotentiation, WaitForPropagation,
 };
 pub use cell::effect::{
     GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown, MassStart,
-    Transmit as TransmitEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
+    OperationMassOptimize, OperationMassPerturbDown, OperationMassPerturbUp, OperationMassStart,
+    Transmit as TransmitEffect, TransmitArtifactEffect, WaitForArtifactDeliveryEffect,
+    WaitForOperationalControlEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
 pub use fusion::action::{FusionSeed, FusionState};
 pub use fusion::{
@@ -104,7 +108,7 @@ pub use warp::{
 pub use atom::Atom;
 pub use atom::NoBackoffAtom;
 pub use atom::OperationAtom;
-pub use cell::{Cell, Primordium};
+pub use cell::{Cell, OperationCell, OperationPrimordium, Primordium};
 
 pub use sun::{
     action::{
@@ -115,12 +119,13 @@ pub use sun::{
     effect::{
         BroadcastPotentiationEffect, BroadcastPotentiationResult, NodeTransmission,
         SchedulerDelivery, SendRootPropagationEffect, SendRootPropagationInput,
+        WaitForNodeArtifactDeliveryEffect, WaitForNodeArtifactDeliveryInput,
         WaitForNodeTransmissionEffect, WaitForNodeTransmissionInput,
     },
-    Binary, BlackHole, BoundaryInit, DeclaredEdge, Edge, Epoch, Manifest, PendingNotEmpty, PropA,
-    PropAFlow, PropB, PropBFlow, PropagationFlows, PropagationLoop, SpawnAnimal, StatelessManifest,
-    SunAppearance, SunEdgeAppearance, SunInner, SunNodeAppearance, SunNodeState, SunState,
-    TypedEdges, Unary, Warp,
+    Binary, BlackHole, BoundaryInit, DeclaredEdge, Edge, Epoch, Manifest, OperationNode,
+    PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow, PropagationFlows, PropagationLoop,
+    SpawnAnimal, StatelessManifest, SunAppearance, SunEdgeAppearance, SunInner, SunNodeAppearance,
+    SunNodeState, SunState, TypedEdges, Unary, Warp,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]

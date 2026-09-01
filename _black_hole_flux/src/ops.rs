@@ -93,6 +93,68 @@ pub trait VoidOps: Send + Sync {
         self.resolve(reference.object_ref()).await
     }
 
+    /// Wait for one operation-typed artifact delivery.
+    ///
+    /// The payload marker is compile-time only, so the wire representation
+    /// remains the three object IDs used by the scheduler and destination
+    /// cell.
+    async fn wait_for_artifact_delivery<T>(
+        &self,
+        id: ObjectId,
+    ) -> Result<black_hole_spec::ArtifactDelivery<T>, String>
+    where
+        T: Send,
+    {
+        loop {
+            match self
+                .download_raw_wait(id, DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS)
+                .await
+            {
+                Ok(Some(data)) => {
+                    return postcard::from_bytes(&data)
+                        .map_err(|error| format!("postcard deserialize: {error}"));
+                }
+                Ok(None) => tracing::debug!(
+                    ?id,
+                    timeout_ms = DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS,
+                    "artifact delivery wait timed out, retrying"
+                ),
+                Err(error) => {
+                    tracing::debug!(?id, %error, "artifact delivery wait failed, retrying")
+                }
+            }
+        }
+    }
+
+    /// Wait for a program-selected control payload.
+    async fn wait_for_operational_control<C>(
+        &self,
+        id: ObjectId,
+    ) -> Result<black_hole_spec::OperationalControl<C>, String>
+    where
+        C: DeserializeOwned + Send,
+    {
+        loop {
+            match self
+                .download_raw_wait(id, DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS)
+                .await
+            {
+                Ok(Some(data)) => {
+                    return postcard::from_bytes(&data)
+                        .map_err(|error| format!("postcard deserialize: {error}"));
+                }
+                Ok(None) => tracing::debug!(
+                    ?id,
+                    timeout_ms = DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS,
+                    "operational control wait timed out, retrying"
+                ),
+                Err(error) => {
+                    tracing::debug!(?id, %error, "operational control wait failed, retrying")
+                }
+            }
+        }
+    }
+
     async fn download_emission<M, T>(&self, id: EmissionId<T>) -> Result<Emission<M, T>, String>
     where
         M: Serialize + DeserializeOwned + Send,

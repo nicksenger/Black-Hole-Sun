@@ -480,11 +480,7 @@ impl SunOps for ProbeSpaceJungle {
             .map_err(|error| format!("deserialize appearance failed: {error}"))
     }
 
-    async fn perturb_animal<S>(
-        &self,
-        journey_id: Uuid,
-        stimulus: &S,
-    ) -> Result<(), String>
+    async fn perturb_animal<S>(&self, journey_id: Uuid, stimulus: &S) -> Result<(), String>
     where
         S: serde::Serialize + Sync + Send,
     {

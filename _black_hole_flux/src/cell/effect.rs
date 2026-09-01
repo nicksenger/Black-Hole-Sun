@@ -11,8 +11,9 @@ use black_hole_spec::{ObjectId, Transmission};
 
 use super::action::{Potentiation, Propagation};
 use crate::mass::{DefaultConfig, ModelConfig};
-use crate::ops::VoidInferOps;
+use crate::ops::{MassOps, OptimizeOps, PerturbOps, VoidInferOps, VoidOps};
 use crate::AtomError;
+use black_hole_contract::TensorContract;
 
 // ---------------------------------------------------------------------------
 // Model instance lifecycle
@@ -170,6 +171,189 @@ impl<J: VoidInferOps> Effect<J> for MassOptimize {
                 .await
                 .map_err(AtomError::Optimize)?;
             Ok(params.is_frozen)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Operation-typed lifecycle and transport
+// ---------------------------------------------------------------------------
+
+pub struct OperationMassStart<Op>(PhantomData<fn() -> Op>);
+
+#[jungle::effect(id = 76)]
+impl<Op, J> Effect<J> for OperationMassStart<Op>
+where
+    Op: TensorContract + Send + Sync + 'static,
+    J: MassOps<Op>,
+{
+    type In = ObjectId;
+    type Out = ();
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        instance_id: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            MassOps::<Op>::start_operation(jungle, instance_id)
+                .await
+                .map_err(AtomError::ModelStart)
+        }
+    }
+}
+
+pub struct OperationMassPerturbUp<Op>(PhantomData<fn() -> Op>);
+
+#[jungle::effect(id = 77)]
+impl<Op, J> Effect<J> for OperationMassPerturbUp<Op>
+where
+    Op: TensorContract + Send + Sync + 'static,
+    J: PerturbOps<Op>,
+{
+    type In = (ObjectId, u64);
+    type Out = ();
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        (instance_id, seed): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            PerturbOps::<Op>::perturb_up_operation(jungle, instance_id, seed)
+                .await
+                .map_err(AtomError::PerturbUp)
+        }
+    }
+}
+
+pub struct OperationMassPerturbDown<Op>(PhantomData<fn() -> Op>);
+
+#[jungle::effect(id = 78)]
+impl<Op, J> Effect<J> for OperationMassPerturbDown<Op>
+where
+    Op: TensorContract + Send + Sync + 'static,
+    J: PerturbOps<Op>,
+{
+    type In = ObjectId;
+    type Out = ();
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        instance_id: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            PerturbOps::<Op>::perturb_down_operation(jungle, instance_id)
+                .await
+                .map_err(AtomError::PerturbDown)
+        }
+    }
+}
+
+pub struct OperationMassOptimize<Op>(PhantomData<fn() -> Op>);
+
+#[jungle::effect(id = 79)]
+impl<Op, J> Effect<J> for OperationMassOptimize<Op>
+where
+    Op: TensorContract + Send + Sync + 'static,
+    J: OptimizeOps<Op>,
+{
+    type In = (ObjectId, Potentiation);
+    type Out = ();
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        (instance_id, potentiation): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            OptimizeOps::<Op>::optimize_operation(
+                jungle,
+                instance_id,
+                potentiation.loss_up,
+                potentiation.loss_down,
+            )
+            .await
+            .map_err(AtomError::Optimize)
+        }
+    }
+}
+
+pub struct WaitForArtifactDeliveryEffect<T>(PhantomData<fn() -> T>);
+
+#[jungle::effect(id = 80)]
+impl<T, J> Effect<J> for WaitForArtifactDeliveryEffect<T>
+where
+    T: Send + 'static,
+    J: VoidOps,
+{
+    type In = ObjectId;
+    type Out = black_hole_spec::ArtifactDelivery<T>;
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        id: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            VoidOps::wait_for_artifact_delivery(jungle, id)
+                .await
+                .map_err(AtomError::Transmission)
+        }
+    }
+}
+
+pub struct WaitForOperationalControlEffect<C>(PhantomData<fn() -> C>);
+
+#[jungle::effect(id = 81)]
+impl<C, J> Effect<J> for WaitForOperationalControlEffect<C>
+where
+    C: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    J: VoidOps,
+{
+    type In = ObjectId;
+    type Out = black_hole_spec::OperationalControl<C>;
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        id: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            VoidOps::wait_for_operational_control(jungle, id)
+                .await
+                .map_err(AtomError::Transmission)
+        }
+    }
+}
+
+pub struct TransmitArtifactEffect<T>(PhantomData<fn() -> T>);
+
+#[jungle::effect(id = 82)]
+impl<T, J> Effect<J> for TransmitArtifactEffect<T>
+where
+    T: Send + 'static,
+    J: VoidOps,
+{
+    type In = (black_hole_spec::EmissionId<T>, ObjectId);
+    type Out = ();
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        (emission_id, send_id): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let delivery = black_hole_spec::ArtifactDelivery {
+                emission_id,
+                recv: ObjectId::nil(),
+                send: ObjectId::nil(),
+            };
+            let bytes = postcard::to_allocvec(&delivery)?;
+            VoidOps::upload_to_void_with(jungle, send_id, bytes)
+                .await
+                .map_err(AtomError::Transmission)
         }
     }
 }

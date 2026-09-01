@@ -30,9 +30,9 @@ pub use black_hole_flux::{
     atom, cell, fusion, ops, sun, warp, AtomError, Boundary, BoundaryInit, BoundaryInner,
     BoundaryMicrostep, BoundaryState, CellInit, CheckpointOps, DefaultConfig, ErrorFeedbackPolicy,
     FuseOps, Fusion, FusionSeed, FusionState, InitBoundaryRecvId, MassOps, ModelConfig,
-    NoErrorFeedback, NoModelBoundary, NoOscillation, OperationAtom, OptimizeOps,
-    OscillationSchedule, PerturbOps, QuzoFusion, QuzoFusionWithModelConfig, QwenAdapterOps, Ray,
-    ResetOps, VoidInferOps, VoidOps, Warp,
+    NoErrorFeedback, NoModelBoundary, NoOscillation, OperationAtom, OperationCell, OperationNode,
+    OperationPrimordium, OptimizeOps, OscillationSchedule, PerturbOps, QuzoFusion,
+    QuzoFusionWithModelConfig, QwenAdapterOps, Ray, ResetOps, VoidInferOps, VoidOps, Warp,
 };
 
 // Convenience re-exports — spec types

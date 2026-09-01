@@ -9,15 +9,15 @@ use iced_sugiyama::motion::easing::Easing;
 use jungle_sdk::{Animal, JourneyAstSource, JungleClient};
 use uuid::Uuid;
 
-#[cfg(feature = "piano")]
-use crate::piano::score_text::BhsScore;
-#[cfg(feature = "piano")]
-use crate::piano::PianoEvent;
 use crate::app::run_beam;
 use crate::flow::{BlackHoleSunAnimal, BlackHoleSunFlow};
 use crate::labels::short_type_name;
 use crate::live::LiveConfig;
 use crate::model::BeamModel;
+#[cfg(feature = "piano")]
+use crate::piano::score_text::BhsScore;
+#[cfg(feature = "piano")]
+use crate::piano::PianoEvent;
 use crate::subpanel::{build_subpanel_viewer, SubpanelConfig};
 
 const DEFAULT_WINDOW_WIDTH: f32 = 1440.0;

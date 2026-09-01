@@ -163,7 +163,9 @@ impl VoidInferOps for RedDwarfJungle {
         checkpoint_id: ObjectId,
         contribution: f32,
     ) -> Result<ObjectId, String> {
-        self.mass_client.fuse_weights(model_id, checkpoint_id, contribution).await
+        self.mass_client
+            .fuse_weights(model_id, checkpoint_id, contribution)
+            .await
     }
 
     fn darken(&self, _prompt: &str) -> Result<Vec<black_hole_sun::DarkToken>, String> {

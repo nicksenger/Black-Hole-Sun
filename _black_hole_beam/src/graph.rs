@@ -80,7 +80,6 @@ where
     }
 }
 
-
 /// Builds a Sugiyama graph widget for one Black Hole Sun model.
 pub(crate) fn build_sun_graph(
     graph: Graph,

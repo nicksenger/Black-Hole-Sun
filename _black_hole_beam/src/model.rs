@@ -189,7 +189,11 @@ impl BeamModel {
         child_rays: &HashMap<Uuid, Ray>,
         warp_appearances: &HashMap<Vec<u32>, SunAppearance>,
         errors: &mut Vec<String>,
-    ) -> (Vec<CellDefinition>, Vec<(u32, u32, u32)>, HashMap<u32, Vec<u32>>) {
+    ) -> (
+        Vec<CellDefinition>,
+        Vec<(u32, u32, u32)>,
+        HashMap<u32, Vec<u32>>,
+    ) {
         let grad_steps = appearance.grad_steps.max(1);
 
         let mut cells: Vec<CellDefinition> = appearance
@@ -259,9 +263,7 @@ impl BeamModel {
             // merged recursively.
             let sub_expansions: HashMap<Vec<u32>, SunAppearance> = warp_appearances
                 .iter()
-                .filter(|(path, _)| {
-                    path.len() > 1 && path.first() == Some(&parent_id)
-                })
+                .filter(|(path, _)| path.len() > 1 && path.first() == Some(&parent_id))
                 .map(|(path, appearance)| (path[1..].to_vec(), appearance.clone()))
                 .collect();
             // Validate the nested sun with the same rules as the outer one;
@@ -386,7 +388,9 @@ impl BeamModel {
                 continue;
             }
             if source == target {
-                errors.push(format!("cell {source} has a self edge on port {target_port}"));
+                errors.push(format!(
+                    "cell {source} has a self edge on port {target_port}"
+                ));
                 continue;
             }
             if port_owner.get(target_port) != Some(target) {

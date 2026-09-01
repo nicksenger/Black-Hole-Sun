@@ -632,9 +632,7 @@ fn run_transpose(args: &TransposeArgs) -> Result<(), String> {
 
 fn run_mutate(args: &MutateArgs) -> Result<(), String> {
     if !args.noise.is_finite() || !(0.0..=1.0).contains(&args.noise) {
-        return Err(
-            "the noise level must be a finite number between 0.0 and 1.0".to_string(),
-        );
+        return Err("the noise level must be a finite number between 0.0 and 1.0".to_string());
     }
 
     let path = &args.score;
@@ -1074,8 +1072,7 @@ mod tests {
         // The fixture loops at eight seconds (7680 ticks at 960/second).
         let directory = std::env::temp_dir();
         let input = directory.join(format!("bhs-transpose-in-{}.bhs", std::process::id()));
-        let output = directory
-            .join(format!("bhs-transpose-out-{}.bhs", std::process::id()));
+        let output = directory.join(format!("bhs-transpose-out-{}.bhs", std::process::id()));
         fs::write(
             &input,
             "format bhs-score-v1\nticks_per_second 960\nloop_ticks 7680\n\

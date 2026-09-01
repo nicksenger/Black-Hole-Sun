@@ -60,10 +60,7 @@ async fn fetch_appearance(live: LiveConfig) -> Result<Option<LiveAppearanceSnaps
     }))
 }
 
-async fn fetch_child_rays(
-    live: &LiveConfig,
-    appearances: &[&SunAppearance],
-) -> HashMap<Uuid, Ray> {
+async fn fetch_child_rays(live: &LiveConfig, appearances: &[&SunAppearance]) -> HashMap<Uuid, Ray> {
     let mut rays = HashMap::new();
     for appearance in appearances {
         for node in &appearance.nodes {

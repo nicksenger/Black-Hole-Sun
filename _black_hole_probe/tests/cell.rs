@@ -50,7 +50,10 @@ impl Observe for Progenitor {
 
 #[test]
 fn progenitor_observe_reports_cell_frozen_state() {
-    let state = CellState::<()> { is_frozen: true, ..Default::default() };
+    let state = CellState::<()> {
+        is_frozen: true,
+        ..Default::default()
+    };
     assert_eq!(Progenitor::observe(&state), Ray { frozen: true });
 }
 
@@ -153,7 +156,9 @@ impl VoidInferOps for SpaceJungle {
         checkpoint_id: ObjectId,
         contribution: f32,
     ) -> Result<ObjectId, String> {
-        self.mass_client.fuse_weights(model_id, checkpoint_id, contribution).await
+        self.mass_client
+            .fuse_weights(model_id, checkpoint_id, contribution)
+            .await
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {

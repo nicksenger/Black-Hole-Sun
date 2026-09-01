@@ -9,7 +9,7 @@ use jungle_sdk::prelude::*;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::ops::{SunOps, VoidInferOps};
+use crate::ops::{SunOps, VoidInferOps, VoidOps};
 use crate::{AtomError, FusionSeed};
 
 pub struct GenUuidEffect;
@@ -164,6 +164,36 @@ pub struct WaitForNodeTransmissionInput {
 /// the graph.
 pub struct WaitForNodeTransmissionEffect;
 
+/// Typed counterpart to [`WaitForNodeTransmissionInput`].
+///
+/// A scheduler instance handles one source artifact type at a time. The
+/// runtime graph finalizer has already checked that every listed downstream
+/// target accepts that source type.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(bound = "")]
+pub struct WaitForNodeArtifactDeliveryInput<T> {
+    pub rx_endpoints: Vec<(u32, ObjectId)>,
+    pub downstream: HashMap<u32, Vec<PropagationTarget>>,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T> WaitForNodeArtifactDeliveryInput<T> {
+    pub fn new(
+        rx_endpoints: Vec<(u32, ObjectId)>,
+        downstream: HashMap<u32, Vec<PropagationTarget>>,
+    ) -> Self {
+        Self {
+            rx_endpoints,
+            downstream,
+            marker: PhantomData,
+        }
+    }
+}
+
+/// Waits for and forwards a typed artifact delivery without interpreting any
+/// training-program control message.
+pub struct WaitForNodeArtifactDeliveryEffect<T>(PhantomData<fn() -> T>);
+
 async fn send_propagation<J: VoidInferOps>(
     jungle: &J,
     target: &PropagationTarget,
@@ -190,6 +220,29 @@ async fn send_propagation<J: VoidInferOps>(
         .map_err(|e| {
             AtomError::Transmission(format!(
                 "send propagation to vertex {} port {}: {e}",
+                target.node_id, target.port_id
+            ))
+        })
+}
+
+async fn send_artifact_delivery<J: VoidOps, T>(
+    jungle: &J,
+    target: &PropagationTarget,
+    delivery: black_hole_spec::ArtifactDelivery<T>,
+) -> Result<(), AtomError> {
+    let delivery = black_hole_spec::ArtifactDelivery {
+        emission_id: delivery.emission_id,
+        recv: target.next_input_id,
+        send: target.output_id,
+    };
+    let data = postcard::to_allocvec(&delivery).map_err(|error| {
+        AtomError::Transmission(format!("serialize artifact delivery: {error}"))
+    })?;
+    VoidOps::upload_to_void_with(jungle, target.input_id, data)
+        .await
+        .map_err(|error| {
+            AtomError::Transmission(format!(
+                "send artifact to vertex {} port {}: {error}",
                 target.node_id, target.port_id
             ))
         })
@@ -323,6 +376,58 @@ impl<J: VoidInferOps> Effect<J> for WaitForNodeTransmissionEffect {
                 }
                 Err(e) => Err(e),
             }
+        }
+    }
+}
+
+#[jungle::effect(id = 83)]
+impl<T, J> Effect<J> for WaitForNodeArtifactDeliveryEffect<T>
+where
+    T: Send + 'static,
+    J: VoidOps,
+{
+    type In = WaitForNodeArtifactDeliveryInput<T>;
+    type Out = SchedulerDelivery<T>;
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            if input.rx_endpoints.is_empty() {
+                return Err(AtomError::Transmission(
+                    "no typed artifact endpoints to wait for".to_string(),
+                ));
+            }
+
+            let futures: Vec<_> = input
+                .rx_endpoints
+                .into_iter()
+                .map(|(node_id, id)| {
+                    let jungle_ref = jungle;
+                    Box::pin(async move {
+                        let delivery = VoidOps::wait_for_artifact_delivery::<T>(jungle_ref, id)
+                            .await
+                            .map_err(AtomError::Transmission)?;
+                        Ok::<_, AtomError>((node_id, delivery))
+                    })
+                })
+                .collect();
+            let (result, _index, _rest) = futures::future::select_all(futures).await;
+            let (node_id, delivery) = result?;
+
+            let mut sent_node_ids = BTreeSet::new();
+            for target in input.downstream.get(&node_id).cloned().unwrap_or_default() {
+                send_artifact_delivery(jungle, &target, delivery).await?;
+                sent_node_ids.insert(target.node_id);
+            }
+
+            Ok(SchedulerDelivery {
+                node_id,
+                delivery,
+                sent_node_ids: sent_node_ids.into_iter().collect(),
+            })
         }
     }
 }

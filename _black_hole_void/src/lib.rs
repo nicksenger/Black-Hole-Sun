@@ -50,15 +50,26 @@ pub enum VoidIn {
     DownloadWait { id: uuid::Uuid, timeout_ms: u64 },
     /// Begin a multipart upload for objects too large for one frame. When
     /// `id` is None the server assigns one. Server responds with VoidOut::Uploaded(id).
-    UploadBegin { id: Option<uuid::Uuid>, total_size: u64 },
+    UploadBegin {
+        id: Option<uuid::Uuid>,
+        total_size: u64,
+    },
     /// Upload one part (1-indexed) of an in-flight multipart upload.
-    UploadPart { id: uuid::Uuid, part_number: u32, data: Vec<u8> },
+    UploadPart {
+        id: uuid::Uuid,
+        part_number: u32,
+        data: Vec<u8>,
+    },
     /// Complete an in-flight multipart upload, making the object visible to
     /// downloads. `part_count` must match the number of parts uploaded.
     UploadFinish { id: uuid::Uuid, part_count: u32 },
     /// Download up to `length` bytes of an object starting at `offset`.
     /// Returns fewer bytes (possibly zero) at end of object.
-    DownloadRange { id: uuid::Uuid, offset: u64, length: u64 },
+    DownloadRange {
+        id: uuid::Uuid,
+        offset: u64,
+        length: u64,
+    },
 }
 
 /// Wire response sent by the server.
@@ -392,7 +403,9 @@ async fn handle_stream(
         VoidIn::DownloadWait { id, timeout_ms } => {
             handle_download_wait(&context, id, timeout_ms).await
         }
-        VoidIn::UploadBegin { id, total_size } => handle_upload_begin(&context, id, total_size).await,
+        VoidIn::UploadBegin { id, total_size } => {
+            handle_upload_begin(&context, id, total_size).await
+        }
         VoidIn::UploadPart {
             id,
             part_number,
@@ -534,18 +547,14 @@ async fn handle_upload_begin(
     let key = id.to_string();
     match context.object_store.begin_multipart(&key).await {
         Ok(store_session_id) => {
-            context
-                .multipart_uploads
-                .lock()
-                .await
-                .insert(
-                    id,
-                    MultipartSession {
-                        store_session_id,
-                        parts: std::collections::BTreeMap::new(),
-                        total_size: 0,
-                    },
-                );
+            context.multipart_uploads.lock().await.insert(
+                id,
+                MultipartSession {
+                    store_session_id,
+                    parts: std::collections::BTreeMap::new(),
+                    total_size: 0,
+                },
+            );
             info!(%id, total_size, "multipart upload begun");
             VoidOut::Uploaded { id }
         }
@@ -566,9 +575,7 @@ async fn handle_upload_part(
 ) -> VoidOut {
     if part_number == 0 || part_number > MAX_MULTIPART_PARTS {
         return VoidOut::Error {
-            message: format!(
-                "part_number must be in 1..={MAX_MULTIPART_PARTS}, got {part_number}"
-            ),
+            message: format!("part_number must be in 1..={MAX_MULTIPART_PARTS}, got {part_number}"),
         };
     }
 
@@ -616,11 +623,7 @@ async fn handle_upload_part(
     }
 }
 
-async fn handle_upload_finish(
-    context: &VoidContext,
-    id: uuid::Uuid,
-    part_count: u32,
-) -> VoidOut {
+async fn handle_upload_finish(context: &VoidContext, id: uuid::Uuid, part_count: u32) -> VoidOut {
     if part_count == 0 || part_count > MAX_MULTIPART_PARTS {
         return VoidOut::Error {
             message: format!("part_count must be in 1..={MAX_MULTIPART_PARTS}, got {part_count}"),
@@ -636,7 +639,13 @@ async fn handle_upload_finish(
 
     // Parts must be exactly 1..=part_count with no gaps or duplicates.
     let expected: std::collections::BTreeSet<u32> = (1..=part_count).collect();
-    if session.parts.keys().copied().collect::<std::collections::BTreeSet<_>>() != expected {
+    if session
+        .parts
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected
+    {
         let _ = context
             .object_store
             .abort_multipart(&key, &session.store_session_id)
@@ -666,7 +675,12 @@ async fn handle_upload_finish(
     // Persist the object metadata (same as single-shot uploads).
     if let Err(e) = context
         .store
-        .insert_object(id, context.object_namespace.clone(), key.clone(), total_size as i64)
+        .insert_object(
+            id,
+            context.object_namespace.clone(),
+            key.clone(),
+            total_size as i64,
+        )
         .await
     {
         warn!(error = %e, "failed to persist object metadata");
@@ -692,9 +706,11 @@ async fn handle_download_range(
 
     let record = match context.store.get_object(id).await {
         Ok(Some(record)) => record,
-        Ok(None) => return VoidOut::Error {
-            message: format!("object not found: {id}"),
-        },
+        Ok(None) => {
+            return VoidOut::Error {
+                message: format!("object not found: {id}"),
+            }
+        }
         Err(e) => {
             error!(%id, error = %e, "failed to look up object");
             return VoidOut::Error {
@@ -703,7 +719,11 @@ async fn handle_download_range(
         }
     };
 
-    match context.object_store.get_range(&record.key, offset, length).await {
+    match context
+        .object_store
+        .get_range(&record.key, offset, length)
+        .await
+    {
         Ok(data) => {
             debug!(%id, offset, bytes = data.len(), "downloaded range");
             VoidOut::Downloaded { data }

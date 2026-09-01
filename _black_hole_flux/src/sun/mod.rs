@@ -33,12 +33,21 @@ pub use effect::{
 // Descriptors — type-level vertices and their input ports
 // ---------------------------------------------------------------------------
 
+/// Declares which operation contract a spawned node executes.
+///
+/// Legacy animals are Qwen nodes by default. Generic operation animals opt in
+/// explicitly, preventing a topology descriptor from advertising an
+/// unrelated contract for the spawned implementation.
+pub trait OperationNode<Op: TensorContract>: Animal {}
+
+impl<A> OperationNode<QwenDarkInference> for A where A: Animal {}
+
 /// Type-level unary vertex with one input port and a list of output ports.
 ///
 /// `P` is both the public input port and the deterministic internal vertex key.
 pub struct Unary<
     P: Unsigned,
-    A: Animal,
+    A: Animal + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract = QwenDarkInference,
 >(
@@ -56,7 +65,7 @@ pub struct Unary<
 pub struct Binary<
     P1: Unsigned,
     P2: Unsigned,
-    A: Animal,
+    A: Animal + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract = QwenDarkInference,
 >(
@@ -89,7 +98,7 @@ pub struct TypedEdges<E>(PhantomData<E>);
 pub struct Warp<
     P: Unsigned,
     WarpAnimal: Animal + Observe,
-    BoundaryAnimal: Animal,
+    BoundaryAnimal: Animal + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract = QwenDarkInference,
 >(
@@ -529,7 +538,8 @@ pub struct PortTarget {
 #[derive(Flow)]
 pub struct UnarySunStepWithState<
     P: Unsigned,
-    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>,
+    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>
+        + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract,
     S,
@@ -554,12 +564,12 @@ pub struct BinarySunStepWithState<
     P1: Unsigned,
     P2: Unsigned,
     AnimalT: Animal<
-        Id: AnimalIdValue,
-        Generation: Unsigned,
-        Seed = FusionSeed,
-        State = FusionState,
-        Flow: FusionFlow,
-    >,
+            Id: AnimalIdValue,
+            Generation: Unsigned,
+            Seed = FusionSeed,
+            State = FusionState,
+            Flow: FusionFlow,
+        > + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract,
     S,
@@ -586,11 +596,11 @@ pub struct WarpSunStepWithState<
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
     BoundaryAnimalT: Animal<
-        Id: AnimalIdValue,
-        Generation: Unsigned,
-        Seed = BoundaryInit,
-        State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
-    >,
+            Id: AnimalIdValue,
+            Generation: Unsigned,
+            Seed = BoundaryInit,
+            State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
+        > + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract,
     S,
@@ -651,7 +661,8 @@ where
 impl<P, A, E, Op, U> BlackHole for List<(Unary<P, A, E, Op>, U)>
 where
     P: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>
+        + OperationNode<Op>,
     Op: TensorContract,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     U: BlackHole,
@@ -665,7 +676,8 @@ impl<P1, P2, A, E, Op, U> BlackHole for List<(Binary<P1, P2, A, E, Op>, U)>
 where
     P1: Unsigned,
     P2: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
+        + OperationNode<Op>,
     A::Flow: FusionFlow,
     Op: TensorContract,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
@@ -682,11 +694,11 @@ where
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
     BoundaryAnimalT: Animal<
-        Id: AnimalIdValue,
-        Generation: Unsigned,
-        Seed = BoundaryInit,
-        State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
-    >,
+            Id: AnimalIdValue,
+            Generation: Unsigned,
+            Seed = BoundaryInit,
+            State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
+        > + OperationNode<Op>,
     Op: TensorContract,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     U: BlackHole,
