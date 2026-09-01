@@ -5154,7 +5154,19 @@ mod tests {
                 total: Some(7),
                 available: Some(3),
                 occupied: 4,
-                per_architecture: vec![],
+                per_architecture: super::COMPILED_ARCHITECTURE
+                    .map(|architecture| {
+                        vec![(
+                            architecture,
+                            MassModelCapacity {
+                                total: Some(2),
+                                available: Some(0),
+                                occupied: 2,
+                                per_architecture: vec![],
+                            },
+                        )]
+                    })
+                    .unwrap_or_default(),
             }
         );
     }
@@ -5194,7 +5206,19 @@ mod tests {
                 total: Some(1),
                 available: Some(0),
                 occupied: 2,
-                per_architecture: vec![],
+                per_architecture: super::COMPILED_ARCHITECTURE
+                    .map(|architecture| {
+                        vec![(
+                            architecture,
+                            MassModelCapacity {
+                                total: Some(1),
+                                available: Some(0),
+                                occupied: 2,
+                                per_architecture: vec![],
+                            },
+                        )]
+                    })
+                    .unwrap_or_default(),
             }
         );
     }
@@ -5514,7 +5538,14 @@ mod tests {
         let selected = select_start_target(&ctx, Some(MassArchitecture::Qwen35_0p8b))
             .await
             .expect("compatible worker should be selected");
-        assert_eq!(selected, RouteTarget::Worker(student_token));
+        assert_eq!(
+            selected,
+            if super::COMPILED_ARCHITECTURE == Some(MassArchitecture::Qwen35_0p8b) {
+                RouteTarget::Local
+            } else {
+                RouteTarget::Worker(student_token)
+            }
+        );
     }
 
     #[tokio::test]
@@ -5567,7 +5598,14 @@ mod tests {
         let selected = select_start_target(&ctx, Some(MassArchitecture::Qwen35_0p8b))
             .await
             .expect("matching worker should be selected");
-        assert_eq!(selected, RouteTarget::Worker(worker_token));
+        assert_eq!(
+            selected,
+            if super::COMPILED_ARCHITECTURE == Some(MassArchitecture::Qwen35_0p8b) {
+                RouteTarget::Local
+            } else {
+                RouteTarget::Worker(worker_token)
+            }
+        );
     }
 
     #[tokio::test]
@@ -5669,18 +5707,39 @@ mod tests {
         let black_hole_spec::MassOut::ModelCapacity { capacity } = out else {
             panic!("unexpected query response");
         };
-        assert_eq!(
-            capacity.per_architecture,
-            vec![(
-                MassArchitecture::Qwen38_27b,
+        let teacher_architecture = MassArchitecture::Qwen38_27b;
+        let mut expected = Vec::new();
+        if let Some(local_architecture) = super::COMPILED_ARCHITECTURE {
+            expected.push((
+                local_architecture,
+                MassModelCapacity {
+                    total: Some(if local_architecture == teacher_architecture {
+                        3
+                    } else {
+                        1
+                    }),
+                    available: Some(if local_architecture == teacher_architecture {
+                        2
+                    } else {
+                        1
+                    }),
+                    occupied: usize::from(local_architecture == teacher_architecture),
+                    per_architecture: vec![],
+                },
+            ));
+        }
+        if super::COMPILED_ARCHITECTURE != Some(teacher_architecture) {
+            expected.push((
+                teacher_architecture,
                 MassModelCapacity {
                     total: Some(2),
                     available: Some(1),
                     occupied: 1,
                     per_architecture: vec![],
-                }
-            )]
-        );
+                },
+            ));
+        }
+        assert_eq!(capacity.per_architecture, expected);
     }
 }
 

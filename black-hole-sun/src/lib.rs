@@ -30,20 +30,20 @@ pub use black_hole_flux::{
     atom, cell, fusion, ops, sun, warp, AtomError, Boundary, BoundaryInit, BoundaryInner,
     BoundaryMicrostep, BoundaryState, CellInit, CheckpointOps, DefaultConfig, ErrorFeedbackPolicy,
     FuseOps, Fusion, FusionSeed, FusionState, InitBoundaryRecvId, MassOps, ModelConfig,
-    NoErrorFeedback, NoModelBoundary, NoOscillation, OptimizeOps, OscillationSchedule, PerturbOps,
-    QuzoFusion, QuzoFusionWithModelConfig, QwenAdapterOps, Ray, ResetOps, VoidInferOps, VoidOps,
-    Warp,
+    NoErrorFeedback, NoModelBoundary, NoOscillation, OperationAtom, OptimizeOps,
+    OscillationSchedule, PerturbOps, QuzoFusion, QuzoFusionWithModelConfig, QwenAdapterOps, Ray,
+    ResetOps, VoidInferOps, VoidOps, Warp,
 };
 
 // Convenience re-exports — spec types
 pub use black_hole_spec::{
-    ArtifactRef, ContractDescriptor, ContractHash, ContractId, ContractSide, DarkToken,
-    DimensionDescriptor, DtypeConstraint, Emission, EmissionId, EncodingId, InferenceInput,
-    InferenceOutput, InferenceOutputId, InferenceRequest, LayoutConstraint, LogitEntry,
-    MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn, MassModelCapacity, MassModelConfig,
-    MassModelParams, MassOut, MassPerturbationMode, ObjectId, ObjectRef, OperationArtifactRef,
-    OperationCapability, Potentiation, SequenceOutput, TensorDtype, TensorEnvelope,
-    TensorPortDescriptor, Transmission,
+    ArtifactDelivery, ArtifactRef, ContractDescriptor, ContractHash, ContractId, ContractSide,
+    DarkToken, DimensionDescriptor, DtypeConstraint, Emission, EmissionId, EncodingId,
+    InferenceInput, InferenceOutput, InferenceOutputId, InferenceRequest, LayoutConstraint,
+    LogitEntry, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn, MassModelCapacity,
+    MassModelConfig, MassModelParams, MassOut, MassPerturbationMode, ObjectId, ObjectRef,
+    OperationArtifactRef, OperationCapability, OperationalControl, Potentiation, SequenceOutput,
+    TensorDtype, TensorEnvelope, TensorPortDescriptor, Transmission,
 };
 
 // Convenience re-exports — typed operation contracts and tensor codec

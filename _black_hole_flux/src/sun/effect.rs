@@ -99,6 +99,19 @@ pub struct NodeTransmission {
     pub sent_node_ids: Vec<u32>,
 }
 
+/// Operation-typed scheduler completion for the neutral data plane.
+///
+/// The current two-sided ZO driver continues to use [`NodeTransmission`] as a
+/// compatibility program payload. Generic schedulers use this type so an
+/// output bundle cannot be relayed as a different artifact type.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(bound = "")]
+pub struct SchedulerDelivery<T> {
+    pub node_id: u32,
+    pub delivery: black_hole_spec::ArtifactDelivery<T>,
+    pub sent_node_ids: Vec<u32>,
+}
+
 /// Mailboxes needed to drive one cell through a propagation pass.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PropagationTarget {

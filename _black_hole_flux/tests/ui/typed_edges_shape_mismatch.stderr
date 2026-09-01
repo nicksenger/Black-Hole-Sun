@@ -1,0 +1,19 @@
+error[E0271]: type mismatch resolving `<Destination as TensorContract>::Input == TensorBundleSpec<(Three,)>`
+  --> tests/ui/typed_edges_shape_mismatch.rs:42:28
+   |
+42 |     assert_edges::<Source, TypedEdges<list![Edge<U1, Destination>]>>();
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ type mismatch resolving `<Destination as TensorContract>::Input == TensorBundleSpec<(Three,)>`
+   |
+note: expected this to be `TensorBundleSpec<(Three,)>`
+  --> tests/ui/typed_edges_shape_mismatch.rs:34:18
+   |
+34 |     type Input = TensorBundleSpec<(Four,)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: expected struct `TensorBundleSpec<(Three,)>`
+              found struct `TensorBundleSpec<(Four,)>`
+   = note: required for `TypedEdges<typosaurus::collections::list::List<(Edge<UInt<UTerm, B1>, Destination>, typosaurus::collections::list::List<()>)>>` to implement `DeclaredEdges<Source>`
+note: required by a bound in `assert_edges`
+  --> tests/ui/typed_edges_shape_mismatch.rs:40:39
+   |
+40 | fn assert_edges<S: TensorContract, E: DeclaredEdges<S>>() {}
+   |                                       ^^^^^^^^^^^^^^^^ required by this bound in `assert_edges`

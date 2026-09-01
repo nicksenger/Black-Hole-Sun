@@ -4,6 +4,7 @@
 use black_hole_flux::sun::{
     BinarySunStep, NodeIdsFromList, Sun, SunAppearance, SunNode, SunState, UnarySunStep,
 };
+use black_hole_flux::{DeclaredEdges, TensorContract};
 use black_hole_flux::{FusionFlow, FusionSeed, FusionState};
 use jungle_sdk::{Animal, AnimalIdValue, Observe};
 use typenum::Unsigned;
@@ -42,12 +43,13 @@ impl<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::De
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
 
-impl<Port, A, Edges, Tail, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::DescribeSun
-    for SunNode<UnarySunStep<Port, A, Edges, S, GRADIENT_ACCUMULATION_STEPS>, Tail>
+impl<Port, A, Edges, Tail, S, Op, const GRADIENT_ACCUMULATION_STEPS: usize> private::DescribeSun
+    for SunNode<UnarySunStep<Port, A, Edges, S, GRADIENT_ACCUMULATION_STEPS, Op>, Tail>
 where
     Port: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = black_hole_flux::CellInit> + 'static,
-    Edges: NodeIdsFromList,
+    Op: TensorContract,
+    Edges: NodeIdsFromList + DeclaredEdges<Op>,
     Tail: private::DescribeSun,
 {
     fn append_cells(cells: &mut Vec<CellDefinition>) {
@@ -60,15 +62,17 @@ where
     }
 }
 
-impl<PortA, PortB, A, Edges, Tail, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::DescribeSun
-    for SunNode<BinarySunStep<PortA, PortB, A, Edges, S, GRADIENT_ACCUMULATION_STEPS>, Tail>
+impl<PortA, PortB, A, Edges, Tail, S, Op, const GRADIENT_ACCUMULATION_STEPS: usize>
+    private::DescribeSun
+    for SunNode<BinarySunStep<PortA, PortB, A, Edges, S, GRADIENT_ACCUMULATION_STEPS, Op>, Tail>
 where
     PortA: Unsigned,
     PortB: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
         + 'static,
     A::Flow: FusionFlow,
-    Edges: NodeIdsFromList,
+    Op: TensorContract,
+    Edges: NodeIdsFromList + DeclaredEdges<Op>,
     Tail: private::DescribeSun,
 {
     fn append_cells(cells: &mut Vec<CellDefinition>) {

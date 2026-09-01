@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use black_hole_spec::{ObjectId, Transmission};
+use black_hole_contract::{QwenDarkInference, TensorContract};
+use black_hole_spec::{ContractDescriptor, ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 use typenum::Unsigned;
@@ -35,10 +36,16 @@ pub use effect::{
 /// Type-level unary vertex with one input port and a list of output ports.
 ///
 /// `P` is both the public input port and the deterministic internal vertex key.
-pub struct Unary<P: Unsigned, A: Animal, E: NodeIdsFromList>(
+pub struct Unary<
+    P: Unsigned,
+    A: Animal,
+    E: NodeIdsFromList + action::DeclaredEdges<Op>,
+    Op: TensorContract = QwenDarkInference,
+>(
     PhantomData<P>,
     PhantomData<A>,
     PhantomData<E>,
+    PhantomData<Op>,
 );
 
 /// Type-level binary vertex whose two input ports share one spawned animal and
@@ -46,12 +53,32 @@ pub struct Unary<P: Unsigned, A: Animal, E: NodeIdsFromList>(
 ///
 /// `P1` is the deterministic internal vertex key; both `P1` and `P2` resolve
 /// to it during graph finalization.
-pub struct Binary<P1: Unsigned, P2: Unsigned, A: Animal, E: NodeIdsFromList>(
+pub struct Binary<
+    P1: Unsigned,
+    P2: Unsigned,
+    A: Animal,
+    E: NodeIdsFromList + action::DeclaredEdges<Op>,
+    Op: TensorContract = QwenDarkInference,
+>(
     PhantomData<P1>,
     PhantomData<P2>,
     PhantomData<A>,
     PhantomData<E>,
+    PhantomData<Op>,
 );
+
+/// A destination port paired with the operation contract that owns it.
+///
+/// Use this inside [`TypedEdges`]. The destination operation's input bundle
+/// is required to equal the source operation's output bundle when the graph
+/// is compiled through [`BlackHole`].
+pub struct Edge<P: Unsigned, Destination: TensorContract>(PhantomData<(P, Destination)>);
+
+/// Explicitly typed output-edge list for a node descriptor.
+///
+/// Legacy `list![U1, U2]` output lists remain accepted and mean Qwen-to-Qwen
+/// edges. Generic graphs use `TypedEdges<list![Edge<U1, NextOp>]>`.
+pub struct TypedEdges<E>(PhantomData<E>);
 
 /// Type-level warp vertex that composes a nested Sun animal behind a boundary
 /// cell that handles ingress/egress behavior in the parent graph.
@@ -63,12 +90,14 @@ pub struct Warp<
     P: Unsigned,
     WarpAnimal: Animal + Observe,
     BoundaryAnimal: Animal,
-    E: NodeIdsFromList,
+    E: NodeIdsFromList + action::DeclaredEdges<Op>,
+    Op: TensorContract = QwenDarkInference,
 >(
     PhantomData<P>,
     PhantomData<WarpAnimal>,
     PhantomData<BoundaryAnimal>,
     PhantomData<E>,
+    PhantomData<Op>,
 );
 
 /// Initialization payload for one spawned warp boundary cell.
@@ -365,6 +394,10 @@ pub struct SunInner {
     pub port_vertices: HashMap<u32, u32>,
     /// Ports declared as outputs by each vertex, before graph finalization.
     pub declared_outputs: HashMap<u32, Vec<u32>>,
+    /// Full operation descriptor registered by each vertex.
+    pub node_contracts: HashMap<u32, ContractDescriptor>,
+    /// Typed edge declarations retained for runtime validation.
+    pub declared_edges: HashMap<u32, Vec<DeclaredEdge>>,
     /// Ports claimed by more than one descriptor.
     pub duplicate_ports: HashSet<u32>,
     /// Maps each vertex to the vertices of its incoming edges.
@@ -389,6 +422,15 @@ pub struct SunInner {
     pub p2_rx: HashMap<u32, ObjectId>,
     /// Potentiation input endpoints keyed by port id.
     pub po_tx: HashMap<u32, ObjectId>,
+}
+
+/// Erased form of a compile-time checked edge. Separate binaries and rolling
+/// deployments must still agree on these descriptors at runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclaredEdge {
+    pub port_id: u32,
+    pub source_contract: ContractDescriptor,
+    pub destination_contract: ContractDescriptor,
 }
 
 impl SunInner {
@@ -488,16 +530,23 @@ pub struct PortTarget {
 pub struct UnarySunStepWithState<
     P: Unsigned,
     AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>,
-    E: NodeIdsFromList,
+    E: NodeIdsFromList + action::DeclaredEdges<Op>,
+    Op: TensorContract,
     S,
     const GRADIENT_ACCUMULATION_STEPS: usize,
 >(
     Step<GenUuid<S, GRADIENT_ACCUMULATION_STEPS>>,
-    Step<action::SpawnUnary<P, AnimalT, E, S>>,
+    Step<action::SpawnUnary<P, AnimalT, E, S, Op>>,
 );
 
-pub type UnarySunStep<P, AnimalT, E, S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
-    UnarySunStepWithState<P, AnimalT, E, S, GRADIENT_ACCUMULATION_STEPS>;
+pub type UnarySunStep<
+    P,
+    AnimalT,
+    E,
+    S = (),
+    const GRADIENT_ACCUMULATION_STEPS: usize = 1,
+    Op = QwenDarkInference,
+> = UnarySunStepWithState<P, AnimalT, E, Op, S, GRADIENT_ACCUMULATION_STEPS>;
 
 /// Generate a two-port seed, then spawn and register one binary animal.
 #[derive(Flow)]
@@ -511,16 +560,24 @@ pub struct BinarySunStepWithState<
         State = FusionState,
         Flow: FusionFlow,
     >,
-    E: NodeIdsFromList,
+    E: NodeIdsFromList + action::DeclaredEdges<Op>,
+    Op: TensorContract,
     S,
     const GRADIENT_ACCUMULATION_STEPS: usize,
 >(
     Step<action::GenFusionSeed<S, GRADIENT_ACCUMULATION_STEPS>>,
-    Step<action::SpawnBinary<P1, P2, AnimalT, E, S>>,
+    Step<action::SpawnBinary<P1, P2, AnimalT, E, S, Op>>,
 );
 
-pub type BinarySunStep<P1, P2, AnimalT, E, S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
-    BinarySunStepWithState<P1, P2, AnimalT, E, S, GRADIENT_ACCUMULATION_STEPS>;
+pub type BinarySunStep<
+    P1,
+    P2,
+    AnimalT,
+    E,
+    S = (),
+    const GRADIENT_ACCUMULATION_STEPS: usize = 1,
+    Op = QwenDarkInference,
+> = BinarySunStepWithState<P1, P2, AnimalT, E, Op, S, GRADIENT_ACCUMULATION_STEPS>;
 
 /// Generate boundary mailboxes, spawn the nested warp animal, then spawn and
 /// register the boundary animal in the parent topology.
@@ -534,13 +591,14 @@ pub struct WarpSunStepWithState<
         Seed = BoundaryInit,
         State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
     >,
-    E: NodeIdsFromList,
+    E: NodeIdsFromList + action::DeclaredEdges<Op>,
+    Op: TensorContract,
     S,
     const GRADIENT_ACCUMULATION_STEPS: usize,
 >(
     Step<GenUuid<S, GRADIENT_ACCUMULATION_STEPS>>,
-    Step<action::SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S>>,
-    Step<action::SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S>>,
+    Step<action::SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S, Op>>,
+    Step<action::SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S, Op>>,
 );
 
 pub type WarpSunStep<
@@ -550,7 +608,8 @@ pub type WarpSunStep<
     E,
     S = (),
     const GRADIENT_ACCUMULATION_STEPS: usize = 1,
-> = WarpSunStepWithState<P, WarpAnimalT, BoundaryAnimalT, E, S, GRADIENT_ACCUMULATION_STEPS>;
+    Op = QwenDarkInference,
+> = WarpSunStepWithState<P, WarpAnimalT, BoundaryAnimalT, E, Op, S, GRADIENT_ACCUMULATION_STEPS>;
 
 /// One descriptor-specific spawn flow followed by the remaining descriptors.
 #[derive(Flow)]
@@ -589,34 +648,36 @@ where
     type Sun<M: Manifest, const ACCUM_STEPS: usize> =
         <<(List<(T1, T2)>, U) as Mappend>::Out as BlackHole>::Sun<M, ACCUM_STEPS>;
 }
-impl<P, A, E, U> BlackHole for List<(Unary<P, A, E>, U)>
+impl<P, A, E, Op, U> BlackHole for List<(Unary<P, A, E, Op>, U)>
 where
     P: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>,
-    E: NodeIdsFromList,
+    Op: TensorContract,
+    E: NodeIdsFromList + action::DeclaredEdges<Op>,
     U: BlackHole,
 {
     type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
-        UnarySunStep<P, A, E, <M as Manifest>::State, ACCUM_STEPS>,
+        UnarySunStep<P, A, E, <M as Manifest>::State, ACCUM_STEPS, Op>,
         <U as BlackHole>::Sun<M, ACCUM_STEPS>,
     >;
 }
-impl<P1, P2, A, E, U> BlackHole for List<(Binary<P1, P2, A, E>, U)>
+impl<P1, P2, A, E, Op, U> BlackHole for List<(Binary<P1, P2, A, E, Op>, U)>
 where
     P1: Unsigned,
     P2: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
     A::Flow: FusionFlow,
-    E: NodeIdsFromList,
+    Op: TensorContract,
+    E: NodeIdsFromList + action::DeclaredEdges<Op>,
     U: BlackHole,
 {
     type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
-        BinarySunStep<P1, P2, A, E, M::State, ACCUM_STEPS>,
+        BinarySunStep<P1, P2, A, E, M::State, ACCUM_STEPS, Op>,
         <U as BlackHole>::Sun<M, ACCUM_STEPS>,
     >;
 }
-impl<P, WarpAnimalT, BoundaryAnimalT, E, U> BlackHole
-    for List<(Warp<P, WarpAnimalT, BoundaryAnimalT, E>, U)>
+impl<P, WarpAnimalT, BoundaryAnimalT, E, Op, U> BlackHole
+    for List<(Warp<P, WarpAnimalT, BoundaryAnimalT, E, Op>, U)>
 where
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
@@ -626,11 +687,12 @@ where
         Seed = BoundaryInit,
         State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
     >,
-    E: NodeIdsFromList,
+    Op: TensorContract,
+    E: NodeIdsFromList + action::DeclaredEdges<Op>,
     U: BlackHole,
 {
     type Sun<M: Manifest, const ACCUM_STEPS: usize> = SunNode<
-        WarpSunStep<P, WarpAnimalT, BoundaryAnimalT, E, M::State, ACCUM_STEPS>,
+        WarpSunStep<P, WarpAnimalT, BoundaryAnimalT, E, M::State, ACCUM_STEPS, Op>,
         <U as BlackHole>::Sun<M, ACCUM_STEPS>,
     >;
 }

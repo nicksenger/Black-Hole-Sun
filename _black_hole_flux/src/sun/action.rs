@@ -11,6 +11,7 @@ use super::effect::{
     SendRootPropagationInput, SendRootTaskPropagationsEffect, WaitForNodeTransmissionEffect,
     WaitForNodeTransmissionInput,
 };
+use black_hole_contract::{QwenDarkInference, TensorContract};
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use typosaurus::collections::list::{Empty, List};
@@ -45,6 +46,83 @@ where
     }
 }
 
+impl NodeIdsFromList for super::TypedEdges<Empty> {
+    fn node_ids() -> Vec<u32> {
+        Vec::new()
+    }
+}
+
+impl<P, Destination, T> NodeIdsFromList
+    for super::TypedEdges<List<(super::Edge<P, Destination>, T)>>
+where
+    P: Unsigned,
+    Destination: TensorContract,
+    super::TypedEdges<T>: NodeIdsFromList,
+{
+    fn node_ids() -> Vec<u32> {
+        let mut ids = vec![P::U32];
+        ids.extend(<super::TypedEdges<T> as NodeIdsFromList>::node_ids());
+        ids
+    }
+}
+
+/// Produces runtime edge descriptors while enforcing compile-time bundle
+/// equality between every source output and destination input.
+pub trait DeclaredEdges<Source: TensorContract>: NodeIdsFromList {
+    fn declared_edges() -> Vec<super::DeclaredEdge>;
+}
+
+impl<Source: TensorContract> DeclaredEdges<Source> for Empty {
+    fn declared_edges() -> Vec<super::DeclaredEdge> {
+        Vec::new()
+    }
+}
+
+// Compatibility for the original numeric-only topology syntax. It is
+// intentionally limited to the Qwen artifact bundle; generic graphs must name
+// destination contracts with `TypedEdges`.
+impl<Source, P, T> DeclaredEdges<Source> for List<(P, T)>
+where
+    Source: TensorContract<Output = <QwenDarkInference as TensorContract>::Input>,
+    P: Unsigned,
+    T: DeclaredEdges<Source>,
+{
+    fn declared_edges() -> Vec<super::DeclaredEdge> {
+        let mut edges = vec![super::DeclaredEdge {
+            port_id: P::U32,
+            source_contract: Source::descriptor(),
+            destination_contract: QwenDarkInference::descriptor(),
+        }];
+        edges.extend(T::declared_edges());
+        edges
+    }
+}
+
+impl<Source: TensorContract> DeclaredEdges<Source> for super::TypedEdges<Empty> {
+    fn declared_edges() -> Vec<super::DeclaredEdge> {
+        Vec::new()
+    }
+}
+
+impl<Source, P, Destination, T> DeclaredEdges<Source>
+    for super::TypedEdges<List<(super::Edge<P, Destination>, T)>>
+where
+    Source: TensorContract,
+    Destination: TensorContract<Input = Source::Output>,
+    P: Unsigned,
+    super::TypedEdges<T>: DeclaredEdges<Source>,
+{
+    fn declared_edges() -> Vec<super::DeclaredEdge> {
+        let mut edges = vec![super::DeclaredEdge {
+            port_id: P::U32,
+            source_contract: Source::descriptor(),
+            destination_contract: Destination::descriptor(),
+        }];
+        edges.extend(<super::TypedEdges<T> as DeclaredEdges<Source>>::declared_edges());
+        edges
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Spawn — descriptor-specific animal spawning and graph registration
 // ---------------------------------------------------------------------------
@@ -54,7 +132,8 @@ fn register_vertex<S>(
     vertex_id: u32,
     node_label: String,
     ports: &[(u32, ObjectId)],
-    declared_outputs: Vec<u32>,
+    contract: black_hole_spec::ContractDescriptor,
+    declared_edges: Vec<super::DeclaredEdge>,
     journey_id: Uuid,
     warp_journey_id: Option<Uuid>,
 ) {
@@ -75,10 +154,15 @@ fn register_vertex<S>(
         .vertex_ports
         .entry(vertex_id)
         .or_insert_with(|| ports.iter().map(|(port_id, _)| *port_id).collect());
+    inner.node_contracts.entry(vertex_id).or_insert(contract);
     inner
         .declared_outputs
         .entry(vertex_id)
-        .or_insert(declared_outputs);
+        .or_insert_with(|| declared_edges.iter().map(|edge| edge.port_id).collect());
+    inner
+        .declared_edges
+        .entry(vertex_id)
+        .or_insert(declared_edges);
 
     for &(port_id, initial_recv_id) in ports {
         if inner.port_vertices.contains_key(&port_id) {
@@ -124,14 +208,17 @@ fn push_shortened_type_token(shortened: &mut String, token: &mut String) {
 }
 
 /// Spawns and registers a [`Unary`](super::Unary) descriptor.
-pub struct SpawnUnary<P, A, E, S = ()>(PhantomData<fn() -> (P, A, E, S)>);
+pub struct SpawnUnary<P, A, E, S = (), Op = QwenDarkInference>(
+    PhantomData<fn() -> (P, A, E, S, Op)>,
+);
 
 #[jungle::action]
-impl<P, A, E, S> Action for SpawnUnary<P, A, E, S>
+impl<P, A, E, S, Op> Action for SpawnUnary<P, A, E, S, Op>
 where
     P: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>,
-    E: NodeIdsFromList,
+    Op: TensorContract,
+    E: NodeIdsFromList + DeclaredEdges<Op>,
 {
     type Effect = super::effect::SpawnAnimal<A>;
     type Input = crate::cell::action::Init;
@@ -158,7 +245,8 @@ where
             port_id,
             short_type_name::<A>(),
             &[(port_id, initial_recv_id.recv_id)],
-            E::node_ids(),
+            Op::descriptor(),
+            E::declared_edges(),
             journey_id,
             None,
         );
@@ -168,19 +256,22 @@ where
 }
 
 /// Backwards-compatible name for the unary spawn action.
-pub type Spawn<P, A, E, S = ()> = SpawnUnary<P, A, E, S>;
+pub type Spawn<P, A, E, S = (), Op = QwenDarkInference> = SpawnUnary<P, A, E, S, Op>;
 
 /// Spawns and registers a [`Binary`](super::Binary) descriptor.
-pub struct SpawnBinary<P1, P2, A, E, S = ()>(PhantomData<fn() -> (P1, P2, A, E, S)>);
+pub struct SpawnBinary<P1, P2, A, E, S = (), Op = QwenDarkInference>(
+    PhantomData<fn() -> (P1, P2, A, E, S, Op)>,
+);
 
 #[jungle::action]
-impl<P1, P2, A, E, S> Action for SpawnBinary<P1, P2, A, E, S>
+impl<P1, P2, A, E, S, Op> Action for SpawnBinary<P1, P2, A, E, S, Op>
 where
     P1: Unsigned,
     P2: Unsigned,
     A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>,
     A::Flow: crate::fusion::FusionFlow,
-    E: NodeIdsFromList,
+    Op: TensorContract,
+    E: NodeIdsFromList + DeclaredEdges<Op>,
 {
     type Effect = super::effect::SpawnAnimal<A>;
     type Input = FusionSeed;
@@ -205,7 +296,8 @@ where
             p1,
             short_type_name::<A>(),
             &[(p1, seed.p1_recv_id), (p2, seed.p2_recv_id)],
-            E::node_ids(),
+            Op::descriptor(),
+            E::declared_edges(),
             journey_id,
             None,
         );
@@ -220,13 +312,13 @@ where
 /// 1. Spawn the nested warp animal and keep its journey id.
 /// 2. Spawn the boundary animal with [`super::BoundaryInit`], then register
 ///    the boundary journey as the parent graph vertex for scheduling.
-pub struct SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S = ()>(
-    PhantomData<fn() -> (P, WarpAnimalT, BoundaryAnimalT, E, S)>,
+pub struct SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S = (), Op = QwenDarkInference>(
+    PhantomData<fn() -> (P, WarpAnimalT, BoundaryAnimalT, E, S, Op)>,
 );
 
 #[jungle::action]
-impl<P, WarpAnimalT, BoundaryAnimalT, E, S> Action
-    for SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S>
+impl<P, WarpAnimalT, BoundaryAnimalT, E, S, Op> Action
+    for SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, S, Op>
 where
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
@@ -236,7 +328,8 @@ where
         Seed = super::BoundaryInit,
         State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
     >,
-    E: NodeIdsFromList,
+    Op: TensorContract,
+    E: NodeIdsFromList + DeclaredEdges<Op>,
 {
     type Effect = super::effect::SpawnAnimal<WarpAnimalT>;
     type Input = crate::cell::action::Init;
@@ -258,13 +351,13 @@ where
     }
 }
 
-pub struct SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S = ()>(
-    PhantomData<fn() -> (P, WarpAnimalT, BoundaryAnimalT, E, S)>,
+pub struct SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S = (), Op = QwenDarkInference>(
+    PhantomData<fn() -> (P, WarpAnimalT, BoundaryAnimalT, E, S, Op)>,
 );
 
 #[jungle::action]
-impl<P, WarpAnimalT, BoundaryAnimalT, E, S> Action
-    for SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S>
+impl<P, WarpAnimalT, BoundaryAnimalT, E, S, Op> Action
+    for SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, S, Op>
 where
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
@@ -274,7 +367,8 @@ where
         Seed = super::BoundaryInit,
         State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
     >,
-    E: NodeIdsFromList,
+    Op: TensorContract,
+    E: NodeIdsFromList + DeclaredEdges<Op>,
 {
     type Effect = super::effect::SpawnAnimal<BoundaryAnimalT>;
     type Input = (crate::cell::action::Init, Uuid);
@@ -314,7 +408,8 @@ where
                 short_type_name::<BoundaryAnimalT>()
             ),
             &[(port_id, init.recv_id)],
-            E::node_ids(),
+            Op::descriptor(),
+            E::declared_edges(),
             boundary_journey_id,
             Some(warp_journey_id),
         );
@@ -782,12 +877,53 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
             .collect();
 
         for (&source_vertex, output_ports) in &inner.declared_outputs {
+            let source_contract = inner.node_contracts.get(&source_vertex).ok_or_else(|| {
+                Failure::Message(format!(
+                    "vertex {source_vertex} did not register an operation contract"
+                ))
+            })?;
+            let declared_edges = inner
+                .declared_edges
+                .get(&source_vertex)
+                .cloned()
+                .unwrap_or_default();
+
             for &port_id in output_ports {
                 let Some(&target_vertex) = inner.port_vertices.get(&port_id) else {
                     return Err(Failure::Message(format!(
                         "output from vertex {source_vertex} targets missing port {port_id}"
                     )));
                 };
+
+                let edge = declared_edges
+                    .iter()
+                    .find(|edge| edge.port_id == port_id)
+                    .ok_or_else(|| {
+                        Failure::Message(format!(
+                            "output from vertex {source_vertex} to port {port_id} has no contract descriptor"
+                        ))
+                    })?;
+                let destination_contract =
+                    inner.node_contracts.get(&target_vertex).ok_or_else(|| {
+                        Failure::Message(format!(
+                        "destination vertex {target_vertex} did not register an operation contract"
+                    ))
+                    })?;
+                if &edge.source_contract != source_contract {
+                    return Err(Failure::Message(format!(
+                        "source contract mismatch for edge {source_vertex} -> port {port_id}"
+                    )));
+                }
+                if &edge.destination_contract != destination_contract {
+                    return Err(Failure::Message(format!(
+                        "destination contract mismatch for edge {source_vertex} -> port {port_id}"
+                    )));
+                }
+                if source_contract.outputs != destination_contract.inputs {
+                    return Err(Failure::Message(format!(
+                        "artifact bundle mismatch for edge {source_vertex} -> port {port_id}"
+                    )));
+                }
 
                 let producer_count = producer_counts
                     .get_mut(&port_id)
@@ -2006,7 +2142,15 @@ mod tests {
             vertex_id,
             format!("Node{vertex_id}"),
             &ports,
-            outputs.to_vec(),
+            QwenDarkInference::descriptor(),
+            outputs
+                .iter()
+                .map(|&port_id| super::super::DeclaredEdge {
+                    port_id,
+                    source_contract: QwenDarkInference::descriptor(),
+                    destination_contract: QwenDarkInference::descriptor(),
+                })
+                .collect(),
             Uuid::new_v4(),
             None,
         );
@@ -2163,10 +2307,7 @@ mod tests {
 
         let inner = state.a.shared.lock().unwrap();
         assert_eq!(inner.journey_ids.get(&U1::U32), Some(&boundary_journey_id));
-        assert_eq!(
-            inner.warp_journey_ids.get(&U1::U32),
-            Some(&warp_journey_id)
-        );
+        assert_eq!(inner.warp_journey_ids.get(&U1::U32), Some(&warp_journey_id));
         assert_eq!(inner.port_vertices.get(&U1::U32), Some(&U1::U32));
     }
 
@@ -2200,6 +2341,31 @@ mod tests {
 
         let error = finalize(&mut state).unwrap_err();
         assert!(error.to_string().contains("targets missing port 9"));
+    }
+
+    #[test]
+    fn finalization_rejects_a_destination_contract_changed_after_compilation() {
+        let mut state = super::super::SunState::default();
+        add_vertex(&mut state, 0, &[0], &[1]);
+        add_vertex(&mut state, 1, &[1], &[]);
+
+        let mut wrong = QwenDarkInference::descriptor();
+        wrong.version += 1;
+        state
+            .a
+            .shared
+            .lock()
+            .unwrap()
+            .node_contracts
+            .insert(1, wrong);
+
+        let error = finalize(&mut state).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("destination contract mismatch for edge 0 -> port 1"),
+            "{error}"
+        );
     }
 
     #[test]

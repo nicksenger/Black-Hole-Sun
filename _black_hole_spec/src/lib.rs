@@ -786,6 +786,47 @@ pub enum EmissionArtifact<T> {
 /// this reference yet; Stage 4 carries the full operation type through Flux.
 pub type EmissionId<T = InferenceOutput> = ObjectRef<EmissionArtifact<T>>;
 
+/// Neutral data-plane message used by operation-typed schedulers.
+///
+/// Unlike [`Transmission`], this type contains no training-program vocabulary.
+/// `T` is the artifact bundle produced by the source operation, so forwarding
+/// it to a destination retains the compile-time payload identity.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct ArtifactDelivery<T> {
+    pub emission_id: EmissionId<T>,
+    pub recv: ObjectId,
+    pub send: ObjectId,
+}
+
+impl<T> Clone for ArtifactDelivery<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for ArtifactDelivery<T> {}
+
+impl<T> fmt::Debug for ArtifactDelivery<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ArtifactDelivery")
+            .field("emission_id", &self.emission_id)
+            .field("recv", &self.recv)
+            .field("send", &self.send)
+            .finish()
+    }
+}
+
+/// Program-selected control-plane message. Generic graph execution carries
+/// artifact deliveries; strategies such as two-sided ZO choose their own
+/// control payload instead of adding variants to the shared data plane.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationalControl<C> {
+    pub control: C,
+    pub recv: ObjectId,
+}
+
 /// Input / Output from a Cell
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Transmission {

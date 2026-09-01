@@ -13,6 +13,8 @@ use crate::cell::action::CellState;
 use crate::mass::{DefaultConfig, ModelConfig};
 use crate::EmissionId;
 use action::MassInferStep;
+use action::OperationMassInferStep;
+use black_hole_contract::TensorContract;
 
 const MASS_INFER_BACKOFF_INITIAL_DELAY_MS: u64 = 100;
 const MASS_INFER_BACKOFF_MAX_DELAY_MS: u64 = 10_000;
@@ -49,6 +51,19 @@ pub struct AtomWithState<
 >(In, MassInferWithBackoff<M, S, H>, Out);
 
 pub type Atom<In, Out, M, S = (), H = DefaultConfig> = AtomWithState<In, Out, M, S, H>;
+
+/// Generic operation Atom. Its surrounding flows must produce and consume
+/// emission IDs matching the operation contract's input/output bundles.
+#[derive(Flow)]
+pub struct OperationAtomWithState<
+    In,
+    Out,
+    M: Serialize + DeserializeOwned + Send + Sync + 'static,
+    Op: TensorContract<Input: Send, Output: Send> + Send + Sync + 'static,
+    S,
+>(In, Step<OperationMassInferStep<M, Op, S>>, Out);
+
+pub type OperationAtom<In, Out, M, Op, S = ()> = OperationAtomWithState<In, Out, M, Op, S>;
 
 #[derive(Flow)]
 pub struct NoBackoffAtom<

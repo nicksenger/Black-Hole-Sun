@@ -1,0 +1,19 @@
+error[E0271]: type mismatch resolving `<Destination as TensorContract>::Input == TensorBundleSpec<(FloatValue,)>`
+  --> tests/ui/typed_edges_dtype_mismatch.rs:42:28
+   |
+42 |     assert_edges::<Source, TypedEdges<list![Edge<U1, Destination>]>>();
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ type mismatch resolving `<Destination as TensorContract>::Input == TensorBundleSpec<(FloatValue,)>`
+   |
+note: expected this to be `TensorBundleSpec<(FloatValue,)>`
+  --> tests/ui/typed_edges_dtype_mismatch.rs:34:18
+   |
+34 |     type Input = TensorBundleSpec<(IntegerValue,)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: expected struct `TensorBundleSpec<(FloatValue,)>`
+              found struct `TensorBundleSpec<(IntegerValue,)>`
+   = note: required for `TypedEdges<typosaurus::collections::list::List<(Edge<UInt<UTerm, B1>, Destination>, typosaurus::collections::list::List<()>)>>` to implement `DeclaredEdges<Source>`
+note: required by a bound in `assert_edges`
+  --> tests/ui/typed_edges_dtype_mismatch.rs:40:39
+   |
+40 | fn assert_edges<S: TensorContract, E: DeclaredEdges<S>>() {}
+   |                                       ^^^^^^^^^^^^^^^^ required by this bound in `assert_edges`
