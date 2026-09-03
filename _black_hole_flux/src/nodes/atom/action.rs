@@ -1,5 +1,5 @@
 //! Atom actions — re-exports for the Atom flow.
-pub use crate::cell::action::MassInferStep;
+pub use crate::nodes::cell::action::MassInferStep;
 
 use std::marker::PhantomData;
 
@@ -24,12 +24,12 @@ where
     type Input = (Uuid, black_hole_spec::EmissionId<Op::Input>);
     type Output = black_hole_spec::EmissionId<Op::Output>;
 
-    fn emit(_state: &crate::cell::action::CellState<S>, input: Self::Input) -> Self::Input {
+    fn emit(_state: &crate::nodes::cell::action::CellState<S>, input: Self::Input) -> Self::Input {
         input
     }
 
     fn absorb(
-        _state: &mut crate::cell::action::CellState<S>,
+        _state: &mut crate::nodes::cell::action::CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|error| Failure::Message(format!("operation inference failed: {error}")))

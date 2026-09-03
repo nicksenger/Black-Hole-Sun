@@ -13,8 +13,8 @@ use super::effect::{
     FusionPotentiationEnvelope, GenerateTransformIdEffect, WaitForFusionPotentiationEffect,
     WaitForFusionPropagationEffect,
 };
-use crate::cell::action::Potentiation;
-use crate::cell::effect::{
+use crate::nodes::cell::action::Potentiation;
+use crate::nodes::cell::effect::{
     MassOptimize, MassPerturbDown, MassPerturbUp, MassStart, Transmit as TransmitEffect,
 };
 use crate::mass::{DefaultConfig, ModelConfig};
@@ -299,7 +299,7 @@ impl<M> Action for FusionMassInferStep<M>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
 {
-    type Effect = crate::atom::effect::MassInfer<M>;
+    type Effect = crate::nodes::atom::effect::MassInfer<M>;
     type Input = EmissionId;
     type Output = EmissionId;
 

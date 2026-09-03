@@ -26,8 +26,9 @@ pub use tokenizer::{Tokenizer, TokenizerBuilder};
 pub use void_client::{PreparedTransfer, VoidClient};
 
 // Convenience re-exports — flux modules and core sun types
+pub use black_hole_flux::nodes::{atom, cell, fusion, warp};
 pub use black_hole_flux::{
-    atom, cell, fusion, ops, sun, warp, AtomError, Boundary, BoundaryInit, BoundaryInner,
+    ops, sun, AtomError, Boundary, BoundaryInit, BoundaryInner,
     BoundaryMicrostep, BoundaryState, CellInit, CheckpointOps, DefaultConfig, ErrorFeedbackPolicy,
     ForwardOperationCell, ForwardOperationPrimordium, FuseOps, Fusion, FusionSeed, FusionState,
     InitBoundaryRecvId, MassOps, ModelConfig, NoErrorFeedback, NoModelBoundary, NoOscillation,

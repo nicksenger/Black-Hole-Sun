@@ -17,7 +17,7 @@ use typosaurus::collections::list::{Empty, List};
 use typosaurus::traits::semigroup::Mappend;
 use uuid::Uuid;
 
-use crate::fusion::action::FusionSeed;
+use crate::nodes::fusion::action::FusionSeed;
 
 pub use action::{
     InitializePropagation, NodeIdsFromList, ProcessNextNode, PropagationState, SendRootPropagation,
@@ -787,12 +787,12 @@ pub struct DeploymentProgram<S, const ACCUM_STEPS: usize>(PhantomData<fn() -> S>
 impl<S, const ACCUM_STEPS: usize> SunProgram for DeploymentProgram<S, ACCUM_STEPS> {
     type State = SunState<S>;
     type Driver = ();
-    type UnarySeed = crate::cell::action::Init;
+    type UnarySeed = crate::nodes::cell::action::Init;
     type BinarySeed = FusionSeed;
     type WarpSeed = BoundaryInit;
 
     fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
-        crate::cell::action::Init {
+        crate::nodes::cell::action::Init {
             recv_id: inbox,
             grad_steps: ACCUM_STEPS.max(1),
         }
@@ -1028,12 +1028,12 @@ pub struct TwoSidedZoWithState<Generator, Policy, S, const ACCUM_STEPS: usize = 
 impl<G, P, S, const A: usize> SunProgram for TwoSidedZoWithState<G, P, S, A> {
     type State = SunState<S>;
     type Driver = Sun<G, P, S, A>;
-    type UnarySeed = crate::cell::action::Init;
+    type UnarySeed = crate::nodes::cell::action::Init;
     type BinarySeed = FusionSeed;
     type WarpSeed = BoundaryInit;
 
     fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
-        crate::cell::action::Init {
+        crate::nodes::cell::action::Init {
             recv_id: inbox,
             grad_steps: A.max(1),
         }
@@ -1078,12 +1078,12 @@ pub struct TwoSidedZoManifest<M: Manifest, const ACCUM_STEPS: usize = 1>(Phantom
 impl<M: Manifest, const A: usize> SunProgram for TwoSidedZoManifest<M, A> {
     type State = SunState<M::State>;
     type Driver = Sun<M::Generator, M::Policy, M::State, A>;
-    type UnarySeed = crate::cell::action::Init;
+    type UnarySeed = crate::nodes::cell::action::Init;
     type BinarySeed = FusionSeed;
     type WarpSeed = BoundaryInit;
 
     fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
-        crate::cell::action::Init {
+        crate::nodes::cell::action::Init {
             recv_id: inbox,
             grad_steps: A.max(1),
         }
@@ -1284,12 +1284,12 @@ where
 {
     type State = ForwardSunState<S>;
     type Driver = ServeFlow<Source, InputOp::Input, OutputOp::Output, S>;
-    type UnarySeed = crate::cell::action::Init;
+    type UnarySeed = crate::nodes::cell::action::Init;
     type BinarySeed = FusionSeed;
     type WarpSeed = BoundaryInit;
 
     fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
-        crate::cell::action::Init {
+        crate::nodes::cell::action::Init {
             recv_id: inbox,
             grad_steps: 1,
         }
@@ -1338,12 +1338,12 @@ pub struct CheckpointEvaluate<Checkpoint, Evaluation, S = ()>(
 impl<Checkpoint, Evaluation, S> SunProgram for CheckpointEvaluate<Checkpoint, Evaluation, S> {
     type State = NeutralSunState<S>;
     type Driver = CheckpointEvaluateFlow<Checkpoint, Evaluation, S>;
-    type UnarySeed = crate::cell::action::Init;
+    type UnarySeed = crate::nodes::cell::action::Init;
     type BinarySeed = FusionSeed;
     type WarpSeed = BoundaryInit;
 
     fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
-        crate::cell::action::Init {
+        crate::nodes::cell::action::Init {
             recv_id: inbox,
             grad_steps: 1,
         }

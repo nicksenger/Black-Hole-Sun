@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::cell::action::{Potentiation, Propagation};
+use crate::nodes::cell::action::{Potentiation, Propagation};
 use crate::ops::VoidInferOps;
 use crate::AtomError;
 

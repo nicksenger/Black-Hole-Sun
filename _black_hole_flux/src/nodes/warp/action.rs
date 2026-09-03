@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use uuid::Uuid;
 
-pub use crate::cell::action::{EmissionId, Potentiation, Propagation};
+pub use crate::nodes::cell::action::{EmissionId, Potentiation, Propagation};
 pub use crate::sun::BoundaryInit;
 
 use super::effect::{

@@ -2581,7 +2581,7 @@ mod tests {
         type Id = Id<U1>;
         type Generation = U0;
         type State = crate::CellState;
-        type Seed = crate::cell::action::Init;
+        type Seed = crate::nodes::cell::action::Init;
         type Flow = crate::Primordium;
     }
 
@@ -2764,7 +2764,7 @@ mod tests {
             <SpawnUnary<U1, TestUnaryChildAnimal, Empty, Program> as Action>::Bind<
                 TestSunAnimalWithPayload,
             >;
-        let seed = crate::cell::action::Init {
+        let seed = crate::nodes::cell::action::Init {
             recv_id: Uuid::new_v4(),
             grad_steps: 1,
         };
@@ -2791,7 +2791,7 @@ mod tests {
     fn warp_actions_seed_boundary_with_spawned_warp_journey() {
         type Payload = (String, String);
         let mut state = super::super::SunState::<Payload>::default();
-        let init = crate::cell::action::Init {
+        let init = crate::nodes::cell::action::Init {
             recv_id: Uuid::new_v4(),
             grad_steps: 3,
         };

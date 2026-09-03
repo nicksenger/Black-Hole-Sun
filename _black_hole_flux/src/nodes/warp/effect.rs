@@ -9,7 +9,7 @@ use serde::Serialize;
 use tracing::debug;
 use uuid::Uuid;
 
-pub use crate::cell::effect::{
+pub use crate::nodes::cell::effect::{
     Transmit as TransmitEffect, WaitForPotentiationEffect as WaitForBoundaryPotentiationEffect,
     WaitForPropagationEffect,
 };

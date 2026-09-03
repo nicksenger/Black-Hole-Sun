@@ -53,14 +53,11 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub mod atom;
-pub mod cell;
-pub mod fusion;
 pub mod mass;
+pub mod nodes;
 pub mod ops;
 pub mod ray;
 pub mod sun;
-pub mod warp;
 
 pub use black_hole_contract::{QwenDarkInference, StreamingTensorOp, TensorContract};
 
@@ -71,22 +68,22 @@ pub use black_hole_spec::{
     ObjectId, ObjectRef, OperationalControl, SequenceOutput, StreamRef, TransferRef, Transmission,
 };
 
-pub use atom::effect::MassInfer;
-pub use cell::action::{
+pub use nodes::atom::effect::MassInfer;
+pub use nodes::cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
     InitRecvId, MassInferStep, Optimize, OptimizeOperation, PerturbDown, PerturbOperationDown,
     PerturbOperationUp, PerturbUp, Potentiation, PrepareAtomInput, PrepareOperationInput,
     Propagation, ShutdownModel, StartModel, StartOperation, Transmit, TransmitArtifact,
     WaitForArtifact, WaitForOperationalControl, WaitForPotentiation, WaitForPropagation,
 };
-pub use cell::effect::{
+pub use nodes::cell::effect::{
     GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown, MassStart,
     OperationMassOptimize, OperationMassPerturbDown, OperationMassPerturbUp, OperationMassStart,
     Transmit as TransmitEffect, TransmitArtifactEffect, WaitForArtifactDeliveryEffect,
     WaitForOperationalControlEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
-pub use fusion::action::{FusionSeed, FusionState};
-pub use fusion::{
+pub use nodes::fusion::action::{FusionSeed, FusionState};
+pub use nodes::fusion::{
     Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch, QuzoFusionWithModelConfig,
 };
 pub use mass::{
@@ -98,17 +95,17 @@ pub use ops::{
     VoidInferOps, VoidOps,
 };
 pub use ray::Ray;
-pub use warp::action::{InitRecvId as InitBoundaryRecvId, ObserveWarp, PerturbWarp};
-pub use warp::effect::{ObserveWarpEffect, PerturbWarpEffect};
-pub use warp::{
+pub use nodes::warp::action::{InitRecvId as InitBoundaryRecvId, ObserveWarp, PerturbWarp};
+pub use nodes::warp::effect::{ObserveWarpEffect, PerturbWarpEffect};
+pub use nodes::warp::{
     Boundary, BoundaryState, Inner as BoundaryInner,
     InnerPropagationMicrostep as BoundaryMicrostep, NoModelBoundary,
 };
 
-pub use atom::Atom;
-pub use atom::NoBackoffAtom;
-pub use atom::OperationAtom;
-pub use cell::{
+pub use nodes::atom::Atom;
+pub use nodes::atom::NoBackoffAtom;
+pub use nodes::atom::OperationAtom;
+pub use nodes::cell::{
     Cell, ForwardOperationCell, ForwardOperationPrimordium, OperationCell, OperationPrimordium,
     Primordium,
 };
