@@ -126,11 +126,13 @@ pub use sun::{
         WaitForNodeArtifactDeliveryInput, WaitForNodeTransmissionEffect,
         WaitForNodeTransmissionInput,
     },
-    Binary, BlackHole, BoundaryInit, DeclaredEdge, Edge, Epoch, ForwardOnly, ForwardPass,
-    LegacySun, Manifest, OperationNode, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
+    Binary, BlackHole, BoundaryInit, CheckpointEvaluate, CheckpointEvaluateFlow, CompileSun,
+    DeclaredEdge, Edge, Epoch, ForwardOnly, ForwardPass, ForwardSunState, LegacySun, Manifest,
+    NeutralSunState, OperationNode, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
     PropagationFlows, PropagationLoop, ServeFlow, SpawnAnimal, StatelessManifest, SunAppearance,
-    SunEdgeAppearance, SunInner, SunNodeAppearance, SunNodeState, SunProgram, SunState, TwoSidedZo,
-    TwoSidedZoManifest, TwoSidedZoWithState, TypedEdges, Unary, Warp,
+    SunEdgeAppearance, SunInner, SunNodeAppearance, SunNodeState, SunProgram, SunState,
+    SunStateView, SunTopology, SunTopologyState, TwoSidedZo, TwoSidedZoManifest, TwoSidedZoState,
+    TwoSidedZoWithState, TypedEdges, Unary, Warp,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]

@@ -19,8 +19,8 @@ use black_hole_contract::{
     SingleTensorSpec, TensorContract, TensorPortSpec,
 };
 use black_hole_flux::sun::{
-    SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState, SunOperationalState,
-    SunState,
+    ForwardSunState, SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState,
+    SunOperationalState,
 };
 use black_hole_flux::{
     BlackHole, CellInit, CellState, Edge, ForwardOnly, ForwardOperationPrimordium, OperationNode,
@@ -141,14 +141,14 @@ type Topology = List<(
     EncodeNode,
 )>;
 
-type RedesignSun = <Topology as BlackHole>::Sun<ForwardOnly<Primordium, Normalize>>;
+type RedesignSun = <Topology as BlackHole>::Sun<ForwardOnly<Primordium, Normalize, Classify>>;
 
 struct RedesignDemo;
 
 impl Animal for RedesignDemo {
     type Id = Id<U3>;
     type Generation = U0;
-    type State = SunState;
+    type State = ForwardSunState;
     type Seed = ();
     type Flow = RedesignSun;
 }

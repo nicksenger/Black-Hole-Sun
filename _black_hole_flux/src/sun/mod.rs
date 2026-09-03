@@ -17,8 +17,7 @@ use typosaurus::collections::list::{Empty, List};
 use typosaurus::traits::semigroup::Mappend;
 use uuid::Uuid;
 
-use crate::fusion::action::{FusionSeed, FusionState};
-use crate::fusion::FusionFlow;
+use crate::fusion::action::FusionSeed;
 
 pub use action::{
     InitializePropagation, NodeIdsFromList, ProcessNextNode, PropagationState, SendRootPropagation,
@@ -222,11 +221,61 @@ fn default_gradient_accumulation_steps() -> usize {
     1
 }
 
-/// State for propagation branch A.
+/// Immutable/resolved topology and program-neutral observation data.
+///
+/// Program mailboxes, phase counters, and strategy state deliberately do not
+/// live here. They belong to the runtime selected by [`SunProgram`].
+#[derive(Optic, Clone, Default, Debug)]
+pub struct SunTopology {
+    pub finalized: bool,
+    pub journey_ids: HashMap<u32, Uuid>,
+    pub warp_journey_ids: HashMap<u32, Uuid>,
+    pub node_labels: HashMap<u32, String>,
+    pub node_operational_states: HashMap<u32, SunOperationalState>,
+    pub node_phase_annotations: HashMap<u32, String>,
+    pub node_state_sequences: HashMap<u32, u64>,
+    pub vertex_ports: HashMap<u32, Vec<u32>>,
+    pub port_vertices: HashMap<u32, u32>,
+    pub declared_outputs: HashMap<u32, Vec<u32>>,
+    pub node_contracts: HashMap<u32, ContractDescriptor>,
+    pub declared_edges: HashMap<u32, Vec<DeclaredEdge>>,
+    pub duplicate_ports: HashSet<u32>,
+    pub incoming: HashMap<u32, Vec<u32>>,
+    pub outgoing: HashMap<u32, Vec<PortTarget>>,
+}
+
+impl SunTopology {
+    pub(crate) fn record_forward_started(&mut self, node_ids: impl IntoIterator<Item = u32>) {
+        for node_id in node_ids {
+            self.node_operational_states
+                .insert(node_id, SunOperationalState::Running);
+            self.node_phase_annotations
+                .insert(node_id, "forward".to_string());
+            *self.node_state_sequences.entry(node_id).or_default() += 1;
+        }
+    }
+
+    pub(crate) fn record_forward_completed(&mut self, node_id: u32) {
+        self.node_operational_states
+            .insert(node_id, SunOperationalState::Succeeded);
+    }
+}
+
+/// Access to the neutral topology shared by every Sun program state.
+pub trait SunTopologyState {
+    fn topology(&self) -> &Arc<Mutex<SunTopology>>;
+}
+
+pub trait SunStateView: SunTopologyState {
+    fn sun_appearance(&self) -> SunAppearance;
+}
+
+/// State for two-sided propagation branch A.
 #[derive(Optic, Clone, Default, Debug)]
 pub struct PropA {
-    /// Shared bookkeeping (Arc so both branches share topology data).
-    pub shared: Arc<Mutex<SunInner>>,
+    pub topology: Arc<Mutex<SunTopology>>,
+    /// Shared two-sided bookkeeping (Arc so both branches share it).
+    pub shared: Arc<Mutex<TwoSidedZoInner>>,
     /// Unfinished nodes and their unresolved incoming-edge counts.
     pub pending: HashMap<u32, usize>,
     /// Unfinished nodes whose incoming edges have all completed.
@@ -236,8 +285,9 @@ pub struct PropA {
 /// State for propagation branch B.
 #[derive(Optic, Clone, Default, Debug)]
 pub struct PropB {
-    /// Shared bookkeeping (Arc so both branches share topology data).
-    pub shared: Arc<Mutex<SunInner>>,
+    pub topology: Arc<Mutex<SunTopology>>,
+    /// Shared two-sided bookkeeping (Arc so both branches share it).
+    pub shared: Arc<Mutex<TwoSidedZoInner>>,
     /// Unfinished nodes and their unresolved incoming-edge counts.
     pub pending: HashMap<u32, usize>,
     /// Unfinished nodes whose incoming edges have all completed.
@@ -248,6 +298,8 @@ pub struct PropB {
 /// for a sun of spawned animals.
 #[derive(Optic, Clone, Debug)]
 pub struct SunStateWithInner<S> {
+    /// Program-neutral graph and observation data.
+    pub topology: Arc<Mutex<SunTopology>>,
     /// State for propagation branch A — uses p1_tx / p1_rx maps.
     #[jungle(focus = a)]
     pub a: PropA,
@@ -292,23 +344,29 @@ pub struct SunStateWithInner<S> {
 ///
 /// The generic `S` payload is available to user flows via
 /// [`SunState::inner`] and defaults to `()`.
-pub type SunState<S = ()> = SunStateWithInner<S>;
+pub type TwoSidedZoState<S = ()> = SunStateWithInner<S>;
+/// Compatibility name for the state owned by the [`TwoSidedZo`] program.
+pub type SunState<S = ()> = TwoSidedZoState<S>;
 
 impl<S> Default for SunStateWithInner<S>
 where
     S: Default,
 {
     fn default() -> Self {
-        let shared = Arc::new(Mutex::new(SunInner::default()));
+        let topology = Arc::new(Mutex::new(SunTopology::default()));
+        let shared = Arc::new(Mutex::new(TwoSidedZoInner::default()));
         Self {
             a: PropA {
+                topology: Arc::clone(&topology),
                 shared: Arc::clone(&shared),
                 ..PropA::default()
             },
             b: PropB {
+                topology: Arc::clone(&topology),
                 shared,
                 ..PropB::default()
             },
+            topology,
             inner: S::default(),
             propagation_down_inputs: VecDeque::new(),
             propagation_up_inputs: Vec::new(),
@@ -332,52 +390,53 @@ where
 impl<S> SunStateWithInner<S> {
     /// Build a deterministic, serializable view of the runtime graph.
     pub fn appearance(&self) -> SunAppearance {
-        let inner = self.a.shared.lock().unwrap();
-        let grad_steps = inner.grad_steps.max(1);
-        let mut nodes = inner
+        let topology = self.topology.lock().unwrap();
+        let strategy = self.a.shared.lock().unwrap();
+        let grad_steps = strategy.grad_steps.max(1);
+        let mut nodes = topology
             .journey_ids
             .keys()
             .copied()
             .map(|id| SunNodeAppearance {
                 id,
-                journey_id: inner
+                journey_id: topology
                     .journey_ids
                     .get(&id)
                     .copied()
                     .unwrap_or_else(Uuid::nil),
-                warp_journey_id: inner
+                warp_journey_id: topology
                     .warp_journey_ids
                     .get(&id)
                     .copied()
                     .unwrap_or_else(Uuid::nil),
-                label: inner
+                label: topology
                     .node_labels
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| format!("cell {id}")),
-                input_ports: inner.vertex_ports.get(&id).cloned().unwrap_or_default(),
-                operational_state: inner
+                input_ports: topology.vertex_ports.get(&id).cloned().unwrap_or_default(),
+                operational_state: topology
                     .node_operational_states
                     .get(&id)
                     .copied()
                     .unwrap_or_default(),
-                phase_annotation: inner.node_phase_annotations.get(&id).cloned(),
-                state: inner.node_states.get(&id).copied().unwrap_or_default(),
-                state_sequence: inner
+                phase_annotation: topology.node_phase_annotations.get(&id).cloned(),
+                state: strategy.node_states.get(&id).copied().unwrap_or_default(),
+                state_sequence: topology
                     .node_state_sequences
                     .get(&id)
                     .copied()
                     .unwrap_or_default(),
-                grad_step: inner
+                grad_step: strategy
                     .node_grad_steps
                     .get(&id)
                     .copied()
-                    .unwrap_or_else(|| inner.current_grad_step()),
+                    .unwrap_or_else(|| strategy.current_grad_step()),
             })
             .collect::<Vec<_>>();
         nodes.sort_by_key(|node| node.id);
 
-        let mut edges = inner
+        let mut edges = topology
             .outgoing
             .iter()
             .flat_map(|(&source, targets)| {
@@ -392,7 +451,7 @@ impl<S> SunStateWithInner<S> {
         edges.dedup();
 
         SunAppearance {
-            finalized: inner.finalized,
+            finalized: topology.finalized,
             grad_steps,
             nodes,
             edges,
@@ -400,47 +459,165 @@ impl<S> SunStateWithInner<S> {
     }
 }
 
+impl<S> SunTopologyState for SunStateWithInner<S> {
+    fn topology(&self) -> &Arc<Mutex<SunTopology>> {
+        &self.topology
+    }
+}
+
+impl<S> SunStateView for SunStateWithInner<S> {
+    fn sun_appearance(&self) -> SunAppearance {
+        self.appearance()
+    }
+}
+
+/// Neutral scheduler state used by [`ForwardPass`].
+#[derive(Clone, Default, Debug)]
+pub struct ForwardRuntime<S> {
+    pub inner: S,
+    pub pending: HashMap<u32, usize>,
+    pub ready: HashSet<u32>,
+    pub inputs: HashMap<u32, ObjectId>,
+    pub next_inputs: HashMap<u32, ObjectId>,
+    pub outputs: HashMap<u32, ObjectId>,
+    pub sink_id: Option<u32>,
+}
+
+/// State for forward programs; it contains no two-sided strategy fields.
+#[derive(Clone, Debug)]
+pub struct ForwardSunState<S = ()> {
+    pub topology: Arc<Mutex<SunTopology>>,
+    pub runtime: ForwardRuntime<S>,
+}
+
+impl<S: Default> Default for ForwardSunState<S> {
+    fn default() -> Self {
+        Self {
+            topology: Arc::new(Mutex::new(SunTopology::default())),
+            runtime: ForwardRuntime::default(),
+        }
+    }
+}
+
+impl<S> SunTopologyState for ForwardSunState<S> {
+    fn topology(&self) -> &Arc<Mutex<SunTopology>> {
+        &self.topology
+    }
+}
+
+impl<S> ForwardSunState<S> {
+    pub fn appearance(&self) -> SunAppearance {
+        neutral_appearance(&self.topology.lock().unwrap())
+    }
+}
+
+impl<S> SunStateView for ForwardSunState<S> {
+    fn sun_appearance(&self) -> SunAppearance {
+        self.appearance()
+    }
+}
+
+/// State for programs that only need a compiled topology and private payload.
+#[derive(Clone, Debug)]
+pub struct NeutralSunState<S = ()> {
+    pub topology: Arc<Mutex<SunTopology>>,
+    pub inner: S,
+}
+
+impl<S: Default> Default for NeutralSunState<S> {
+    fn default() -> Self {
+        Self {
+            topology: Arc::new(Mutex::new(SunTopology::default())),
+            inner: S::default(),
+        }
+    }
+}
+
+impl<S> SunTopologyState for NeutralSunState<S> {
+    fn topology(&self) -> &Arc<Mutex<SunTopology>> {
+        &self.topology
+    }
+}
+
+impl<S> NeutralSunState<S> {
+    pub fn appearance(&self) -> SunAppearance {
+        neutral_appearance(&self.topology.lock().unwrap())
+    }
+}
+
+impl<S> SunStateView for NeutralSunState<S> {
+    fn sun_appearance(&self) -> SunAppearance {
+        self.appearance()
+    }
+}
+
+fn neutral_appearance(topology: &SunTopology) -> SunAppearance {
+    let mut nodes = topology
+        .journey_ids
+        .keys()
+        .copied()
+        .map(|id| SunNodeAppearance {
+            id,
+            journey_id: topology.journey_ids[&id],
+            warp_journey_id: topology
+                .warp_journey_ids
+                .get(&id)
+                .copied()
+                .unwrap_or_default(),
+            label: topology
+                .node_labels
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("cell {id}")),
+            input_ports: topology.vertex_ports.get(&id).cloned().unwrap_or_default(),
+            state: SunNodeState::Idle,
+            state_sequence: topology
+                .node_state_sequences
+                .get(&id)
+                .copied()
+                .unwrap_or_default(),
+            grad_step: 1,
+            operational_state: topology
+                .node_operational_states
+                .get(&id)
+                .copied()
+                .unwrap_or_default(),
+            phase_annotation: topology.node_phase_annotations.get(&id).cloned(),
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_by_key(|node| node.id);
+    let mut edges = topology
+        .outgoing
+        .iter()
+        .flat_map(|(&source, targets)| {
+            targets.iter().map(move |target| SunEdgeAppearance {
+                source,
+                target: target.vertex_id,
+                target_port: target.port_id,
+            })
+        })
+        .collect::<Vec<_>>();
+    edges.sort_by_key(|edge| (edge.source, edge.target, edge.target_port));
+    edges.dedup();
+    SunAppearance {
+        finalized: topology.finalized,
+        grad_steps: 1,
+        nodes,
+        edges,
+    }
+}
+
 /// Shared inner state accessible by both propagation branches via Arc<Mutex>.
 #[derive(Optic, Clone, Default, Debug)]
-pub struct SunInner {
-    /// Whether the graph has passed runtime topology validation.
-    pub finalized: bool,
-    /// Maps an internal vertex key to its associated journey ID.
-    pub journey_ids: HashMap<u32, Uuid>,
-    /// Journey IDs of the nested warp animals for warp vertices.
-    pub warp_journey_ids: HashMap<u32, Uuid>,
-    /// Human-readable animal type names keyed by internal vertex.
-    pub node_labels: HashMap<u32, String>,
+pub struct TwoSidedZoInner {
     /// Latest observable orchestration phase reached by each internal vertex.
     pub node_states: HashMap<u32, SunNodeState>,
-    /// Program-independent execution state for each vertex.
-    pub node_operational_states: HashMap<u32, SunOperationalState>,
-    /// Optional program-selected phase labels rendered by Beam.
-    pub node_phase_annotations: HashMap<u32, String>,
-    /// Logical phase position for each vertex, used to recover skipped observations.
-    pub node_state_sequences: HashMap<u32, u64>,
     /// 1-based gradient accumulation step currently associated with each vertex.
     pub node_grad_steps: HashMap<u32, usize>,
     /// Nodes whose first-pass output has been received in the current epoch.
     pub p1_completed: HashSet<u32>,
     /// Nodes whose second pass has been sent in the current epoch.
     pub p2_sent: HashSet<u32>,
-    /// Input ports owned by each vertex, in descriptor order.
-    pub vertex_ports: HashMap<u32, Vec<u32>>,
-    /// Resolves every public input port to its internal vertex key.
-    pub port_vertices: HashMap<u32, u32>,
-    /// Ports declared as outputs by each vertex, before graph finalization.
-    pub declared_outputs: HashMap<u32, Vec<u32>>,
-    /// Full operation descriptor registered by each vertex.
-    pub node_contracts: HashMap<u32, ContractDescriptor>,
-    /// Typed edge declarations retained for runtime validation.
-    pub declared_edges: HashMap<u32, Vec<DeclaredEdge>>,
-    /// Ports claimed by more than one descriptor.
-    pub duplicate_ports: HashSet<u32>,
-    /// Maps each vertex to the vertices of its incoming edges.
-    pub incoming: HashMap<u32, Vec<u32>>,
-    /// Resolved outgoing destination ports for each vertex.
-    pub outgoing: HashMap<u32, Vec<PortTarget>>,
     /// Number of propagation microsteps per optimization epoch.
     pub grad_steps: usize,
     /// Current microstep index (0-based) inside the accumulation epoch.
@@ -470,7 +647,7 @@ pub struct DeclaredEdge {
     pub destination_contract: ContractDescriptor,
 }
 
-impl SunInner {
+impl TwoSidedZoInner {
     fn current_grad_step(&self) -> usize {
         let grad_steps = self.grad_steps.max(1);
         self.active_micro_step
@@ -485,12 +662,13 @@ impl SunInner {
         }
     }
 
-    fn record_state_sent(&mut self, node_id: u32, phase: SunNodeState) {
+    fn record_state_sent(&mut self, topology: &mut SunTopology, node_id: u32, phase: SunNodeState) {
         let grad_step = self.grad_step_for_phase(phase);
         let current = self.node_states.get(&node_id).copied().unwrap_or_default();
-        self.node_operational_states
+        topology
+            .node_operational_states
             .insert(node_id, SunOperationalState::Running);
-        self.node_phase_annotations.insert(
+        topology.node_phase_annotations.insert(
             node_id,
             match phase {
                 SunNodeState::Idle => "idle",
@@ -517,12 +695,13 @@ impl SunInner {
         }
 
         self.node_states.insert(node_id, phase);
-        *self.node_state_sequences.entry(node_id).or_default() += distance;
+        *topology.node_state_sequences.entry(node_id).or_default() += distance;
         self.node_grad_steps.insert(node_id, grad_step);
     }
 
     pub(crate) fn record_propagation_sent(
         &mut self,
+        topology: &mut SunTopology,
         node_ids: impl IntoIterator<Item = u32>,
         phase: SunNodeState,
     ) {
@@ -534,13 +713,13 @@ impl SunInner {
             match phase {
                 SunNodeState::Propagation1 => {
                     if self.node_states.get(&node_id) != Some(&SunNodeState::Propagation2) {
-                        self.record_state_sent(node_id, phase);
+                        self.record_state_sent(topology, node_id, phase);
                     }
                 }
                 SunNodeState::Propagation2 => {
                     self.p2_sent.insert(node_id);
                     if self.p1_completed.contains(&node_id) {
-                        self.record_state_sent(node_id, phase);
+                        self.record_state_sent(topology, node_id, phase);
                     }
                 }
                 _ => unreachable!("propagation phase was validated above"),
@@ -548,40 +727,38 @@ impl SunInner {
         }
     }
 
-    pub(crate) fn record_propagation_completed(&mut self, node_id: u32, phase: SunNodeState) {
-        self.node_operational_states
+    pub(crate) fn record_propagation_completed(
+        &mut self,
+        topology: &mut SunTopology,
+        node_id: u32,
+        phase: SunNodeState,
+    ) {
+        topology
+            .node_operational_states
             .insert(node_id, SunOperationalState::Succeeded);
         if phase == SunNodeState::Propagation1 {
             self.p1_completed.insert(node_id);
             if self.p2_sent.contains(&node_id) {
-                self.record_state_sent(node_id, SunNodeState::Propagation2);
+                self.record_state_sent(topology, node_id, SunNodeState::Propagation2);
             }
         }
     }
 
-    pub(crate) fn record_optimization_sent(&mut self, node_ids: impl IntoIterator<Item = u32>) {
+    pub(crate) fn record_optimization_sent(
+        &mut self,
+        topology: &mut SunTopology,
+        node_ids: impl IntoIterator<Item = u32>,
+    ) {
         for node_id in node_ids {
-            self.record_state_sent(node_id, SunNodeState::Optimization);
+            self.record_state_sent(topology, node_id, SunNodeState::Optimization);
             self.p1_completed.remove(&node_id);
             self.p2_sent.remove(&node_id);
         }
     }
-
-    pub(crate) fn record_forward_started(&mut self, node_ids: impl IntoIterator<Item = u32>) {
-        for node_id in node_ids {
-            self.node_operational_states
-                .insert(node_id, SunOperationalState::Running);
-            self.node_phase_annotations
-                .insert(node_id, "forward".to_string());
-            *self.node_state_sequences.entry(node_id).or_default() += 1;
-        }
-    }
-
-    pub(crate) fn record_forward_completed(&mut self, node_id: u32) {
-        self.node_operational_states
-            .insert(node_id, SunOperationalState::Succeeded);
-    }
 }
+
+/// Compatibility name for the two-sided strategy state.
+pub type SunInner = TwoSidedZoInner;
 
 /// A resolved edge target. `port_id` identifies the destination mailbox while
 /// `vertex_id` identifies the single animal/output shared by all of its ports.
@@ -596,23 +773,59 @@ pub struct PortTarget {
 pub struct UnarySunStepWithProgram<
     Program: SunProgram,
     P: Unsigned,
-    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>
-        + OperationNode<Op>,
+    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::UnarySeed> + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract,
 >(
     Step<GenUuid<Program>>,
-    Step<action::SpawnUnary<P, AnimalT, E, Program::State, Op>>,
+    Step<action::SpawnUnary<P, AnimalT, E, Program, Op>>,
 );
 
 /// Compatibility program used by the descriptor-step aliases.
 pub struct DeploymentProgram<S, const ACCUM_STEPS: usize>(PhantomData<fn() -> S>);
 
 impl<S, const ACCUM_STEPS: usize> SunProgram for DeploymentProgram<S, ACCUM_STEPS> {
-    type State = S;
+    type State = SunState<S>;
     type Driver = ();
+    type UnarySeed = crate::cell::action::Init;
+    type BinarySeed = FusionSeed;
+    type WarpSeed = BoundaryInit;
 
-    const ACCUM_STEPS: usize = ACCUM_STEPS;
+    fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
+        crate::cell::action::Init {
+            recv_id: inbox,
+            grad_steps: ACCUM_STEPS.max(1),
+        }
+    }
+    fn unary_inbox(seed: &Self::UnarySeed) -> ObjectId {
+        seed.recv_id
+    }
+    fn binary_seed([p1_recv_id, p2_recv_id]: [ObjectId; 2]) -> Self::BinarySeed {
+        FusionSeed {
+            p1_recv_id,
+            p2_recv_id,
+            grad_steps: ACCUM_STEPS.max(1),
+        }
+    }
+    fn binary_inboxes(seed: &Self::BinarySeed) -> [ObjectId; 2] {
+        [seed.p1_recv_id, seed.p2_recv_id]
+    }
+    fn warp_seed(recv_id: ObjectId, warp_journey_id: Uuid) -> Self::WarpSeed {
+        BoundaryInit {
+            recv_id,
+            grad_steps: ACCUM_STEPS.max(1),
+            warp_journey_id,
+        }
+    }
+    fn register_inboxes(state: &mut Self::State, ports: &[(u32, ObjectId)]) {
+        state
+            .a
+            .shared
+            .lock()
+            .unwrap()
+            .p1_tx
+            .extend(ports.iter().copied());
+    }
 }
 
 pub type UnarySunStepWithState<P, AnimalT, E, Op, S, const ACCUM_STEPS: usize> =
@@ -633,18 +846,12 @@ pub struct BinarySunStepWithProgram<
     Program: SunProgram,
     P1: Unsigned,
     P2: Unsigned,
-    AnimalT: Animal<
-            Id: AnimalIdValue,
-            Generation: Unsigned,
-            Seed = FusionSeed,
-            State = FusionState,
-            Flow: FusionFlow,
-        > + OperationNode<Op>,
+    AnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::BinarySeed> + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract,
 >(
     Step<action::GenFusionSeed<Program>>,
-    Step<action::SpawnBinary<P1, P2, AnimalT, E, Program::State, Op>>,
+    Step<action::SpawnBinary<P1, P2, AnimalT, E, Program, Op>>,
 );
 
 pub type BinarySunStepWithState<P1, P2, AnimalT, E, Op, S, const ACCUM_STEPS: usize> =
@@ -667,18 +874,13 @@ pub struct WarpSunStepWithProgram<
     Program: SunProgram,
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
-    BoundaryAnimalT: Animal<
-            Id: AnimalIdValue,
-            Generation: Unsigned,
-            Seed = BoundaryInit,
-            State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
-        > + OperationNode<Op>,
+    BoundaryAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::WarpSeed> + OperationNode<Op>,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
     Op: TensorContract,
 >(
     Step<GenUuid<Program>>,
-    Step<action::SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, Program::State, Op>>,
-    Step<action::SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, Program::State, Op>>,
+    Step<action::SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, Program, Op>>,
+    Step<action::SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, Program, Op>>,
 );
 
 pub type WarpSunStepWithState<P, WarpAnimalT, BoundaryAnimalT, E, Op, S, const ACCUM_STEPS: usize> =
@@ -712,82 +914,101 @@ pub struct SunNode<S, U>(S, U);
 /// steps; the terminal case now attaches `Program::Driver` instead of a fixed
 /// QuZO epoch.
 pub trait BlackHole {
-    type Sun<P: SunProgram>;
+    type Sun<P: SunProgram>
+    where
+        Self: CompileSun<P>;
 }
-impl<U> BlackHole for List<(Empty, U)>
+
+impl<T> BlackHole for T {
+    type Sun<P: SunProgram>
+        = <T as CompileSun<P>>::Flow
+    where
+        T: CompileSun<P>;
+}
+
+/// Program-specific compilation proof for a topology. This is where node
+/// seed requirements are selected; the recursive [`BlackHole`] facade no
+/// longer fixes them globally.
+pub trait CompileSun<Program: SunProgram> {
+    type Flow;
+}
+
+impl<Program: SunProgram, U> CompileSun<Program> for List<(Empty, U)>
 where
-    U: BlackHole,
+    U: CompileSun<Program>,
 {
-    type Sun<P: SunProgram> = <U as BlackHole>::Sun<P>;
+    type Flow = U::Flow;
 }
-impl<T1, T2, U> BlackHole for List<(List<(T1, T2)>, U)>
+
+impl<Program: SunProgram, T1, T2, U> CompileSun<Program> for List<(List<(T1, T2)>, U)>
 where
-    List<(T1, T2)>: BlackHole,
-    U: BlackHole,
     (List<(T1, T2)>, U): Mappend,
-    <(List<(T1, T2)>, U) as Mappend>::Out: BlackHole,
+    <(List<(T1, T2)>, U) as Mappend>::Out: CompileSun<Program>,
 {
-    type Sun<P: SunProgram> = <<(List<(T1, T2)>, U) as Mappend>::Out as BlackHole>::Sun<P>;
+    type Flow = <<(List<(T1, T2)>, U) as Mappend>::Out as CompileSun<Program>>::Flow;
 }
-impl<P, A, E, Op, U> BlackHole for List<(Unary<P, A, E, Op>, U)>
+
+impl<Program, P, A, E, Op, U> CompileSun<Program> for List<(Unary<P, A, E, Op>, U)>
 where
+    Program: SunProgram,
     P: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = crate::cell::action::Init>
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::UnarySeed>
         + OperationNode<Op>,
     Op: TensorContract,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
-    U: BlackHole,
+    U: CompileSun<Program>,
 {
-    type Sun<Program: SunProgram> =
-        SunNode<UnarySunStepWithProgram<Program, P, A, E, Op>, <U as BlackHole>::Sun<Program>>;
+    type Flow = SunNode<UnarySunStepWithProgram<Program, P, A, E, Op>, U::Flow>;
 }
-impl<P1, P2, A, E, Op, U> BlackHole for List<(Binary<P1, P2, A, E, Op>, U)>
+
+impl<Program, P1, P2, A, E, Op, U> CompileSun<Program> for List<(Binary<P1, P2, A, E, Op>, U)>
 where
+    Program: SunProgram,
     P1: Unsigned,
     P2: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::BinarySeed>
         + OperationNode<Op>,
-    A::Flow: FusionFlow,
     Op: TensorContract,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
-    U: BlackHole,
+    U: CompileSun<Program>,
 {
-    type Sun<Program: SunProgram> = SunNode<
-        BinarySunStepWithProgram<Program, P1, P2, A, E, Op>,
-        <U as BlackHole>::Sun<Program>,
-    >;
+    type Flow = SunNode<BinarySunStepWithProgram<Program, P1, P2, A, E, Op>, U::Flow>;
 }
-impl<P, WarpAnimalT, BoundaryAnimalT, E, Op, U> BlackHole
+
+impl<Program, P, WarpAnimalT, BoundaryAnimalT, E, Op, U> CompileSun<Program>
     for List<(Warp<P, WarpAnimalT, BoundaryAnimalT, E, Op>, U)>
 where
+    Program: SunProgram,
     P: Unsigned,
     WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
-    BoundaryAnimalT: Animal<
-            Id: AnimalIdValue,
-            Generation: Unsigned,
-            Seed = BoundaryInit,
-            State = crate::BoundaryState<<WarpAnimalT as Observe>::Appearance>,
-        > + OperationNode<Op>,
+    BoundaryAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::WarpSeed>
+        + OperationNode<Op>,
     Op: TensorContract,
     E: NodeIdsFromList + action::DeclaredEdges<Op>,
-    U: BlackHole,
+    U: CompileSun<Program>,
 {
-    type Sun<Program: SunProgram> = SunNode<
-        WarpSunStepWithProgram<Program, P, WarpAnimalT, BoundaryAnimalT, E, Op>,
-        <U as BlackHole>::Sun<Program>,
-    >;
+    type Flow =
+        SunNode<WarpSunStepWithProgram<Program, P, WarpAnimalT, BoundaryAnimalT, E, Op>, U::Flow>;
 }
-impl BlackHole for Empty {
-    type Sun<P: SunProgram> = P::Driver;
+
+impl<Program: SunProgram> CompileSun<Program> for Empty {
+    type Flow = Program::Driver;
 }
 
 /// Selects the state, deployment settings, and executable driver for a Sun.
 pub trait SunProgram {
-    type State;
+    type State: SunTopologyState;
     type Driver;
+    type UnarySeed: Clone + Send + Sync + 'static;
+    type BinarySeed: Clone + Send + Sync + 'static;
+    type WarpSeed: Clone + Send + Sync + 'static;
 
-    /// Number of operation microsteps provisioned in each spawned node.
-    const ACCUM_STEPS: usize;
+    fn unary_seed(inbox: ObjectId) -> Self::UnarySeed;
+    fn unary_inbox(seed: &Self::UnarySeed) -> ObjectId;
+    fn binary_seed(inboxes: [ObjectId; 2]) -> Self::BinarySeed;
+    fn binary_inboxes(seed: &Self::BinarySeed) -> [ObjectId; 2];
+    fn warp_seed(inbox: ObjectId, warp_journey_id: Uuid) -> Self::WarpSeed;
+    fn register_inboxes(state: &mut Self::State, ports: &[(u32, ObjectId)]);
 }
 
 /// Legacy generator/policy/state bundle accepted by [`TwoSidedZoManifest`].
@@ -805,10 +1026,47 @@ pub struct TwoSidedZoWithState<Generator, Policy, S, const ACCUM_STEPS: usize = 
 );
 
 impl<G, P, S, const A: usize> SunProgram for TwoSidedZoWithState<G, P, S, A> {
-    type State = S;
+    type State = SunState<S>;
     type Driver = Sun<G, P, S, A>;
+    type UnarySeed = crate::cell::action::Init;
+    type BinarySeed = FusionSeed;
+    type WarpSeed = BoundaryInit;
 
-    const ACCUM_STEPS: usize = A;
+    fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
+        crate::cell::action::Init {
+            recv_id: inbox,
+            grad_steps: A.max(1),
+        }
+    }
+    fn unary_inbox(seed: &Self::UnarySeed) -> ObjectId {
+        seed.recv_id
+    }
+    fn binary_seed([p1_recv_id, p2_recv_id]: [ObjectId; 2]) -> Self::BinarySeed {
+        FusionSeed {
+            p1_recv_id,
+            p2_recv_id,
+            grad_steps: A.max(1),
+        }
+    }
+    fn binary_inboxes(seed: &Self::BinarySeed) -> [ObjectId; 2] {
+        [seed.p1_recv_id, seed.p2_recv_id]
+    }
+    fn warp_seed(recv_id: ObjectId, warp_journey_id: Uuid) -> Self::WarpSeed {
+        BoundaryInit {
+            recv_id,
+            grad_steps: A.max(1),
+            warp_journey_id,
+        }
+    }
+    fn register_inboxes(state: &mut Self::State, ports: &[(u32, ObjectId)]) {
+        state
+            .a
+            .shared
+            .lock()
+            .unwrap()
+            .p1_tx
+            .extend(ports.iter().copied());
+    }
 }
 
 pub type TwoSidedZo<Generator, Policy, const ACCUM_STEPS: usize = 1> =
@@ -818,10 +1076,47 @@ pub type TwoSidedZo<Generator, Policy, const ACCUM_STEPS: usize = 1> =
 pub struct TwoSidedZoManifest<M: Manifest, const ACCUM_STEPS: usize = 1>(PhantomData<M>);
 
 impl<M: Manifest, const A: usize> SunProgram for TwoSidedZoManifest<M, A> {
-    type State = M::State;
+    type State = SunState<M::State>;
     type Driver = Sun<M::Generator, M::Policy, M::State, A>;
+    type UnarySeed = crate::cell::action::Init;
+    type BinarySeed = FusionSeed;
+    type WarpSeed = BoundaryInit;
 
-    const ACCUM_STEPS: usize = A;
+    fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
+        crate::cell::action::Init {
+            recv_id: inbox,
+            grad_steps: A.max(1),
+        }
+    }
+    fn unary_inbox(seed: &Self::UnarySeed) -> ObjectId {
+        seed.recv_id
+    }
+    fn binary_seed([p1_recv_id, p2_recv_id]: [ObjectId; 2]) -> Self::BinarySeed {
+        FusionSeed {
+            p1_recv_id,
+            p2_recv_id,
+            grad_steps: A.max(1),
+        }
+    }
+    fn binary_inboxes(seed: &Self::BinarySeed) -> [ObjectId; 2] {
+        [seed.p1_recv_id, seed.p2_recv_id]
+    }
+    fn warp_seed(recv_id: ObjectId, warp_journey_id: Uuid) -> Self::WarpSeed {
+        BoundaryInit {
+            recv_id,
+            grad_steps: A.max(1),
+            warp_journey_id,
+        }
+    }
+    fn register_inboxes(state: &mut Self::State, ports: &[(u32, ObjectId)]) {
+        state
+            .a
+            .shared
+            .lock()
+            .unwrap()
+            .p1_tx
+            .extend(ports.iter().copied());
+    }
 }
 
 /// Legacy stateless generator/policy bundle.
@@ -909,14 +1204,13 @@ impl<S> Predicate<(&SunState<S>, &())> for PendingPipelineWork<S> {
 }
 
 /// Predicate for a neutral dependency-aware forward pass.
-pub struct PendingForwardWork<S, T>(PhantomData<fn() -> (S, T)>);
+pub struct PendingForwardWork<S>(PhantomData<fn() -> S>);
 
-impl<S, T> Predicate<(&S, &black_hole_spec::ArtifactDelivery<T>)> for PendingForwardWork<S, T>
-where
-    S: PropagationState,
+impl<S> Predicate<(&ForwardSunState<S>, &black_hole_spec::ArtifactDelivery<()>)>
+    for PendingForwardWork<S>
 {
-    fn eval((state, _): &(&S, &black_hole_spec::ArtifactDelivery<T>)) -> bool {
-        !state.pending().is_empty()
+    fn eval((state, _): &(&ForwardSunState<S>, &black_hole_spec::ArtifactDelivery<()>)) -> bool {
+        !state.runtime.pending.is_empty()
     }
 }
 
@@ -936,9 +1230,7 @@ pub struct PipelineProgressStep<S, const GRADIENT_ACCUMULATION_STEPS: usize>(
 
 /// One completion step in a neutral typed forward pass.
 #[derive(Flow)]
-pub struct ForwardPassLoop<S: PropagationState, T: Send + 'static>(
-    Step<action::ProcessForwardNode<S, T>>,
-);
+pub struct ForwardPassLoop<S>(Step<action::ProcessForwardNode<S>>);
 
 /// Dependency-aware, operation-typed graph execution primitive.
 ///
@@ -946,28 +1238,29 @@ pub struct ForwardPassLoop<S: PropagationState, T: Send + 'static>(
 /// semantics. Programs provide one typed root artifact; the scheduler runs
 /// every ready node once and routes the sink completion.
 #[derive(Flow)]
-#[jungle(focus = PropA)]
-pub struct ForwardPass<T: Send + 'static>(
-    Step<action::PrepareForwardPass<PropA, T>>,
-    Step<action::SendForwardRoots<PropA, T>>,
-    While<FocusedLoopCondition<PendingForwardWork<PropA, T>, PropA>, ForwardPassLoop<PropA, T>>,
-    Step<action::CompleteForwardPass<PropA, T>>,
+pub struct ForwardPassWithState<Input: Send + 'static, Output: Send + 'static, S>(
+    Step<action::PrepareForwardPass<S, Input>>,
+    Step<action::SendForwardRoots<S>>,
+    While<PendingForwardWork<S>, ForwardPassLoop<S>>,
+    Step<action::CompleteForwardPass<S, Output>>,
 );
+
+pub type ForwardPass<Input, Output = Input> = ForwardPassWithState<Input, Output, ()>;
 
 /// One forward-only serving request.
 #[derive(Flow)]
-pub struct ServeRequest<Source, T: Send + 'static, S>(
+pub struct ServeRequest<Source, Input: Send + 'static, Output: Send + 'static, S>(
     Source,
-    ForwardPass<T>,
-    Step<action::DiscardForwardOutput<S, T>>,
+    ForwardPassWithState<Input, Output, S>,
+    Step<action::DiscardForwardOutput<S, Output>>,
 );
 
 /// Minimal serving driver: finalize once, then execute one neutral forward
 /// pass for every artifact emitted by `Source`.
 #[derive(Flow)]
-pub struct ServeFlow<Source, T: Send + 'static, S>(
-    Step<action::BuildAddrs<S, 1>>,
-    While<Always<SunState<S>, ()>, ServeRequest<Source, T, S>>,
+pub struct ServeFlow<Source, Input: Send + 'static, Output: Send + 'static, S>(
+    Step<action::FinalizeForwardGraph<S>>,
+    While<Always<ForwardSunState<S>, ()>, ServeRequest<Source, Input, Output, S>>,
 );
 
 /// Forward-only Sun program for a homogeneous operation topology.
@@ -975,22 +1268,107 @@ pub struct ServeFlow<Source, T: Send + 'static, S>(
 /// Nodes used with this program can run [`crate::ForwardOperationCell`] and
 /// therefore require only `MassOps<Op>`; no perturb or optimize capability is
 /// part of the driver.
-pub struct ForwardOnly<Source, Op: TensorContract, S = (), T = <Op as TensorContract>::Input>(
+pub struct ForwardOnly<Source, InputOp: TensorContract, OutputOp: TensorContract = InputOp, S = ()>(
     PhantomData<Source>,
-    PhantomData<Op>,
+    PhantomData<InputOp>,
+    PhantomData<OutputOp>,
     PhantomData<fn() -> S>,
-    PhantomData<fn() -> T>,
 );
 
-impl<Source, Op, S, T> SunProgram for ForwardOnly<Source, Op, S, T>
+impl<Source, InputOp, OutputOp, S> SunProgram for ForwardOnly<Source, InputOp, OutputOp, S>
 where
-    Op: TensorContract<Input = T, Output = T>,
-    T: Send + 'static,
+    InputOp: TensorContract,
+    OutputOp: TensorContract,
+    InputOp::Input: Send + 'static,
+    OutputOp::Output: Send + 'static,
 {
-    type State = S;
-    type Driver = ServeFlow<Source, T, S>;
+    type State = ForwardSunState<S>;
+    type Driver = ServeFlow<Source, InputOp::Input, OutputOp::Output, S>;
+    type UnarySeed = crate::cell::action::Init;
+    type BinarySeed = FusionSeed;
+    type WarpSeed = BoundaryInit;
 
-    const ACCUM_STEPS: usize = 1;
+    fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
+        crate::cell::action::Init {
+            recv_id: inbox,
+            grad_steps: 1,
+        }
+    }
+    fn unary_inbox(seed: &Self::UnarySeed) -> ObjectId {
+        seed.recv_id
+    }
+    fn binary_seed([p1_recv_id, p2_recv_id]: [ObjectId; 2]) -> Self::BinarySeed {
+        FusionSeed {
+            p1_recv_id,
+            p2_recv_id,
+            grad_steps: 1,
+        }
+    }
+    fn binary_inboxes(seed: &Self::BinarySeed) -> [ObjectId; 2] {
+        [seed.p1_recv_id, seed.p2_recv_id]
+    }
+    fn warp_seed(recv_id: ObjectId, warp_journey_id: Uuid) -> Self::WarpSeed {
+        BoundaryInit {
+            recv_id,
+            grad_steps: 1,
+            warp_journey_id,
+        }
+    }
+    fn register_inboxes(state: &mut Self::State, ports: &[(u32, ObjectId)]) {
+        state.runtime.inputs.extend(ports.iter().copied());
+    }
+}
+
+/// A small non-forward, non-QuZO schedule proving that a program can compile
+/// a topology and then run arbitrary checkpoint and evaluation flows without
+/// inheriting propagation state.
+#[derive(Flow)]
+pub struct CheckpointEvaluateFlow<Checkpoint, Evaluation, S>(
+    Step<action::FinalizeNeutralGraph<S>>,
+    Checkpoint,
+    Evaluation,
+);
+
+pub struct CheckpointEvaluate<Checkpoint, Evaluation, S = ()>(
+    PhantomData<Checkpoint>,
+    PhantomData<Evaluation>,
+    PhantomData<fn() -> S>,
+);
+
+impl<Checkpoint, Evaluation, S> SunProgram for CheckpointEvaluate<Checkpoint, Evaluation, S> {
+    type State = NeutralSunState<S>;
+    type Driver = CheckpointEvaluateFlow<Checkpoint, Evaluation, S>;
+    type UnarySeed = crate::cell::action::Init;
+    type BinarySeed = FusionSeed;
+    type WarpSeed = BoundaryInit;
+
+    fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
+        crate::cell::action::Init {
+            recv_id: inbox,
+            grad_steps: 1,
+        }
+    }
+    fn unary_inbox(seed: &Self::UnarySeed) -> ObjectId {
+        seed.recv_id
+    }
+    fn binary_seed([p1_recv_id, p2_recv_id]: [ObjectId; 2]) -> Self::BinarySeed {
+        FusionSeed {
+            p1_recv_id,
+            p2_recv_id,
+            grad_steps: 1,
+        }
+    }
+    fn binary_inboxes(seed: &Self::BinarySeed) -> [ObjectId; 2] {
+        [seed.p1_recv_id, seed.p2_recv_id]
+    }
+    fn warp_seed(recv_id: ObjectId, warp_journey_id: Uuid) -> Self::WarpSeed {
+        BoundaryInit {
+            recv_id,
+            grad_steps: 1,
+            warp_journey_id,
+        }
+    }
+    fn register_inboxes(_state: &mut Self::State, _ports: &[(u32, ObjectId)]) {}
 }
 
 // ---------------------------------------------------------------------------

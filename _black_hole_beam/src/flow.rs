@@ -3,10 +3,9 @@
 
 use black_hole_flux::sun::{
     BinarySunStepWithProgram, NodeIdsFromList, OperationNode, ServeFlow, Sun, SunAppearance,
-    SunNode, SunProgram, SunState, UnarySunStepWithProgram,
+    SunNode, SunProgram, SunStateView, UnarySunStepWithProgram,
 };
 use black_hole_flux::{DeclaredEdges, TensorContract};
-use black_hole_flux::{FusionFlow, FusionSeed, FusionState};
 use jungle_sdk::{Animal, AnimalIdValue, Observe};
 use typenum::Unsigned;
 
@@ -15,8 +14,10 @@ use crate::model::CellDefinition;
 /// Marker for Sun animals whose runtime state is `SunState<S>`.
 pub trait BlackHoleSunAnimal: Animal + Observe<Appearance = SunAppearance> {}
 
-impl<A, S> BlackHoleSunAnimal for A where
-    A: Animal<State = SunState<S>> + Observe<Appearance = SunAppearance>
+impl<A> BlackHoleSunAnimal for A
+where
+    A: Animal + Observe<Appearance = SunAppearance>,
+    A::State: SunStateView,
 {
 }
 
@@ -42,7 +43,9 @@ impl<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::De
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
 
-impl<Source, T: Send + 'static, S> private::DescribeSun for ServeFlow<Source, T, S> {
+impl<Source, Input: Send + 'static, Output: Send + 'static, S> private::DescribeSun
+    for ServeFlow<Source, Input, Output, S>
+{
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
 
@@ -51,7 +54,7 @@ impl<Program, Port, A, Edges, Tail, Op> private::DescribeSun
 where
     Program: SunProgram,
     Port: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = black_hole_flux::CellInit> + 'static,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::UnarySeed> + 'static,
     A: OperationNode<Op>,
     Op: TensorContract,
     Edges: NodeIdsFromList + DeclaredEdges<Op>,
@@ -73,10 +76,8 @@ where
     Program: SunProgram,
     PortA: Unsigned,
     PortB: Unsigned,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = FusionSeed, State = FusionState>
-        + 'static,
+    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::BinarySeed> + 'static,
     A: OperationNode<Op>,
-    A::Flow: FusionFlow,
     Op: TensorContract,
     Edges: NodeIdsFromList + DeclaredEdges<Op>,
     Tail: private::DescribeSun,
