@@ -937,6 +937,7 @@ dependencies = [
  "async-trait",
  "black-hole-contract",
  "black-hole-spec",
+ "black-hole-void",
  "clap",
  "directories-next",
  "paramecia-engine",

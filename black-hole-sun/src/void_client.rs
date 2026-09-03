@@ -401,6 +401,31 @@ impl VoidClient {
         }
     }
 
+    /// Resolve raw bytes from any typed artifact location. Live references
+    /// fetch and authenticate their ticket, consume the progressive stream,
+    /// and retain the committed transfer as their replay fallback.
+    pub async fn receive_artifact<T>(&self, reference: &ArtifactRef<T>) -> Result<Vec<u8>, String> {
+        match reference {
+            ArtifactRef::Committed(reference) => self.download(reference.id()).await,
+            ArtifactRef::Transfer(reference) => {
+                VoidOps::resolve_transfer_raw(self, reference.id()).await
+            }
+            ArtifactRef::Stream(reference) => {
+                let ticket_bytes = self.download(reference.ticket_id).await?;
+                let ticket: TransferTicket = postcard::from_bytes(&ticket_bytes)
+                    .map_err(|error| format!("invalid transfer ticket: {error}"))?;
+                if ticket.transfer_id != reference.fallback_transfer_id
+                    || ticket.eventual_void_id != reference.fallback_transfer_id
+                {
+                    return Err(
+                        "transfer ticket does not match the artifact's durable fallback".into(),
+                    );
+                }
+                self.receive_stream(&ticket).await
+            }
+        }
+    }
+
     fn source_authority(&self) -> String {
         match &self.transport {
             VoidTransport::Quic { addr, .. } | VoidTransport::Tcp { addr } => addr.to_string(),

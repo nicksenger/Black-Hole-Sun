@@ -33,5 +33,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "ti
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[dev-dependencies]
+black-hole-void = { path = "../_black_hole_void", default-features = false }
+
 [lints]
 workspace = true

@@ -136,7 +136,8 @@ async fn generic_mass_hosts_injected_operation_and_validates_payloads() {
         .forward(instance_id, ArtifactRef::from_object_id(input_id))
         .await
         .unwrap();
-    let output_bytes = void_client.download(output.object_id()).await.unwrap();
+    assert!(matches!(output, ArtifactRef::Stream(_)));
+    let output_bytes = void_client.receive_artifact(&output).await.unwrap();
     assert_eq!(fake_output_values(&output_bytes), vec![2, 8, 42]);
 
     let malformed_id = void_client

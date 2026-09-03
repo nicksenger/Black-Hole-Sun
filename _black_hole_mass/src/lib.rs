@@ -29,12 +29,12 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use black_hole_spec::{
-    ContractId, ContractSide, DarkToken, InferenceInput, InferenceOutput, InferenceRequest,
-    LogitEntry, MassArchitecture, MassErrorFeedbackConfig, MassIn, MassModelCapacity,
-    MassModelConfig, MassModelParams, MassOut, MassPerturbationMode, ObjectId,
-    OperationArtifactRef, OperationCapability, SequenceOutput, TransferBegin, TransferChunk,
-    TransferHash, TransferRecord, TunnelRequest, WorkerCapabilities,
-    MASS_OPERATION_PROTOCOL_VERSION,
+    ContractDescriptor, ContractId, ContractSide, DarkToken, DurabilityPolicy, InferenceInput,
+    InferenceOutput, InferenceRequest, LogitEntry, MassArchitecture, MassErrorFeedbackConfig,
+    MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode,
+    ObjectId, OperationArtifactRef, OperationCapability, SequenceOutput, TransferBegin,
+    TransferChunk, TransferHash, TransferRecord, TransferStreamFrame, TransferTicket,
+    TunnelRequest, WorkerCapabilities, MASS_OPERATION_PROTOCOL_VERSION, TRANSFER_PROTOCOL_VERSION,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -42,6 +42,7 @@ const DEFAULT_LISTEN_ADDR: &str = "[::1]:4433";
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 /// Chunk size for streaming void transfers (must fit within one frame).
 const VOID_CHUNK_SIZE: usize = 16 * 1024 * 1024; // 16 MB
+const STREAM_TRANSFER_LEASE: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_ENGINE_TOP_K: usize = 256;
 const DEFAULT_ENGINE_TEMPERATURE: f64 = 0.7;
 const DEFAULT_ENGINE_REPEAT_PENALTY: f32 = 1.0;
@@ -334,6 +335,14 @@ enum VoidClientTransport {
     },
 }
 
+enum PendingTransferUpload {
+    Quic {
+        send: quinn::SendStream,
+        recv: quinn::RecvStream,
+    },
+    Tcp(TcpStream),
+}
+
 /// A client connection to the void object store.
 pub struct VoidClient {
     transport: VoidClientTransport,
@@ -421,18 +430,225 @@ impl VoidClient {
         }
     }
 
-    /// Resolve only authoritative operation inputs. Transfer and stream
-    /// references both replay from the committed Void manifest, which
-    /// prevents an operation result from being published before its durable
-    /// input commits.
+    /// Resolve an operation input. Stream references use their live ticket
+    /// first and fall back to the committed Void manifest if the live channel
+    /// is interrupted. A full-tensor operation receives bytes only after the
+    /// stream's commit frame, so its output cannot precede durable input.
     pub async fn download_artifact(&self, reference: OperationArtifactRef) -> Result<Vec<u8>> {
         match reference {
             OperationArtifactRef::Committed(id) => self.download(id).await,
-            OperationArtifactRef::Transfer(id)
-            | OperationArtifactRef::Stream {
-                fallback_transfer_id: id,
-                ..
-            } => self.download_committed_transfer(id).await,
+            OperationArtifactRef::Transfer(id) => self.download_committed_transfer(id).await,
+            OperationArtifactRef::Stream {
+                ticket_id,
+                fallback_transfer_id,
+            } => {
+                let ticket = self.download_stream_ticket(ticket_id).await;
+                let durability = ticket.as_ref().ok().map(|ticket| ticket.durability);
+                let live = match ticket {
+                    Ok(ticket) => {
+                        if ticket.eventual_void_id != fallback_transfer_id
+                            || ticket.transfer_id != fallback_transfer_id
+                        {
+                            Err(ServerError::VoidError(
+                                "stream ticket does not match its durable fallback".into(),
+                            ))
+                        } else {
+                            self.receive_stream(&ticket).await
+                        }
+                    }
+                    Err(error) => Err(error),
+                };
+                match live {
+                    Ok(bytes) => Ok(bytes),
+                    Err(error) if durability == Some(DurabilityPolicy::Ephemeral) => Err(error),
+                    Err(live_error) => {
+                        debug!(
+                            %ticket_id,
+                            %fallback_transfer_id,
+                            error = %live_error,
+                            "live artifact stream failed; resolving committed Void fallback"
+                        );
+                        self.download_committed_transfer(fallback_transfer_id)
+                            .await
+                            .map_err(|fallback_error| {
+                                ServerError::VoidError(format!(
+                                    "live stream failed ({live_error}); durable fallback failed ({fallback_error})"
+                                ))
+                            })
+                    }
+                }
+            }
+        }
+    }
+
+    async fn download_stream_ticket(&self, ticket_id: ObjectId) -> Result<TransferTicket> {
+        let bytes = self.download(ticket_id).await?;
+        let ticket: TransferTicket = from_bytes(&bytes).map_err(ServerError::DecodeFrame)?;
+        validate_transfer_ticket(&ticket)?;
+        Ok(ticket)
+    }
+
+    async fn receive_stream(&self, ticket: &TransferTicket) -> Result<Vec<u8>> {
+        let source: SocketAddr = ticket.source.parse().map_err(|error| {
+            ServerError::VoidError(format!("invalid transfer source in ticket: {error}"))
+        })?;
+        let bytes = match &self.transport {
+            VoidClientTransport::Quic { endpoint, .. } => {
+                let connection = endpoint
+                    .connect(source, &source.ip().to_string())
+                    .map_err(|error| ServerError::VoidConnect(error.to_string()))?
+                    .await
+                    .map_err(|error| ServerError::VoidConnect(error.to_string()))?;
+                let (mut send, mut recv) = connection
+                    .open_bi()
+                    .await
+                    .map_err(|error| ServerError::VoidStream(error.to_string()))?;
+                write_frame_quic(
+                    &mut send,
+                    &VoidIn::TransferStreamDownload {
+                        transfer_id: ticket.transfer_id,
+                        authorization: ticket.authorization,
+                    },
+                )
+                .await?;
+                receive_transfer_frames_quic(&mut recv, ticket).await?
+            }
+            VoidClientTransport::Tcp { .. } => {
+                let mut stream = TcpStream::connect(source)
+                    .await
+                    .map_err(|error| ServerError::VoidTcpConnect(error.to_string()))?;
+                write_frame_io(
+                    &mut stream,
+                    &VoidIn::TransferStreamDownload {
+                        transfer_id: ticket.transfer_id,
+                        authorization: ticket.authorization,
+                    },
+                )
+                .await?;
+                receive_transfer_frames_io(&mut stream, ticket).await?
+            }
+        };
+        validate_received_transfer(ticket, bytes)
+    }
+
+    /// Publish a validated operation result as a live stream and tee every
+    /// frame into Void. The transfer begin and ticket are durable before this
+    /// returns; chunk upload and commit continue in the background.
+    pub async fn publish_artifact(
+        &self,
+        descriptor: ContractDescriptor,
+        side: ContractSide,
+        data: Vec<u8>,
+    ) -> Result<OperationArtifactRef> {
+        let validated = black_hole_contract::validate_artifact(&descriptor, side, &data)
+            .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
+        let tensor_header = black_hole_contract::tensor_stream_header(&data)
+            .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
+        let expected_len = data.len() as u64;
+        let expected_hash = transfer_hash(&data);
+        let expected_chunks = if data.is_empty() {
+            0
+        } else {
+            u32::try_from(data.len().div_ceil(VOID_CHUNK_SIZE)).map_err(|_| {
+                ServerError::VoidError("artifact requires too many transfer chunks".into())
+            })?
+        };
+        let transfer_id = ObjectId::new_v4();
+        let authorization = random_transfer_authorization();
+        let deadline_unix_ms = unix_time_ms().saturating_add(
+            STREAM_TRANSFER_LEASE
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+        );
+        let begin = TransferBegin {
+            protocol_version: TRANSFER_PROTOCOL_VERSION,
+            transfer_id,
+            envelope: validated.envelope.clone(),
+            tensor_header: tensor_header.clone(),
+            expected_chunks,
+            expected_len,
+            expected_hash,
+            deadline_unix_ms,
+            authorization_hash: transfer_hash(&authorization),
+        };
+        let ticket = TransferTicket {
+            descriptor,
+            envelope: validated.envelope,
+            tensor_header,
+            transfer_id,
+            source: self.source_authority(),
+            authorization,
+            expected_len,
+            expected_hash,
+            deadline_unix_ms,
+            durability: DurabilityPolicy::ReplayRequired,
+            eventual_void_id: transfer_id,
+        };
+
+        let mut upload = self.open_transfer_upload(begin, authorization).await?;
+        let ticket_bytes = to_allocvec(&ticket).map_err(ServerError::EncodeFrame)?;
+        let ticket_id = match self.upload(ticket_bytes).await {
+            Ok(ticket_id) => ticket_id,
+            Err(error) => {
+                let _ =
+                    abort_pending_upload(&mut upload, "failed to persist transfer ticket").await;
+                return Err(error);
+            }
+        };
+        tokio::spawn(async move {
+            if let Err(error) = finish_transfer_upload(upload, data, expected_hash).await {
+                warn!(%transfer_id, %error, "background artifact stream failed");
+            }
+        });
+        Ok(OperationArtifactRef::Stream {
+            ticket_id,
+            fallback_transfer_id: transfer_id,
+        })
+    }
+
+    fn source_authority(&self) -> String {
+        match &self.transport {
+            VoidClientTransport::Quic { remote_addr, .. }
+            | VoidClientTransport::Tcp { remote_addr } => remote_addr.to_string(),
+        }
+    }
+
+    async fn open_transfer_upload(
+        &self,
+        begin: TransferBegin,
+        authorization: [u8; 32],
+    ) -> Result<PendingTransferUpload> {
+        let request = VoidIn::TransferStreamUpload {
+            begin,
+            authorization,
+        };
+        match &self.transport {
+            VoidClientTransport::Quic {
+                endpoint,
+                remote_addr,
+            } => {
+                let connection = endpoint
+                    .connect(*remote_addr, &remote_addr.ip().to_string())
+                    .map_err(|error| ServerError::VoidConnect(error.to_string()))?
+                    .await
+                    .map_err(|error| ServerError::VoidConnect(error.to_string()))?;
+                let (mut send, mut recv) = connection
+                    .open_bi()
+                    .await
+                    .map_err(|error| ServerError::VoidStream(error.to_string()))?;
+                write_frame_quic(&mut send, &request).await?;
+                expect_transfer_started(read_frame_quic(&mut recv).await?)?;
+                Ok(PendingTransferUpload::Quic { send, recv })
+            }
+            VoidClientTransport::Tcp { remote_addr } => {
+                let mut stream = TcpStream::connect(*remote_addr)
+                    .await
+                    .map_err(|error| ServerError::VoidTcpConnect(error.to_string()))?;
+                write_frame_io(&mut stream, &request).await?;
+                expect_transfer_started(read_frame_io(&mut stream).await?)?;
+                Ok(PendingTransferUpload::Tcp(stream))
+            }
         }
     }
 
@@ -654,6 +870,288 @@ impl VoidClient {
         }
         Ok(offset)
     }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn transfer_hash(data: &[u8]) -> TransferHash {
+    TransferHash(Sha256::digest(data).into())
+}
+
+fn random_transfer_authorization() -> [u8; 32] {
+    let left = ObjectId::new_v4();
+    let right = ObjectId::new_v4();
+    let mut authorization = [0; 32];
+    authorization[..16].copy_from_slice(left.as_bytes());
+    authorization[16..].copy_from_slice(right.as_bytes());
+    authorization
+}
+
+fn expect_transfer_started(response: VoidOut) -> Result<()> {
+    match response {
+        VoidOut::Transfer {
+            record: TransferRecord::InProgress { .. },
+        } => Ok(()),
+        VoidOut::Error { message } => Err(ServerError::VoidError(message)),
+        _ => Err(ServerError::VoidError(
+            "unexpected response while opening transfer stream".into(),
+        )),
+    }
+}
+
+async fn write_pending_upload(
+    upload: &mut PendingTransferUpload,
+    frame: &TransferStreamFrame,
+) -> Result<()> {
+    match upload {
+        PendingTransferUpload::Quic { send, .. } => write_frame_quic(send, frame).await,
+        PendingTransferUpload::Tcp(stream) => write_frame_io(stream, frame).await,
+    }
+}
+
+async fn read_pending_upload(upload: &mut PendingTransferUpload) -> Result<VoidOut> {
+    match upload {
+        PendingTransferUpload::Quic { recv, .. } => read_frame_quic(recv).await,
+        PendingTransferUpload::Tcp(stream) => read_frame_io(stream).await,
+    }
+}
+
+async fn abort_pending_upload(
+    upload: &mut PendingTransferUpload,
+    reason: impl Into<String>,
+) -> Result<()> {
+    write_pending_upload(
+        upload,
+        &TransferStreamFrame::Abort {
+            reason: reason.into(),
+        },
+    )
+    .await?;
+    match read_pending_upload(upload).await? {
+        VoidOut::Transfer {
+            record: TransferRecord::Aborted(_),
+        } => Ok(()),
+        VoidOut::Error { message } => Err(ServerError::VoidError(message)),
+        _ => Err(ServerError::VoidError(
+            "unexpected response while aborting transfer stream".into(),
+        )),
+    }
+}
+
+async fn finish_transfer_upload(
+    mut upload: PendingTransferUpload,
+    data: Vec<u8>,
+    aggregate_hash: TransferHash,
+) -> Result<()> {
+    for (index, chunk) in data.chunks(VOID_CHUNK_SIZE).enumerate() {
+        let index = u32::try_from(index)
+            .map_err(|_| ServerError::VoidError("too many stream chunks".into()))?;
+        let data = chunk.to_vec();
+        let hash = transfer_hash(&data);
+        write_pending_upload(
+            &mut upload,
+            &TransferStreamFrame::Chunk { index, data, hash },
+        )
+        .await?;
+    }
+    write_pending_upload(&mut upload, &TransferStreamFrame::Commit { aggregate_hash }).await?;
+    match read_pending_upload(&mut upload).await? {
+        VoidOut::Transfer {
+            record: TransferRecord::Committed(_),
+        } => Ok(()),
+        VoidOut::Error { message } => Err(ServerError::VoidError(message)),
+        _ => Err(ServerError::VoidError(
+            "unexpected response while committing transfer stream".into(),
+        )),
+    }
+}
+
+fn validate_transfer_ticket(ticket: &TransferTicket) -> Result<()> {
+    if ticket.descriptor.id != ticket.envelope.contract_id
+        || ticket.descriptor.version != ticket.envelope.contract_version
+        || black_hole_contract::descriptor_hash(&ticket.descriptor) != ticket.envelope.contract_hash
+    {
+        return Err(ServerError::VoidError(
+            "transfer ticket descriptor does not match its tensor envelope".into(),
+        ));
+    }
+    if ticket.eventual_void_id != ticket.transfer_id {
+        return Err(ServerError::VoidError(
+            "transfer ticket durable object does not match its transfer ID".into(),
+        ));
+    }
+    let declared_len = black_hole_contract::validate_tensor_stream_header(
+        &ticket.descriptor,
+        ticket.envelope.side,
+        &ticket.tensor_header,
+    )
+    .map_err(|error| ServerError::VoidError(format!("invalid tensor stream header: {error}")))?;
+    if declared_len != ticket.expected_len {
+        return Err(ServerError::VoidError(format!(
+            "tensor stream header declares {declared_len} bytes, but ticket declares {}",
+            ticket.expected_len
+        )));
+    }
+    Ok(())
+}
+
+fn validate_stream_begin(begin: &TransferBegin, ticket: &TransferTicket) -> Result<()> {
+    if begin.transfer_id != ticket.transfer_id
+        || begin.envelope != ticket.envelope
+        || begin.tensor_header != ticket.tensor_header
+        || begin.expected_len != ticket.expected_len
+        || begin.expected_hash != ticket.expected_hash
+        || begin.deadline_unix_ms != ticket.deadline_unix_ms
+        || begin.authorization_hash != transfer_hash(&ticket.authorization)
+    {
+        return Err(ServerError::VoidError(
+            "live stream begin frame does not match its ticket".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn apply_transfer_frame(
+    frame: TransferStreamFrame,
+    ticket: &TransferTicket,
+    begin: &mut Option<TransferBegin>,
+    next_index: &mut u32,
+    aggregate: &mut Sha256,
+    output: &mut Vec<u8>,
+) -> Result<bool> {
+    match frame {
+        TransferStreamFrame::Begin(received) => {
+            if begin.is_some() {
+                return Err(ServerError::VoidError(
+                    "duplicate begin frame on transfer stream".into(),
+                ));
+            }
+            validate_stream_begin(&received, ticket)?;
+            *begin = Some(received);
+            Ok(false)
+        }
+        TransferStreamFrame::Chunk { index, data, hash } => {
+            if begin.is_none() {
+                return Err(ServerError::VoidError(
+                    "transfer chunk arrived before begin frame".into(),
+                ));
+            }
+            if index != *next_index {
+                return Err(ServerError::VoidError(format!(
+                    "transfer stream chunk {index} arrived out of order; expected {}",
+                    *next_index
+                )));
+            }
+            if transfer_hash(&data) != hash {
+                return Err(ServerError::VoidError(format!(
+                    "transfer stream chunk {index} failed validation"
+                )));
+            }
+            let prefix_start = output.len().min(ticket.tensor_header.len());
+            let prefix_end = output
+                .len()
+                .saturating_add(data.len())
+                .min(ticket.tensor_header.len());
+            if prefix_start < prefix_end
+                && data[..prefix_end - prefix_start]
+                    != ticket.tensor_header[prefix_start..prefix_end]
+            {
+                return Err(ServerError::VoidError(format!(
+                    "transfer stream chunk {index} does not match the authenticated tensor header"
+                )));
+            }
+            *next_index = next_index.saturating_add(1);
+            aggregate.update(&data);
+            output.extend_from_slice(&data);
+            Ok(false)
+        }
+        TransferStreamFrame::Commit { aggregate_hash } => {
+            let begin = begin.as_ref().ok_or_else(|| {
+                ServerError::VoidError("transfer committed before begin frame".into())
+            })?;
+            let actual_hash = TransferHash(aggregate.clone().finalize().into());
+            if *next_index != begin.expected_chunks
+                || output.len() as u64 != begin.expected_len
+                || aggregate_hash != begin.expected_hash
+                || actual_hash != aggregate_hash
+            {
+                return Err(ServerError::VoidError(
+                    "committed transfer stream failed aggregate validation".into(),
+                ));
+            }
+            Ok(true)
+        }
+        TransferStreamFrame::Abort { reason } => Err(ServerError::VoidError(format!(
+            "transfer aborted: {reason}"
+        ))),
+    }
+}
+
+async fn receive_transfer_frames_quic(
+    recv: &mut quinn::RecvStream,
+    ticket: &TransferTicket,
+) -> Result<Vec<u8>> {
+    let mut begin = None;
+    let mut next_index = 0;
+    let mut aggregate = Sha256::new();
+    let mut output = Vec::new();
+    loop {
+        let frame = read_frame_quic(recv).await?;
+        if apply_transfer_frame(
+            frame,
+            ticket,
+            &mut begin,
+            &mut next_index,
+            &mut aggregate,
+            &mut output,
+        )? {
+            return Ok(output);
+        }
+    }
+}
+
+async fn receive_transfer_frames_io<S>(stream: &mut S, ticket: &TransferTicket) -> Result<Vec<u8>>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut begin = None;
+    let mut next_index = 0;
+    let mut aggregate = Sha256::new();
+    let mut output = Vec::new();
+    loop {
+        let frame = read_frame_io(stream).await?;
+        if apply_transfer_frame(
+            frame,
+            ticket,
+            &mut begin,
+            &mut next_index,
+            &mut aggregate,
+            &mut output,
+        )? {
+            return Ok(output);
+        }
+    }
+}
+
+fn validate_received_transfer(ticket: &TransferTicket, bytes: Vec<u8>) -> Result<Vec<u8>> {
+    if bytes.len() as u64 != ticket.expected_len
+        || transfer_hash(&bytes) != ticket.expected_hash
+        || !bytes.starts_with(&ticket.tensor_header)
+    {
+        return Err(ServerError::VoidError(
+            "received tensor does not match its transfer ticket".into(),
+        ));
+    }
+    black_hole_contract::validate_artifact(&ticket.descriptor, ticket.envelope.side, &bytes)
+        .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
+    Ok(bytes)
 }
 
 enum MassRpcClientInner {
@@ -3161,10 +3659,10 @@ async fn handle_operation_forward_local(
         &output_bytes,
     )
     .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
-    let output_id = void.upload(output_bytes).await?;
-    Ok(MassOut::Forwarded {
-        output: OperationArtifactRef::committed(output_id),
-    })
+    let output = void
+        .publish_artifact(capability.descriptor, ContractSide::Output, output_bytes)
+        .await?;
+    Ok(MassOut::Forwarded { output })
 }
 
 async fn handle_qwen_operation_forward(
@@ -3294,10 +3792,14 @@ async fn handle_qwen_operation_forward(
     ];
     let output_bytes = encode_output::<QwenDarkInference>(&output_tensors, &())
         .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
-    let output_id = void.upload(output_bytes).await?;
-    Ok(MassOut::Forwarded {
-        output: OperationArtifactRef::committed(output_id),
-    })
+    let output = void
+        .publish_artifact(
+            <black_hole_contract::QwenDarkInference as black_hole_contract::TensorContract>::descriptor(),
+            ContractSide::Output,
+            output_bytes,
+        )
+        .await?;
+    Ok(MassOut::Forwarded { output })
 }
 
 async fn handle_operation_shutdown_routed(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
@@ -4637,10 +5139,16 @@ mod tests {
         RouteTarget, ServerBuilder, ServerError, TransportMode, TunnelWorker,
         DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
-    use black_hole_contract::{operation_capability, QwenDarkInference, TensorContract};
+    use black_hole_contract::{
+        encode_output,
+        glowstick::{Dyn, Shape1},
+        operation_capability, QwenDarkInference, RawTensor, SingleTensorSpec, TensorContract,
+        TensorPortSpec,
+    };
     use black_hole_spec::{
-        ContractId, EncodingId, MassArchitecture, MassErrorFeedbackConfig, MassModelCapacity,
-        MassModelConfig, MassPerturbationMode, WorkerCapabilities,
+        ContractId, DimensionDescriptor, DtypeConstraint, EncodingId, MassArchitecture,
+        MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig, MassPerturbationMode,
+        OperationArtifactRef, TensorDtype, WorkerCapabilities,
     };
     use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
     use tokio::sync::{Mutex, RwLock};
@@ -4649,6 +5157,32 @@ mod tests {
     struct FakeOperation;
     struct SameShapeOtherOperation;
     struct FakeOperationV2;
+    struct StreamAxis;
+    struct StreamPort;
+    struct StreamOperation;
+
+    impl TensorPortSpec for StreamPort {
+        type Shape = Shape1<Dyn<StreamAxis>>;
+
+        const NAME: &'static str = "bytes";
+
+        fn dimensions() -> Vec<DimensionDescriptor> {
+            vec![DimensionDescriptor::Dynamic]
+        }
+
+        fn dtype() -> DtypeConstraint {
+            DtypeConstraint::Exact(TensorDtype::U8)
+        }
+    }
+
+    impl TensorContract for StreamOperation {
+        type Input = SingleTensorSpec<StreamPort>;
+        type Output = SingleTensorSpec<StreamPort>;
+        type Metadata = ();
+
+        const ID: ContractId = ContractId::from_u128(0x7374_7265_616d_2d6f_7065_7261_7469_6f6e);
+        const VERSION: u32 = 1;
+    }
 
     macro_rules! qwen_shaped_contract {
         ($operation:ty, $id:expr, $version:expr) => {
@@ -4669,6 +5203,82 @@ mod tests {
         0x7361_6d65_2d73_6861_7065_2d6f_7468_6572,
         1
     );
+
+    #[tokio::test]
+    async fn operation_artifacts_are_published_as_live_replayable_streams() {
+        let (void_addr, void_handle) = black_hole_void::ServerBuilder::new(
+            Box::new(black_hole_void::object_store::InMemoryObjectStore::new()),
+            Box::new(black_hole_void::persist::InMemoryStore::new()),
+        )
+        .tcp()
+        .listen("127.0.0.1:0".parse().unwrap())
+        .serve()
+        .await
+        .unwrap();
+        let publisher = super::VoidClient::connect(void_addr, TransportMode::Tcp)
+            .await
+            .unwrap();
+        let consumer = super::VoidClient::connect(void_addr, TransportMode::Tcp)
+            .await
+            .unwrap();
+        let payload = b"progressive-output".to_vec();
+        let frame = encode_output::<StreamOperation>(
+            &[RawTensor {
+                name: "bytes".into(),
+                dtype: TensorDtype::U8,
+                shape: vec![payload.len()],
+                data: payload,
+            }],
+            &(),
+        )
+        .unwrap();
+
+        let reference = publisher
+            .publish_artifact(
+                StreamOperation::descriptor(),
+                super::ContractSide::Output,
+                frame.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(reference, OperationArtifactRef::Stream { .. }));
+        assert_eq!(consumer.download_artifact(reference).await.unwrap(), frame);
+
+        let OperationArtifactRef::Stream {
+            ticket_id,
+            fallback_transfer_id,
+        } = reference
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            publisher
+                .download_committed_transfer(fallback_transfer_id)
+                .await
+                .unwrap(),
+            frame
+        );
+
+        let ticket_bytes = publisher.download(ticket_id).await.unwrap();
+        let mut interrupted_ticket: super::TransferTicket =
+            postcard::from_bytes(&ticket_bytes).unwrap();
+        interrupted_ticket.source = "127.0.0.1:9".into();
+        let interrupted_ticket_id = publisher
+            .upload(postcard::to_allocvec(&interrupted_ticket).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            consumer
+                .download_artifact(OperationArtifactRef::Stream {
+                    ticket_id: interrupted_ticket_id,
+                    fallback_transfer_id,
+                })
+                .await
+                .unwrap(),
+            frame
+        );
+        void_handle.abort();
+    }
 
     #[test]
     fn generic_protocol_versions_fail_closed() {
