@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use black_hole_flux::sun::{SunAppearance, SunNodeState, SunOperationalState};
+use black_hole_flux::topology::{SunAppearance, SunNodeState, SunOperationalState};
 use black_hole_flux::Ray;
 use iced_sugiyama::Graph;
 use jungle_sdk::Animal;

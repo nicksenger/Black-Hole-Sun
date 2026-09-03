@@ -1,7 +1,7 @@
 //! Visualize Black Hole Sun cell graphs.
 //!
 //! [`BeamBuilder`] renders the type-level cell topology of a
-//! [`BlackHole`](black_hole_flux::sun::BlackHole), using the circular `circo`
+//! [`BlackHole`](black_hole_flux::compile::BlackHole), using the circular `circo`
 //! layout by default. Live views use the parent Sun animal's Jungle
 //! [`Observe`](jungle_sdk::Observe) appearance as the source of graph topology
 //! and node phase.
@@ -48,7 +48,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use black_hole_flux::sun::{SunAppearance, SunNodeState, SunOperationalState};
+    use black_hole_flux::topology::{SunAppearance, SunNodeState, SunOperationalState};
     use black_hole_flux::{FusionSeed, FusionState, Ray};
     #[cfg(feature = "piano")]
     use iced::keyboard;
@@ -76,10 +76,10 @@ mod tests {
         MIN_COLOR_STATE_DURATION,
     };
 
-    use black_hole_flux::sun::{
-        Binary, BlackHole, ForwardOnly, Manifest, OperationNode, SunEdgeAppearance,
-        SunNodeAppearance, TwoSidedZo, TwoSidedZoManifest, Unary,
-    };
+    use black_hole_flux::compile::BlackHole;
+    use black_hole_flux::programs::forward_only::ForwardOnly;
+    use black_hole_flux::programs::two_sided_zo::{Manifest, TwoSidedZo, TwoSidedZoManifest};
+    use black_hole_flux::topology::{Binary, OperationNode, SunEdgeAppearance, SunNodeAppearance, Unary};
     use black_hole_flux::{
         CellState, ContractId, ForwardOperationPrimordium, Fusion, Primordium, QwenDarkInference,
         TensorContract,
@@ -2092,12 +2092,12 @@ loop_ticks 19200
 mod warp_fetch_diagnostics {
     use std::sync::Arc;
 
-    use black_hole_flux::sun::{SunAppearance, SunNodeState, SunOperationalState};
+    use black_hole_flux::topology::{SunAppearance, SunNodeState, SunOperationalState};
     use uuid::Uuid;
 
     use crate::live::{fetch_warp_appearances, LiveConfig};
 
-    use black_hole_flux::sun::SunNodeAppearance;
+    use black_hole_flux::topology::SunNodeAppearance;
 
     fn warp_appearance_with(journey_id: Uuid) -> SunAppearance {
         SunAppearance {

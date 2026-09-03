@@ -14,9 +14,9 @@ use black_hole_sun::cell::action::{
     WaitForPotentiation, WaitForPropagation,
 };
 use black_hole_sun::ops::{SunOps, VoidInferOps};
-use black_hole_sun::sun::{
-    Binary, BlackHole, SunAppearance, SunNodeState, SunState, TwoSidedZo, Unary,
-};
+use black_hole_sun::compile::BlackHole;
+use black_hole_sun::programs::two_sided_zo::{SunState, TwoSidedZo};
+use black_hole_sun::topology::{Binary, SunAppearance, SunNodeState, Unary};
 use black_hole_sun::{
     AtomError, EmissionId, InferenceRequest, MassModelConfig, MassModelParams, ObjectId, Ray,
     TestVoidServer, Tokenizer, Transmission, VoidClient,

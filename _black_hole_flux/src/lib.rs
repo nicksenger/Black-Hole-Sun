@@ -53,11 +53,14 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod compile;
+pub mod forward;
 pub mod mass;
 pub mod nodes;
 pub mod ops;
+pub mod programs;
 pub mod ray;
-pub mod sun;
+pub mod topology;
 
 pub use black_hole_contract::{QwenDarkInference, StreamingTensorOp, TensorContract};
 
@@ -110,26 +113,35 @@ pub use nodes::cell::{
     Primordium,
 };
 
-pub use sun::{
-    action::{
-        BroadcastPotentiation, BroadcastPotentiationInput, DeclaredEdges, InitializePropagation,
-        NodeIdsFromList, PrepareForwardPass, ProcessForwardNode, ProcessNextNode, PropagationState,
-        SendForwardRoots, SendRootPropagation, Spawn, SpawnWarpAnimal, SpawnWarpBoundary,
-    },
-    effect::{
-        BroadcastPotentiationEffect, BroadcastPotentiationResult, NodeTransmission,
-        SchedulerDelivery, SendRootArtifactDeliveryEffect, SendRootArtifactDeliveryInput,
-        SendRootPropagationEffect, SendRootPropagationInput, WaitForNodeArtifactDeliveryEffect,
-        WaitForNodeArtifactDeliveryInput, WaitForNodeTransmissionEffect,
-        WaitForNodeTransmissionInput,
-    },
-    Binary, BlackHole, BoundaryInit, CheckpointEvaluate, CheckpointEvaluateFlow, CompileSun,
-    DeclaredEdge, Edge, Epoch, ForwardOnly, ForwardPass, ForwardSunState, LegacySun, Manifest,
-    NeutralSunState, OperationNode, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
-    PropagationFlows, PropagationLoop, ServeFlow, SpawnAnimal, StatelessManifest, SunAppearance,
-    SunEdgeAppearance, SunInner, SunNodeAppearance, SunNodeState, SunProgram, SunState,
-    SunStateView, SunTopology, SunTopologyState, TwoSidedZo, TwoSidedZoManifest, TwoSidedZoState,
-    TwoSidedZoWithState, TypedEdges, Unary, Warp,
+pub use compile::action::{Spawn, SpawnWarpAnimal, SpawnWarpBoundary};
+pub use compile::effect::SpawnAnimal;
+pub use compile::{BlackHole, CompileSun, SunProgram};
+pub use forward::action::{PrepareForwardPass, ProcessForwardNode, SendForwardRoots};
+pub use forward::effect::{
+    SchedulerDelivery, SendRootArtifactDeliveryEffect, SendRootArtifactDeliveryInput,
+    WaitForNodeArtifactDeliveryEffect, WaitForNodeArtifactDeliveryInput,
+};
+pub use forward::{ForwardPass, ForwardSunState, NeutralSunState, ServeFlow};
+pub use programs::checkpoint_evaluate::{CheckpointEvaluate, CheckpointEvaluateFlow};
+pub use programs::forward_only::ForwardOnly;
+pub use programs::two_sided_zo::action::{
+    BroadcastPotentiation, BroadcastPotentiationInput, InitializePropagation, ProcessNextNode,
+    PropagationState, SendRootPropagation,
+};
+pub use programs::two_sided_zo::effect::{
+    BroadcastPotentiationEffect, BroadcastPotentiationResult, NodeTransmission,
+    SendRootPropagationEffect, SendRootPropagationInput, WaitForNodeTransmissionEffect,
+    WaitForNodeTransmissionInput,
+};
+pub use programs::two_sided_zo::{
+    Epoch, LegacySun, Manifest, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
+    PropagationFlows, PropagationLoop, StatelessManifest, SunInner, SunState, TwoSidedZo,
+    TwoSidedZoManifest, TwoSidedZoState, TwoSidedZoWithState,
+};
+pub use topology::{
+    Binary, BoundaryInit, DeclaredEdge, DeclaredEdges, Edge, NodeIdsFromList, OperationNode,
+    SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState, SunStateView, SunTopology,
+    SunTopologyState, TypedEdges, Unary, Warp,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]

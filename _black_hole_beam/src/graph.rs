@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use black_hole_flux::sun::SunNodeState;
+use black_hole_flux::topology::SunNodeState;
 use iced::mouse;
 use iced::widget::canvas::{self, Path};
 use iced::{Color, Element, Point, Rectangle, Theme, Vector};

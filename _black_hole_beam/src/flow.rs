@@ -1,10 +1,12 @@
 //! Marker traits describing which Jungle animals and structural flows can be
 //! rendered as Black Hole Sun views.
 
-use black_hole_flux::sun::{
-    BinarySunStepWithProgram, NodeIdsFromList, OperationNode, ServeFlow, Sun, SunAppearance,
-    SunNode, SunProgram, SunStateView, UnarySunStepWithProgram,
+use black_hole_flux::compile::{
+    BinarySunStepWithProgram, SunNode, SunProgram, UnarySunStepWithProgram,
 };
+use black_hole_flux::forward::ServeFlow;
+use black_hole_flux::programs::two_sided_zo::Sun;
+use black_hole_flux::topology::{NodeIdsFromList, OperationNode, SunAppearance, SunStateView};
 use black_hole_flux::{DeclaredEdges, TensorContract};
 use jungle_sdk::{Animal, AnimalIdValue, Observe};
 use typenum::Unsigned;
@@ -31,7 +33,7 @@ pub(crate) mod private {
 /// `<Graph as BlackHole>::Sun<Program>`.
 ///
 /// The trait is sealed and is only implemented for the `SunNode<…>` chain
-/// emitted by [`BlackHole`](black_hole_flux::sun::BlackHole).
+/// emitted by [`BlackHole`](black_hole_flux::compile::BlackHole).
 #[allow(private_bounds)]
 pub trait BlackHoleSunFlow: private::DescribeSun {}
 

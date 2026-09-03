@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use black_hole_flux::sun::{SunAppearance, SunNodeState};
+use black_hole_flux::topology::{SunAppearance, SunNodeState};
 use iced::keyboard;
 use iced::time::Instant;
 use iced::widget::{button, column, container, mouse_area, opaque, row, rule, space, stack, text};
@@ -660,10 +660,10 @@ impl BeamApp {
                     format!(
                         "{annotation} · {}",
                         match cell.operational_state {
-                            black_hole_flux::sun::SunOperationalState::Queued => "queued",
-                            black_hole_flux::sun::SunOperationalState::Running => "running",
-                            black_hole_flux::sun::SunOperationalState::Succeeded => "succeeded",
-                            black_hole_flux::sun::SunOperationalState::Failed => "failed",
+                            black_hole_flux::topology::SunOperationalState::Queued => "queued",
+                            black_hole_flux::topology::SunOperationalState::Running => "running",
+                            black_hole_flux::topology::SunOperationalState::Succeeded => "succeeded",
+                            black_hole_flux::topology::SunOperationalState::Failed => "failed",
                         }
                     )
                 } else if matches!(activity, SunNodeState::Idle) {
@@ -991,10 +991,10 @@ impl BeamApp {
         let cell = self.model.cells.iter().find(|cell| cell.id == node_id)?;
         if let Some(annotation) = &cell.phase_annotation {
             let status = match cell.operational_state {
-                black_hole_flux::sun::SunOperationalState::Queued => "queued",
-                black_hole_flux::sun::SunOperationalState::Running => "running",
-                black_hole_flux::sun::SunOperationalState::Succeeded => "succeeded",
-                black_hole_flux::sun::SunOperationalState::Failed => "failed",
+                black_hole_flux::topology::SunOperationalState::Queued => "queued",
+                black_hole_flux::topology::SunOperationalState::Running => "running",
+                black_hole_flux::topology::SunOperationalState::Succeeded => "succeeded",
+                black_hole_flux::topology::SunOperationalState::Failed => "failed",
             };
             return Some(format!("{annotation} [{status}]"));
         }

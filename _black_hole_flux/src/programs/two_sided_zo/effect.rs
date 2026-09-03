@@ -1,92 +1,17 @@
-//! Sun effects — spawning, transmission waiting, and potentiation.
+//! Two-sided zeroth-order effects — transmission waiting/forwarding and
+//! potentiation broadcast over void.
 
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
-use std::marker::PhantomData;
 
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::ops::{SunOps, VoidInferOps, VoidOps};
-use crate::{AtomError, FusionSeed};
-
-pub struct GenUuidEffect;
-#[jungle::effect(id = 51)]
-impl<J> Effect<J> for GenUuidEffect {
-    type In = ();
-    type Out = Uuid;
-    type Err = AtomError;
-
-    fn effect(
-        _jungle: &J,
-        _input: Self::In,
-    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        async { Ok(Uuid::new_v4()) }
-    }
-}
-
-pub struct GenFusionSeedEffect;
-#[jungle::effect(id = 52)]
-impl<J> Effect<J> for GenFusionSeedEffect {
-    type In = ();
-    type Out = FusionSeed;
-    type Err = AtomError;
-
-    fn effect(
-        _jungle: &J,
-        _input: Self::In,
-    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        async {
-            Ok(FusionSeed {
-                p1_recv_id: Uuid::new_v4(),
-                p2_recv_id: Uuid::new_v4(),
-                grad_steps: 1,
-            })
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SpawnAnimal — spawn an animal and return its journey ID
-// ---------------------------------------------------------------------------
-
-/// Effect that spawns an animal of type `A` into the jungle.
-pub struct SpawnAnimal<A>(PhantomData<fn() -> A>);
-#[jungle::effect(id = 53)]
-impl<
-        A: Animal<
-            Id: AnimalIdValue,
-            Generation: typosaurus::num::Unsigned,
-            Seed: Sync + Send + 'static,
-        >,
-        J: SunOps,
-    > Effect<J> for SpawnAnimal<A>
-{
-    type In = A::Seed;
-    type Out = Uuid;
-    type Err = AtomError;
-
-    fn effect(
-        jungle: &J,
-        seed: Self::In,
-    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        async move {
-            debug!(animal_id = <A::Id as AnimalIdValue>::U32, "spawning animal");
-            let journey_id = jungle
-                .spawn_animal::<A>(&seed)
-                .await
-                .map_err(AtomError::Spawn)?;
-            debug!(?journey_id, "animal spawned");
-            Ok(journey_id)
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// WaitForNodeTransmissionEffect — wait for any currently-ready node
-// ---------------------------------------------------------------------------
+use crate::ops::VoidInferOps;
+use crate::topology::PropagationTarget;
+use crate::AtomError;
 
 /// Result of waiting for a transmission from the ready frontier.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -99,33 +24,6 @@ pub struct NodeTransmission {
     pub sent_node_ids: Vec<u32>,
 }
 
-/// Operation-typed scheduler completion for the neutral data plane.
-///
-/// The current two-sided ZO driver continues to use [`NodeTransmission`] as a
-/// compatibility program payload. Generic schedulers use this type so an
-/// output bundle cannot be relayed as a different artifact type.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound = "")]
-pub struct SchedulerDelivery<T> {
-    pub node_id: u32,
-    pub delivery: black_hole_spec::ArtifactDelivery<T>,
-    pub sent_node_ids: Vec<u32>,
-}
-
-/// Mailboxes needed to drive one cell through a propagation pass.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PropagationTarget {
-    /// Internal vertex that owns this destination port.
-    pub node_id: u32,
-    /// Public destination port whose independent mailbox receives the envelope.
-    pub port_id: u32,
-    /// Object id where the cell is currently waiting for a transmission.
-    pub input_id: ObjectId,
-    /// Object id the cell should wait on after this propagation.
-    pub next_input_id: ObjectId,
-    /// Object id where the cell should publish its output.
-    pub output_id: ObjectId,
-}
 
 /// First-pass or second-pass propagation sent to every root port.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -146,16 +44,6 @@ pub struct SendRootPropagationEffect;
 /// Sends many root propagations where each target can use a different payload.
 pub struct SendRootTaskPropagationsEffect;
 
-/// Typed root delivery for one neutral forward pass.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound = "")]
-pub struct SendRootArtifactDeliveryInput<T> {
-    pub targets: Vec<PropagationTarget>,
-    pub delivery: black_hole_spec::ArtifactDelivery<T>,
-}
-
-/// Sends an operation-typed input to every root port.
-pub struct SendRootArtifactDeliveryEffect<T>(PhantomData<fn() -> T>);
 
 /// Input for [`WaitForNodeTransmissionEffect`]: ready rx endpoints plus
 /// downstream forwarding targets keyed by source node id.
@@ -175,35 +63,6 @@ pub struct WaitForNodeTransmissionInput {
 /// the graph.
 pub struct WaitForNodeTransmissionEffect;
 
-/// Typed counterpart to [`WaitForNodeTransmissionInput`].
-///
-/// A scheduler instance handles one source artifact type at a time. The
-/// runtime graph finalizer has already checked that every listed downstream
-/// target accepts that source type.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound = "")]
-pub struct WaitForNodeArtifactDeliveryInput<T> {
-    pub rx_endpoints: Vec<(u32, ObjectId)>,
-    pub downstream: HashMap<u32, Vec<PropagationTarget>>,
-    marker: PhantomData<fn() -> T>,
-}
-
-impl<T> WaitForNodeArtifactDeliveryInput<T> {
-    pub fn new(
-        rx_endpoints: Vec<(u32, ObjectId)>,
-        downstream: HashMap<u32, Vec<PropagationTarget>>,
-    ) -> Self {
-        Self {
-            rx_endpoints,
-            downstream,
-            marker: PhantomData,
-        }
-    }
-}
-
-/// Waits for and forwards a typed artifact delivery without interpreting any
-/// training-program control message.
-pub struct WaitForNodeArtifactDeliveryEffect<T>(PhantomData<fn() -> T>);
 
 async fn send_propagation<J: VoidInferOps>(
     jungle: &J,
@@ -236,28 +95,6 @@ async fn send_propagation<J: VoidInferOps>(
         })
 }
 
-async fn send_artifact_delivery<J: VoidOps, T>(
-    jungle: &J,
-    target: &PropagationTarget,
-    delivery: black_hole_spec::ArtifactDelivery<T>,
-) -> Result<(), AtomError> {
-    let delivery = black_hole_spec::ArtifactDelivery {
-        emission_id: delivery.emission_id,
-        recv: target.next_input_id,
-        send: target.output_id,
-    };
-    let data = postcard::to_allocvec(&delivery).map_err(|error| {
-        AtomError::Transmission(format!("serialize artifact delivery: {error}"))
-    })?;
-    VoidOps::upload_to_void_with(jungle, target.input_id, data)
-        .await
-        .map_err(|error| {
-            AtomError::Transmission(format!(
-                "send artifact to vertex {} port {}: {error}",
-                target.node_id, target.port_id
-            ))
-        })
-}
 
 #[jungle::effect(id = 54)]
 impl<J: VoidInferOps> Effect<J> for SendRootPropagationEffect {
@@ -286,6 +123,7 @@ impl<J: VoidInferOps> Effect<J> for SendRootPropagationEffect {
     }
 }
 
+
 #[jungle::effect(id = 55)]
 impl<J: VoidInferOps> Effect<J> for SendRootTaskPropagationsEffect {
     type In = Vec<RootPropagationSend>;
@@ -313,30 +151,6 @@ impl<J: VoidInferOps> Effect<J> for SendRootTaskPropagationsEffect {
     }
 }
 
-#[jungle::effect(id = 84)]
-impl<T, J> Effect<J> for SendRootArtifactDeliveryEffect<T>
-where
-    T: Send + 'static,
-    J: VoidOps,
-{
-    type In = SendRootArtifactDeliveryInput<T>;
-    type Out = Vec<u32>;
-    type Err = AtomError;
-
-    fn effect(
-        jungle: &J,
-        input: Self::In,
-    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        async move {
-            let mut sent_node_ids = BTreeSet::new();
-            for target in input.targets {
-                send_artifact_delivery(jungle, &target, input.delivery).await?;
-                sent_node_ids.insert(target.node_id);
-            }
-            Ok(sent_node_ids.into_iter().collect())
-        }
-    }
-}
 
 #[jungle::effect(id = 56)]
 impl<J: VoidInferOps> Effect<J> for WaitForNodeTransmissionEffect {
@@ -416,57 +230,6 @@ impl<J: VoidInferOps> Effect<J> for WaitForNodeTransmissionEffect {
     }
 }
 
-#[jungle::effect(id = 83)]
-impl<T, J> Effect<J> for WaitForNodeArtifactDeliveryEffect<T>
-where
-    T: Send + 'static,
-    J: VoidOps,
-{
-    type In = WaitForNodeArtifactDeliveryInput<T>;
-    type Out = SchedulerDelivery<T>;
-    type Err = AtomError;
-
-    fn effect(
-        jungle: &J,
-        input: Self::In,
-    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        async move {
-            if input.rx_endpoints.is_empty() {
-                return Err(AtomError::Transmission(
-                    "no typed artifact endpoints to wait for".to_string(),
-                ));
-            }
-
-            let futures: Vec<_> = input
-                .rx_endpoints
-                .into_iter()
-                .map(|(node_id, id)| {
-                    let jungle_ref = jungle;
-                    Box::pin(async move {
-                        let delivery = VoidOps::wait_for_artifact_delivery::<T>(jungle_ref, id)
-                            .await
-                            .map_err(AtomError::Transmission)?;
-                        Ok::<_, AtomError>((node_id, delivery))
-                    })
-                })
-                .collect();
-            let (result, _index, _rest) = futures::future::select_all(futures).await;
-            let (node_id, delivery) = result?;
-
-            let mut sent_node_ids = BTreeSet::new();
-            for target in input.downstream.get(&node_id).cloned().unwrap_or_default() {
-                send_artifact_delivery(jungle, &target, delivery).await?;
-                sent_node_ids.insert(target.node_id);
-            }
-
-            Ok(SchedulerDelivery {
-                node_id,
-                delivery,
-                sent_node_ids: sent_node_ids.into_iter().collect(),
-            })
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // BroadcastPotentiationEffect — broadcast potentiation payloads to all nodes

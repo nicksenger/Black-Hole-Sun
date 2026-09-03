@@ -8,7 +8,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 pub use crate::nodes::cell::action::{EmissionId, Potentiation, Propagation};
-pub use crate::sun::BoundaryInit;
+pub use crate::topology::BoundaryInit;
 
 use super::effect::{
     ObserveWarpEffect, PerturbWarpEffect, TransmitEffect,

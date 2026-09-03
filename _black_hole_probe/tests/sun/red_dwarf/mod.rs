@@ -7,7 +7,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use black_hole_sun::cell::{CellState, Primordium};
 use black_hole_sun::ops::{SunOps, VoidInferOps};
-use black_hole_sun::sun::{BlackHole, SunAppearance, SunNodeState, SunState, TwoSidedZo, Unary};
+use black_hole_sun::compile::BlackHole;
+use black_hole_sun::programs::two_sided_zo::{SunState, TwoSidedZo};
+use black_hole_sun::topology::{SunAppearance, SunNodeState, Unary};
 use black_hole_sun::{
     EmissionId, InferenceRequest, MassClient, MassModelConfig, MassModelParams, ObjectId, Ray,
     TestMassServer, TestVoidServer, Transmission, VoidClient,

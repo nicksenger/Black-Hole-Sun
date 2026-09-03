@@ -13,7 +13,9 @@ use black_hole_sun::cell::action::{
 };
 use black_hole_sun::cell::Primordium;
 use black_hole_sun::ops::{SunOps, VoidInferOps};
-use black_hole_sun::sun::{Binary, BlackHole, SunAppearance, SunState, TwoSidedZo, Unary};
+use black_hole_sun::compile::BlackHole;
+use black_hole_sun::programs::two_sided_zo::{SunState, TwoSidedZo};
+use black_hole_sun::topology::{Binary, SunAppearance, Unary};
 use black_hole_sun::{
     EmissionId, InferenceRequest, MassClient, MassModelConfig, MassModelParams, ObjectId, Ray,
     TestMassServer, TestVoidServer, Tokenizer, Transmission, VoidClient,

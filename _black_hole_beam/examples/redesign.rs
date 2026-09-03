@@ -18,9 +18,9 @@ use black_hole_contract::{
     glowstick::{Dyn, Shape2},
     SingleTensorSpec, TensorContract, TensorPortSpec,
 };
-use black_hole_flux::sun::{
-    ForwardSunState, SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState,
-    SunOperationalState,
+use black_hole_flux::forward::ForwardSunState;
+use black_hole_flux::topology::{
+    SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState, SunOperationalState,
 };
 use black_hole_flux::{
     BlackHole, CellInit, CellState, Edge, ForwardOnly, ForwardOperationPrimordium, OperationNode,

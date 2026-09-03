@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use black_hole_flux::sun::{SunNodeState, SunOperationalState};
+use black_hole_flux::topology::{SunNodeState, SunOperationalState};
 use iced::Color;
 
 use crate::style::black_hole_text;

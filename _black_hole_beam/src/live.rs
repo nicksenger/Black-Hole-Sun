@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use black_hole_flux::sun::SunAppearance;
+use black_hole_flux::topology::SunAppearance;
 use black_hole_flux::Ray;
 use iced::Task;
 use jungle_sdk::JungleClient;

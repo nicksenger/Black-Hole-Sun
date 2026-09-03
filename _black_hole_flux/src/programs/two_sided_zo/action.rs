@@ -1,498 +1,22 @@
-//! Sun actions — spawning animals, propagation, and potentiation.
+//! Two-sided zeroth-order pipeline actions — epoch bookkeeping, per-node
+//! propagation scheduling, and potentiation broadcast.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 
-use crate::sun::effect::{GenFusionSeedEffect, GenUuidEffect};
-use crate::sun::SunTopologyState;
-
-use super::effect::{
-    BroadcastPotentiationEffect, PropagationTarget, RootPropagationSend,
-    SendRootArtifactDeliveryEffect, SendRootArtifactDeliveryInput, SendRootPropagationEffect,
-    SendRootPropagationInput, SendRootTaskPropagationsEffect, WaitForNodeArtifactDeliveryEffect,
-    WaitForNodeArtifactDeliveryInput, WaitForNodeTransmissionEffect, WaitForNodeTransmissionInput,
-};
-use black_hole_contract::{QwenDarkInference, TensorContract};
 use black_hole_spec::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
-use typosaurus::collections::list::{Empty, List};
-use typosaurus::num::Unsigned;
 use uuid::Uuid;
 
-// ---------------------------------------------------------------------------
-// NodeIdsFromList — extract runtime node IDs from a type-level integer list
-// ---------------------------------------------------------------------------
-
-/// Trait that converts a type-level list of typenum integers into a runtime
-/// vector of node IDs (u32 values).
-pub trait NodeIdsFromList {
-    fn node_ids() -> Vec<u32>;
-}
-
-impl NodeIdsFromList for Empty {
-    fn node_ids() -> Vec<u32> {
-        Vec::new()
-    }
-}
-
-impl<H, T> NodeIdsFromList for List<(H, T)>
-where
-    H: Unsigned,
-    T: NodeIdsFromList,
-{
-    fn node_ids() -> Vec<u32> {
-        let mut ids = vec![<H as Unsigned>::U32];
-        ids.extend(T::node_ids());
-        ids
-    }
-}
-
-impl NodeIdsFromList for super::TypedEdges<Empty> {
-    fn node_ids() -> Vec<u32> {
-        Vec::new()
-    }
-}
-
-impl<P, Destination, T> NodeIdsFromList
-    for super::TypedEdges<List<(super::Edge<P, Destination>, T)>>
-where
-    P: Unsigned,
-    Destination: TensorContract,
-    super::TypedEdges<T>: NodeIdsFromList,
-{
-    fn node_ids() -> Vec<u32> {
-        let mut ids = vec![P::U32];
-        ids.extend(<super::TypedEdges<T> as NodeIdsFromList>::node_ids());
-        ids
-    }
-}
-
-/// Produces runtime edge descriptors while enforcing compile-time bundle
-/// equality between every source output and destination input.
-pub trait DeclaredEdges<Source: TensorContract>: NodeIdsFromList {
-    fn declared_edges() -> Vec<super::DeclaredEdge>;
-}
-
-impl<Source: TensorContract> DeclaredEdges<Source> for Empty {
-    fn declared_edges() -> Vec<super::DeclaredEdge> {
-        Vec::new()
-    }
-}
-
-// Compatibility for the original numeric-only topology syntax. It is
-// intentionally limited to the Qwen artifact bundle; generic graphs must name
-// destination contracts with `TypedEdges`.
-impl<Source, P, T> DeclaredEdges<Source> for List<(P, T)>
-where
-    Source: TensorContract<Output = <QwenDarkInference as TensorContract>::Input>,
-    P: Unsigned,
-    T: DeclaredEdges<Source>,
-{
-    fn declared_edges() -> Vec<super::DeclaredEdge> {
-        let mut edges = vec![super::DeclaredEdge {
-            port_id: P::U32,
-            source_contract: Source::descriptor(),
-            destination_contract: QwenDarkInference::descriptor(),
-        }];
-        edges.extend(T::declared_edges());
-        edges
-    }
-}
-
-impl<Source: TensorContract> DeclaredEdges<Source> for super::TypedEdges<Empty> {
-    fn declared_edges() -> Vec<super::DeclaredEdge> {
-        Vec::new()
-    }
-}
-
-impl<Source, P, Destination, T> DeclaredEdges<Source>
-    for super::TypedEdges<List<(super::Edge<P, Destination>, T)>>
-where
-    Source: TensorContract,
-    Destination: TensorContract<Input = Source::Output>,
-    P: Unsigned,
-    super::TypedEdges<T>: DeclaredEdges<Source>,
-{
-    fn declared_edges() -> Vec<super::DeclaredEdge> {
-        let mut edges = vec![super::DeclaredEdge {
-            port_id: P::U32,
-            source_contract: Source::descriptor(),
-            destination_contract: Destination::descriptor(),
-        }];
-        edges.extend(<super::TypedEdges<T> as DeclaredEdges<Source>>::declared_edges());
-        edges
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Spawn — descriptor-specific animal spawning and graph registration
-// ---------------------------------------------------------------------------
-
-fn register_vertex<Program: super::SunProgram>(
-    state: &mut Program::State,
-    vertex_id: u32,
-    node_label: String,
-    ports: &[(u32, ObjectId)],
-    contract: black_hole_spec::ContractDescriptor,
-    declared_edges: Vec<super::DeclaredEdge>,
-    journey_id: Uuid,
-    warp_journey_id: Option<Uuid>,
-) {
-    let mut topology = state.topology().lock().unwrap();
-
-    topology.journey_ids.entry(vertex_id).or_insert(journey_id);
-    if let Some(warp_journey_id) = warp_journey_id {
-        topology.warp_journey_ids.insert(vertex_id, warp_journey_id);
-    }
-    topology.node_labels.entry(vertex_id).or_insert(node_label);
-    topology
-        .node_operational_states
-        .entry(vertex_id)
-        .or_insert(super::SunOperationalState::Queued);
-    topology.node_state_sequences.entry(vertex_id).or_default();
-    topology
-        .vertex_ports
-        .entry(vertex_id)
-        .or_insert_with(|| ports.iter().map(|(port_id, _)| *port_id).collect());
-    topology.node_contracts.entry(vertex_id).or_insert(contract);
-    topology
-        .declared_outputs
-        .entry(vertex_id)
-        .or_insert_with(|| declared_edges.iter().map(|edge| edge.port_id).collect());
-    topology
-        .declared_edges
-        .entry(vertex_id)
-        .or_insert(declared_edges);
-
-    for &(port_id, _) in ports {
-        if topology.port_vertices.contains_key(&port_id) {
-            topology.duplicate_ports.insert(port_id);
-            continue;
-        }
-        topology.port_vertices.insert(port_id, vertex_id);
-    }
-    drop(topology);
-    Program::register_inboxes(state, ports);
-}
-
-fn short_type_name<T: ?Sized>() -> String {
-    short_type_label(core::any::type_name::<T>())
-}
-
-fn short_type_label(label: &str) -> String {
-    let mut shortened = String::with_capacity(label.len());
-    let mut token = String::new();
-
-    for ch in label.chars() {
-        let token_char = ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '\'');
-        if token_char {
-            token.push(ch);
-            continue;
-        }
-
-        push_shortened_type_token(&mut shortened, &mut token);
-        shortened.push(ch);
-    }
-
-    push_shortened_type_token(&mut shortened, &mut token);
-    shortened.trim().to_string()
-}
-
-fn push_shortened_type_token(shortened: &mut String, token: &mut String) {
-    if token.is_empty() {
-        return;
-    }
-
-    let short = token.rsplit("::").next().unwrap_or(token.as_str());
-    shortened.push_str(short);
-    token.clear();
-}
-
-/// Spawns and registers a [`Unary`](super::Unary) descriptor.
-pub struct SpawnUnary<P, A, E, Program, Op = QwenDarkInference>(
-    PhantomData<fn() -> (P, A, E, Program, Op)>,
-);
-
-#[jungle::action]
-impl<P, A, E, Program, Op> Action for SpawnUnary<P, A, E, Program, Op>
-where
-    P: Unsigned,
-    Program: super::SunProgram,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::UnarySeed>
-        + super::OperationNode<Op>,
-    Op: TensorContract,
-    E: NodeIdsFromList + DeclaredEdges<Op>,
-{
-    type Effect = super::effect::SpawnAnimal<A>;
-    type Input = Program::UnarySeed;
-    type Output = ();
-    type Carry = Program::UnarySeed;
-
-    fn emit(
-        _state: &Program::State,
-        input: Self::Input,
-    ) -> (Program::UnarySeed, Program::UnarySeed) {
-        (input.clone(), input)
-    }
-
-    fn absorb(
-        state: &mut Program::State,
-        output: EffectCompletion<Self::Effect>,
-        seed: Self::Carry,
-    ) -> Result<Self::Output, Failure> {
-        let journey_id = output.map_err(|e| Failure::Message(format!("spawn failed: {e}")))?;
-
-        let port_id = P::U32;
-        register_vertex::<Program>(
-            state,
-            port_id,
-            short_type_name::<A>(),
-            &[(port_id, Program::unary_inbox(&seed))],
-            Op::descriptor(),
-            E::declared_edges(),
-            journey_id,
-            None,
-        );
-
-        Ok(())
-    }
-}
-
-/// Backwards-compatible name for the unary spawn action.
-pub type Spawn<P, A, E, Program, Op = QwenDarkInference> = SpawnUnary<P, A, E, Program, Op>;
-
-/// Spawns and registers a [`Binary`](super::Binary) descriptor.
-pub struct SpawnBinary<P1, P2, A, E, Program, Op = QwenDarkInference>(
-    PhantomData<fn() -> (P1, P2, A, E, Program, Op)>,
-);
-
-#[jungle::action]
-impl<P1, P2, A, E, Program, Op> Action for SpawnBinary<P1, P2, A, E, Program, Op>
-where
-    P1: Unsigned,
-    P2: Unsigned,
-    Program: super::SunProgram,
-    A: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::BinarySeed>
-        + super::OperationNode<Op>,
-    Op: TensorContract,
-    E: NodeIdsFromList + DeclaredEdges<Op>,
-{
-    type Effect = super::effect::SpawnAnimal<A>;
-    type Input = Program::BinarySeed;
-    type Output = ();
-    type Carry = Program::BinarySeed;
-
-    fn emit(
-        _state: &Program::State,
-        seed: Self::Input,
-    ) -> (Program::BinarySeed, Program::BinarySeed) {
-        (seed.clone(), seed)
-    }
-
-    fn absorb(
-        state: &mut Program::State,
-        output: EffectCompletion<Self::Effect>,
-        seed: Self::Carry,
-    ) -> Result<Self::Output, Failure> {
-        let journey_id = output.map_err(|e| Failure::Message(format!("spawn failed: {e}")))?;
-
-        let p1 = P1::U32;
-        let p2 = P2::U32;
-        let [p1_inbox, p2_inbox] = Program::binary_inboxes(&seed);
-        register_vertex::<Program>(
-            state,
-            p1,
-            short_type_name::<A>(),
-            &[(p1, p1_inbox), (p2, p2_inbox)],
-            Op::descriptor(),
-            E::declared_edges(),
-            journey_id,
-            None,
-        );
-
-        Ok(())
-    }
-}
-
-/// Spawns and registers a [`Warp`](super::Warp) descriptor's boundary node.
-///
-/// This runs in two steps:
-/// 1. Spawn the nested warp animal and keep its journey id.
-/// 2. Spawn the boundary animal with [`super::BoundaryInit`], then register
-///    the boundary journey as the parent graph vertex for scheduling.
-pub struct SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, Program, Op = QwenDarkInference>(
-    PhantomData<fn() -> (P, WarpAnimalT, BoundaryAnimalT, E, Program, Op)>,
-);
-
-#[jungle::action]
-impl<P, WarpAnimalT, BoundaryAnimalT, E, Program, Op> Action
-    for SpawnWarpAnimal<P, WarpAnimalT, BoundaryAnimalT, E, Program, Op>
-where
-    P: Unsigned,
-    Program: super::SunProgram,
-    WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
-    BoundaryAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::WarpSeed>
-        + super::OperationNode<Op>,
-    Op: TensorContract,
-    E: NodeIdsFromList + DeclaredEdges<Op>,
-{
-    type Effect = super::effect::SpawnAnimal<WarpAnimalT>;
-    type Input = Program::UnarySeed;
-    type Output = (Program::UnarySeed, Uuid);
-    type Carry = Program::UnarySeed;
-
-    fn emit(_state: &Program::State, input: Self::Input) -> ((), Program::UnarySeed) {
-        ((), input)
-    }
-
-    fn absorb(
-        _state: &mut Program::State,
-        output: EffectCompletion<Self::Effect>,
-        carry: Program::UnarySeed,
-    ) -> Result<Self::Output, Failure> {
-        let warp_journey_id =
-            output.map_err(|e| Failure::Message(format!("warp spawn failed: {e}")))?;
-        Ok((carry, warp_journey_id))
-    }
-}
-
-pub struct SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, Program, Op = QwenDarkInference>(
-    PhantomData<fn() -> (P, WarpAnimalT, BoundaryAnimalT, E, Program, Op)>,
-);
-
-#[jungle::action]
-impl<P, WarpAnimalT, BoundaryAnimalT, E, Program, Op> Action
-    for SpawnWarpBoundary<P, WarpAnimalT, BoundaryAnimalT, E, Program, Op>
-where
-    P: Unsigned,
-    Program: super::SunProgram,
-    WarpAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = ()> + Observe,
-    BoundaryAnimalT: Animal<Id: AnimalIdValue, Generation: Unsigned, Seed = Program::WarpSeed>
-        + super::OperationNode<Op>,
-    Op: TensorContract,
-    E: NodeIdsFromList + DeclaredEdges<Op>,
-{
-    type Effect = super::effect::SpawnAnimal<BoundaryAnimalT>;
-    type Input = (Program::UnarySeed, Uuid);
-    type Output = ();
-    type Carry = (Program::UnarySeed, Uuid);
-
-    fn emit(
-        _state: &Program::State,
-        input: Self::Input,
-    ) -> (Program::WarpSeed, (Program::UnarySeed, Uuid)) {
-        let (init, warp_journey_id) = input;
-        (
-            Program::warp_seed(Program::unary_inbox(&init), warp_journey_id),
-            (init, warp_journey_id),
-        )
-    }
-
-    fn absorb(
-        state: &mut Program::State,
-        output: EffectCompletion<Self::Effect>,
-        carry: (Program::UnarySeed, Uuid),
-    ) -> Result<Self::Output, Failure> {
-        let boundary_journey_id =
-            output.map_err(|e| Failure::Message(format!("boundary spawn failed: {e}")))?;
-        let (init, warp_journey_id) = carry;
-        let port_id = P::U32;
-        register_vertex::<Program>(
-            state,
-            port_id,
-            format!(
-                "Warp<{}, {}>",
-                short_type_name::<WarpAnimalT>(),
-                short_type_name::<BoundaryAnimalT>()
-            ),
-            &[(port_id, Program::unary_inbox(&init))],
-            Op::descriptor(),
-            E::declared_edges(),
-            boundary_journey_id,
-            Some(warp_journey_id),
-        );
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// InitializePropagation — initialize the dynamic Kahn frontier
-// ---------------------------------------------------------------------------
-
-fn pending_dependency_counts(topology: &super::SunTopology) -> HashMap<u32, usize> {
-    topology
-        .journey_ids
-        .keys()
-        .map(|&node_id| {
-            let unresolved = topology.incoming.get(&node_id).map_or(0, Vec::len);
-            (node_id, unresolved)
-        })
-        .collect()
-}
-
-fn initial_ready_nodes(pending: &HashMap<u32, usize>) -> HashSet<u32> {
-    pending
-        .iter()
-        .filter_map(|(&node_id, &unresolved)| (unresolved == 0).then_some(node_id))
-        .collect()
-}
-
-fn sorted_node_ids(nodes: &HashSet<u32>) -> Vec<u32> {
-    let mut ready: Vec<_> = nodes.iter().copied().collect();
-    ready.sort_unstable();
-    ready
-}
-
-fn advance_frontier(
-    pending: &mut HashMap<u32, usize>,
-    ready: &mut HashSet<u32>,
-    node_id: u32,
-    outgoing: &[super::PortTarget],
-) -> Result<(), Failure> {
-    let unresolved = pending
-        .get(&node_id)
-        .copied()
-        .ok_or_else(|| Failure::Message(format!("completed node {node_id} is not pending")))?;
-    if unresolved != 0 {
-        return Err(Failure::Message(format!(
-            "completed node {node_id} still has {unresolved} unresolved predecessors"
-        )));
-    }
-    if !ready.contains(&node_id) {
-        return Err(Failure::Message(format!(
-            "completed node {node_id} is not in the ready frontier"
-        )));
-    }
-
-    let mut decrements = HashMap::<u32, usize>::new();
-    for target in outgoing {
-        *decrements.entry(target.vertex_id).or_default() += 1;
-    }
-    for (&target_id, &decrement) in &decrements {
-        let target_unresolved = pending.get(&target_id).ok_or_else(|| {
-            Failure::Message(format!("downstream node {target_id} is not pending"))
-        })?;
-        if *target_unresolved < decrement {
-            return Err(Failure::Message(format!(
-                "downstream node {target_id} has {target_unresolved} unresolved predecessors, \
-                 cannot resolve {decrement}"
-            )));
-        }
-    }
-
-    pending.remove(&node_id);
-    ready.remove(&node_id);
-    for (target_id, decrement) in decrements {
-        let target_unresolved = pending
-            .get_mut(&target_id)
-            .expect("downstream node was validated above");
-        *target_unresolved -= decrement;
-        if *target_unresolved == 0 {
-            ready.insert(target_id);
-        }
-    }
-    Ok(())
-}
+use super::effect::{
+    BroadcastPotentiationEffect, RootPropagationSend, SendRootPropagationEffect,
+    SendRootPropagationInput, SendRootTaskPropagationsEffect, WaitForNodeTransmissionEffect,
+    WaitForNodeTransmissionInput,
+};
+use crate::topology::{
+    advance_frontier, initial_ready_nodes, pending_dependency_counts, port_ids, root_vertex_ids,
+    sorted_node_ids, vertex_ids, PropagationTarget,
+};
 
 /// Initializes one propagation pass with every node's unresolved predecessor
 /// count. Nodes whose count is zero form the initial ready frontier.
@@ -531,40 +55,23 @@ where
     }
 }
 
+
 // ---------------------------------------------------------------------------
 // FinalizeGraph — resolve ports, validate the DAG, and allocate phase mailboxes
 // ---------------------------------------------------------------------------
-
-fn port_ids(topology: &super::SunTopology) -> Vec<u32> {
-    topology.port_vertices.keys().copied().collect()
-}
-
-fn vertex_ids(topology: &super::SunTopology) -> Vec<u32> {
-    topology.journey_ids.keys().copied().collect()
-}
-
-fn root_vertex_ids(topology: &super::SunTopology) -> Vec<u32> {
-    let mut roots: Vec<_> = topology
-        .incoming
-        .iter()
-        .filter_map(|(&node_id, sources)| sources.is_empty().then_some(node_id))
-        .collect();
-    roots.sort_unstable();
-    roots
-}
 
 fn task_for_node<S>(
     state: &super::SunState<S>,
     node_id: u32,
     grad_steps: usize,
-) -> Option<(super::SunNodeState, usize)> {
+) -> Option<(crate::topology::SunNodeState, usize)> {
     let p1_completed = state
         .node_p1_completed
         .get(&node_id)
         .copied()
         .unwrap_or_default();
     if p1_completed < grad_steps {
-        return Some((super::SunNodeState::Propagation1, p1_completed + 1));
+        return Some((crate::topology::SunNodeState::Propagation1, p1_completed + 1));
     }
 
     let p2_completed = state
@@ -573,7 +80,7 @@ fn task_for_node<S>(
         .copied()
         .unwrap_or_default();
     if p2_completed < grad_steps {
-        return Some((super::SunNodeState::Propagation2, p2_completed + 1));
+        return Some((crate::topology::SunNodeState::Propagation2, p2_completed + 1));
     }
 
     None
@@ -581,9 +88,9 @@ fn task_for_node<S>(
 
 fn task_deps_satisfied<S>(
     state: &super::SunState<S>,
-    topology: &super::SunTopology,
+    topology: &crate::topology::SunTopology,
     node_id: u32,
-    phase: super::SunNodeState,
+    phase: crate::topology::SunNodeState,
     step: usize,
 ) -> bool {
     let is_root = topology
@@ -592,7 +99,7 @@ fn task_deps_satisfied<S>(
         .is_none_or(|sources| sources.is_empty());
     if is_root {
         return match phase {
-            super::SunNodeState::Propagation1 => {
+            crate::topology::SunNodeState::Propagation1 => {
                 state
                     .root_p1_sent
                     .get(&node_id)
@@ -600,7 +107,7 @@ fn task_deps_satisfied<S>(
                     .unwrap_or_default()
                     >= step
             }
-            super::SunNodeState::Propagation2 => {
+            crate::topology::SunNodeState::Propagation2 => {
                 state
                     .root_p2_sent
                     .get(&node_id)
@@ -614,7 +121,7 @@ fn task_deps_satisfied<S>(
 
     let predecessors = topology.incoming.get(&node_id).cloned().unwrap_or_default();
     predecessors.into_iter().all(|pred_id| match phase {
-        super::SunNodeState::Propagation1 => {
+        crate::topology::SunNodeState::Propagation1 => {
             state
                 .node_p1_completed
                 .get(&pred_id)
@@ -622,7 +129,7 @@ fn task_deps_satisfied<S>(
                 .unwrap_or_default()
                 >= step
         }
-        super::SunNodeState::Propagation2 => {
+        crate::topology::SunNodeState::Propagation2 => {
             state
                 .node_p2_completed
                 .get(&pred_id)
@@ -636,7 +143,7 @@ fn task_deps_satisfied<S>(
 
 fn ready_nodes<S>(
     state: &super::SunState<S>,
-    topology: &super::SunTopology,
+    topology: &crate::topology::SunTopology,
     strategy: &super::SunInner,
 ) -> Vec<u32> {
     let grad_steps = strategy.grad_steps.max(1);
@@ -655,9 +162,9 @@ fn ready_nodes<S>(
 
 fn step_target<S>(
     state: &super::SunState<S>,
-    topology: &super::SunTopology,
+    topology: &crate::topology::SunTopology,
     inner: &super::SunInner,
-    phase: super::SunNodeState,
+    phase: crate::topology::SunNodeState,
     step: usize,
     port_id: u32,
 ) -> PropagationTarget {
@@ -668,11 +175,11 @@ fn step_target<S>(
     let idx = step.checked_sub(1).expect("step index must be at least 1");
     let grad_steps = inner.grad_steps.max(1);
     let input_id = match phase {
-        super::SunNodeState::Propagation1 => state
+        crate::topology::SunNodeState::Propagation1 => state
             .p1_step_tx
             .get(idx)
             .and_then(|map| map.get(&port_id).copied()),
-        super::SunNodeState::Propagation2 => state
+        crate::topology::SunNodeState::Propagation2 => state
             .p2_step_tx
             .get(idx)
             .and_then(|map| map.get(&port_id).copied()),
@@ -681,19 +188,19 @@ fn step_target<S>(
     .unwrap_or_else(|| panic!("missing input mailbox for port {port_id} at {phase:?} step {step}"));
 
     let next_input_id = match phase {
-        super::SunNodeState::Propagation1 if step < grad_steps => state
+        crate::topology::SunNodeState::Propagation1 if step < grad_steps => state
             .p1_step_tx
             .get(idx + 1)
             .and_then(|map| map.get(&port_id).copied()),
-        super::SunNodeState::Propagation1 => state
+        crate::topology::SunNodeState::Propagation1 => state
             .p2_step_tx
             .first()
             .and_then(|map| map.get(&port_id).copied()),
-        super::SunNodeState::Propagation2 if step < grad_steps => state
+        crate::topology::SunNodeState::Propagation2 if step < grad_steps => state
             .p2_step_tx
             .get(idx + 1)
             .and_then(|map| map.get(&port_id).copied()),
-        super::SunNodeState::Propagation2 => inner.po_tx.get(&port_id).copied(),
+        crate::topology::SunNodeState::Propagation2 => inner.po_tx.get(&port_id).copied(),
         _ => None,
     }
     .unwrap_or_else(|| {
@@ -701,11 +208,11 @@ fn step_target<S>(
     });
 
     let output_id = match phase {
-        super::SunNodeState::Propagation1 => state
+        crate::topology::SunNodeState::Propagation1 => state
             .p1_step_rx
             .get(idx)
             .and_then(|map| map.get(&node_id).copied()),
-        super::SunNodeState::Propagation2 => state
+        crate::topology::SunNodeState::Propagation2 => state
             .p2_step_rx
             .get(idx)
             .and_then(|map| map.get(&node_id).copied()),
@@ -727,18 +234,19 @@ fn step_target<S>(
 fn task_output_id<S>(
     state: &super::SunState<S>,
     node_id: u32,
-    phase: super::SunNodeState,
+    phase: crate::topology::SunNodeState,
     step: usize,
 ) -> Option<ObjectId> {
     let idx = step.checked_sub(1)?;
     match phase {
-        super::SunNodeState::Propagation1 => state.p1_step_rx.get(idx)?.get(&node_id).copied(),
-        super::SunNodeState::Propagation2 => state.p2_step_rx.get(idx)?.get(&node_id).copied(),
+        crate::topology::SunNodeState::Propagation1 => state.p1_step_rx.get(idx)?.get(&node_id).copied(),
+        crate::topology::SunNodeState::Propagation2 => state.p2_step_rx.get(idx)?.get(&node_id).copied(),
         _ => None,
     }
 }
 
-fn reset_epoch_mailboxes(topology: &super::SunTopology, inner: &mut super::SunInner) {
+
+fn reset_epoch_mailboxes(topology: &crate::topology::SunTopology, inner: &mut super::SunInner) {
     let port_ids = port_ids(topology);
     let vertex_ids = vertex_ids(topology);
 
@@ -764,7 +272,7 @@ fn reset_epoch_mailboxes(topology: &super::SunTopology, inner: &mut super::SunIn
 }
 
 fn prepare_next_up_microstep(
-    topology: &super::SunTopology,
+    topology: &crate::topology::SunTopology,
     inner: &mut super::SunInner,
     completed_steps: usize,
 ) {
@@ -788,7 +296,7 @@ fn prepare_next_up_microstep(
 }
 
 fn prepare_next_down_microstep(
-    topology: &super::SunTopology,
+    topology: &crate::topology::SunTopology,
     inner: &mut super::SunInner,
     completed_steps: usize,
 ) {
@@ -810,6 +318,7 @@ fn prepare_next_down_microstep(
         }
     }
 }
+
 
 pub struct FinalizeGraph<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
     PhantomData<fn() -> S>,
@@ -877,7 +386,7 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
             .copied()
             .map(|port_id| (port_id, 0))
             .collect();
-        let mut outgoing: HashMap<u32, Vec<super::PortTarget>> = vertices
+        let mut outgoing: HashMap<u32, Vec<crate::topology::PortTarget>> = vertices
             .iter()
             .copied()
             .map(|vertex_id| (vertex_id, Vec::new()))
@@ -945,7 +454,7 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
                 outgoing
                     .entry(source_vertex)
                     .or_default()
-                    .push(super::PortTarget {
+                    .push(crate::topology::PortTarget {
                         port_id,
                         vertex_id: target_vertex,
                     });
@@ -1029,7 +538,7 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         for node_id in vertex_ids(&topology) {
             inner
                 .node_grad_steps
-                .insert(node_id, super::default_gradient_accumulation_steps());
+                .insert(node_id, crate::topology::default_gradient_accumulation_steps());
         }
         inner.po_tx.clear();
         for port_id in port_ids(&topology) {
@@ -1046,197 +555,6 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
 pub type BuildAddrs<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
     FinalizeGraph<S, GRADIENT_ACCUMULATION_STEPS>;
 
-fn resolve_neutral_topology(topology: &mut super::SunTopology) -> Result<u32, Failure> {
-    topology.finalized = false;
-    if !topology.duplicate_ports.is_empty() {
-        let mut ports = topology.duplicate_ports.iter().copied().collect::<Vec<_>>();
-        ports.sort_unstable();
-        return Err(Failure::Message(format!(
-            "duplicate input port ownership: {ports:?}"
-        )));
-    }
-    let vertices = topology.journey_ids.keys().copied().collect::<HashSet<_>>();
-    if vertices.is_empty() {
-        return Err(Failure::Message(
-            "sun graph must contain at least one vertex".to_string(),
-        ));
-    }
-    let mut producer_counts = topology
-        .port_vertices
-        .keys()
-        .copied()
-        .map(|port| (port, 0usize))
-        .collect::<HashMap<_, _>>();
-    let mut outgoing = vertices
-        .iter()
-        .copied()
-        .map(|id| (id, Vec::new()))
-        .collect::<HashMap<u32, Vec<super::PortTarget>>>();
-    let mut incoming = vertices
-        .iter()
-        .copied()
-        .map(|id| (id, Vec::new()))
-        .collect::<HashMap<u32, Vec<u32>>>();
-
-    for (&source, output_ports) in &topology.declared_outputs {
-        let source_contract = topology.node_contracts.get(&source).ok_or_else(|| {
-            Failure::Message(format!(
-                "vertex {source} did not register an operation contract"
-            ))
-        })?;
-        let declared = topology
-            .declared_edges
-            .get(&source)
-            .cloned()
-            .unwrap_or_default();
-        for &port in output_ports {
-            let target = *topology.port_vertices.get(&port).ok_or_else(|| {
-                Failure::Message(format!(
-                    "output from vertex {source} targets missing port {port}"
-                ))
-            })?;
-            let edge = declared
-                .iter()
-                .find(|edge| edge.port_id == port)
-                .ok_or_else(|| {
-                    Failure::Message(format!(
-                        "output from vertex {source} to port {port} has no contract descriptor"
-                    ))
-                })?;
-            let destination_contract = topology.node_contracts.get(&target).ok_or_else(|| {
-                Failure::Message(format!(
-                    "destination vertex {target} did not register an operation contract"
-                ))
-            })?;
-            if &edge.source_contract != source_contract {
-                return Err(Failure::Message(format!(
-                    "source contract mismatch for edge {source} -> port {port}"
-                )));
-            }
-            if &edge.destination_contract != destination_contract {
-                return Err(Failure::Message(format!(
-                    "destination contract mismatch for edge {source} -> port {port}"
-                )));
-            }
-            if source_contract.outputs != destination_contract.inputs {
-                return Err(Failure::Message(format!(
-                    "artifact bundle mismatch for edge {source} -> port {port}"
-                )));
-            }
-            *producer_counts.get_mut(&port).expect("registered port") += 1;
-            outgoing.entry(source).or_default().push(super::PortTarget {
-                port_id: port,
-                vertex_id: target,
-            });
-            incoming.entry(target).or_default().push(source);
-        }
-    }
-    for (&port, &count) in &producer_counts {
-        if count > 1 {
-            return Err(Failure::Message(format!(
-                "input port {port} has {count} producers; expected at most one"
-            )));
-        }
-    }
-    for (&vertex, ports) in &topology.vertex_ports {
-        let counts = ports
-            .iter()
-            .map(|port| producer_counts.get(port).copied().unwrap_or(0))
-            .collect::<Vec<_>>();
-        if !counts.iter().all(|count| *count == 0) && !counts.iter().all(|count| *count == 1) {
-            return Err(Failure::Message(format!(
-                "vertex {vertex} has incorrect producer counts for ports {ports:?}: {counts:?}"
-            )));
-        }
-    }
-    let mut degrees = incoming
-        .iter()
-        .map(|(&id, sources)| (id, sources.len()))
-        .collect::<HashMap<_, _>>();
-    let mut roots = degrees
-        .iter()
-        .filter_map(|(&id, &degree)| (degree == 0).then_some(id))
-        .collect::<Vec<_>>();
-    roots.sort_unstable();
-    let mut queue = VecDeque::from(roots);
-    let mut visited = 0;
-    while let Some(id) = queue.pop_front() {
-        visited += 1;
-        for target in outgoing.get(&id).into_iter().flatten() {
-            let degree = degrees.get_mut(&target.vertex_id).expect("resolved vertex");
-            *degree -= 1;
-            if *degree == 0 {
-                queue.push_back(target.vertex_id);
-            }
-        }
-    }
-    if visited != vertices.len() {
-        return Err(Failure::Message("sun graph contains a cycle".to_string()));
-    }
-    let mut sinks = vertices
-        .iter()
-        .copied()
-        .filter(|id| outgoing.get(id).is_none_or(Vec::is_empty))
-        .collect::<Vec<_>>();
-    sinks.sort_unstable();
-    if sinks.len() != 1 {
-        return Err(Failure::Message(format!(
-            "sun graph must contain exactly one sink; found {sinks:?}"
-        )));
-    }
-    topology.incoming = incoming;
-    topology.outgoing = outgoing;
-    topology.finalized = true;
-    Ok(sinks[0])
-}
-
-/// Finalizes a graph for a forward program without allocating any P1/P2/PO
-/// strategy mailboxes.
-pub struct FinalizeForwardGraph<S>(PhantomData<fn() -> S>);
-
-#[jungle::action]
-impl<S> Action for FinalizeForwardGraph<S> {
-    type Effect = NoEffect;
-    type Input = ();
-    type Output = ();
-
-    fn emit(_state: &super::ForwardSunState<S>, _input: ()) {}
-
-    fn absorb(
-        state: &mut super::ForwardSunState<S>,
-        output: EffectCompletion<Self::Effect>,
-    ) -> Result<(), Failure> {
-        output.map_err(|_| Failure::Message("finalize forward graph failed".to_string()))?;
-        let sink = resolve_neutral_topology(&mut state.topology.lock().unwrap())?;
-        state.runtime.pending.clear();
-        state.runtime.ready.clear();
-        state.runtime.next_inputs.clear();
-        state.runtime.outputs.clear();
-        state.runtime.sink_id = Some(sink);
-        Ok(())
-    }
-}
-
-/// Finalizes a topology for a program with no forward or QuZO runtime.
-pub struct FinalizeNeutralGraph<S>(PhantomData<fn() -> S>);
-
-#[jungle::action]
-impl<S> Action for FinalizeNeutralGraph<S> {
-    type Effect = NoEffect;
-    type Input = ();
-    type Output = ();
-
-    fn emit(_state: &super::NeutralSunState<S>, _input: ()) {}
-
-    fn absorb(
-        state: &mut super::NeutralSunState<S>,
-        output: EffectCompletion<Self::Effect>,
-    ) -> Result<(), Failure> {
-        output.map_err(|_| Failure::Message("finalize neutral graph failed".to_string()))?;
-        resolve_neutral_topology(&mut state.topology.lock().unwrap())?;
-        Ok(())
-    }
-}
 
 // ---------------------------------------------------------------------------
 // SendRootPropagation — seed every root before waiting for ready output
@@ -1309,6 +627,7 @@ where
         Ok(carry)
     }
 }
+
 
 // ---------------------------------------------------------------------------
 // ProcessNextNode — wait for a ready node, then advance the frontier
@@ -1415,311 +734,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// ForwardPass — phase-neutral typed graph execution
-// ---------------------------------------------------------------------------
-
-/// Initializes one dependency-aware forward pass using a program-neutral
-/// frontier and endpoint set. The typed boundary is erased only while the
-/// already contract-validated graph is scheduled.
-pub struct PrepareForwardPass<S, Input>(PhantomData<fn() -> (S, Input)>);
-
-#[jungle::action(carry = black_hole_spec::ArtifactDelivery<Input>)]
-impl<S, Input> Action for PrepareForwardPass<S, Input>
-where
-    Input: Send + 'static,
-{
-    type Effect = NoEffect;
-    type Input = black_hole_spec::ArtifactDelivery<Input>;
-    type Output = black_hole_spec::ArtifactDelivery<()>;
-
-    fn emit(
-        _state: &super::ForwardSunState<S>,
-        input: Self::Input,
-    ) -> ((), black_hole_spec::ArtifactDelivery<Input>) {
-        ((), input)
-    }
-
-    fn absorb(
-        state: &mut super::ForwardSunState<S>,
-        output: EffectCompletion<Self::Effect>,
-        carry: black_hole_spec::ArtifactDelivery<Input>,
-    ) -> Result<Self::Output, Failure> {
-        output.map_err(|_| Failure::Message("prepare forward pass failed".to_string()))?;
-
-        let mut topology = state.topology.lock().unwrap();
-        let pending = pending_dependency_counts(&topology);
-        let ready = initial_ready_nodes(&pending);
-        let ports = port_ids(&topology);
-        let nodes = vertex_ids(&topology);
-
-        state.runtime.next_inputs = ports
-            .into_iter()
-            .map(|port_id| (port_id, Uuid::new_v4()))
-            .collect();
-        state.runtime.outputs = nodes
-            .iter()
-            .copied()
-            .map(|node_id| (node_id, Uuid::new_v4()))
-            .collect();
-        for node_id in nodes {
-            topology
-                .node_operational_states
-                .insert(node_id, super::SunOperationalState::Queued);
-            topology.node_phase_annotations.remove(&node_id);
-        }
-        state.runtime.pending = pending;
-        state.runtime.ready = ready;
-        Ok(black_hole_spec::ArtifactDelivery {
-            emission_id: black_hole_spec::ObjectRef::new(carry.emission_id.id()),
-            recv: carry.recv,
-            send: carry.send,
-        })
-    }
-}
-
-/// Sends the typed input artifact to every root of a forward pass.
-pub struct SendForwardRoots<S>(PhantomData<fn() -> S>);
-
-#[jungle::action(carry = black_hole_spec::ArtifactDelivery<()>)]
-impl<S> Action for SendForwardRoots<S> {
-    type Effect = SendRootArtifactDeliveryEffect<()>;
-    type Input = black_hole_spec::ArtifactDelivery<()>;
-    type Output = black_hole_spec::ArtifactDelivery<()>;
-
-    fn emit(
-        state: &super::ForwardSunState<S>,
-        input: Self::Input,
-    ) -> (
-        SendRootArtifactDeliveryInput<()>,
-        black_hole_spec::ArtifactDelivery<()>,
-    ) {
-        let topology = state.topology.lock().unwrap();
-        let mut targets = Vec::new();
-        for (&node_id, ports) in &topology.vertex_ports {
-            if !topology
-                .incoming
-                .get(&node_id)
-                .is_none_or(|sources| sources.is_empty())
-            {
-                continue;
-            }
-            for &port_id in ports {
-                let (Some(&input_id), Some(&next_input_id), Some(&output_id)) = (
-                    state.runtime.inputs.get(&port_id),
-                    state.runtime.next_inputs.get(&port_id),
-                    state.runtime.outputs.get(&node_id),
-                ) else {
-                    continue;
-                };
-                targets.push(PropagationTarget {
-                    node_id,
-                    port_id,
-                    input_id,
-                    next_input_id,
-                    output_id,
-                });
-            }
-        }
-        targets.sort_by_key(|target| (target.node_id, target.port_id));
-
-        (
-            SendRootArtifactDeliveryInput {
-                targets,
-                delivery: input,
-            },
-            input,
-        )
-    }
-
-    fn absorb(
-        state: &mut super::ForwardSunState<S>,
-        output: EffectCompletion<Self::Effect>,
-        carry: black_hole_spec::ArtifactDelivery<()>,
-    ) -> Result<Self::Output, Failure> {
-        let sent = output
-            .map_err(|error| Failure::Message(format!("send forward roots failed: {error}")))?;
-        state.topology.lock().unwrap().record_forward_started(sent);
-        Ok(carry)
-    }
-}
-
-/// Waits for one ready typed node, forwards its output, and advances the
-/// dependency frontier.
-pub struct ProcessForwardNode<S>(PhantomData<fn() -> S>);
-
-#[jungle::action]
-impl<S> Action for ProcessForwardNode<S> {
-    type Effect = WaitForNodeArtifactDeliveryEffect<()>;
-    type Input = black_hole_spec::ArtifactDelivery<()>;
-    type Output = black_hole_spec::ArtifactDelivery<()>;
-
-    fn emit(
-        state: &super::ForwardSunState<S>,
-        _input: Self::Input,
-    ) -> WaitForNodeArtifactDeliveryInput<()> {
-        let ready = sorted_node_ids(&state.runtime.ready);
-        let topology = state.topology.lock().unwrap();
-        let rx_endpoints = ready
-            .iter()
-            .filter_map(|node_id| state.runtime.outputs.get(node_id).map(|id| (*node_id, *id)))
-            .collect();
-        let mut downstream = HashMap::new();
-
-        for node_id in ready {
-            let targets = topology
-                .outgoing
-                .get(&node_id)
-                .into_iter()
-                .flatten()
-                .filter_map(|target| {
-                    Some(PropagationTarget {
-                        node_id: target.vertex_id,
-                        port_id: target.port_id,
-                        input_id: *state.runtime.inputs.get(&target.port_id)?,
-                        next_input_id: *state.runtime.next_inputs.get(&target.port_id)?,
-                        output_id: *state.runtime.outputs.get(&target.vertex_id)?,
-                    })
-                })
-                .collect();
-            downstream.insert(node_id, targets);
-        }
-
-        WaitForNodeArtifactDeliveryInput::new(rx_endpoints, downstream)
-    }
-
-    fn absorb(
-        state: &mut super::ForwardSunState<S>,
-        output: EffectCompletion<Self::Effect>,
-    ) -> Result<Self::Output, Failure> {
-        let completion = output
-            .map_err(|error| Failure::Message(format!("process forward node failed: {error}")))?;
-        let outgoing = state
-            .topology
-            .lock()
-            .unwrap()
-            .outgoing
-            .get(&completion.node_id)
-            .cloned()
-            .unwrap_or_default();
-        advance_frontier(
-            &mut state.runtime.pending,
-            &mut state.runtime.ready,
-            completion.node_id,
-            &outgoing,
-        )?;
-        let mut topology = state.topology.lock().unwrap();
-        topology.record_forward_completed(completion.node_id);
-        topology.record_forward_started(completion.sent_node_ids);
-        Ok(completion.delivery)
-    }
-}
-
-/// Rotates each node to the inbox provisioned for the next serving request.
-pub struct CompleteForwardPass<S, Output>(PhantomData<fn() -> (S, Output)>);
-
-#[jungle::action(carry = black_hole_spec::ArtifactDelivery<()>)]
-impl<S, Output> Action for CompleteForwardPass<S, Output>
-where
-    Output: Send + 'static,
-{
-    type Effect = NoEffect;
-    type Input = black_hole_spec::ArtifactDelivery<()>;
-    type Output = black_hole_spec::ArtifactDelivery<Output>;
-
-    fn emit(
-        _state: &super::ForwardSunState<S>,
-        input: Self::Input,
-    ) -> ((), black_hole_spec::ArtifactDelivery<()>) {
-        ((), input)
-    }
-
-    fn absorb(
-        state: &mut super::ForwardSunState<S>,
-        output: EffectCompletion<Self::Effect>,
-        carry: black_hole_spec::ArtifactDelivery<()>,
-    ) -> Result<Self::Output, Failure> {
-        output.map_err(|_| Failure::Message("complete forward pass failed".to_string()))?;
-        state.runtime.inputs = std::mem::take(&mut state.runtime.next_inputs);
-        state.runtime.outputs.clear();
-        Ok(black_hole_spec::ArtifactDelivery {
-            emission_id: black_hole_spec::ObjectRef::new(carry.emission_id.id()),
-            recv: carry.recv,
-            send: carry.send,
-        })
-    }
-}
-
-/// Default serving sink used when the caller only needs the durable artifact
-/// emitted by the final node.
-pub struct DiscardForwardOutput<S, T>(PhantomData<fn() -> (S, T)>);
-
-#[jungle::action]
-impl<S, T> Action for DiscardForwardOutput<S, T>
-where
-    T: Send + 'static,
-{
-    type Effect = NoEffect;
-    type Input = black_hole_spec::ArtifactDelivery<T>;
-    type Output = ();
-
-    fn emit(_state: &super::ForwardSunState<S>, _input: Self::Input) {}
-
-    fn absorb(
-        _state: &mut super::ForwardSunState<S>,
-        output: EffectCompletion<Self::Effect>,
-    ) -> Result<Self::Output, Failure> {
-        output.map_err(|_| Failure::Message("discard forward output failed".to_string()))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// GenUuid
-// ---------------------------------------------------------------------------
-
-/// Generates the initial inbox used to seed one spawned cell journey.
-///
-/// The selected [`SunProgram`](super::SunProgram) owns the accumulation
-/// setting so deployment no longer needs a universal const generic.
-pub struct GenUuid<P: super::SunProgram>(PhantomData<fn() -> P>);
-
-#[jungle::action]
-impl<P: super::SunProgram> Action for GenUuid<P> {
-    type Effect = GenUuidEffect;
-    type Input = ();
-    type Output = P::UnarySeed;
-
-    fn emit(_state: &P::State, _input: Self::Input) {}
-    fn absorb(
-        _state: &mut P::State,
-        output: EffectCompletion<Self::Effect>,
-    ) -> Result<Self::Output, Failure> {
-        let recv_id =
-            output.map_err(|_e| Failure::Message("failed to generate a uuid...".to_string()))?;
-        Ok(P::unary_seed(recv_id))
-    }
-}
-
-/// Generates the two independent initial inboxes for a binary vertex.
-pub struct GenFusionSeed<P: super::SunProgram>(PhantomData<fn() -> P>);
-
-#[jungle::action]
-impl<P: super::SunProgram> Action for GenFusionSeed<P> {
-    type Effect = GenFusionSeedEffect;
-    type Input = ();
-    type Output = P::BinarySeed;
-
-    fn emit(_state: &P::State, _input: Self::Input) {}
-
-    fn absorb(
-        _state: &mut P::State,
-        output: EffectCompletion<Self::Effect>,
-    ) -> Result<Self::Output, Failure> {
-        let seed =
-            output.map_err(|_| Failure::Message("failed to generate fusion seed".to_string()))?;
-        Ok(P::binary_seed([seed.p1_recv_id, seed.p2_recv_id]))
-    }
-}
 
 /// Clears collected propagation outputs and resets accumulation counters.
 pub struct BeginGradientAccumulation<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
@@ -1762,7 +776,7 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         for node_id in vertex_ids(&topology) {
             topology
                 .node_operational_states
-                .insert(node_id, super::SunOperationalState::Queued);
+                .insert(node_id, crate::topology::SunOperationalState::Queued);
             topology.node_phase_annotations.remove(&node_id);
         }
         Ok(())
@@ -1932,12 +946,12 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
                 continue;
             };
             let already_sent = match phase {
-                super::SunNodeState::Propagation1 => state
+                crate::topology::SunNodeState::Propagation1 => state
                     .root_p1_sent
                     .get(&root_id)
                     .copied()
                     .unwrap_or_default(),
-                super::SunNodeState::Propagation2 => state
+                crate::topology::SunNodeState::Propagation2 => state
                     .root_p2_sent
                     .get(&root_id)
                     .copied()
@@ -1949,12 +963,12 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
             }
 
             let transmission = match phase {
-                super::SunNodeState::Propagation1 => state
+                crate::topology::SunNodeState::Propagation1 => state
                     .propagation_up_inputs
                     .get(step - 1)
                     .cloned()
                     .expect("missing generated up propagation for root step"),
-                super::SunNodeState::Propagation2 => state
+                crate::topology::SunNodeState::Propagation2 => state
                     .propagation_down_inputs
                     .get(step - 1)
                     .cloned()
@@ -1999,10 +1013,10 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
                 continue;
             };
             match phase {
-                super::SunNodeState::Propagation1 => {
+                crate::topology::SunNodeState::Propagation1 => {
                     state.root_p1_sent.insert(node_id, step);
                 }
-                super::SunNodeState::Propagation2 => {
+                crate::topology::SunNodeState::Propagation2 => {
                     state.root_p2_sent.insert(node_id, step);
                 }
                 _ => {}
@@ -2084,13 +1098,13 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         };
 
         match phase {
-            super::SunNodeState::Propagation1 => {
+            crate::topology::SunNodeState::Propagation1 => {
                 let completed = state.node_p1_completed.get_mut(&node_id).ok_or_else(|| {
                     Failure::Message(format!("missing p1 counter for node {node_id}"))
                 })?;
                 *completed = completed.saturating_add(1);
             }
-            super::SunNodeState::Propagation2 => {
+            crate::topology::SunNodeState::Propagation2 => {
                 let completed = state.node_p2_completed.get_mut(&node_id).ok_or_else(|| {
                     Failure::Message(format!("missing p2 counter for node {node_id}"))
                 })?;
@@ -2106,12 +1120,12 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
 
         if Some(node_id) == state.sink_id {
             match phase {
-                super::SunNodeState::Propagation1 => {
+                crate::topology::SunNodeState::Propagation1 => {
                     state
                         .propagation_up_outputs
                         .push(node_tx.transmission.clone());
                 }
-                super::SunNodeState::Propagation2 => {
+                crate::topology::SunNodeState::Propagation2 => {
                     let up = state.propagation_up_outputs.get(step - 1).cloned().ok_or_else(|| {
                         Failure::Message(format!(
                             "missing first-pass sink output for step {step} before second-pass output"
@@ -2347,6 +1361,7 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
     }
 }
 
+
 // ---------------------------------------------------------------------------
 // BroadcastPotentiation — broadcast potentiation payload to all nodes
 // ---------------------------------------------------------------------------
@@ -2435,6 +1450,7 @@ pub struct BroadcastPotentiationInput {
     pub port_endpoints: Vec<(u32, ObjectId)>,
 }
 
+
 // ---------------------------------------------------------------------------
 // PropagationState — trait for branch state types (PropA, PropB)
 // ---------------------------------------------------------------------------
@@ -2443,11 +1459,11 @@ pub struct BroadcastPotentiationInput {
 /// shared by [`PropA`](super::PropA) and [`PropB`](super::PropB).
 pub trait PropagationState {
     /// Appearance phase corresponding to this propagation branch.
-    const PROPAGATION_STATE: super::SunNodeState;
+    const PROPAGATION_STATE: crate::topology::SunNodeState;
 
     /// Access the shared inner state.
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>>;
-    fn get_topology(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunTopology>>;
+    fn get_topology(&self) -> &std::sync::Arc<std::sync::Mutex<crate::topology::SunTopology>>;
 
     /// Select this branch's current input, next input, and output mailboxes.
     fn transmission_maps(
@@ -2470,12 +1486,12 @@ pub trait PropagationState {
 }
 
 impl PropagationState for super::PropA {
-    const PROPAGATION_STATE: super::SunNodeState = super::SunNodeState::Propagation1;
+    const PROPAGATION_STATE: crate::topology::SunNodeState = crate::topology::SunNodeState::Propagation1;
 
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
         &self.shared
     }
-    fn get_topology(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunTopology>> {
+    fn get_topology(&self) -> &std::sync::Arc<std::sync::Mutex<crate::topology::SunTopology>> {
         &self.topology
     }
     fn transmission_maps(
@@ -2504,12 +1520,12 @@ impl PropagationState for super::PropA {
 }
 
 impl PropagationState for super::PropB {
-    const PROPAGATION_STATE: super::SunNodeState = super::SunNodeState::Propagation2;
+    const PROPAGATION_STATE: crate::topology::SunNodeState = crate::topology::SunNodeState::Propagation2;
 
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
         &self.shared
     }
-    fn get_topology(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunTopology>> {
+    fn get_topology(&self) -> &std::sync::Arc<std::sync::Mutex<crate::topology::SunTopology>> {
         &self.topology
     }
     fn transmission_maps(
@@ -2537,94 +1553,29 @@ impl PropagationState for super::PropB {
     }
 }
 
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jungle_sdk::Id;
-    use typenum::{U0, U1, U2};
 
-    struct GenericType<T>(std::marker::PhantomData<T>);
+    use black_hole_contract::{QwenDarkInference, TensorContract};
+
+    use crate::compile::action::register_vertex;
+    use crate::topology::{advance_frontier, initial_ready_nodes, pending_dependency_counts, sorted_node_ids};
 
     struct TestSunAnimal;
 
     impl Animal for TestSunAnimal {
         type Id = ();
         type Generation = ();
-        type State = super::super::SunState;
+        type State = crate::programs::two_sided_zo::SunState;
         type Seed = ();
-        type Flow = ();
-    }
-
-    struct TestSunAnimalWithPayload;
-
-    impl Animal for TestSunAnimalWithPayload {
-        type Id = Id<U0>;
-        type Generation = U0;
-        type State = super::super::SunState<(String, String)>;
-        type Seed = ();
-        type Flow = ();
-    }
-
-    struct TestForwardAnimal;
-
-    impl Animal for TestForwardAnimal {
-        type Id = ();
-        type Generation = ();
-        type State = super::super::ForwardSunState;
-        type Seed = ();
-        type Flow = ();
-    }
-
-    struct TestUnaryChildAnimal;
-
-    impl Animal for TestUnaryChildAnimal {
-        type Id = Id<U1>;
-        type Generation = U0;
-        type State = crate::CellState;
-        type Seed = crate::nodes::cell::action::Init;
-        type Flow = crate::Primordium;
-    }
-
-    struct TestFusionChildAnimal;
-
-    impl Animal for TestFusionChildAnimal {
-        type Id = Id<U2>;
-        type Generation = U0;
-        type State = crate::FusionState;
-        type Seed = crate::FusionSeed;
-        type Flow = crate::Fusion<crate::Primordium>;
-    }
-
-    struct TestWarpChildAnimal;
-
-    impl Animal for TestWarpChildAnimal {
-        type Id = Id<U1>;
-        type Generation = U0;
-        type State = super::super::SunState;
-        type Seed = ();
-        type Flow = ();
-    }
-
-    impl Observe for TestWarpChildAnimal {
-        type Appearance = crate::Ray;
-
-        fn observe(_state: &Self::State) -> Self::Appearance {
-            crate::Ray { frozen: false }
-        }
-    }
-
-    struct TestWarpBoundaryAnimal;
-
-    impl Animal for TestWarpBoundaryAnimal {
-        type Id = Id<U2>;
-        type Generation = U0;
-        type State = crate::BoundaryState<<TestWarpChildAnimal as Observe>::Appearance>;
-        type Seed = super::super::BoundaryInit;
         type Flow = ();
     }
 
     fn add_vertex(
-        state: &mut super::super::SunState,
+        state: &mut crate::programs::two_sided_zo::SunState,
         vertex_id: u32,
         port_ids: &[u32],
         outputs: &[u32],
@@ -2633,7 +1584,7 @@ mod tests {
             .iter()
             .map(|&port_id| (port_id, Uuid::new_v4()))
             .collect();
-        register_vertex::<super::super::DeploymentProgram<(), 1>>(
+        register_vertex::<crate::programs::two_sided_zo::DeploymentProgram<(), 1>>(
             state,
             vertex_id,
             format!("Node{vertex_id}"),
@@ -2641,7 +1592,7 @@ mod tests {
             QwenDarkInference::descriptor(),
             outputs
                 .iter()
-                .map(|&port_id| super::super::DeclaredEdge {
+                .map(|&port_id| crate::topology::DeclaredEdge {
                     port_id,
                     source_contract: QwenDarkInference::descriptor(),
                     destination_contract: QwenDarkInference::descriptor(),
@@ -2653,9 +1604,9 @@ mod tests {
     }
 
     fn record_sent(
-        state: &mut super::super::SunState,
+        state: &mut crate::programs::two_sided_zo::SunState,
         nodes: impl IntoIterator<Item = u32>,
-        phase: super::super::SunNodeState,
+        phase: crate::topology::SunNodeState,
     ) {
         let mut topology = state.topology.lock().unwrap();
         state
@@ -2667,9 +1618,9 @@ mod tests {
     }
 
     fn record_completed(
-        state: &mut super::super::SunState,
+        state: &mut crate::programs::two_sided_zo::SunState,
         node: u32,
-        phase: super::super::SunNodeState,
+        phase: crate::topology::SunNodeState,
     ) {
         let mut topology = state.topology.lock().unwrap();
         state
@@ -2680,7 +1631,7 @@ mod tests {
             .record_propagation_completed(&mut topology, node, phase);
     }
 
-    fn record_optimized(state: &mut super::super::SunState, nodes: impl IntoIterator<Item = u32>) {
+    fn record_optimized(state: &mut crate::programs::two_sided_zo::SunState, nodes: impl IntoIterator<Item = u32>) {
         let mut topology = state.topology.lock().unwrap();
         state
             .a
@@ -2690,13 +1641,13 @@ mod tests {
             .record_optimization_sent(&mut topology, nodes);
     }
 
-    fn finalize(state: &mut super::super::SunState) -> Result<(), Failure> {
+    fn finalize(state: &mut crate::programs::two_sided_zo::SunState) -> Result<(), Failure> {
         type Bound = <FinalizeGraph<(), 1> as Action>::Bind<TestSunAnimal>;
         <Bound as BoundAction<TestSunAnimal>>::absorb(state, Ok(()))
     }
 
     fn finalize_with_steps<const STEPS: usize>(
-        state: &mut super::super::SunState,
+        state: &mut crate::programs::two_sided_zo::SunState,
     ) -> Result<(), Failure> {
         type Bound<const N: usize> = <FinalizeGraph<(), N> as Action>::Bind<TestSunAnimal>;
         <Bound<STEPS> as BoundAction<TestSunAnimal>>::absorb(state, Ok(()))
@@ -2711,7 +1662,7 @@ mod tests {
     }
 
     fn prepare_pipeline_with_steps<const STEPS: usize>(
-        state: &mut super::super::SunState,
+        state: &mut crate::programs::two_sided_zo::SunState,
     ) -> Result<(), Failure> {
         state.propagation_up_inputs = (0..STEPS)
             .map(|step| propagation(100 + step as u128))
@@ -2726,148 +1677,16 @@ mod tests {
 
     #[test]
     fn sun_state_supports_custom_inner_payload() {
-        let mut state = super::super::SunState::<(String, String)>::default();
+        let mut state = crate::programs::two_sided_zo::SunState::<(String, String)>::default();
         state.inner.0.push_str("left");
         state.inner.1.push_str("right");
         assert_eq!(state.inner, ("left".to_string(), "right".to_string()));
     }
 
-    #[test]
-    fn sun_actions_bind_with_custom_state_payload() {
-        type Payload = (String, String);
-
-        let state = super::super::SunState::<Payload>::default();
-
-        type Program = super::super::DeploymentProgram<Payload, 1>;
-        type GenUuidBound = <GenUuid<Program> as Action>::Bind<TestSunAnimalWithPayload>;
-        <GenUuidBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
-
-        type GenFusionSeedBound =
-            <GenFusionSeed<Program> as Action>::Bind<TestSunAnimalWithPayload>;
-        <GenFusionSeedBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
-
-        type FinalizeBound = <FinalizeGraph<Payload, 1> as Action>::Bind<TestSunAnimalWithPayload>;
-        <FinalizeBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, ());
-
-        type BroadcastBound =
-            <BroadcastPotentiation<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
-        <BroadcastBound as BoundAction<TestSunAnimalWithPayload>>::emit(
-            &state,
-            black_hole_spec::Potentiation {
-                loss_up: 0.1,
-                loss_down: 0.2,
-                seed: 7,
-            },
-        );
-
-        type SpawnUnaryBound =
-            <SpawnUnary<U1, TestUnaryChildAnimal, Empty, Program> as Action>::Bind<
-                TestSunAnimalWithPayload,
-            >;
-        let seed = crate::nodes::cell::action::Init {
-            recv_id: Uuid::new_v4(),
-            grad_steps: 1,
-        };
-        let effect_seed =
-            <SpawnUnaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, seed);
-        assert_eq!(effect_seed, seed);
-
-        type SpawnBinaryBound =
-            <SpawnBinary<U1, U2, TestFusionChildAnimal, Empty, Program> as Action>::Bind<
-                TestSunAnimalWithPayload,
-            >;
-        let seed = crate::FusionSeed {
-            p1_recv_id: Uuid::new_v4(),
-            p2_recv_id: Uuid::new_v4(),
-            grad_steps: 1,
-        };
-        let effect_seed =
-            <SpawnBinaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, seed);
-        assert_eq!(effect_seed.p1_recv_id, seed.p1_recv_id);
-        assert_eq!(effect_seed.p2_recv_id, seed.p2_recv_id);
-    }
-
-    #[test]
-    fn warp_actions_seed_boundary_with_spawned_warp_journey() {
-        type Payload = (String, String);
-        let mut state = super::super::SunState::<Payload>::default();
-        let init = crate::nodes::cell::action::Init {
-            recv_id: Uuid::new_v4(),
-            grad_steps: 3,
-        };
-
-        type SpawnWarpAnimalBound = <SpawnWarpAnimal<
-            U1,
-            TestWarpChildAnimal,
-            TestWarpBoundaryAnimal,
-            Empty,
-            super::super::DeploymentProgram<Payload, 3>,
-        > as Action>::Bind<TestSunAnimalWithPayload>;
-        let spawn_input =
-            <SpawnWarpAnimalBound as BoundAction<TestSunAnimalWithPayload>>::emit(&state, init);
-        assert_eq!(spawn_input, ());
-
-        let warp_journey_id = Uuid::new_v4();
-        let (boundary_init, boundary_carry) = <SpawnWarpAnimalBound as BoundAction<
-            TestSunAnimalWithPayload,
-        >>::absorb_with_carry(
-            &mut state, Ok(warp_journey_id), init
-        )
-        .unwrap();
-        assert_eq!(boundary_init, init);
-        assert_eq!(boundary_carry, warp_journey_id);
-
-        type SpawnWarpBoundaryBound = <SpawnWarpBoundary<
-            U1,
-            TestWarpChildAnimal,
-            TestWarpBoundaryAnimal,
-            Empty,
-            super::super::DeploymentProgram<Payload, 3>,
-        > as Action>::Bind<TestSunAnimalWithPayload>;
-        let boundary_seed = <SpawnWarpBoundaryBound as BoundAction<TestSunAnimalWithPayload>>::emit(
-            &state,
-            (boundary_init, boundary_carry),
-        );
-        assert_eq!(boundary_seed.recv_id, init.recv_id);
-        assert_eq!(boundary_seed.grad_steps, init.grad_steps);
-        assert_eq!(boundary_seed.warp_journey_id, warp_journey_id);
-
-        let boundary_journey_id = Uuid::new_v4();
-        <SpawnWarpBoundaryBound as BoundAction<TestSunAnimalWithPayload>>::absorb_with_carry(
-            &mut state,
-            Ok(boundary_journey_id),
-            (boundary_init, boundary_carry),
-        )
-        .unwrap();
-
-        let topology = state.topology.lock().unwrap();
-        assert_eq!(
-            topology.journey_ids.get(&U1::U32),
-            Some(&boundary_journey_id)
-        );
-        assert_eq!(
-            topology.warp_journey_ids.get(&U1::U32),
-            Some(&warp_journey_id)
-        );
-        assert_eq!(topology.port_vertices.get(&U1::U32), Some(&U1::U32));
-    }
-
-    #[test]
-    fn short_type_name_preserves_generic_arguments() {
-        type Nested = GenericType<Result<String, Vec<u8>>>;
-        assert_eq!(
-            short_type_name::<Nested>(),
-            "GenericType<Result<String, Vec<u8>>>"
-        );
-        assert_eq!(
-            short_type_label("my::module::Animal<crate::Inner<leaf::Type>, alloc::vec::Vec<u8>>"),
-            "Animal<Inner<Type>, Vec<u8>>"
-        );
-    }
 
     #[test]
     fn finalization_rejects_duplicate_port_ownership() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[]);
         add_vertex(&mut state, 1, &[0], &[]);
 
@@ -2875,18 +1694,20 @@ mod tests {
         assert!(error.to_string().contains("duplicate input port ownership"));
     }
 
+
     #[test]
     fn finalization_rejects_missing_output_ports() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[9]);
 
         let error = finalize(&mut state).unwrap_err();
         assert!(error.to_string().contains("targets missing port 9"));
     }
 
+
     #[test]
     fn finalization_rejects_a_destination_contract_changed_after_compilation() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[1]);
         add_vertex(&mut state, 1, &[1], &[]);
 
@@ -2908,9 +1729,10 @@ mod tests {
         );
     }
 
+
     #[test]
     fn finalization_rejects_partially_connected_binary_vertices() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[1]);
         add_vertex(&mut state, 1, &[1, 2], &[]);
 
@@ -2918,9 +1740,10 @@ mod tests {
         assert!(error.to_string().contains("incorrect producer counts"));
     }
 
+
     #[test]
     fn finalization_rejects_cycles() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[1]);
         add_vertex(&mut state, 1, &[1], &[0]);
 
@@ -2928,9 +1751,10 @@ mod tests {
         assert!(error.to_string().contains("contains a cycle"));
     }
 
+
     #[test]
     fn finalization_rejects_multiple_sinks() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[]);
         add_vertex(&mut state, 1, &[1], &[]);
 
@@ -2938,9 +1762,10 @@ mod tests {
         assert!(error.to_string().contains("exactly one sink"));
     }
 
+
     #[test]
     fn completed_node_immediately_unblocks_deeper_successor() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[1, 2]);
         add_vertex(&mut state, 1, &[1], &[3]);
         add_vertex(&mut state, 2, &[2], &[4]);
@@ -2963,115 +1788,10 @@ mod tests {
         assert_eq!(sorted_node_ids(&ready), vec![2, 3]);
     }
 
-    #[test]
-    fn neutral_forward_pass_routes_typed_artifacts_and_rotates_inboxes() {
-        type Program = super::super::ForwardOnly<(), QwenDarkInference>;
-        let mut state = super::super::ForwardSunState::default();
-        let add =
-            |state: &mut super::super::ForwardSunState, vertex_id, port_id, outputs: &[u32]| {
-                let ports = [(port_id, Uuid::new_v4())];
-                register_vertex::<Program>(
-                    state,
-                    vertex_id,
-                    format!("Node{vertex_id}"),
-                    &ports,
-                    QwenDarkInference::descriptor(),
-                    outputs
-                        .iter()
-                        .map(|&port_id| super::super::DeclaredEdge {
-                            port_id,
-                            source_contract: QwenDarkInference::descriptor(),
-                            destination_contract: QwenDarkInference::descriptor(),
-                        })
-                        .collect(),
-                    Uuid::new_v4(),
-                    None,
-                );
-            };
-        add(&mut state, 0, 0, &[1]);
-        add(&mut state, 1, 1, &[]);
-        type Finalize = <FinalizeForwardGraph<()> as Action>::Bind<TestForwardAnimal>;
-        <Finalize as BoundAction<TestForwardAnimal>>::absorb(&mut state, Ok(())).unwrap();
-
-        let delivery = black_hole_spec::ArtifactDelivery::<()> {
-            emission_id: black_hole_spec::EmissionId::new(Uuid::new_v4()),
-            recv: Uuid::new_v4(),
-            send: Uuid::new_v4(),
-        };
-
-        type Prepare = <PrepareForwardPass<(), ()> as Action>::Bind<TestForwardAnimal>;
-        <Prepare as BoundAction<TestForwardAnimal>>::emit(&state, delivery);
-        let prepared = <Prepare as BoundAction<TestForwardAnimal>>::absorb_with_carry(
-            &mut state,
-            Ok(()),
-            delivery,
-        )
-        .unwrap();
-        assert_eq!(sorted_node_ids(&state.runtime.ready), vec![0]);
-
-        type Send = <SendForwardRoots<()> as Action>::Bind<TestForwardAnimal>;
-        let root_input = <Send as BoundAction<TestForwardAnimal>>::emit(&state, prepared);
-        assert_eq!(root_input.targets.len(), 1);
-        assert_eq!(root_input.targets[0].node_id, 0);
-        let routed = <Send as BoundAction<TestForwardAnimal>>::absorb_with_carry(
-            &mut state,
-            Ok(vec![0]),
-            prepared,
-        )
-        .unwrap();
-
-        type Process = <ProcessForwardNode<()> as Action>::Bind<TestForwardAnimal>;
-        let routed = <Process as BoundAction<TestForwardAnimal>>::absorb(
-            &mut state,
-            Ok(super::super::effect::SchedulerDelivery {
-                node_id: 0,
-                delivery: routed,
-                sent_node_ids: vec![1],
-            }),
-        )
-        .unwrap();
-        assert_eq!(sorted_node_ids(&state.runtime.ready), vec![1]);
-
-        let completed = <Process as BoundAction<TestForwardAnimal>>::absorb(
-            &mut state,
-            Ok(super::super::effect::SchedulerDelivery {
-                node_id: 1,
-                delivery: routed,
-                sent_node_ids: vec![],
-            }),
-        )
-        .unwrap();
-        assert!(state.runtime.pending.is_empty());
-
-        let next_inboxes = state.runtime.next_inputs.clone();
-        type Complete = <CompleteForwardPass<(), ()> as Action>::Bind<TestForwardAnimal>;
-        <Complete as BoundAction<TestForwardAnimal>>::emit(&state, completed);
-        <Complete as BoundAction<TestForwardAnimal>>::absorb_with_carry(
-            &mut state,
-            Ok(()),
-            completed,
-        )
-        .unwrap();
-
-        let topology = state.topology.lock().unwrap();
-        assert_eq!(state.runtime.inputs, next_inboxes);
-        assert_eq!(
-            topology.node_operational_states.get(&0),
-            Some(&super::super::SunOperationalState::Succeeded)
-        );
-        assert_eq!(
-            topology.node_operational_states.get(&1),
-            Some(&super::super::SunOperationalState::Succeeded)
-        );
-        assert_eq!(
-            topology.node_phase_annotations.get(&1).map(String::as_str),
-            Some("forward")
-        );
-    }
 
     #[test]
     fn pipeline_scheduler_allows_branch_progress_without_global_step_barrier() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[2]);
         add_vertex(&mut state, 1, &[1], &[3]);
         add_vertex(&mut state, 2, &[2], &[4]);
@@ -3099,9 +1819,10 @@ mod tests {
         );
     }
 
+
     #[test]
     fn appearance_contains_deterministic_port_aware_topology() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 1, &[1], &[3]);
         add_vertex(&mut state, 0, &[0], &[2]);
         add_vertex(&mut state, 2, &[2, 3], &[]);
@@ -3123,9 +1844,9 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
             vec![
-                (0, "Node0", vec![0], super::super::SunNodeState::Idle, 1),
-                (1, "Node1", vec![1], super::super::SunNodeState::Idle, 1),
-                (2, "Node2", vec![2, 3], super::super::SunNodeState::Idle, 1),
+                (0, "Node0", vec![0], crate::topology::SunNodeState::Idle, 1),
+                (1, "Node1", vec![1], crate::topology::SunNodeState::Idle, 1),
+                (2, "Node2", vec![2, 3], crate::topology::SunNodeState::Idle, 1),
             ]
         );
         assert!(
@@ -3138,12 +1859,12 @@ mod tests {
         assert_eq!(
             appearance.edges,
             vec![
-                super::super::SunEdgeAppearance {
+                crate::topology::SunEdgeAppearance {
                     source: 0,
                     target: 2,
                     target_port: 2,
                 },
-                super::super::SunEdgeAppearance {
+                crate::topology::SunEdgeAppearance {
                     source: 1,
                     target: 2,
                     target_port: 3,
@@ -3152,24 +1873,25 @@ mod tests {
         );
     }
 
+
     #[test]
     fn propagation_two_waits_for_propagation_one_completion() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[]);
 
-        record_sent(&mut state, [0], super::super::SunNodeState::Propagation2);
-        record_sent(&mut state, [0], super::super::SunNodeState::Propagation1);
+        record_sent(&mut state, [0], crate::topology::SunNodeState::Propagation2);
+        record_sent(&mut state, [0], crate::topology::SunNodeState::Propagation1);
         assert_eq!(
             state.appearance().nodes[0].state,
-            super::super::SunNodeState::Propagation1,
+            crate::topology::SunNodeState::Propagation1,
             "sending propagation 2 must not hide in-flight propagation 1"
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 1);
 
-        record_completed(&mut state, 0, super::super::SunNodeState::Propagation1);
+        record_completed(&mut state, 0, crate::topology::SunNodeState::Propagation1);
         assert_eq!(
             state.appearance().nodes[0].state,
-            super::super::SunNodeState::Propagation2,
+            crate::topology::SunNodeState::Propagation2,
             "propagation 2 becomes visible after propagation 1 emits"
         );
         assert_eq!(
@@ -3181,57 +1903,59 @@ mod tests {
         record_optimized(&mut state, [0]);
         assert_eq!(
             state.appearance().nodes[0].state,
-            super::super::SunNodeState::Optimization
+            crate::topology::SunNodeState::Optimization
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 3);
 
-        record_sent(&mut state, [0], super::super::SunNodeState::Propagation1);
+        record_sent(&mut state, [0], crate::topology::SunNodeState::Propagation1);
         assert_eq!(
             state.appearance().nodes[0].state,
-            super::super::SunNodeState::Propagation1
+            crate::topology::SunNodeState::Propagation1
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 4);
 
-        record_sent(&mut state, [0], super::super::SunNodeState::Propagation2);
+        record_sent(&mut state, [0], crate::topology::SunNodeState::Propagation2);
         assert_eq!(
             state.appearance().nodes[0].state,
-            super::super::SunNodeState::Propagation1,
+            crate::topology::SunNodeState::Propagation1,
             "the prior epoch's completion must not expose propagation 2 early"
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 4);
 
-        record_completed(&mut state, 0, super::super::SunNodeState::Propagation1);
+        record_completed(&mut state, 0, crate::topology::SunNodeState::Propagation1);
         assert_eq!(
             state.appearance().nodes[0].state,
-            super::super::SunNodeState::Propagation2
+            crate::topology::SunNodeState::Propagation2
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 5);
     }
 
+
     #[test]
     fn propagation_two_is_exposed_when_sent_after_propagation_one_completes() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[]);
 
-        record_sent(&mut state, [0], super::super::SunNodeState::Propagation1);
-        record_completed(&mut state, 0, super::super::SunNodeState::Propagation1);
-        record_sent(&mut state, [0], super::super::SunNodeState::Propagation2);
+        record_sent(&mut state, [0], crate::topology::SunNodeState::Propagation1);
+        record_completed(&mut state, 0, crate::topology::SunNodeState::Propagation1);
+        record_sent(&mut state, [0], crate::topology::SunNodeState::Propagation2);
 
         assert_eq!(
             state.appearance().nodes[0].state,
-            super::super::SunNodeState::Propagation2
+            crate::topology::SunNodeState::Propagation2
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 2);
     }
 
+
     #[test]
     fn appearance_tracks_per_node_gradient_step() {
-        let mut state = super::super::SunState::default();
+        let mut state = crate::programs::two_sided_zo::SunState::default();
         add_vertex(&mut state, 0, &[0], &[1]);
         add_vertex(&mut state, 1, &[1], &[]);
         finalize_with_steps::<4>(&mut state).unwrap();
 
-        record_sent(&mut state, [0], super::super::SunNodeState::Propagation1);
+        record_sent(&mut state, [0], crate::topology::SunNodeState::Propagation1);
         let appearance = state.appearance();
         assert_eq!(appearance.grad_steps, 4);
         assert_eq!(
@@ -3254,18 +1978,18 @@ mod tests {
         );
 
         state.a.shared.lock().unwrap().active_micro_step = 2;
-        record_sent(&mut state, [0], super::super::SunNodeState::Propagation1);
-        record_completed(&mut state, 0, super::super::SunNodeState::Propagation1);
-        record_sent(&mut state, [0], super::super::SunNodeState::Propagation2);
+        record_sent(&mut state, [0], crate::topology::SunNodeState::Propagation1);
+        record_completed(&mut state, 0, crate::topology::SunNodeState::Propagation1);
+        record_sent(&mut state, [0], crate::topology::SunNodeState::Propagation2);
         let appearance = state.appearance();
         let node0 = appearance.nodes.iter().find(|node| node.id == 0).unwrap();
-        assert_eq!(node0.state, super::super::SunNodeState::Propagation2);
+        assert_eq!(node0.state, crate::topology::SunNodeState::Propagation2);
         assert_eq!(node0.grad_step, 3);
 
         record_optimized(&mut state, [0]);
         let appearance = state.appearance();
         let node0 = appearance.nodes.iter().find(|node| node.id == 0).unwrap();
-        assert_eq!(node0.state, super::super::SunNodeState::Optimization);
+        assert_eq!(node0.state, crate::topology::SunNodeState::Optimization);
         assert_eq!(node0.grad_step, 4);
     }
 }

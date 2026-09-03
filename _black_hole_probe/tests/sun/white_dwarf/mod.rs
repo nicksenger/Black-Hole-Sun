@@ -10,9 +10,9 @@ use async_trait::async_trait;
 use black_hole_sun::cell::action::Potentiation;
 use black_hole_sun::cell::{CellState, Primordium};
 use black_hole_sun::ops::{InferenceOutputOps, SunOps, TransmissionOps, VoidInferOps};
-use black_hole_sun::sun::{
-    BlackHole, Manifest, SunAppearance, SunNodeState, SunState, TwoSidedZoManifest, Unary,
-};
+use black_hole_sun::compile::BlackHole;
+use black_hole_sun::programs::two_sided_zo::{Manifest, SunState, TwoSidedZoManifest};
+use black_hole_sun::topology::{SunAppearance, SunNodeState, Unary};
 use black_hole_sun::{
     AtomError, CellInit, DarkToken, EmissionId, ErrorFeedbackPolicy, InferenceOutput,
     InferenceRequest, MassClient, MassErrorFeedbackMode, MassModelConfig, MassModelParams,
