@@ -29,7 +29,6 @@ use black_hole_sun::{
 use jungle_sdk::prelude::*;
 use tracing::info;
 use typenum::{U0, U1, U2, U3, U4};
-use typosaurus::collections::list::{Empty, List};
 use typosaurus::list;
 
 /// The generator's 2x3 input matrix.
@@ -127,17 +126,12 @@ impl Animal for ReluCell {
 
 impl OperationNode<Relu> for ReluCell {}
 
-type ReluNode = List<(Unary<U2, ReluCell, TypedEdges<Empty>, Relu>, Empty)>;
-type ScaleNode = List<(
-    Unary<U1, ScaleCell, TypedEdges<list![Edge<U2, Relu>]>, Scale>,
-    ReluNode,
-)>;
-
 /// Three-cell matrix pipeline, with compile-time checked operation edges.
-pub type MatmulGraph = List<(
+pub type MatmulGraph = list![
     Unary<U0, MatmulCell, TypedEdges<list![Edge<U1, Scale>]>, Matmul>,
-    ScaleNode,
-)>;
+    Unary<U1, ScaleCell, TypedEdges<list![Edge<U2, Relu>]>, Scale>,
+    Unary<U2, ReluCell, TypedEdges<list![]>, Relu>
+];
 
 /// Repeatedly emits the same 2x3 matrix as a typed input artifact.
 #[derive(Flow)]
