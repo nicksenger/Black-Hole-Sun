@@ -18,7 +18,8 @@ use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::programs::two_sided_zo::{SunState, TwoSidedZo};
 use black_hole_sun::topology::{Edge, TypedEdges, Unary};
 use black_hole_sun::{
-    decode_output, AtomError, Emission, OperationNode, Potentiation, TensorDtype, Transmission,
+    decode_output, ArtifactRef, AtomError, Emission, OperationNode, Potentiation, TensorDtype,
+    Transmission,
 };
 use corgi_fwd::{HeadOp, Logits, SampleMetadata, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 use jungle_sdk::list;
@@ -32,6 +33,16 @@ pub use corgi_fwd::{
 };
 
 pub static OPTIMIZED_EPOCHS: AtomicUsize = AtomicUsize::new(0);
+
+/// Resolve an operation output whether Mass returned a committed object or a
+/// replayable progressive artifact stream.
+#[async_trait::async_trait]
+pub trait ArtifactOps: Send + Sync {
+    async fn receive_artifact<T: Send>(
+        &self,
+        reference: &ArtifactRef<T>,
+    ) -> Result<Vec<u8>, String>;
+}
 
 macro_rules! operation_cell {
     ($cell:ident, $id:ty, $op:ty) => {
@@ -154,7 +165,7 @@ impl Action for ComputeLoss {
 
 pub struct ComputeLossEffect;
 #[jungle::effect(id = 204)]
-impl<J: VoidInferOps> Effect<J> for ComputeLossEffect {
+impl<J: VoidInferOps + ArtifactOps> Effect<J> for ComputeLossEffect {
     type In = [(Transmission, Transmission); 1];
     type Out = Potentiation;
     type Err = AtomError;
@@ -178,7 +189,7 @@ impl<J: VoidInferOps> Effect<J> for ComputeLossEffect {
     }
 }
 
-async fn classification_loss<J: VoidInferOps>(
+async fn classification_loss<J: VoidInferOps + ArtifactOps>(
     jungle: &J,
     transmission: &Transmission,
 ) -> Result<f32, AtomError> {
@@ -197,7 +208,7 @@ async fn classification_loss<J: VoidInferOps>(
     let emission: Emission<SampleMetadata, Logits> =
         postcard::from_bytes(&emission_bytes).map_err(AtomError::Serialization)?;
     let output_bytes = jungle
-        .download_raw(emission.output_id.object_id())
+        .receive_artifact(&emission.output_id)
         .await
         .map_err(AtomError::Download)?;
     let output = decode_output::<HeadOp>(&output_bytes)

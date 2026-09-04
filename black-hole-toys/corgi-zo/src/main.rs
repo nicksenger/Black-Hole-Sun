@@ -17,7 +17,7 @@ use candle::{DType, Device, Tensor, Var};
 use candle_nn::{Linear, Module, VarBuilder, VarMap};
 use clap::Parser;
 use corgi_fwd::{HeadOp, SampleMetadata, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
-use corgi_zo::{CorgiZo, OPTIMIZED_EPOCHS};
+use corgi_zo::{ArtifactOps, CorgiZo, OPTIMIZED_EPOCHS};
 use hf_hub::HFClientSync;
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
@@ -291,6 +291,16 @@ struct CorgiAnimals(
 impl Ecosystem for CorgiJungle {
     const NAME: &'static str = "corgi-zo";
     type Animals = CorgiAnimals;
+}
+
+#[async_trait]
+impl ArtifactOps for CorgiJungle {
+    async fn receive_artifact<T: Send>(
+        &self,
+        reference: &ArtifactRef<T>,
+    ) -> Result<Vec<u8>, String> {
+        self.void.receive_artifact(reference).await
+    }
 }
 
 #[async_trait]
