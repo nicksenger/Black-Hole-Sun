@@ -509,7 +509,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let _parent = client.spawn::<CorgiForward>(&()).await?;
     let worker_error = Arc::new(Mutex::new(None::<String>));
-    let workers = (0..4)
+    // Keep a worker available for the parent and every one of the six
+    // operation cells. The matmul example uses four workers for its four
+    // journeys; corgi-fwd needs one more runner per additional cell.
+    let workers = (0..8)
         .map(|_| {
             let worker = JungleWorker::new(jungle.clone(), client.clone());
             let worker_error = Arc::clone(&worker_error);
