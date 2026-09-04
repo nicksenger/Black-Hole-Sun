@@ -9,3 +9,8 @@ edition = "2021"
 
 [dependencies]
 black-hole-sun = { path = "../../black-hole-sun" }
+jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun", features = ["fjall", "fusion"] }
+postcard = { version = "1", features = ["alloc"] }
+tracing = "0.1"
+typenum = "1"
+typosaurus = { git = "https://github.com/nicksenger/typosaurus.git", branch = "jungle" }

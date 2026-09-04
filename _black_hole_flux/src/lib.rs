@@ -123,7 +123,7 @@ pub use forward::effect::{
 };
 pub use forward::{ForwardPass, ForwardSunState, NeutralSunState, ServeFlow};
 pub use programs::checkpoint_evaluate::{CheckpointEvaluate, CheckpointEvaluateFlow};
-pub use programs::forward_only::ForwardOnly;
+pub use programs::forward_only::{ForwardOnly, ForwardOnlyWithPolicy};
 pub use programs::two_sided_zo::action::{
     BroadcastPotentiation, BroadcastPotentiationInput, InitializePropagation, ProcessNextNode,
     PropagationState, SendRootPropagation,

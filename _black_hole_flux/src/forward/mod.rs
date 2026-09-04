@@ -206,3 +206,17 @@ pub struct ServeFlow<Source, Input: Send + 'static, Output: Send + 'static, S>(
     Step<crate::compile::action::FinalizeForwardGraph<S>>,
     While<Always<ForwardSunState<S>, ()>, ServeRequest<Source, Input, Output, S>>,
 );
+
+/// Serving driver variant that applies a policy to each completed sink.
+#[derive(Flow)]
+pub struct ServeFlowWithPolicy<Source, Input: Send + 'static, Output: Send + 'static, S, Policy>(
+    Step<crate::compile::action::FinalizeForwardGraph<S>>,
+    While<Always<ForwardSunState<S>, ()>, ServeRequestWithPolicy<Source, Input, Output, S, Policy>>,
+);
+
+#[derive(Flow)]
+pub struct ServeRequestWithPolicy<Source, Input: Send + 'static, Output: Send + 'static, S, Policy>(
+    Source,
+    ForwardPassWithState<Input, Output, S>,
+    Policy,
+);
