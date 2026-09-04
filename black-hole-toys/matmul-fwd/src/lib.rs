@@ -1,10 +1,10 @@
 //! A small forward-only tensor pipeline.
 //!
 //! The example deliberately keeps the tensor and operations simple so the
-//! topology is easy to inspect:
+//! topology and shape transition are easy to inspect:
 //!
 //! ```text
-//! Generator -> Matmul -> Scale -> ReLU -> LogPolicy
+//! Generator (2x3) -> Matmul (2x4) -> Scale -> ReLU -> LogPolicy
 //! ```
 //!
 //! The three operation cells are a statically typed DAG.  In particular, the
@@ -28,22 +28,22 @@ use black_hole_sun::{
 };
 use jungle_sdk::prelude::*;
 use tracing::info;
-use typenum::{U0, U1, U2, U3};
+use typenum::{U0, U1, U2, U3, U4};
 use typosaurus::collections::list::{Empty, List};
 use typosaurus::list;
 
-/// The one tensor carried by this toy pipeline: a 2x2 matrix of f32 values.
-pub struct MatrixPort;
+/// The generator's 2x3 input matrix.
+pub struct InputMatrixPort;
 
-impl TensorPortSpec for MatrixPort {
-    type Shape = Shape2<U2, U2>;
+impl TensorPortSpec for InputMatrixPort {
+    type Shape = Shape2<U2, U3>;
 
-    const NAME: &'static str = "matrix";
+    const NAME: &'static str = "input_matrix";
 
     fn dimensions() -> Vec<DimensionDescriptor> {
         vec![
             DimensionDescriptor::Static(2),
-            DimensionDescriptor::Static(2),
+            DimensionDescriptor::Static(3),
         ]
     }
 
@@ -52,14 +52,35 @@ impl TensorPortSpec for MatrixPort {
     }
 }
 
-pub type Matrix = SingleTensorSpec<MatrixPort>;
+/// The 2x4 matrix produced by the matmul and carried by downstream cells.
+pub struct ProductMatrixPort;
+
+impl TensorPortSpec for ProductMatrixPort {
+    type Shape = Shape2<U2, U4>;
+
+    const NAME: &'static str = "product_matrix";
+
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![
+            DimensionDescriptor::Static(2),
+            DimensionDescriptor::Static(4),
+        ]
+    }
+
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::F32)
+    }
+}
+
+pub type InputMatrix = SingleTensorSpec<InputMatrixPort>;
+pub type ProductMatrix = SingleTensorSpec<ProductMatrixPort>;
 
 /// Contract for the first cell, which represents a matrix multiplication.
 pub struct Matmul;
 
 impl TensorContract for Matmul {
-    type Input = Matrix;
-    type Output = Matrix;
+    type Input = InputMatrix;
+    type Output = ProductMatrix;
     type Metadata = ();
 
     const ID: ContractId = ContractId::from_u128(0x6d61_746d_756c_2d66_7764_2d303031);
@@ -70,8 +91,8 @@ impl TensorContract for Matmul {
 pub struct Scale;
 
 impl TensorContract for Scale {
-    type Input = Matrix;
-    type Output = Matrix;
+    type Input = ProductMatrix;
+    type Output = ProductMatrix;
     type Metadata = ();
 
     const ID: ContractId = ContractId::from_u128(0x7363_616c_652d_6677_642d_3030_3100);
@@ -82,8 +103,8 @@ impl TensorContract for Scale {
 pub struct Relu;
 
 impl TensorContract for Relu {
-    type Input = Matrix;
-    type Output = Matrix;
+    type Input = ProductMatrix;
+    type Output = ProductMatrix;
     type Metadata = ();
 
     const ID: ContractId = ContractId::from_u128(0x7265_6c75_2d66_7764_2d30_3031_0000);
@@ -138,7 +159,7 @@ pub type MatmulGraph = List<(
     ScaleNode,
 )>;
 
-/// Repeatedly emits the same 2x2 matrix as a typed input artifact.
+/// Repeatedly emits the same 2x3 matrix as a typed input artifact.
 #[derive(Flow)]
 pub struct Generator(Step<GenerateTensor>);
 
@@ -148,7 +169,7 @@ pub struct GenerateTensor;
 impl Action for GenerateTensor {
     type Effect = GenerateTensorEffect;
     type Input = ();
-    type Output = ArtifactDelivery<Matrix>;
+    type Output = ArtifactDelivery<InputMatrix>;
 
     fn emit(_state: &ForwardSunState, _input: Self::Input) {}
 
@@ -165,7 +186,7 @@ pub struct GenerateTensorEffect;
 #[jungle::effect(id = 101)]
 impl<J: VoidOps> Effect<J> for GenerateTensorEffect {
     type In = ();
-    type Out = ArtifactDelivery<Matrix>;
+    type Out = ArtifactDelivery<InputMatrix>;
     type Err = String;
 
     fn effect(
@@ -175,10 +196,10 @@ impl<J: VoidOps> Effect<J> for GenerateTensorEffect {
         async move {
             let input = black_hole_sun::encode_input::<Matmul>(
                 &[RawTensor {
-                    name: "matrix".to_string(),
+                    name: "input_matrix".to_string(),
                     dtype: TensorDtype::F32,
-                    shape: vec![2, 2],
-                    data: [1.0_f32, 2.0, 3.0, 4.0]
+                    shape: vec![2, 3],
+                    data: [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
                         .into_iter()
                         .flat_map(f32::to_le_bytes)
                         .collect(),
@@ -188,7 +209,7 @@ impl<J: VoidOps> Effect<J> for GenerateTensorEffect {
             .map_err(|error| error.to_string())?;
             let tensor_id = jungle.upload_to_void(input).await?;
 
-            let emission = Emission::<(), Matrix> {
+            let emission = Emission::<(), InputMatrix> {
                 metadata: (),
                 output_id: ArtifactRef::committed(ObjectRef::new(tensor_id)),
             };
@@ -216,7 +237,7 @@ pub struct LogTensor;
 #[jungle::action]
 impl Action for LogTensor {
     type Effect = LogTensorEffect;
-    type Input = ArtifactDelivery<Matrix>;
+    type Input = ArtifactDelivery<ProductMatrix>;
     type Output = ();
 
     fn emit(_state: &ForwardSunState, input: Self::Input) -> Self::Input {
@@ -235,7 +256,7 @@ pub struct LogTensorEffect;
 
 #[jungle::effect(id = 102)]
 impl<J: VoidOps> Effect<J> for LogTensorEffect {
-    type In = ArtifactDelivery<Matrix>;
+    type In = ArtifactDelivery<ProductMatrix>;
     type Out = ();
     type Err = String;
 
@@ -245,7 +266,7 @@ impl<J: VoidOps> Effect<J> for LogTensorEffect {
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
             let emission_bytes = jungle.download_raw(delivery.emission_id.id()).await?;
-            let emission: Emission<(), Matrix> =
+            let emission: Emission<(), ProductMatrix> =
                 postcard::from_bytes(&emission_bytes).map_err(|error| error.to_string())?;
             let tensor_bytes = jungle.download_raw(emission.output_id.object_id()).await?;
             let tensor = black_hole_sun::decode_output::<Relu>(&tensor_bytes)
