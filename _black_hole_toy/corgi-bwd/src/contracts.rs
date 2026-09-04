@@ -80,7 +80,7 @@ impl<J: VoidOps> Effect<J> for GenerateImageEffect {
     type Out = ArtifactDelivery<Image>;
     type Err = String;
     fn effect(jungle: &J, _input: ()) -> impl Future<Output = Result<Self::Out, String>> + Send {
-        toy_common::dataset::generate_image::<J, StemOp>(jungle)
+        toy_common::dataset::generate_training_image::<J, StemOp>(jungle)
     }
 }
 

@@ -102,7 +102,7 @@ impl<J: VoidInferOps> Effect<J> for GenerateImageEffect {
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let delivery = toy_common::dataset::generate_image::<J, StemOp>(jungle)
+            let delivery = toy_common::dataset::generate_training_image::<J, StemOp>(jungle)
                 .await
                 .map_err(AtomError::Upload)?;
             let propagation = Transmission::Propagation {

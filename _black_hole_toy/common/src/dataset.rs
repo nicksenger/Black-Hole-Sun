@@ -20,6 +20,7 @@ pub const DATASET_ID: &str = "maurice-fp/stanford-dogs";
 pub const DATASET_SAMPLES: usize = 20_580;
 /// Number of images emitted in each tensor batch.
 pub const BATCH_SIZE: usize = 4;
+const VALIDATION_PERCENT: usize = 15;
 
 const PEMBROKE_LABEL: u32 = 111;
 const CARDIGAN_LABEL: u32 = 112;
@@ -44,6 +45,14 @@ struct DatasetCursor {
 
 impl DatasetCursor {
     fn new() -> Result<Self, String> {
+        Self::new_with_validation(false)
+    }
+
+    fn new_training() -> Result<Self, String> {
+        Self::new_with_validation(true)
+    }
+
+    fn new_with_validation(training_only: bool) -> Result<Self, String> {
         let api = HFClientSync::new().map_err(|e| format!("Hugging Face API: {e}"))?;
 
         // Select positions before loading images so balancing does not require
@@ -85,6 +94,9 @@ impl DatasetCursor {
                 samples.len()
             ));
         }
+        if training_only {
+            samples = training_samples(samples, &mut rng);
+        }
 
         Ok(Self {
             samples,
@@ -104,6 +116,16 @@ impl DatasetCursor {
         self.next_index += 1;
         Ok(Some(sample))
     }
+}
+
+fn training_samples(
+    mut samples: Vec<DatasetSample>,
+    rng: &mut impl rand::Rng,
+) -> Vec<DatasetSample> {
+    samples.shuffle(rng);
+    let validation_count = samples.len() * VALIDATION_PERCENT / 100;
+    samples.truncate(samples.len() - validation_count);
+    samples
 }
 
 fn dataset_readers(
@@ -133,6 +155,7 @@ fn select_balanced_positions(
 }
 
 static DATASET: OnceLock<Result<Mutex<DatasetCursor>, String>> = OnceLock::new();
+static TRAINING_DATASET: OnceLock<Result<Mutex<DatasetCursor>, String>> = OnceLock::new();
 
 /// The next dataset sample, shared across all callers in this process.
 pub fn next_sample() -> Result<DatasetSample, String> {
@@ -145,6 +168,18 @@ pub fn next_sample() -> Result<DatasetSample, String> {
         .map_err(|_| "Stanford Dogs cursor poisoned".to_owned())?
         .next()?
         .ok_or_else(|| "Stanford Dogs dataset exhausted".to_owned())
+}
+
+fn next_training_sample() -> Result<DatasetSample, String> {
+    let cursor = TRAINING_DATASET
+        .get_or_init(|| DatasetCursor::new_training().map(Mutex::new))
+        .as_ref()
+        .map_err(Clone::clone)?;
+    cursor
+        .lock()
+        .map_err(|_| "Stanford Dogs training cursor poisoned".to_owned())?
+        .next()?
+        .ok_or_else(|| "Stanford Dogs training dataset is empty".to_owned())
 }
 
 fn parse_row(row: Row) -> Result<DatasetSample, String> {
@@ -231,6 +266,20 @@ mod tests {
         assert!(cursor.next().unwrap().is_some());
         assert_eq!(cursor.next_index, 1);
     }
+
+    #[test]
+    fn training_samples_reserve_fifteen_percent_for_validation() {
+        let samples = (0..20)
+            .map(|label| DatasetSample {
+                image: vec![label as u8],
+                label: label as u32,
+            })
+            .collect();
+
+        let samples = training_samples(samples, &mut rand::rng());
+
+        assert_eq!(samples.len(), 17);
+    }
 }
 
 /// Decode one dataset image into a normalized CHW f32 vector.
@@ -265,10 +314,37 @@ where
     J: VoidOps,
     C: TensorContract<Metadata = SampleMetadata>,
 {
+    generate_batch::<J, C>(jungle, false).await
+}
+
+/// Generate a batch from the randomized training split, reserving 15% of the
+/// filtered samples for validation. The validation split is not emitted.
+pub async fn generate_training_image<J, C>(
+    jungle: &J,
+) -> Result<ArtifactDelivery<C::Input>, String>
+where
+    J: VoidOps,
+    C: TensorContract<Metadata = SampleMetadata>,
+{
+    generate_batch::<J, C>(jungle, true).await
+}
+
+async fn generate_batch<J, C>(
+    jungle: &J,
+    training_only: bool,
+) -> Result<ArtifactDelivery<C::Input>, String>
+where
+    J: VoidOps,
+    C: TensorContract<Metadata = SampleMetadata>,
+{
     let mut values = Vec::with_capacity(BATCH_SIZE * 3 * IMAGE_SIZE * IMAGE_SIZE);
     let mut dataset_labels = [0; BATCH_SIZE];
     for label in &mut dataset_labels {
-        let sample = next_sample()?;
+        let sample = if training_only {
+            next_training_sample()?
+        } else {
+            next_sample()?
+        };
         values.extend(image_tensor(&sample.image)?);
         *label = sample.label;
     }
