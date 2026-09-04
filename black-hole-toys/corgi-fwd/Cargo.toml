@@ -10,15 +10,11 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1"
 black-hole-sun = { path = "../../black-hole-sun" }
+black-hole-toys-common = { path = "../common", features = ["dataset"] }
 candle = { path = "../../../candle/candle-core", package = "candle-core", version = "0.11.0" }
-candle-datasets = { path = "../../../candle/candle-datasets", version = "0.11.0" }
 candle-nn = { path = "../../../candle/candle-nn", version = "0.11.0" }
-candle-transformers = { path = "../../../candle/candle-transformers", version = "0.11.0" }
 clap = { version = "4", features = ["derive"] }
-hf-hub = { version = "1.0", features = ["blocking"] }
-image = { version = "0.25.2", default-features = false, features = ["jpeg", "png"] }
 jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun", features = ["fjall", "fusion"] }
-parquet = "59"
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

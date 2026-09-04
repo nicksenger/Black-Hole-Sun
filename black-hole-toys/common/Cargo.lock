@@ -1736,45 +1736,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "corgi-fwd"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "black-hole-sun",
- "black-hole-toys-common",
- "candle-core",
- "candle-nn",
- "clap",
- "jungle-sdk",
- "postcard",
- "serde",
- "tokio",
- "tracing",
- "typenum",
- "uuid",
-]
-
-[[package]]
-name = "corgi-zo"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "black-hole-sun",
- "black-hole-toys-common",
- "candle-core",
- "candle-nn",
- "clap",
- "corgi-fwd",
- "jungle-sdk",
- "postcard",
- "serde",
- "tokio",
- "tracing",
- "typenum",
- "uuid",
-]
-
-[[package]]
 name = "cosmic-text"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6069,9 +6030,9 @@ checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "portable-atomic-util"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
+checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
 dependencies = [
  "portable-atomic",
 ]
@@ -9819,9 +9780,9 @@ dependencies = [
 
 [[package]]
 name = "zstd-safe"
-version = "7.2.4"
+version = "7.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+checksum = "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882"
 dependencies = [
  "zstd-sys",
 ]

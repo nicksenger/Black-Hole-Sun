@@ -1,6 +1,6 @@
 [package]
-name = "matmul-fwd"
-description = "Example: matmul forward pass"
+name = "tensor-fwd"
+description = "Example: small forward-only tensor pipeline"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,8 +9,8 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1"
-black-hole-flux = { path = "../../_black_hole_flux" }
 black-hole-sun = { path = "../../black-hole-sun" }
+black-hole-toys-common = { path = "../common" }
 jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun", features = ["fjall", "fusion"] }
 postcard = { version = "1", features = ["alloc"] }
 serde = "1"

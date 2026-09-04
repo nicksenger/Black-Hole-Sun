@@ -150,6 +150,26 @@ pub trait TensorContract {
             outputs: Self::Output::descriptor(),
         }
     }
+
+    /// Construct the contract's first input tensor from f32 values.
+    fn input_f32(shape: &[usize], values: impl IntoIterator<Item = f32>) -> RawTensor {
+        let name = Self::Input::descriptor()
+            .first()
+            .expect("input bundle has at least one port")
+            .name
+            .clone();
+        RawTensor::f32(name, shape, values)
+    }
+
+    /// Construct the contract's first output tensor from f32 values.
+    fn output_f32(shape: &[usize], values: impl IntoIterator<Item = f32>) -> RawTensor {
+        let name = Self::Output::descriptor()
+            .first()
+            .expect("output bundle has at least one port")
+            .name
+            .clone();
+        RawTensor::f32(name, shape, values)
+    }
 }
 
 /// Reverse-mode tensor types for an operation that retains its forward graph.
@@ -167,6 +187,32 @@ pub trait BackwardContract: TensorContract {
             inputs: Self::OutputGrad::descriptor(),
             outputs: Self::InputGrad::descriptor(),
         }
+    }
+
+    /// Construct the contract's first output-gradient tensor from f32 values.
+    fn output_grad_f32(
+        shape: &[usize],
+        values: impl IntoIterator<Item = f32>,
+    ) -> RawTensor {
+        let name = Self::OutputGrad::descriptor()
+            .first()
+            .expect("output gradient bundle has at least one port")
+            .name
+            .clone();
+        RawTensor::f32(name, shape, values)
+    }
+
+    /// Construct the contract's first input-gradient tensor from f32 values.
+    fn input_grad_f32(
+        shape: &[usize],
+        values: impl IntoIterator<Item = f32>,
+    ) -> RawTensor {
+        let name = Self::InputGrad::descriptor()
+            .first()
+            .expect("input gradient bundle has at least one port")
+            .name
+            .clone();
+        RawTensor::f32(name, shape, values)
     }
 }
 
@@ -342,6 +388,42 @@ pub struct RawTensor {
     pub data: Vec<u8>,
 }
 
+impl RawTensor {
+    /// Construct a contiguous row-major f32 tensor.
+    pub fn f32(
+        name: impl Into<String>,
+        shape: &[usize],
+        values: impl IntoIterator<Item = f32>,
+    ) -> Self {
+        let data = values.into_iter().flat_map(f32::to_le_bytes).collect();
+        Self {
+            name: name.into(),
+            dtype: TensorDtype::F32,
+            shape: shape.to_vec(),
+            data,
+        }
+    }
+
+    /// Interpret the element bytes as little-endian f32 values.
+    pub fn to_f32(&self) -> Result<Vec<f32>, CodecError> {
+        if self.dtype != TensorDtype::F32 {
+            return Err(CodecError::DtypeMismatch {
+                name: self.name.clone(),
+                expected: DtypeConstraint::Exact(TensorDtype::F32),
+                actual: self.dtype,
+            });
+        }
+        if self.data.len() % 4 != 0 {
+            return Err(CodecError::Truncated);
+        }
+        Ok(self
+            .data
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("four bytes")))
+            .collect())
+    }
+}
+
 /// Validated decoded tensor artifact, tagged with its compile-time spec.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodedTensorBundle<S, M> {
@@ -349,6 +431,15 @@ pub struct DecodedTensorBundle<S, M> {
     pub metadata: M,
     pub tensors: Vec<RawTensor>,
     marker: PhantomData<S>,
+}
+
+impl<S, M> DecodedTensorBundle<S, M> {
+    /// The bundle's first tensor. Tensors decode in descriptor order.
+    pub fn first_tensor(&self) -> Result<&RawTensor, CodecError> {
+        self.tensors
+            .first()
+            .ok_or_else(|| CodecError::MissingTensor("bundle has no tensors".into()))
+    }
 }
 
 /// Runtime-validated artifact used by type-erased operation hosts.
@@ -431,6 +522,12 @@ pub enum CodecError {
     Postcard(#[from] postcard::Error),
     #[error("safetensors header JSON: {0}")]
     HeaderJson(#[from] serde_json::Error),
+}
+
+impl From<CodecError> for String {
+    fn from(error: CodecError) -> Self {
+        error.to_string()
+    }
 }
 
 /// Stable hash of a contract's canonical postcard representation.

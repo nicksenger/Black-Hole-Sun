@@ -1031,6 +1031,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "black-hole-toys-common"
+version = "0.1.0"
+dependencies = [
+ "black-hole-sun",
+ "candle-datasets",
+ "hf-hub 1.0.0",
+ "image",
+ "jungle-sdk",
+ "parquet",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "black-hole-type"
 version = "0.1.0"
 dependencies = [
@@ -1350,23 +1364,6 @@ dependencies = [
  "safetensors 0.8.0",
  "serde",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "candle-transformers"
-version = "0.11.0"
-dependencies = [
- "byteorder",
- "candle-core",
- "candle-nn",
- "fancy-regex 0.19.0",
- "num-traits",
- "rand 0.9.5",
- "rayon",
- "serde",
- "serde_json",
- "serde_plain",
- "tracing",
 ]
 
 [[package]]
@@ -1744,15 +1741,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "black-hole-sun",
+ "black-hole-toys-common",
  "candle-core",
- "candle-datasets",
  "candle-nn",
- "candle-transformers",
  "clap",
- "hf-hub 1.0.0",
- "image",
  "jungle-sdk",
- "parquet",
  "postcard",
  "serde",
  "tokio",
@@ -2522,17 +2515,6 @@ name = "fancy-regex"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72cf461f865c862bb7dc573f643dd6a2b6842f7c30b07882b56bd148cc2761b8"
-dependencies = [
- "bit-set",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
-name = "fancy-regex"
-version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "476de73bddf2ef8490aa4ee8f1cf40b430bf1d56c48c22080e5186952cd580e6"
 dependencies = [
  "bit-set",
  "regex-automata",
@@ -7068,15 +7050,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "serde_plain"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ce1fc6db65a611022b23a0dec6975d63fb80a302cb3388835ff02c097258d50"
-dependencies = [
- "serde",
 ]
 
 [[package]]

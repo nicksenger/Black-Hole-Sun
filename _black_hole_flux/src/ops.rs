@@ -11,12 +11,15 @@ const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
 // ---------------------------------------------------------------------------
 
 pub use black_hole_type::{
-    ArtifactRef, DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId,
-    InferenceRequest, MassModelConfig, MassModelParams, ObjectId, ObjectRef, StreamRef,
-    TransferHash, TransferRecord, TransferRef, Transmission,
+    ArtifactDelivery, ArtifactRef, DarkToken, Emission, EmissionId, InferenceOutput,
+    InferenceOutputId, InferenceRequest, MassModelConfig, MassModelParams, ObjectId, ObjectRef,
+    StreamRef, TransferHash, TransferRecord, TransferRef, Transmission,
 };
 
-use black_hole_spec::{BackwardContract, QwenDarkInference, TensorContract};
+use black_hole_spec::{
+    BackwardContract, DecodedTensorBundle, QwenDarkInference, RawTensor, TensorContract,
+    decode_output, encode_input,
+};
 
 use crate::AtomError;
 
@@ -249,6 +252,66 @@ pub trait VoidOps: Send + Sync {
     {
         let bytes = self.download_raw(id.id()).await?;
         postcard::from_bytes(&bytes).map_err(|error| format!("postcard deserialize: {error}"))
+    }
+
+    /// Emit one typed input artifact for contract `C`.
+    ///
+    /// Encodes the tensor bundle with `C`'s input descriptor, uploads it to
+    /// void, wraps it in an emission, and returns the delivery that
+    /// downstream cells consume.
+    async fn emit<C>(
+        &self,
+        tensors: &[RawTensor],
+        metadata: &C::Metadata,
+    ) -> Result<ArtifactDelivery<C::Input>, String>
+    where
+        C: TensorContract,
+        C::Metadata: Serialize + Clone + Send + Sync,
+    {
+        let frame = encode_input::<C>(tensors, metadata).map_err(|error| error.to_string())?;
+        let tensor_id = self.upload_to_void(frame).await?;
+        let emission = Emission {
+            metadata: metadata.clone(),
+            output_id: ArtifactRef::committed(ObjectRef::<C::Input>::new(tensor_id)),
+        };
+        let emission_bytes = postcard::to_allocvec(&emission).map_err(|error| error.to_string())?;
+        let emission_id = self.upload_to_void(emission_bytes).await?;
+        Ok(ArtifactDelivery {
+            emission_id: ObjectRef::new(emission_id),
+            recv: ObjectId::nil(),
+            send: ObjectId::nil(),
+        })
+    }
+
+    /// Resolve a delivery of `C`'s output bundle and decode it.
+    async fn receive<C>(
+        &self,
+        delivery: &ArtifactDelivery<C::Output>,
+    ) -> Result<DecodedTensorBundle<C::Output, C::Metadata>, String>
+    where
+        C: TensorContract,
+        C::Output: Send,
+        C::Metadata: DeserializeOwned + Send,
+    {
+        self.receive_emission::<C, C::Output>(delivery.emission_id).await
+    }
+
+    /// Resolve the emission at `emission_id` and decode it as `C`'s output
+    /// bundle.
+    async fn receive_emission<C, T>(
+        &self,
+        emission_id: EmissionId<T>,
+    ) -> Result<DecodedTensorBundle<C::Output, C::Metadata>, String>
+    where
+        C: TensorContract,
+        C::Output: Send,
+        C::Metadata: DeserializeOwned + Send,
+    {
+        let bytes = self.download_raw(emission_id.id()).await?;
+        let emission: Emission<C::Metadata, C::Output> =
+            postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+        let frame = self.receive_artifact_raw(&emission.output_id).await?;
+        decode_output::<C>(&frame).map_err(|error| error.to_string())
     }
 }
 

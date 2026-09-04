@@ -1,21 +1,8 @@
-//! A small forward-only tensor pipeline.
-//!
-//! The example deliberately keeps the tensor and operations simple so the
-//! topology and shape transition are easy to inspect:
-//!
-//! ```text
-//! Generator (2x3) -> Matmul (2x4) -> Scale -> ReLU -> LogPolicy
-//! ```
-//!
-//! The three operation cells are a statically typed DAG.  In particular, the
-//! `TypedEdges` declarations make each downstream input contract part of the
-//! graph definition, while the enclosing flow is assembled through the
-//! canonical `<Topology as BlackHole>::Sun<Program>` entrypoint.
+//! Ports, contracts, cells, and the compiled Sun flow for the pipeline.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use async_trait::async_trait;
 use black_hole_sun::black_hole_spec::{
     glowstick::Shape2, SingleTensorSpec, TensorContract, TensorPortSpec,
 };
@@ -24,9 +11,8 @@ use black_hole_sun::compile::BlackHole;
 use black_hole_sun::forward::ForwardSunState;
 use black_hole_sun::topology::{Edge, TypedEdges, Unary};
 use black_hole_sun::{
-    ArtifactDelivery, ArtifactRef, CellInit, ContractId, DtypeConstraint, Emission,
-    ForwardOnlyWithPolicy, ForwardOperationPrimordium, ObjectId, ObjectRef, OperationNode,
-    RawTensor, TensorDtype, VoidOps,
+    ArtifactDelivery, CellInit, ContractId, DtypeConstraint, ForwardOnlyWithPolicy,
+    ForwardOperationPrimordium, OperationNode, TensorDtype, VoidOps,
 };
 use jungle_sdk::list;
 use jungle_sdk::prelude::*;
@@ -92,68 +78,36 @@ impl TensorContract for Relu {
     const VERSION: u32 = 1;
 }
 
-pub struct MatmulCell;
+macro_rules! operation_cell {
+    ($cell:ident, $id:ty, $op:ty) => {
+        pub struct $cell;
 
-impl Animal for MatmulCell {
-    type Id = Id<U0>;
-    type Generation = U0;
-    type State = CellState;
-    type Seed = CellInit;
-    type Flow = ForwardOperationPrimordium<Matmul>;
+        impl Animal for $cell {
+            type Id = Id<$id>;
+            type Generation = U0;
+            type State = CellState;
+            type Seed = CellInit;
+            type Flow = ForwardOperationPrimordium<$op>;
+        }
+
+        impl Observable for $cell {
+            type Observation = NoopObservation;
+        }
+
+        impl Perturbable for $cell {
+            type Perturbation = NoopPerturbation;
+        }
+
+        impl OperationNode<$op> for $cell {}
+    };
 }
 
-impl Observable for MatmulCell {
-    type Observation = NoopObservation;
-}
-
-impl Perturbable for MatmulCell {
-    type Perturbation = NoopPerturbation;
-}
-
-impl OperationNode<Matmul> for MatmulCell {}
-
-pub struct ScaleCell;
-
-impl Animal for ScaleCell {
-    type Id = Id<U1>;
-    type Generation = U0;
-    type State = CellState;
-    type Seed = CellInit;
-    type Flow = ForwardOperationPrimordium<Scale>;
-}
-
-impl Observable for ScaleCell {
-    type Observation = NoopObservation;
-}
-
-impl Perturbable for ScaleCell {
-    type Perturbation = NoopPerturbation;
-}
-
-impl OperationNode<Scale> for ScaleCell {}
-
-pub struct ReluCell;
-
-impl Animal for ReluCell {
-    type Id = Id<U2>;
-    type Generation = U0;
-    type State = CellState;
-    type Seed = CellInit;
-    type Flow = ForwardOperationPrimordium<Relu>;
-}
-
-impl Observable for ReluCell {
-    type Observation = NoopObservation;
-}
-
-impl Perturbable for ReluCell {
-    type Perturbation = NoopPerturbation;
-}
-
-impl OperationNode<Relu> for ReluCell {}
+operation_cell!(MatmulCell, U0, Matmul);
+operation_cell!(ScaleCell, U1, Scale);
+operation_cell!(ReluCell, U2, Relu);
 
 /// Three-cell matrix pipeline, with compile-time checked operation edges.
-pub type MatmulGraph = list![
+pub type TensorGraph = list![
     Unary<U0, MatmulCell, TypedEdges<list![Edge<U1, Scale>]>, Matmul>,
     Unary<U1, ScaleCell, TypedEdges<list![Edge<U2, Relu>]>, Scale>,
     Unary<U2, ReluCell, TypedEdges<list![]>, Relu>
@@ -194,35 +148,8 @@ impl<J: VoidOps> Effect<J> for GenerateTensorEffect {
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let input = black_hole_sun::encode_input::<Matmul>(
-                &[RawTensor {
-                    name: "input_matrix".to_string(),
-                    dtype: TensorDtype::F32,
-                    shape: vec![2, 3],
-                    data: [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
-                        .into_iter()
-                        .flat_map(f32::to_le_bytes)
-                        .collect(),
-                }],
-                &(),
-            )
-            .map_err(|error| error.to_string())?;
-            let tensor_id = jungle.upload_to_void(input).await?;
-
-            let emission = Emission::<(), InputMatrix> {
-                metadata: (),
-                output_id: ArtifactRef::committed(ObjectRef::new(tensor_id)),
-            };
-            let emission_id = jungle
-                .upload_to_void(
-                    postcard::to_allocvec(&emission).map_err(|error| error.to_string())?,
-                )
-                .await?;
-            Ok(ArtifactDelivery {
-                emission_id: ObjectRef::new(emission_id),
-                recv: ObjectId::nil(),
-                send: ObjectId::nil(),
-            })
+            let input = Matmul::input_f32(&[2, 3], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+            jungle.emit::<Matmul>(&[input], &()).await
         }
     }
 }
@@ -232,16 +159,6 @@ impl<J: VoidOps> Effect<J> for GenerateTensorEffect {
 pub struct LogPolicy(Step<LogTensor>);
 
 pub struct LogTensor;
-
-/// Raw artifact resolution used by the policy so committed and streamed
-/// tensor references are handled through the same Void path.
-#[async_trait]
-pub trait RawArtifactOps: VoidOps {
-    async fn receive_raw_artifact<T: Send>(
-        &self,
-        reference: &ArtifactRef<T>,
-    ) -> Result<Vec<u8>, String>;
-}
 
 #[jungle::action]
 impl Action for LogTensor {
@@ -267,7 +184,7 @@ pub struct LogTensorEffect;
 pub static LOGGED_OUTPUTS: AtomicUsize = AtomicUsize::new(0);
 
 #[jungle::effect(id = 102)]
-impl<J: RawArtifactOps> Effect<J> for LogTensorEffect {
+impl<J: VoidOps> Effect<J> for LogTensorEffect {
     type In = ArtifactDelivery<ProductMatrix>;
     type Out = ();
     type Err = String;
@@ -277,22 +194,17 @@ impl<J: RawArtifactOps> Effect<J> for LogTensorEffect {
         delivery: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let emission_bytes = jungle.download_raw(delivery.emission_id.id()).await?;
-            let emission: Emission<(), ProductMatrix> =
-                postcard::from_bytes(&emission_bytes).map_err(|error| error.to_string())?;
-            let tensor_bytes = jungle.receive_raw_artifact(&emission.output_id).await?;
-            let tensor = black_hole_sun::decode_output::<Relu>(&tensor_bytes)
-                .map_err(|error| error.to_string())?;
-            info!(tensor = ?tensor.tensors, "matmul-fwd output");
+            let tensor = jungle.receive::<Relu>(&delivery).await?;
+            info!(tensor = ?tensor.tensors, "tensor-fwd output");
             LOGGED_OUTPUTS.fetch_add(1, Ordering::Release);
             Ok(())
         }
     }
 }
 
-/// The complete flow produced by the redesigned `BlackHole::Sun` compiler.
-pub type MatmulSun =
-    <MatmulGraph as BlackHole>::Sun<ForwardOnlyWithPolicy<Generator, Matmul, Relu, LogPolicy>>;
+/// The complete flow produced by the `BlackHole::Sun` compiler.
+pub type TensorSun =
+    <TensorGraph as BlackHole>::Sun<ForwardOnlyWithPolicy<Generator, Matmul, Relu, LogPolicy>>;
 
 /// Top-level Jungle animal for the example Sun.
 pub struct MatmulForward;
@@ -302,7 +214,7 @@ impl Animal for MatmulForward {
     type Generation = U0;
     type State = ForwardSunState;
     type Seed = ();
-    type Flow = MatmulSun;
+    type Flow = TensorSun;
 }
 
 impl Observable for MatmulForward {

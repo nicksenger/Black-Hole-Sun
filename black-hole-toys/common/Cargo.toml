@@ -1,0 +1,52 @@
+[package]
+name = "black-hole-toys-common"
+description = "Shared runtime and dataset plumbing for black-hole toy examples"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone crate — not a member of the parent workspace
+[workspace]
+
+[lib]
+name = "toys_common"
+path = "src/lib.rs"
+
+[features]
+default = []
+dataset = [
+    "dep:candle-datasets",
+    "dep:hf-hub",
+    "dep:image",
+    "dep:parquet",
+    "dep:serde",
+]
+
+[dependencies]
+black-hole-sun = { path = "../../black-hole-sun" }
+jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun", features = ["fjall", "fusion"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[dependencies.candle-datasets]
+path = "../../../candle/candle-datasets"
+version = "0.11.0"
+optional = true
+
+[dependencies.hf-hub]
+version = "1.0"
+features = ["blocking"]
+optional = true
+
+[dependencies.image]
+version = "0.25.2"
+default-features = false
+features = ["jpeg", "png"]
+optional = true
+
+[dependencies.parquet]
+version = "59"
+optional = true
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+optional = true
