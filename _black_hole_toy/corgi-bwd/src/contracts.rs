@@ -13,6 +13,7 @@ use black_hole_sun::{
 use corgi_fwd::contracts::{HeadOp, Image, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 use jungle_sdk::list;
 use jungle_sdk::prelude::*;
+use toy_common::dataset::BATCH_SIZE;
 use typenum::consts::{U0, U1, U2, U3, U4, U5, U6};
 
 /// Micro-batches per pipeline epoch.
@@ -128,19 +129,35 @@ impl<J: VoidOps> Effect<J> for LogEpochEffect {
             let mut loss = 0f32;
             let mut correct = 0usize;
             for delivery in &epoch.outputs {
-                let decoded =
-                    jungle.receive_emission::<HeadOp, ()>(delivery.emission_id.clone()).await?;
+                let decoded = jungle
+                    .receive_emission::<HeadOp, ()>(delivery.emission_id.clone())
+                    .await?;
                 let logits = decoded.first_tensor()?.to_f32()?;
-                let target = usize::from(!matches!(
-                    decoded.metadata.dataset_label,
-                    corgi_fwd::PEMBROKE_LABEL | corgi_fwd::CARDIGAN_LABEL
-                ));
-                let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                let normalizer = logits.iter().map(|v| (*v - max).exp()).sum::<f32>();
-                loss += normalizer.ln() + max - logits[target];
-                correct += usize::from(usize::from(logits[1] > logits[0]) == target);
+                if logits.len() != BATCH_SIZE * 2 {
+                    return Err(
+                        "classifier output does not contain one pair of logits per image".into(),
+                    );
+                }
+                for (index, label) in decoded.metadata.dataset_labels.iter().enumerate() {
+                    let offset = index * 2;
+                    let target = usize::from(!matches!(
+                        *label,
+                        corgi_fwd::PEMBROKE_LABEL | corgi_fwd::CARDIGAN_LABEL
+                    ));
+                    let max = logits[offset..offset + 2]
+                        .iter()
+                        .copied()
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    let normalizer = logits[offset..offset + 2]
+                        .iter()
+                        .map(|v| (*v - max).exp())
+                        .sum::<f32>();
+                    loss += normalizer.ln() + max - logits[offset + target];
+                    correct +=
+                        usize::from(usize::from(logits[offset + 1] > logits[offset]) == target);
+                }
             }
-            let n = epoch.outputs.len().max(1) as f32;
+            let n = (epoch.outputs.len() * BATCH_SIZE).max(1) as f32;
             let metrics = EpochMetrics {
                 epoch: epoch.epoch,
                 mean_loss: loss / n,

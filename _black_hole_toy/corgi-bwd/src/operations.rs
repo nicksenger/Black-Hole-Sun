@@ -14,7 +14,7 @@ use candle::backprop::GradStore;
 use candle::{Device, Tensor, Var};
 use candle_nn::{Module, Optimizer, SGD};
 use serde::{Deserialize, Serialize};
-use toy_common::dataset::SampleMetadata;
+use toy_common::dataset::{BATCH_SIZE, SampleMetadata};
 
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 
@@ -125,18 +125,31 @@ where
         .pop_front()
         .ok_or_else(|| "backward arrived without a cached forward".to_owned())?;
     let objective = if is_head {
-        let target = usize::from(!matches!(
-            cached.metadata.dataset_label,
-            corgi_fwd::PEMBROKE_LABEL | corgi_fwd::CARDIGAN_LABEL
-        ));
-        let log_probs =
-            candle_nn::ops::log_softmax(&cached.output, candle::D::Minus1).map_err(|e| e.to_string())?;
-        log_probs
-            .narrow(1, target, 1)
-            .map_err(|e| e.to_string())?
-            .neg()
-            .map_err(|e| e.to_string())?
-            .sum_all()
+        let log_probs = candle_nn::ops::log_softmax(&cached.output, candle::D::Minus1)
+            .map_err(|e| e.to_string())?;
+        let mut objective: Option<Tensor> = None;
+        for (index, label) in cached.metadata.dataset_labels.iter().enumerate() {
+            let target = usize::from(!matches!(
+                *label,
+                corgi_fwd::PEMBROKE_LABEL | corgi_fwd::CARDIGAN_LABEL
+            ));
+            let loss = log_probs
+                .narrow(0, index, 1)
+                .map_err(|e| e.to_string())?
+                .narrow(1, target, 1)
+                .map_err(|e| e.to_string())?
+                .neg()
+                .map_err(|e| e.to_string())?
+                .sum_all()
+                .map_err(|e| e.to_string())?;
+            objective = Some(match objective {
+                Some(total) => (total + loss).map_err(|e| e.to_string())?,
+                None => loss,
+            });
+        }
+        objective
+            .ok_or_else(|| "batch has no labels".to_owned())?
+            .affine(1.0 / BATCH_SIZE as f64, 0.0)
             .map_err(|e| e.to_string())?
     } else {
         let grad = tensor_from_raw(decoded.first_tensor()?, &operation.device)?;

@@ -17,7 +17,7 @@ use black_hole_sun::{
 };
 use jungle_sdk::list;
 use jungle_sdk::prelude::*;
-use toy_common::dataset::SampleMetadata;
+use toy_common::dataset::{BATCH_SIZE, SampleMetadata};
 use tracing::warn;
 use typenum::consts::{
     U0, U1, U128, U14, U2, U224, U256, U28, U3, U4, U5, U512, U56, U6, U64, U7,
@@ -27,49 +27,49 @@ use crate::model::{CARDIGAN_LABEL, PEMBROKE_LABEL};
 
 pub struct ImagePort;
 impl TensorPortSpec for ImagePort {
-    type Shape = Shape4<U1, U3, U224, U224>;
+    type Shape = Shape4<U4, U3, U224, U224>;
     const NAME: &'static str = "image";
     const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 pub struct StemPort;
 impl TensorPortSpec for StemPort {
-    type Shape = Shape4<U1, U64, U56, U56>;
+    type Shape = Shape4<U4, U64, U56, U56>;
     const NAME: &'static str = "stem";
     const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 pub struct Stage1Port;
 impl TensorPortSpec for Stage1Port {
-    type Shape = Shape4<U1, U64, U56, U56>;
+    type Shape = Shape4<U4, U64, U56, U56>;
     const NAME: &'static str = "stage1";
     const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 pub struct Stage2Port;
 impl TensorPortSpec for Stage2Port {
-    type Shape = Shape4<U1, U128, U28, U28>;
+    type Shape = Shape4<U4, U128, U28, U28>;
     const NAME: &'static str = "stage2";
     const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 pub struct Stage3Port;
 impl TensorPortSpec for Stage3Port {
-    type Shape = Shape4<U1, U256, U14, U14>;
+    type Shape = Shape4<U4, U256, U14, U14>;
     const NAME: &'static str = "stage3";
     const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 pub struct Stage4Port;
 impl TensorPortSpec for Stage4Port {
-    type Shape = Shape4<U1, U512, U7, U7>;
+    type Shape = Shape4<U4, U512, U7, U7>;
     const NAME: &'static str = "stage4";
     const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 pub struct LogitsPort;
 impl TensorPortSpec for LogitsPort {
-    type Shape = Shape2<U1, U2>;
+    type Shape = Shape2<U4, U2>;
     const NAME: &'static str = "logits";
     const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
@@ -233,17 +233,24 @@ impl<J: VoidOps> Effect<J> for LogPredictionEffect {
         async move {
             let output = jungle.receive::<HeadOp>(&delivery).await?;
             let logits = output.first_tensor()?.to_f32()?;
-            let prediction = if logits[0] >= logits[1] {
-                "corgi"
-            } else {
-                "not a corgi"
-            };
-            let expected = matches!(
-                output.metadata.dataset_label,
-                PEMBROKE_LABEL | CARDIGAN_LABEL
-            );
-            warn!(prediction, expected, "corgi-fwd classification");
-            LOGGED_OUTPUTS.fetch_add(1, Ordering::Release);
+            if logits.len() != BATCH_SIZE * 2 {
+                return Err(format!(
+                    "classifier output has {} values, expected {}",
+                    logits.len(),
+                    BATCH_SIZE * 2
+                ));
+            }
+            for (index, label) in output.metadata.dataset_labels.iter().enumerate() {
+                let offset = index * 2;
+                let prediction = if logits[offset] >= logits[offset + 1] {
+                    "corgi"
+                } else {
+                    "not a corgi"
+                };
+                let expected = matches!(*label, PEMBROKE_LABEL | CARDIGAN_LABEL);
+                warn!(prediction, expected, "corgi-fwd classification");
+            }
+            LOGGED_OUTPUTS.fetch_add(BATCH_SIZE, Ordering::Release);
             Ok(())
         }
     }

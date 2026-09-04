@@ -106,9 +106,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     servers.shutdown();
 
+    let processed = LOGGED_OUTPUTS.load(Ordering::Acquire);
     println!(
         "corgi-fwd processed {} sample(s) (source dataset contains {DATASET_SAMPLES})",
-        args.n_samples
+        processed
     );
     result
         .map(|_| ())

@@ -18,14 +18,16 @@ pub const IMAGE_SIZE: usize = 224;
 pub const DATASET_ID: &str = "maurice-fp/stanford-dogs";
 /// Total number of samples in the dataset.
 pub const DATASET_SAMPLES: usize = 20_580;
+/// Number of images emitted in each tensor batch.
+pub const BATCH_SIZE: usize = 4;
 
 const PEMBROKE_LABEL: u32 = 111;
 const CARDIGAN_LABEL: u32 = 112;
 
-/// Metadata attached to every corgi input emission.
+/// Metadata attached to every corgi input emission, in batch order.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SampleMetadata {
-    pub dataset_label: u32,
+    pub dataset_labels: [u32; BATCH_SIZE],
 }
 
 /// One decoded Stanford Dogs sample.
@@ -222,7 +224,7 @@ pub fn image_tensor(bytes: &[u8]) -> Result<Vec<f32>, String> {
     Ok(output)
 }
 
-/// Generate one normalized Stanford Dogs image as a typed input emission for
+/// Generate a batch of normalized Stanford Dogs images as a typed input emission for
 /// contract `C`. Shared by the forward-only, backward, and two-sided ZO
 /// examples so all of them exercise the same dataset and input contract.
 pub async fn generate_image<J, C>(jungle: &J) -> Result<ArtifactDelivery<C::Input>, String>
@@ -230,12 +232,15 @@ where
     J: VoidOps,
     C: TensorContract<Metadata = SampleMetadata>,
 {
-    let sample = next_sample()?;
-    let values = image_tensor(&sample.image)?;
-    let tensor = C::input_f32(&[1, 3, IMAGE_SIZE, IMAGE_SIZE], values);
-    let metadata = SampleMetadata {
-        dataset_label: sample.label,
-    };
+    let mut values = Vec::with_capacity(BATCH_SIZE * 3 * IMAGE_SIZE * IMAGE_SIZE);
+    let mut dataset_labels = [0; BATCH_SIZE];
+    for label in &mut dataset_labels {
+        let sample = next_sample()?;
+        values.extend(image_tensor(&sample.image)?);
+        *label = sample.label;
+    }
+    let tensor = C::input_f32(&[BATCH_SIZE, 3, IMAGE_SIZE, IMAGE_SIZE], values);
+    let metadata = SampleMetadata { dataset_labels };
     jungle.emit::<C>(&[tensor], &metadata).await
 }
 

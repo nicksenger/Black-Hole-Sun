@@ -12,6 +12,7 @@ use black_hole_sun::{AtomError, InferenceOutput, OperationNode, Potentiation, Tr
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 use jungle_sdk::list;
 use jungle_sdk::prelude::*;
+use toy_common::dataset::BATCH_SIZE;
 use tracing::info;
 use typenum::consts::{U0, U1, U2, U3, U4, U5, U6};
 
@@ -182,23 +183,34 @@ async fn classification_loss<J: VoidInferOps>(
         .first_tensor()
         .and_then(|raw| raw.to_f32())
         .map_err(|error| AtomError::Inference(error.to_string()))?;
-    if logits.len() != 2 {
+    if logits.len() != BATCH_SIZE * 2 {
         return Err(AtomError::Inference(
-            "classifier output is not two f32 logits".into(),
+            "classifier output does not contain one pair of f32 logits per image".into(),
         ));
     }
-    let target = if matches!(
-        decoded.metadata.dataset_label,
-        corgi_fwd::PEMBROKE_LABEL | corgi_fwd::CARDIGAN_LABEL
-    ) {
-        0
-    } else {
-        1
-    };
-    let max_logit = logits[0].max(logits[1]);
-    let log_sum_exp =
-        max_logit + ((logits[0] - max_logit).exp() + (logits[1] - max_logit).exp()).ln();
-    Ok(log_sum_exp - logits[target])
+    let loss = decoded
+        .metadata
+        .dataset_labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            let offset = index * 2;
+            let target = if matches!(
+                *label,
+                corgi_fwd::PEMBROKE_LABEL | corgi_fwd::CARDIGAN_LABEL
+            ) {
+                offset
+            } else {
+                offset + 1
+            };
+            let max_logit = logits[offset].max(logits[offset + 1]);
+            let log_sum_exp = max_logit
+                + ((logits[offset] - max_logit).exp() + (logits[offset + 1] - max_logit).exp())
+                    .ln();
+            log_sum_exp - logits[target]
+        })
+        .sum::<f32>();
+    Ok(loss / BATCH_SIZE as f32)
 }
 
 pub type CorgiSun = <CorgiGraph as BlackHole>::Sun<TwoSidedZo<Generator, Policy, 1>>;

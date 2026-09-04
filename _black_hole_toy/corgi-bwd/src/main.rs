@@ -15,13 +15,13 @@ use corgi_fwd::model::{
     build_stage1, build_stage2, build_stage3, build_stage4, build_trainable_stem, pool_stage4,
 };
 use jungle_sdk::{FusedClient, JourneyStatus, JungleClient};
-use toy_common::dataset::{DATASET_SAMPLES, configure_hf_cache, model_path};
+use toy_common::dataset::{BATCH_SIZE, DATASET_SAMPLES, configure_hf_cache, model_path};
 use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
 
 #[derive(Debug, Parser)]
 #[command(about = "Train a pipeline-parallel ResNet-18 corgi identifier")]
 struct Args {
-    /// Number of optimizer steps (each consumes eight image micro-batches).
+    /// Number of optimizer steps (each consumes eight four-image micro-batches).
     #[arg(long, default_value_t = 1)]
     epochs: usize,
     /// Learning rate used independently by every stage.
@@ -167,8 +167,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     servers.shutdown();
 
     println!(
-        "corgi-bwd completed {} optimizer step(s), {} micro-batches each (source dataset contains {DATASET_SAMPLES})",
-        args.epochs, MICRO_BATCHES
+        "corgi-bwd completed {} optimizer step(s), {} micro-batches of {} images each (source dataset contains {DATASET_SAMPLES})",
+        args.epochs, MICRO_BATCHES, BATCH_SIZE
     );
     result
         .map(|_| ())
