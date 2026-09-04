@@ -218,9 +218,6 @@ impl<J: VoidOps> Effect<J> for GenerateTensorEffect {
                     postcard::to_allocvec(&emission).map_err(|error| error.to_string())?,
                 )
                 .await?;
-
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
             Ok(ArtifactDelivery {
                 emission_id: ObjectRef::new(emission_id),
                 recv: ObjectId::nil(),

@@ -228,10 +228,6 @@ impl<J: VoidOps> Effect<J> for GenerateImageEffect {
             let emission_id = jungle
                 .upload_to_void(postcard::to_allocvec(&emission).map_err(|e| e.to_string())?)
                 .await?;
-            // Give the forward sun time to observe the emission before the
-            // generator's journey is suspended. This is also how the
-            // matmul-fwd example avoids racing the worker subscription.
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             Ok(ArtifactDelivery {
                 emission_id: ObjectRef::new(emission_id),
                 recv: ObjectId::nil(),
