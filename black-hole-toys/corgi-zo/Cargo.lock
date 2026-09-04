@@ -1762,7 +1762,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "corgi-qzo"
+name = "corgi-zo"
 version = "0.1.0"
 dependencies = [
  "async-trait",

@@ -1,5 +1,5 @@
 [package]
-name = "corgi-qzo"
+name = "corgi-zo"
 description = "Example: corgi zero-optimization"
 version = "0.1.0"
 edition = "2021"

@@ -148,7 +148,7 @@ impl Action for ComputeLoss {
         _state: &mut SunState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("corgi-qzo loss policy failed: {error}")))
+        output.map_err(|error| Failure::Message(format!("corgi-zo loss policy failed: {error}")))
     }
 }
 
@@ -168,7 +168,7 @@ impl<J: VoidInferOps> Effect<J> for ComputeLossEffect {
             let loss_up = classification_loss(jungle, &up).await?;
             let loss_down = classification_loss(jungle, &down).await?;
             let epoch = OPTIMIZED_EPOCHS.fetch_add(1, Ordering::AcqRel) + 1;
-            info!(epoch, loss_up, loss_down, "corgi-qzo optimization losses");
+            info!(epoch, loss_up, loss_down, "corgi-zo optimization losses");
             Ok(Potentiation {
                 loss_up,
                 loss_down,

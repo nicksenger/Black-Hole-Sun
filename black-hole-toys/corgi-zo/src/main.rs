@@ -17,7 +17,7 @@ use candle::{DType, Device, Tensor, Var};
 use candle_nn::{Linear, Module, VarBuilder, VarMap};
 use clap::Parser;
 use corgi_fwd::{HeadOp, SampleMetadata, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
-use corgi_qzo::{CorgiZo, OPTIMIZED_EPOCHS};
+use corgi_zo::{CorgiZo, OPTIMIZED_EPOCHS};
 use hf_hub::HFClientSync;
 use jungle_sdk::core::JungleWorker;
 use jungle_sdk::prelude::*;
@@ -260,7 +260,7 @@ operation_impl!(Stage4Operation, Stage4Op, candle_nn::Func<'static>);
 struct HeadModel(Linear);
 impl Module for HeadModel {
     fn forward(&self, xs: &Tensor) -> candle::Result<Tensor> {
-        self.0.forward(&corgi_qzo::pool_stage4(xs)?)
+        self.0.forward(&corgi_zo::pool_stage4(xs)?)
     }
 }
 operation_impl!(HeadOperation, HeadOp, HeadModel);
@@ -279,17 +279,17 @@ struct CorgiJungle {
 
 #[derive(Animals)]
 struct CorgiAnimals(
-    corgi_qzo::StemCell,
-    corgi_qzo::Stage1Cell,
-    corgi_qzo::Stage2Cell,
-    corgi_qzo::Stage3Cell,
-    corgi_qzo::Stage4Cell,
-    corgi_qzo::HeadCell,
+    corgi_zo::StemCell,
+    corgi_zo::Stage1Cell,
+    corgi_zo::Stage2Cell,
+    corgi_zo::Stage3Cell,
+    corgi_zo::Stage4Cell,
+    corgi_zo::HeadCell,
     CorgiZo,
 );
 
 impl Ecosystem for CorgiJungle {
-    const NAME: &'static str = "corgi-qzo";
+    const NAME: &'static str = "corgi-zo";
     type Animals = CorgiAnimals;
 }
 
@@ -316,14 +316,14 @@ impl VoidInferOps for CorgiJungle {
         _model_id: uuid::Uuid,
         _config: Option<black_hole_sun::MassModelConfig>,
     ) -> Result<(), String> {
-        Err("Qwen model lifecycle is not used by corgi-qzo".into())
+        Err("Qwen model lifecycle is not used by corgi-zo".into())
     }
     async fn infer(
         &self,
         _model_id: uuid::Uuid,
         _request: black_hole_sun::InferenceRequest,
     ) -> Result<ObjectId, String> {
-        Err("Qwen inference is not used by corgi-qzo".into())
+        Err("Qwen inference is not used by corgi-zo".into())
     }
     async fn reset_model(&self, _model_id: uuid::Uuid) -> Result<(), String> {
         Err("use typed operation reset".into())
@@ -541,7 +541,7 @@ fn model_path(argument: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::
 }
 
 fn configure_hf_cache(argument: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let local = env::current_dir()?.join("target/corgi-qzo/huggingface");
+    let local = env::current_dir()?.join("target/corgi-zo/huggingface");
     let explicit = argument.is_some();
     let requested = argument.or_else(|| env::var_os("HF_HUB_CACHE").map(PathBuf::from));
     if let Some(path) = requested {
@@ -579,7 +579,7 @@ fn mutable_head(
     device: &Device,
 ) -> Result<ModelOperation<HeadOp, HeadModel>, Box<dyn std::error::Error>> {
     let source = unsafe { VarBuilder::from_mmaped_safetensors(&[path], DType::F32, device)? };
-    let original = corgi_qzo::build_head(source)?;
+    let original = corgi_zo::build_head(source)?;
     let mut varmap = VarMap::new();
     let model = candle_nn::linear(512, 2, VarBuilder::from_varmap(&varmap, DType::F32, device))?;
     varmap.set_one("weight", original.weight())?;
@@ -628,7 +628,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .operation(StemOperation(mutable_stage(
             &path,
             &device,
-            corgi_qzo::build_stem,
+            corgi_zo::build_stem,
         )?))
         .serve()
         .await?;
@@ -639,7 +639,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .operation(Stage1Operation(mutable_stage(
             &path,
             &device,
-            corgi_qzo::build_stage1,
+            corgi_zo::build_stage1,
         )?))
         .serve()
         .await?;
@@ -650,7 +650,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .operation(Stage2Operation(mutable_stage(
             &path,
             &device,
-            corgi_qzo::build_stage2,
+            corgi_zo::build_stage2,
         )?))
         .serve()
         .await?;
@@ -661,7 +661,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .operation(Stage3Operation(mutable_stage(
             &path,
             &device,
-            corgi_qzo::build_stage3,
+            corgi_zo::build_stage3,
         )?))
         .serve()
         .await?;
@@ -672,7 +672,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .operation(Stage4Operation(mutable_stage(
             &path,
             &device,
-            corgi_qzo::build_stage4,
+            corgi_zo::build_stage4,
         )?))
         .serve()
         .await?;
@@ -732,7 +732,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     stage4_task.abort();
     head_task.abort();
     println!(
-        "corgi-qzo completed {} epoch(s) (dataset contains {DATASET_SAMPLES})",
+        "corgi-zo completed {} epoch(s) (dataset contains {DATASET_SAMPLES})",
         args.epochs
     );
     result.map_err(Into::into)
