@@ -9,8 +9,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::nodes::cell::action::CellState;
 use crate::mass::{DefaultConfig, ModelConfig};
+use crate::nodes::cell::action::CellState;
 use crate::EmissionId;
 use action::MassInferStep;
 use action::OperationMassInferStep;

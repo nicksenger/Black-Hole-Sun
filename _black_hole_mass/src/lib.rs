@@ -5519,9 +5519,9 @@ mod tests {
         TensorPortSpec,
     };
     use black_hole_type::{
-        ContractId, DtypeConstraint, EncodingId, MassArchitecture,
-        MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig, MassPerturbationMode,
-        OperationArtifactRef, TensorDtype, WorkerCapabilities,
+        ContractId, DtypeConstraint, EncodingId, MassArchitecture, MassErrorFeedbackConfig,
+        MassModelCapacity, MassModelConfig, MassPerturbationMode, OperationArtifactRef,
+        TensorDtype, WorkerCapabilities,
     };
     use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
     use tokio::sync::{Mutex, RwLock};
@@ -6347,15 +6347,10 @@ mod tests {
         };
         let worker_id = uuid::Uuid::new_v4();
 
-        let out = handle_register_tunnel(
-            worker_id,
-            None,
-            WorkerCapabilities::default(),
-            None,
-            &ctx,
-        )
-            .await
-            .expect("registration should succeed");
+        let out =
+            handle_register_tunnel(worker_id, None, WorkerCapabilities::default(), None, &ctx)
+                .await
+                .expect("registration should succeed");
         let token = match out {
             black_hole_type::MassOut::TunnelRegistered { token } => token,
             other => panic!("unexpected registration response: {other:?}"),
@@ -6400,8 +6395,8 @@ mod tests {
             None,
             &ctx,
         )
-            .await
-            .expect("registration should succeed");
+        .await
+        .expect("registration should succeed");
         let token = match out {
             black_hole_type::MassOut::TunnelRegistered { token } => token,
             other => panic!("unexpected registration response: {other:?}"),

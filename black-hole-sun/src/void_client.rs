@@ -974,8 +974,7 @@ mod tests {
         tensor_stream_header, RawTensor, SingleTensorSpec, TensorContract, TensorPortSpec,
     };
     use black_hole_type::{
-        ContractId, ContractSide, DtypeConstraint, EncodingId, TensorDtype,
-        TransferRecord,
+        ContractId, ContractSide, DtypeConstraint, EncodingId, TensorDtype, TransferRecord,
     };
 
     struct ByteAxis;

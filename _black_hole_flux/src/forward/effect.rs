@@ -24,7 +24,6 @@ pub struct SchedulerDelivery<T> {
     pub sent_node_ids: Vec<u32>,
 }
 
-
 /// Typed root delivery for one neutral forward pass.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound = "")]
@@ -35,7 +34,6 @@ pub struct SendRootArtifactDeliveryInput<T> {
 
 /// Sends an operation-typed input to every root port.
 pub struct SendRootArtifactDeliveryEffect<T>(PhantomData<fn() -> T>);
-
 
 /// Typed counterpart to [`WaitForNodeTransmissionInput`].
 ///
@@ -67,7 +65,6 @@ impl<T> WaitForNodeArtifactDeliveryInput<T> {
 /// training-program control message.
 pub struct WaitForNodeArtifactDeliveryEffect<T>(PhantomData<fn() -> T>);
 
-
 async fn send_artifact_delivery<J: VoidOps, T>(
     jungle: &J,
     target: &PropagationTarget,
@@ -90,7 +87,6 @@ async fn send_artifact_delivery<J: VoidOps, T>(
             ))
         })
 }
-
 
 #[jungle::effect(id = 84)]
 impl<T, J> Effect<J> for SendRootArtifactDeliveryEffect<T>
@@ -116,7 +112,6 @@ where
         }
     }
 }
-
 
 #[jungle::effect(id = 83)]
 impl<T, J> Effect<J> for WaitForNodeArtifactDeliveryEffect<T>

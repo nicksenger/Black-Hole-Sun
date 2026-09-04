@@ -16,9 +16,9 @@ use typosaurus::collections::list::{Empty, List};
 use typosaurus::traits::semigroup::Mappend;
 use uuid::Uuid;
 
-use action::GenUuid;
 use crate::programs::two_sided_zo::DeploymentProgram;
 use crate::topology::{Binary, NodeIdsFromList, OperationNode, SunTopologyState, Unary, Warp};
+use action::GenUuid;
 
 /// Generate a program-selected unary seed, then spawn and register its animal.
 #[derive(Flow)]
@@ -32,7 +32,6 @@ pub struct UnarySunStepWithProgram<
     Step<GenUuid<Program>>,
     Step<action::SpawnUnary<P, AnimalT, E, Program, Op>>,
 );
-
 
 pub type UnarySunStepWithState<P, AnimalT, E, Op, S, const ACCUM_STEPS: usize> =
     UnarySunStepWithProgram<DeploymentProgram<S, ACCUM_STEPS>, P, AnimalT, E, Op>;
@@ -109,11 +108,9 @@ pub type WarpSunStep<
     Op = QwenDarkInference,
 > = WarpSunStepWithState<P, WarpAnimalT, BoundaryAnimalT, E, Op, S, GRADIENT_ACCUMULATION_STEPS>;
 
-
 /// One descriptor-specific spawn flow followed by the remaining descriptors.
 #[derive(Flow)]
 pub struct SunNode<S, U>(S, U);
-
 
 /// Compiles a type-level topology into the executable driver selected by `P`.
 ///
@@ -133,7 +130,6 @@ impl<T> BlackHole for T {
     where
         T: CompileSun<P>;
 }
-
 
 /// Program-specific compilation proof for a topology. This is where node
 /// seed requirements are selected; the recursive [`BlackHole`] facade no
@@ -203,7 +199,6 @@ where
 impl<Program: SunProgram> CompileSun<Program> for Empty {
     type Flow = Program::Driver;
 }
-
 
 /// Selects the state, deployment settings, and executable driver for a Sun.
 pub trait SunProgram {

@@ -101,7 +101,6 @@ impl<S> SunStateView for NeutralSunState<S> {
     }
 }
 
-
 fn neutral_appearance(topology: &SunTopology) -> SunAppearance {
     let mut nodes = topology
         .journey_ids
@@ -158,7 +157,6 @@ fn neutral_appearance(topology: &SunTopology) -> SunAppearance {
     }
 }
 
-
 /// Predicate for a neutral dependency-aware forward pass.
 pub struct PendingForwardWork<S>(PhantomData<fn() -> S>);
 
@@ -169,7 +167,6 @@ impl<S> Predicate<(&ForwardSunState<S>, &black_hole_type::ArtifactDelivery<()>)>
         !state.runtime.pending.is_empty()
     }
 }
-
 
 /// One completion step in a neutral typed forward pass.
 #[derive(Flow)]
@@ -189,7 +186,6 @@ pub struct ForwardPassWithState<Input: Send + 'static, Output: Send + 'static, S
 );
 
 pub type ForwardPass<Input, Output = Input> = ForwardPassWithState<Input, Output, ()>;
-
 
 /// One forward-only serving request.
 #[derive(Flow)]

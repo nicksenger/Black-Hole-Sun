@@ -9,9 +9,9 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
 
 use crate::{
     decode_input, encode_output, object_store, operation_capability, persist, ContractId,
-    DtypeConstraint, EncodingId, MassServerBuilder, OperationCapabilities,
-    OperationCapability, OperationConfig, OperationImplementation, RawTensor, SingleTensorSpec,
-    TensorContract, TensorDtype, TensorPortSpec, VoidServerBuilder,
+    DtypeConstraint, EncodingId, MassServerBuilder, OperationCapabilities, OperationCapability,
+    OperationConfig, OperationImplementation, RawTensor, SingleTensorSpec, TensorContract,
+    TensorDtype, TensorPortSpec, VoidServerBuilder,
 };
 
 pub struct FakeValues;
@@ -155,9 +155,8 @@ pub struct QuadraticValue;
 pub struct QuadraticContract;
 
 impl TensorPortSpec for QuadraticValue {
-    type Shape = crate::black_hole_spec::glowstick::Shape1<
-        crate::black_hole_spec::glowstick::num::U1,
-    >;
+    type Shape =
+        crate::black_hole_spec::glowstick::Shape1<crate::black_hole_spec::glowstick::num::U1>;
     const NAME: &'static str = "parameter";
     const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }

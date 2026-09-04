@@ -24,7 +24,6 @@ pub struct NodeTransmission {
     pub sent_node_ids: Vec<u32>,
 }
 
-
 /// First-pass or second-pass propagation sent to every root port.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SendRootPropagationInput {
@@ -44,7 +43,6 @@ pub struct SendRootPropagationEffect;
 /// Sends many root propagations where each target can use a different payload.
 pub struct SendRootTaskPropagationsEffect;
 
-
 /// Input for [`WaitForNodeTransmissionEffect`]: ready rx endpoints plus
 /// downstream forwarding targets keyed by source node id.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -62,7 +60,6 @@ pub struct WaitForNodeTransmissionInput {
 /// for the specific node that received it, so propagation continues through
 /// the graph.
 pub struct WaitForNodeTransmissionEffect;
-
 
 async fn send_propagation<J: VoidInferOps>(
     jungle: &J,
@@ -95,7 +92,6 @@ async fn send_propagation<J: VoidInferOps>(
         })
 }
 
-
 #[jungle::effect(id = 54)]
 impl<J: VoidInferOps> Effect<J> for SendRootPropagationEffect {
     type In = SendRootPropagationInput;
@@ -123,7 +119,6 @@ impl<J: VoidInferOps> Effect<J> for SendRootPropagationEffect {
     }
 }
 
-
 #[jungle::effect(id = 55)]
 impl<J: VoidInferOps> Effect<J> for SendRootTaskPropagationsEffect {
     type In = Vec<RootPropagationSend>;
@@ -150,7 +145,6 @@ impl<J: VoidInferOps> Effect<J> for SendRootTaskPropagationsEffect {
         }
     }
 }
-
 
 #[jungle::effect(id = 56)]
 impl<J: VoidInferOps> Effect<J> for WaitForNodeTransmissionEffect {
@@ -229,7 +223,6 @@ impl<J: VoidInferOps> Effect<J> for WaitForNodeTransmissionEffect {
         }
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // BroadcastPotentiationEffect — broadcast potentiation payloads to all nodes

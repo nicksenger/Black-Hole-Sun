@@ -55,7 +55,6 @@ where
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // FinalizeGraph — resolve ports, validate the DAG, and allocate phase mailboxes
 // ---------------------------------------------------------------------------
@@ -71,7 +70,10 @@ fn task_for_node<S>(
         .copied()
         .unwrap_or_default();
     if p1_completed < grad_steps {
-        return Some((crate::topology::SunNodeState::Propagation1, p1_completed + 1));
+        return Some((
+            crate::topology::SunNodeState::Propagation1,
+            p1_completed + 1,
+        ));
     }
 
     let p2_completed = state
@@ -80,7 +82,10 @@ fn task_for_node<S>(
         .copied()
         .unwrap_or_default();
     if p2_completed < grad_steps {
-        return Some((crate::topology::SunNodeState::Propagation2, p2_completed + 1));
+        return Some((
+            crate::topology::SunNodeState::Propagation2,
+            p2_completed + 1,
+        ));
     }
 
     None
@@ -239,12 +244,15 @@ fn task_output_id<S>(
 ) -> Option<ObjectId> {
     let idx = step.checked_sub(1)?;
     match phase {
-        crate::topology::SunNodeState::Propagation1 => state.p1_step_rx.get(idx)?.get(&node_id).copied(),
-        crate::topology::SunNodeState::Propagation2 => state.p2_step_rx.get(idx)?.get(&node_id).copied(),
+        crate::topology::SunNodeState::Propagation1 => {
+            state.p1_step_rx.get(idx)?.get(&node_id).copied()
+        }
+        crate::topology::SunNodeState::Propagation2 => {
+            state.p2_step_rx.get(idx)?.get(&node_id).copied()
+        }
         _ => None,
     }
 }
-
 
 fn reset_epoch_mailboxes(topology: &crate::topology::SunTopology, inner: &mut super::SunInner) {
     let port_ids = port_ids(topology);
@@ -318,7 +326,6 @@ fn prepare_next_down_microstep(
         }
     }
 }
-
 
 pub struct FinalizeGraph<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
     PhantomData<fn() -> S>,
@@ -536,9 +543,10 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         inner.grad_steps = GRADIENT_ACCUMULATION_STEPS;
         inner.active_micro_step = 0;
         for node_id in vertex_ids(&topology) {
-            inner
-                .node_grad_steps
-                .insert(node_id, crate::topology::default_gradient_accumulation_steps());
+            inner.node_grad_steps.insert(
+                node_id,
+                crate::topology::default_gradient_accumulation_steps(),
+            );
         }
         inner.po_tx.clear();
         for port_id in port_ids(&topology) {
@@ -554,7 +562,6 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
 /// Compatibility alias for the former mailbox-only graph setup action.
 pub type BuildAddrs<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
     FinalizeGraph<S, GRADIENT_ACCUMULATION_STEPS>;
-
 
 // ---------------------------------------------------------------------------
 // SendRootPropagation — seed every root before waiting for ready output
@@ -627,7 +634,6 @@ where
         Ok(carry)
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // ProcessNextNode — wait for a ready node, then advance the frontier
@@ -733,7 +739,6 @@ where
         Ok(node_tx.transmission)
     }
 }
-
 
 /// Clears collected propagation outputs and resets accumulation counters.
 pub struct BeginGradientAccumulation<S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1>(
@@ -1361,7 +1366,6 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // BroadcastPotentiation — broadcast potentiation payload to all nodes
 // ---------------------------------------------------------------------------
@@ -1450,7 +1454,6 @@ pub struct BroadcastPotentiationInput {
     pub port_endpoints: Vec<(u32, ObjectId)>,
 }
 
-
 // ---------------------------------------------------------------------------
 // PropagationState — trait for branch state types (PropA, PropB)
 // ---------------------------------------------------------------------------
@@ -1486,7 +1489,8 @@ pub trait PropagationState {
 }
 
 impl PropagationState for super::PropA {
-    const PROPAGATION_STATE: crate::topology::SunNodeState = crate::topology::SunNodeState::Propagation1;
+    const PROPAGATION_STATE: crate::topology::SunNodeState =
+        crate::topology::SunNodeState::Propagation1;
 
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
         &self.shared
@@ -1520,7 +1524,8 @@ impl PropagationState for super::PropA {
 }
 
 impl PropagationState for super::PropB {
-    const PROPAGATION_STATE: crate::topology::SunNodeState = crate::topology::SunNodeState::Propagation2;
+    const PROPAGATION_STATE: crate::topology::SunNodeState =
+        crate::topology::SunNodeState::Propagation2;
 
     fn get_shared(&self) -> &std::sync::Arc<std::sync::Mutex<super::SunInner>> {
         &self.shared
@@ -1553,8 +1558,6 @@ impl PropagationState for super::PropB {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1562,7 +1565,9 @@ mod tests {
     use black_hole_spec::{QwenDarkInference, TensorContract};
 
     use crate::compile::action::register_vertex;
-    use crate::topology::{advance_frontier, initial_ready_nodes, pending_dependency_counts, sorted_node_ids};
+    use crate::topology::{
+        advance_frontier, initial_ready_nodes, pending_dependency_counts, sorted_node_ids,
+    };
 
     struct TestSunAnimal;
 
@@ -1631,7 +1636,10 @@ mod tests {
             .record_propagation_completed(&mut topology, node, phase);
     }
 
-    fn record_optimized(state: &mut crate::programs::two_sided_zo::SunState, nodes: impl IntoIterator<Item = u32>) {
+    fn record_optimized(
+        state: &mut crate::programs::two_sided_zo::SunState,
+        nodes: impl IntoIterator<Item = u32>,
+    ) {
         let mut topology = state.topology.lock().unwrap();
         state
             .a
@@ -1683,7 +1691,6 @@ mod tests {
         assert_eq!(state.inner, ("left".to_string(), "right".to_string()));
     }
 
-
     #[test]
     fn finalization_rejects_duplicate_port_ownership() {
         let mut state = crate::programs::two_sided_zo::SunState::default();
@@ -1694,7 +1701,6 @@ mod tests {
         assert!(error.to_string().contains("duplicate input port ownership"));
     }
 
-
     #[test]
     fn finalization_rejects_missing_output_ports() {
         let mut state = crate::programs::two_sided_zo::SunState::default();
@@ -1703,7 +1709,6 @@ mod tests {
         let error = finalize(&mut state).unwrap_err();
         assert!(error.to_string().contains("targets missing port 9"));
     }
-
 
     #[test]
     fn finalization_rejects_a_destination_contract_changed_after_compilation() {
@@ -1729,7 +1734,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn finalization_rejects_partially_connected_binary_vertices() {
         let mut state = crate::programs::two_sided_zo::SunState::default();
@@ -1739,7 +1743,6 @@ mod tests {
         let error = finalize(&mut state).unwrap_err();
         assert!(error.to_string().contains("incorrect producer counts"));
     }
-
 
     #[test]
     fn finalization_rejects_cycles() {
@@ -1751,7 +1754,6 @@ mod tests {
         assert!(error.to_string().contains("contains a cycle"));
     }
 
-
     #[test]
     fn finalization_rejects_multiple_sinks() {
         let mut state = crate::programs::two_sided_zo::SunState::default();
@@ -1761,7 +1763,6 @@ mod tests {
         let error = finalize(&mut state).unwrap_err();
         assert!(error.to_string().contains("exactly one sink"));
     }
-
 
     #[test]
     fn completed_node_immediately_unblocks_deeper_successor() {
@@ -1787,7 +1788,6 @@ mod tests {
         advance_frontier(&mut pending, &mut ready, 1, &topology.outgoing[&1]).unwrap();
         assert_eq!(sorted_node_ids(&ready), vec![2, 3]);
     }
-
 
     #[test]
     fn pipeline_scheduler_allows_branch_progress_without_global_step_barrier() {
@@ -1819,7 +1819,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn appearance_contains_deterministic_port_aware_topology() {
         let mut state = crate::programs::two_sided_zo::SunState::default();
@@ -1846,7 +1845,13 @@ mod tests {
             vec![
                 (0, "Node0", vec![0], crate::topology::SunNodeState::Idle, 1),
                 (1, "Node1", vec![1], crate::topology::SunNodeState::Idle, 1),
-                (2, "Node2", vec![2, 3], crate::topology::SunNodeState::Idle, 1),
+                (
+                    2,
+                    "Node2",
+                    vec![2, 3],
+                    crate::topology::SunNodeState::Idle,
+                    1
+                ),
             ]
         );
         assert!(
@@ -1872,7 +1877,6 @@ mod tests {
             ]
         );
     }
-
 
     #[test]
     fn propagation_two_waits_for_propagation_one_completion() {
@@ -1930,7 +1934,6 @@ mod tests {
         assert_eq!(state.appearance().nodes[0].state_sequence, 5);
     }
 
-
     #[test]
     fn propagation_two_is_exposed_when_sent_after_propagation_one_completes() {
         let mut state = crate::programs::two_sided_zo::SunState::default();
@@ -1946,7 +1949,6 @@ mod tests {
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 2);
     }
-
 
     #[test]
     fn appearance_tracks_per_node_gradient_step() {

@@ -13,11 +13,11 @@ use super::effect::{
     FusionPotentiationEnvelope, GenerateTransformIdEffect, WaitForFusionPotentiationEffect,
     WaitForFusionPropagationEffect,
 };
+use crate::mass::{DefaultConfig, ModelConfig};
 use crate::nodes::cell::action::Potentiation;
 use crate::nodes::cell::effect::{
     MassOptimize, MassPerturbDown, MassPerturbUp, MassStart, Transmit as TransmitEffect,
 };
-use crate::mass::{DefaultConfig, ModelConfig};
 
 /// Initial receive mailboxes for a binary vertex, in declared `P1`, `P2` order.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

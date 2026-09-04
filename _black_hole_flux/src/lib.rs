@@ -71,6 +71,10 @@ pub use black_hole_type::{
     ObjectId, ObjectRef, OperationalControl, SequenceOutput, StreamRef, TransferRef, Transmission,
 };
 
+pub use mass::{
+    DefaultConfig, ErrorFeedbackPolicy, ModelConfig, NoErrorFeedback, NoOscillation,
+    OscillationSchedule,
+};
 pub use nodes::atom::effect::MassInfer;
 pub use nodes::cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
@@ -89,21 +93,17 @@ pub use nodes::fusion::action::{FusionSeed, FusionState};
 pub use nodes::fusion::{
     Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch, QuzoFusionWithModelConfig,
 };
-pub use mass::{
-    DefaultConfig, ErrorFeedbackPolicy, ModelConfig, NoErrorFeedback, NoOscillation,
-    OscillationSchedule,
-};
-pub use ops::{
-    CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, QwenAdapterOps, ResetOps,
-    VoidInferOps, VoidOps,
-};
-pub use ray::Ray;
 pub use nodes::warp::action::{InitRecvId as InitBoundaryRecvId, ObserveWarp, PerturbWarp};
 pub use nodes::warp::effect::{ObserveWarpEffect, PerturbWarpEffect};
 pub use nodes::warp::{
     Boundary, BoundaryState, Inner as BoundaryInner,
     InnerPropagationMicrostep as BoundaryMicrostep, NoModelBoundary,
 };
+pub use ops::{
+    CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, QwenAdapterOps, ResetOps,
+    VoidInferOps, VoidOps,
+};
+pub use ray::Ray;
 
 pub use nodes::atom::Atom;
 pub use nodes::atom::NoBackoffAtom;

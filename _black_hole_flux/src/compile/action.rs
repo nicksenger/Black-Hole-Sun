@@ -304,7 +304,6 @@ where
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // GenUuid
 // ---------------------------------------------------------------------------
@@ -352,7 +351,6 @@ impl<P: super::SunProgram> Action for GenFusionSeed<P> {
         Ok(P::binary_seed([seed.p1_recv_id, seed.p2_recv_id]))
     }
 }
-
 
 fn resolve_neutral_topology(topology: &mut crate::topology::SunTopology) -> Result<u32, Failure> {
     topology.finalized = false;
@@ -432,10 +430,13 @@ fn resolve_neutral_topology(topology: &mut crate::topology::SunTopology) -> Resu
                 )));
             }
             *producer_counts.get_mut(&port).expect("registered port") += 1;
-            outgoing.entry(source).or_default().push(crate::topology::PortTarget {
-                port_id: port,
-                vertex_id: target,
-            });
+            outgoing
+                .entry(source)
+                .or_default()
+                .push(crate::topology::PortTarget {
+                    port_id: port,
+                    vertex_id: target,
+                });
             incoming.entry(target).or_default().push(source);
         }
     }
@@ -498,7 +499,6 @@ fn resolve_neutral_topology(topology: &mut crate::topology::SunTopology) -> Resu
     Ok(sinks[0])
 }
 
-
 /// Finalizes a graph for a forward program without allocating any P1/P2/PO
 /// strategy mailboxes.
 pub struct FinalizeForwardGraph<S>(PhantomData<fn() -> S>);
@@ -547,16 +547,16 @@ impl<S> Action for FinalizeNeutralGraph<S> {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use jungle_sdk::Id;
-    use typosaurus::collections::list::Empty;
     use typenum::{U0, U1, U2};
+    use typosaurus::collections::list::Empty;
 
-    use crate::forward::action::{CompleteForwardPass, PrepareForwardPass, ProcessForwardNode, SendForwardRoots};
+    use crate::forward::action::{
+        CompleteForwardPass, PrepareForwardPass, ProcessForwardNode, SendForwardRoots,
+    };
     use crate::programs::two_sided_zo::action::{BroadcastPotentiation, FinalizeGraph};
     use crate::topology::sorted_node_ids;
 
@@ -630,8 +630,6 @@ mod tests {
         type Flow = ();
     }
 
-
-
     #[test]
     fn sun_actions_bind_with_custom_state_payload() {
         type Payload = (String, String);
@@ -686,7 +684,6 @@ mod tests {
         assert_eq!(effect_seed.p1_recv_id, seed.p1_recv_id);
         assert_eq!(effect_seed.p2_recv_id, seed.p2_recv_id);
     }
-
 
     #[test]
     fn warp_actions_seed_boundary_with_spawned_warp_journey() {
@@ -753,7 +750,6 @@ mod tests {
         assert_eq!(topology.port_vertices.get(&U1::U32), Some(&U1::U32));
     }
 
-
     #[test]
     fn short_type_name_preserves_generic_arguments() {
         type Nested = GenericType<Result<String, Vec<u8>>>;
@@ -766,7 +762,6 @@ mod tests {
             "Animal<Inner<Type>, Vec<u8>>"
         );
     }
-
 
     #[test]
     fn neutral_forward_pass_routes_typed_artifacts_and_rotates_inboxes() {
@@ -873,5 +868,4 @@ mod tests {
             Some("forward")
         );
     }
-
 }

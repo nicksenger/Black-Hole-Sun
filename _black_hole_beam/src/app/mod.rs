@@ -662,7 +662,8 @@ impl BeamApp {
                         match cell.operational_state {
                             black_hole_flux::topology::SunOperationalState::Queued => "queued",
                             black_hole_flux::topology::SunOperationalState::Running => "running",
-                            black_hole_flux::topology::SunOperationalState::Succeeded => "succeeded",
+                            black_hole_flux::topology::SunOperationalState::Succeeded =>
+                                "succeeded",
                             black_hole_flux::topology::SunOperationalState::Failed => "failed",
                         }
                     )

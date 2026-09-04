@@ -117,7 +117,6 @@ impl Default for BoundaryInit {
     }
 }
 
-
 /// The latest orchestration phase reached by a Sun node.
 #[derive(
     Clone,
@@ -254,7 +253,6 @@ pub trait SunStateView: SunTopologyState {
     fn sun_appearance(&self) -> SunAppearance;
 }
 
-
 /// Trait that converts a type-level list of typenum integers into a runtime
 /// vector of node IDs (u32 values).
 pub trait NodeIdsFromList {
@@ -285,8 +283,7 @@ impl NodeIdsFromList for TypedEdges<Empty> {
     }
 }
 
-impl<P, Destination, T> NodeIdsFromList
-    for TypedEdges<List<(Edge<P, Destination>, T)>>
+impl<P, Destination, T> NodeIdsFromList for TypedEdges<List<(Edge<P, Destination>, T)>>
 where
     P: Unsigned,
     Destination: TensorContract,
@@ -298,7 +295,6 @@ where
         ids
     }
 }
-
 
 /// Produces runtime edge descriptors while enforcing compile-time bundle
 /// equality between every source output and destination input.
@@ -357,7 +353,6 @@ where
     }
 }
 
-
 /// Erased form of a compile-time checked edge. Separate binaries and rolling
 /// deployments must still agree on these descriptors at runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -367,7 +362,6 @@ pub struct DeclaredEdge {
     pub destination_contract: ContractDescriptor,
 }
 
-
 /// A resolved edge target. `port_id` identifies the destination mailbox while
 /// `vertex_id` identifies the single animal/output shared by all of its ports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -375,7 +369,6 @@ pub struct PortTarget {
     pub port_id: u32,
     pub vertex_id: u32,
 }
-
 
 /// Mailboxes needed to drive one cell through a propagation pass.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -391,7 +384,6 @@ pub struct PropagationTarget {
     /// Object id where the cell should publish its output.
     pub output_id: ObjectId,
 }
-
 
 pub(crate) fn pending_dependency_counts(topology: &SunTopology) -> HashMap<u32, usize> {
     topology
@@ -467,7 +459,6 @@ pub(crate) fn advance_frontier(
     }
     Ok(())
 }
-
 
 pub(crate) fn port_ids(topology: &SunTopology) -> Vec<u32> {
     topology.port_vertices.keys().copied().collect()

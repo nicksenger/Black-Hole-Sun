@@ -13,8 +13,8 @@ use black_hole_sun::cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, InitRecvId, Potentiation, Transmit,
     WaitForPotentiation, WaitForPropagation,
 };
-use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::compile::BlackHole;
+use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::programs::two_sided_zo::{SunState, TwoSidedZo};
 use black_hole_sun::topology::{Binary, SunAppearance, SunNodeState, Unary};
 use black_hole_sun::{

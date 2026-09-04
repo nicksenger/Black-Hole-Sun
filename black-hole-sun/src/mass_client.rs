@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, net::SocketAddr};
 
-use black_hole_spec::{operation_capability, QwenDarkInference, TensorContract};
 use black_hole_flux::ops::{CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, ResetOps};
+use black_hole_spec::{operation_capability, QwenDarkInference, TensorContract};
 use black_hole_type::{
     ArtifactRef, EncodingId, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut,
     ObjectId, OperationCapabilities, OperationConfig, MASS_OPERATION_PROTOCOL_VERSION,

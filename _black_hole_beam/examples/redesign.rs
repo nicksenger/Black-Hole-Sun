@@ -14,10 +14,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use black_hole_beam::BeamBuilder;
-use black_hole_spec::{
-    glowstick::{Dyn, Shape2},
-    SingleTensorSpec, TensorContract, TensorPortSpec,
-};
 use black_hole_flux::forward::ForwardSunState;
 use black_hole_flux::topology::{
     SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState, SunOperationalState,
@@ -25,6 +21,10 @@ use black_hole_flux::topology::{
 use black_hole_flux::{
     BlackHole, CellInit, CellState, Edge, ForwardOnly, ForwardOperationPrimordium, OperationNode,
     Primordium, TypedEdges, Unary,
+};
+use black_hole_spec::{
+    glowstick::{Dyn, Shape2},
+    SingleTensorSpec, TensorContract, TensorPortSpec,
 };
 use black_hole_type::{ContractId, DtypeConstraint, TensorDtype};
 use iced::futures::stream;

@@ -79,7 +79,9 @@ mod tests {
     use black_hole_flux::compile::BlackHole;
     use black_hole_flux::programs::forward_only::ForwardOnly;
     use black_hole_flux::programs::two_sided_zo::{Manifest, TwoSidedZo, TwoSidedZoManifest};
-    use black_hole_flux::topology::{Binary, OperationNode, SunEdgeAppearance, SunNodeAppearance, Unary};
+    use black_hole_flux::topology::{
+        Binary, OperationNode, SunEdgeAppearance, SunNodeAppearance, Unary,
+    };
     use black_hole_flux::{
         CellState, ContractId, ForwardOperationPrimordium, Fusion, Primordium, QwenDarkInference,
         TensorContract,

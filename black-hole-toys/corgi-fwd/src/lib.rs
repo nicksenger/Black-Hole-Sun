@@ -203,38 +203,44 @@ impl<J: VoidOps> Effect<J> for GenerateImageEffect {
         jungle: &J,
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        async move {
-            let sample = next_sample()?;
-            let tensor = image_tensor(&sample.image)?;
-            let input = black_hole_sun::encode_input::<StemOp>(
-                &[RawTensor {
-                    name: ImagePort::NAME.to_owned(),
-                    dtype: TensorDtype::F32,
-                    shape: vec![1, 3, IMAGE_SIZE, IMAGE_SIZE],
-                    data: tensor.into_iter().flat_map(f32::to_le_bytes).collect(),
-                }],
-                &SampleMetadata {
-                    dataset_label: sample.label,
-                },
-            )
-            .map_err(|error| error.to_string())?;
-            let tensor_id = jungle.upload_to_void(input).await?;
-            let emission = Emission::<SampleMetadata, Image> {
-                metadata: SampleMetadata {
-                    dataset_label: sample.label,
-                },
-                output_id: ArtifactRef::committed(ObjectRef::new(tensor_id)),
-            };
-            let emission_id = jungle
-                .upload_to_void(postcard::to_allocvec(&emission).map_err(|e| e.to_string())?)
-                .await?;
-            Ok(ArtifactDelivery {
-                emission_id: ObjectRef::new(emission_id),
-                recv: ObjectId::nil(),
-                send: ObjectId::nil(),
-            })
-        }
+        generate_image(jungle)
     }
+}
+
+/// Generate one normalized Stanford Dogs image as a typed input artifact.
+///
+/// This is shared by the forward-only and two-sided ZO examples so both
+/// examples exercise the same dataset and input contract.
+pub async fn generate_image<J: VoidOps>(jungle: &J) -> Result<ArtifactDelivery<Image>, String> {
+    let sample = next_sample()?;
+    let tensor = image_tensor(&sample.image)?;
+    let input = black_hole_sun::encode_input::<StemOp>(
+        &[RawTensor {
+            name: ImagePort::NAME.to_owned(),
+            dtype: TensorDtype::F32,
+            shape: vec![1, 3, IMAGE_SIZE, IMAGE_SIZE],
+            data: tensor.into_iter().flat_map(f32::to_le_bytes).collect(),
+        }],
+        &SampleMetadata {
+            dataset_label: sample.label,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let tensor_id = jungle.upload_to_void(input).await?;
+    let emission = Emission::<SampleMetadata, Image> {
+        metadata: SampleMetadata {
+            dataset_label: sample.label,
+        },
+        output_id: ArtifactRef::committed(ObjectRef::new(tensor_id)),
+    };
+    let emission_id = jungle
+        .upload_to_void(postcard::to_allocvec(&emission).map_err(|e| e.to_string())?)
+        .await?;
+    Ok(ArtifactDelivery {
+        emission_id: ObjectRef::new(emission_id),
+        recv: ObjectId::nil(),
+        send: ObjectId::nil(),
+    })
 }
 
 #[derive(Debug)]

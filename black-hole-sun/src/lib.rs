@@ -11,8 +11,8 @@ mod tokenizer;
 mod void_client;
 
 pub use accumulated_transmissions::{AccumulatedTransmissions, Monoid};
-pub use black_hole_spec;
 pub use black_hole_mass;
+pub use black_hole_spec;
 pub use black_hole_type;
 pub use black_hole_void;
 pub use mass_client::MassClient;
@@ -28,8 +28,8 @@ pub use void_client::{PreparedTransfer, VoidClient};
 
 // Convenience re-exports — flux modules and core sun types
 pub use black_hole_flux::nodes::{atom, cell, fusion, warp};
-pub use black_hole_flux::{compile, forward, programs, topology};
 pub use black_hole_flux::ForwardOnlyWithPolicy;
+pub use black_hole_flux::{compile, forward, programs, topology};
 pub use black_hole_flux::{
     ops, AtomError, Boundary, BoundaryInit, BoundaryInner, BoundaryMicrostep, BoundaryState,
     CellInit, CheckpointOps, DefaultConfig, ErrorFeedbackPolicy, ForwardOperationCell,

@@ -17,13 +17,13 @@ use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 use uuid::Uuid;
 
-use action::PropagationState;
 use crate::compile::{BlackHole, SunProgram};
 use crate::nodes::fusion::action::FusionSeed;
 use crate::topology::{
     BoundaryInit, SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState,
     SunOperationalState, SunStateView, SunTopology, SunTopologyState,
 };
+use action::PropagationState;
 
 /// State for two-sided propagation branch A.
 #[derive(Optic, Clone, Default, Debug)]
@@ -102,7 +102,6 @@ pub struct SunStateWithInner<S> {
 pub type TwoSidedZoState<S = ()> = SunStateWithInner<S>;
 /// Compatibility name for the state owned by the [`TwoSidedZo`] program.
 pub type SunState<S = ()> = TwoSidedZoState<S>;
-
 
 impl<S> Default for SunStateWithInner<S>
 where
@@ -227,7 +226,6 @@ impl<S> SunStateView for SunStateWithInner<S> {
     }
 }
 
-
 /// Shared inner state accessible by both propagation branches via Arc<Mutex>.
 #[derive(Optic, Clone, Default, Debug)]
 pub struct TwoSidedZoInner {
@@ -258,7 +256,6 @@ pub struct TwoSidedZoInner {
     /// Potentiation input endpoints keyed by port id.
     pub po_tx: HashMap<u32, ObjectId>,
 }
-
 
 impl TwoSidedZoInner {
     fn current_grad_step(&self) -> usize {
@@ -370,10 +367,8 @@ impl TwoSidedZoInner {
     }
 }
 
-
 /// Compatibility name for the two-sided strategy state.
 pub type SunInner = TwoSidedZoInner;
-
 
 /// Compatibility program used by the descriptor-step aliases.
 pub struct DeploymentProgram<S, const ACCUM_STEPS: usize>(PhantomData<fn() -> S>);
@@ -422,14 +417,12 @@ impl<S, const ACCUM_STEPS: usize> SunProgram for DeploymentProgram<S, ACCUM_STEP
     }
 }
 
-
 /// Legacy generator/policy/state bundle accepted by [`TwoSidedZoManifest`].
 pub trait Manifest {
     type Generator;
     type Policy;
     type State;
 }
-
 
 /// The existing two-sided zeroth-order training schedule as a Sun program.
 pub struct TwoSidedZoWithState<Generator, Policy, S, const ACCUM_STEPS: usize = 1>(
@@ -548,7 +541,6 @@ impl<G, P, const A: usize> Manifest for StatelessManifest<G, P, A> {
 pub type LegacySun<T, M, const ACCUM_STEPS: usize> =
     <T as BlackHole>::Sun<TwoSidedZoManifest<M, ACCUM_STEPS>>;
 
-
 // ---------------------------------------------------------------------------
 // Predicates — loop continuation conditions
 // ---------------------------------------------------------------------------
@@ -617,7 +609,6 @@ impl<S> Predicate<(&SunState<S>, &())> for PendingPipelineWork<S> {
     }
 }
 
-
 /// One generator emission pair capture step.
 #[derive(Flow)]
 pub struct CollectPropagationInputsStep<Generator, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
@@ -631,7 +622,6 @@ pub struct PipelineProgressStep<S, const GRADIENT_ACCUMULATION_STEPS: usize>(
     Step<action::SendReadyRootTasks<S, GRADIENT_ACCUMULATION_STEPS>>,
     Step<action::ProcessReadyPipelineNode<S, GRADIENT_ACCUMULATION_STEPS>>,
 );
-
 
 // ---------------------------------------------------------------------------
 // BlackHole — the top-level orchestration flow
