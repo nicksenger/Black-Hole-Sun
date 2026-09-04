@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::{env, fs};
 
 use async_trait::async_trait;
 use black_hole_sun::black_hole_spec::operation_capability;
@@ -35,6 +36,10 @@ struct Args {
     /// Optional local Candle ResNet-18 safetensors checkpoint.
     #[arg(long)]
     model: Option<PathBuf>,
+
+    /// Writable Hugging Face cache directory for model and dataset files.
+    #[arg(long)]
+    cache_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -359,6 +364,36 @@ fn model_path(argument: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::
         .send()?)
 }
 
+fn writable(path: &PathBuf) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    let probe = path.join(".corgi-fwd-write-test");
+    fs::write(&probe, [])?;
+    fs::remove_file(probe)
+}
+
+fn configure_hf_cache(argument: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let local = env::current_dir()?.join("target/corgi-fwd/huggingface");
+    let explicit = argument.is_some();
+    let requested = argument.or_else(|| env::var_os("HF_HUB_CACHE").map(PathBuf::from));
+    if let Some(path) = requested {
+        if writable(&path).is_ok() {
+            env::set_var("HF_HUB_CACHE", &path);
+            return Ok(path);
+        }
+        if explicit {
+            return Err(format!("Hugging Face cache is not writable: {}", path.display()).into());
+        }
+        eprintln!(
+            "ignoring non-writable HF_HUB_CACHE {}; using {}",
+            path.display(),
+            local.display()
+        );
+    }
+    writable(&local)?;
+    env::set_var("HF_HUB_CACHE", &local);
+    Ok(local)
+}
+
 fn builder(
     path: &PathBuf,
     device: &Device,
@@ -381,6 +416,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.n_samples == 0 {
         return Ok(());
     }
+    let cache_dir = configure_hf_cache(args.cache_dir)?;
+    eprintln!("using Hugging Face cache {}", cache_dir.display());
     let path = model_path(args.model)?;
     let device = Device::Cpu;
 
