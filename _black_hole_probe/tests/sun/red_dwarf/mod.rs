@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use black_hole_sun::cell::{CellState, Primordium};
-use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::compile::BlackHole;
+use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::programs::two_sided_zo::{SunState, TwoSidedZo};
 use black_hole_sun::topology::{SunAppearance, SunNodeState, Unary};
 use black_hole_sun::{
@@ -140,21 +140,23 @@ impl VoidInferOps for RedDwarfJungle {
         model_id: Uuid,
         model_config: Option<MassModelConfig>,
     ) -> Result<(), String> {
-        self.mass_client.start(model_id, model_config).await
+        self.mass_client.start_qwen(model_id, model_config).await
     }
 
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
         let request_bytes = to_allocvec(&request).map_err(|error| format!("serialize: {error}"))?;
         let request_id = self.void_client.upload(request_bytes).await?;
-        self.mass_client.infer(model_id, request_id).await
+        self.mass_client
+            .invoke_qwen_object(&self.void_client, model_id, request_id)
+            .await
     }
 
     async fn reset_model(&self, model_id: Uuid) -> Result<(), String> {
-        self.mass_client.reset(model_id).await
+        self.mass_client.reset_operation(model_id).await
     }
 
     async fn checkpoint_model(&self, model_id: Uuid) -> Result<ObjectId, String> {
-        self.mass_client.checkpoint(model_id).await
+        self.mass_client.checkpoint_operation(model_id).await
     }
 
     async fn fuse_weights(
@@ -164,7 +166,7 @@ impl VoidInferOps for RedDwarfJungle {
         contribution: f32,
     ) -> Result<ObjectId, String> {
         self.mass_client
-            .fuse_weights(model_id, checkpoint_id, contribution)
+            .fuse_operation(model_id, checkpoint_id, contribution)
             .await
     }
 
@@ -181,17 +183,17 @@ impl VoidInferOps for RedDwarfJungle {
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
-        self.mass_client.perturb_up(model_id, seed).await
+        self.mass_client.perturb_up_operation(model_id, seed).await
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
-        self.mass_client.perturb_down(model_id).await
+        self.mass_client.perturb_down_operation(model_id).await
     }
 
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
         let result = self
             .mass_client
-            .optimize(model_id, loss_up, loss_down)
+            .optimize_operation(model_id, loss_up, loss_down)
             .await;
         if result.is_ok() {
             self.optimize_calls.fetch_add(1, Ordering::SeqCst);
@@ -200,11 +202,11 @@ impl VoidInferOps for RedDwarfJungle {
     }
 
     async fn query_model_params(&self, model_id: Uuid) -> Result<MassModelParams, String> {
-        self.mass_client.query_model_params(model_id).await
+        self.mass_client.query_qwen(model_id).await
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
-        self.mass_client.shutdown(model_id).await
+        self.mass_client.shutdown_operation(model_id).await
     }
 
     async fn transmit(&self, emission_id: EmissionId, send_id: ObjectId) -> Result<(), String> {
@@ -265,6 +267,7 @@ impl SunOps for RedDwarfJungle {
 
 #[cfg(test)]
 #[tokio::test]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 async fn red_dwarf_child_ray_frozen_state_oscillates() {
     init_tracing();
 
@@ -442,6 +445,7 @@ async fn red_dwarf_child_ray_frozen_state_oscillates() {
 
 #[cfg(test)]
 #[tokio::test]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 async fn red_dwarf_flow_proceeds_through_optimization_three_times() {
     init_tracing();
 

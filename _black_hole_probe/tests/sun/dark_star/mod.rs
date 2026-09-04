@@ -12,8 +12,8 @@ use black_hole_sun::cell::action::{
     CellState, InitRecvId, Potentiation, Transmit, WaitForPotentiation, WaitForPropagation,
 };
 use black_hole_sun::cell::Primordium;
-use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::compile::BlackHole;
+use black_hole_sun::ops::{SunOps, VoidInferOps};
 use black_hole_sun::programs::two_sided_zo::{SunState, TwoSidedZo};
 use black_hole_sun::topology::{Binary, SunAppearance, Unary};
 use black_hole_sun::{
@@ -402,7 +402,7 @@ impl VoidInferOps for SpaceJungle {
         model_id: Uuid,
         model_config: Option<MassModelConfig>,
     ) -> Result<(), String> {
-        let result = self.mass_client.start(model_id, model_config).await;
+        let result = self.mass_client.start_qwen(model_id, model_config).await;
         self.record_model_error("start model", &result);
         result
     }
@@ -410,7 +410,10 @@ impl VoidInferOps for SpaceJungle {
     async fn infer(&self, model_id: Uuid, request: InferenceRequest) -> Result<ObjectId, String> {
         let request_bytes = postcard::to_allocvec(&request).map_err(|error| error.to_string())?;
         let request_id = self.void_client.upload(request_bytes).await.unwrap();
-        let result = self.mass_client.infer(model_id, request_id).await;
+        let result = self
+            .mass_client
+            .invoke_qwen_object(&self.void_client, model_id, request_id)
+            .await;
         self.record_model_error("infer", &result);
         if result.is_ok() {
             self.inference_calls.fetch_add(1, Ordering::SeqCst);
@@ -419,13 +422,13 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn reset_model(&self, model_id: Uuid) -> Result<(), String> {
-        let result = self.mass_client.reset(model_id).await;
+        let result = self.mass_client.reset_operation(model_id).await;
         self.record_model_error("reset model", &result);
         result
     }
 
     async fn checkpoint_model(&self, model_id: Uuid) -> Result<ObjectId, String> {
-        let result = self.mass_client.checkpoint(model_id).await;
+        let result = self.mass_client.checkpoint_operation(model_id).await;
         self.record_model_error("checkpoint model", &result);
         result
     }
@@ -438,7 +441,7 @@ impl VoidInferOps for SpaceJungle {
     ) -> Result<ObjectId, String> {
         let result = self
             .mass_client
-            .fuse_weights(model_id, checkpoint_id, contribution)
+            .fuse_operation(model_id, checkpoint_id, contribution)
             .await;
         self.record_model_error("fuse weights", &result);
         result
@@ -466,7 +469,7 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn perturb_up(&self, model_id: Uuid, seed: u64) -> Result<(), String> {
-        let result = self.mass_client.perturb_up(model_id, seed).await;
+        let result = self.mass_client.perturb_up_operation(model_id, seed).await;
         self.record_model_error("perturb up", &result);
         if result.is_ok() {
             self.perturb_up_calls.fetch_add(1, Ordering::SeqCst);
@@ -475,7 +478,7 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn perturb_down(&self, model_id: Uuid) -> Result<(), String> {
-        let result = self.mass_client.perturb_down(model_id).await;
+        let result = self.mass_client.perturb_down_operation(model_id).await;
         self.record_model_error("perturb down", &result);
         if result.is_ok() {
             self.perturb_down_calls.fetch_add(1, Ordering::SeqCst);
@@ -486,7 +489,7 @@ impl VoidInferOps for SpaceJungle {
     async fn optimize(&self, model_id: Uuid, loss_up: f32, loss_down: f32) -> Result<(), String> {
         let result = self
             .mass_client
-            .optimize(model_id, loss_up, loss_down)
+            .optimize_operation(model_id, loss_up, loss_down)
             .await;
         self.record_model_error("optimize", &result);
         if result.is_ok() {
@@ -496,13 +499,13 @@ impl VoidInferOps for SpaceJungle {
     }
 
     async fn query_model_params(&self, model_id: Uuid) -> Result<MassModelParams, String> {
-        let result = self.mass_client.query_model_params(model_id).await;
+        let result = self.mass_client.query_qwen(model_id).await;
         self.record_model_error("query model params", &result);
         result
     }
 
     async fn shutdown_model(&self, model_id: Uuid) -> Result<(), String> {
-        let result = self.mass_client.shutdown(model_id).await;
+        let result = self.mass_client.shutdown_operation(model_id).await;
         self.record_model_error("shutdown model", &result);
         result
     }
@@ -719,7 +722,7 @@ pub(super) async fn exercise_epoch<A>(
 
 /// Runs an expanded diamond with Fusion nodes using Twin stack transforms.
 #[cfg(test)]
-#[ignore]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 #[tokio::test]
 async fn dark_star() {
     init_tracing();

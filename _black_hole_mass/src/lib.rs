@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs, io,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -10,6 +10,186 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(feature = "qwen")]
+use paramecia_engine::{
+    fuse_models, ErrorFeedbackMode, ErrorFeedbackParams, HyperParameterUpdate, ModelEngine,
+    PerturbationMode, QuantConflictStrategy, ReplayParams, TrainingConfig,
+};
+#[cfg(not(feature = "qwen"))]
+#[allow(dead_code)]
+mod paramecia_engine {
+    use std::{
+        fmt,
+        path::{Path, PathBuf},
+    };
+
+    #[derive(Debug, Clone)]
+    pub struct Disabled;
+    impl fmt::Display for Disabled {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("Qwen backend is not compiled into this Mass binary")
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum KvCacheQuantization {
+        F16,
+        Q8_0,
+    }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum PerturbationMode {
+        Weight,
+        LowRank(usize),
+    }
+    #[derive(Debug, Clone, Copy)]
+    pub struct ErrorFeedbackParams {
+        pub decay: f64,
+        pub gain: f64,
+    }
+    #[derive(Debug, Clone, Copy)]
+    pub struct ReplayParams {
+        pub steps: u32,
+        pub decay: f64,
+        pub gain: f64,
+    }
+    #[derive(Debug, Clone, Copy)]
+    pub enum ErrorFeedbackMode {
+        None,
+        Persistent(ErrorFeedbackParams),
+        Replay(ReplayParams),
+    }
+    #[derive(Debug, Clone)]
+    pub struct TrainingConfig {
+        pub lr: f64,
+        pub epsilon: f64,
+        pub z_loss: f64,
+        pub lb_loss: f64,
+        pub clip_threshold: f64,
+        pub perturbation_mode: PerturbationMode,
+    }
+    impl Default for TrainingConfig {
+        fn default() -> Self {
+            Self {
+                lr: 1e-4,
+                epsilon: 1e-3,
+                z_loss: 0.0,
+                lb_loss: 0.0,
+                clip_threshold: 1.0,
+                perturbation_mode: PerturbationMode::Weight,
+            }
+        }
+    }
+    #[derive(Debug, Clone, Default)]
+    pub struct HyperParameterUpdate {
+        pub error_feedback: Option<ErrorFeedbackMode>,
+    }
+    #[derive(Debug, Clone)]
+    pub struct LogitEntry {
+        pub token_id: u32,
+        pub log_prob: f32,
+    }
+    #[derive(Debug, Clone)]
+    pub struct SoftToken {
+        pub predicted: u32,
+        pub dark_knowledge: Vec<LogitEntry>,
+    }
+    #[derive(Debug, Clone)]
+    pub enum ModelInput {
+        Text(String),
+        Tokens(Vec<u32>),
+        Soft(Vec<SoftToken>),
+    }
+    #[derive(Debug, Clone)]
+    pub struct Predicted {
+        pub token_id: u32,
+        pub top_k: Vec<LogitEntry>,
+    }
+    pub struct ModelEngine;
+    impl ModelEngine {
+        pub async fn set_hyper_parameters(
+            &self,
+            _update: HyperParameterUpdate,
+        ) -> Result<(), Disabled> {
+            Err(Disabled)
+        }
+        pub async fn reset_state(&self) -> Result<(), Disabled> {
+            Err(Disabled)
+        }
+        pub async fn perturb_up(&self, _seed: Option<u64>) -> Result<(), Disabled> {
+            Err(Disabled)
+        }
+        pub async fn perturb_down(&self) -> Result<(), Disabled> {
+            Err(Disabled)
+        }
+        pub async fn update(&self, _up: f32, _down: f32) -> Result<(), Disabled> {
+            Err(Disabled)
+        }
+        pub async fn save_checkpoint(&self) -> Result<PathBuf, Disabled> {
+            Err(Disabled)
+        }
+        pub async fn unload_model(&self) -> Result<(), Disabled> {
+            Err(Disabled)
+        }
+        pub async fn predict_completions_batched(
+            &self,
+            _sequences: &[Vec<ModelInput>],
+        ) -> Result<
+            (
+                tokio::sync::mpsc::Receiver<Result<Vec<Predicted>, Disabled>>,
+                (),
+            ),
+            Disabled,
+        > {
+            Err(Disabled)
+        }
+    }
+    pub struct ModelEngineBuilder;
+    impl ModelEngineBuilder {
+        pub fn new(_path: PathBuf) -> Self {
+            Self
+        }
+        pub fn top_k(self, _value: usize) -> Self {
+            self
+        }
+        pub fn temperature(self, _value: f64) -> Self {
+            self
+        }
+        pub fn kv_cache_quant(self, _value: KvCacheQuantization) -> Self {
+            self
+        }
+        pub fn repeat_penalty(self, _value: f32) -> Self {
+            self
+        }
+        pub fn presence_penalty(self, _value: f32) -> Self {
+            self
+        }
+        pub fn training_config(self, _value: TrainingConfig) -> Self {
+            self
+        }
+        pub fn top_p(self, _value: f64) -> Self {
+            self
+        }
+        pub fn tokenizer_path(self, _value: PathBuf) -> Self {
+            self
+        }
+        pub fn build(self) -> Result<ModelEngine, Disabled> {
+            Err(Disabled)
+        }
+    }
+    #[derive(Debug, Clone, Copy)]
+    pub enum QuantConflictStrategy {
+        Reject,
+    }
+    pub fn fuse_models(
+        _base: &Path,
+        _members: &[(PathBuf, f32)],
+        _output: &Path,
+        _strategy: QuantConflictStrategy,
+    ) -> Result<(), Disabled> {
+        Err(Disabled)
+    }
+}
+#[cfg(not(feature = "qwen"))]
 use paramecia_engine::{
     fuse_models, ErrorFeedbackMode, ErrorFeedbackParams, HyperParameterUpdate, ModelEngine,
     PerturbationMode, QuantConflictStrategy, ReplayParams, TrainingConfig,
@@ -32,9 +212,10 @@ use black_hole_type::{
     ContractDescriptor, ContractId, ContractSide, DarkToken, DurabilityPolicy, InferenceInput,
     InferenceOutput, InferenceRequest, LogitEntry, MassArchitecture, MassErrorFeedbackConfig,
     MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode,
-    ObjectId, OperationArtifactRef, OperationCapability, SequenceOutput, TransferBegin,
-    TransferChunk, TransferHash, TransferRecord, TransferStreamFrame, TransferTicket,
-    TunnelRequest, WorkerCapabilities, MASS_OPERATION_PROTOCOL_VERSION, TRANSFER_PROTOCOL_VERSION,
+    ObjectId, OperationArtifactRef, OperationCapabilities, OperationCapability, OperationConfig,
+    SequenceOutput, TransferBegin, TransferChunk, TransferHash, TransferRecord,
+    TransferStreamFrame, TransferTicket, TunnelRequest, WorkerCapabilities,
+    MASS_OPERATION_PROTOCOL_VERSION, TRANSFER_PROTOCOL_VERSION,
 };
 pub use paramecia_engine::KvCacheQuantization;
 
@@ -54,9 +235,9 @@ const DEFAULT_CHECKPOINT_TOKENIZER_FILE: &str = "tokenizer.json";
 /// Architecture this mass binary's engine was compiled for.
 ///
 /// paramecia selects model shapes at compile time via cargo features, so a
-/// given build serves exactly one architecture (or none). Tunnel workers
-/// advertise this to roots so model instances are only placed on compatible
-/// engines, and it is used to reject starts this engine cannot serve.
+/// given Qwen build serves exactly one architecture (or none). Tunnel workers
+/// advertise this as backend-specific placement metadata in addition to the
+/// required operation contract and lifecycle capabilities.
 pub const COMPILED_ARCHITECTURE: Option<MassArchitecture> = if cfg!(feature = "qwen35_0p8b") {
     Some(MassArchitecture::Qwen35_0p8b)
 } else if cfg!(feature = "qwen35_2b") {
@@ -76,9 +257,14 @@ pub const COMPILED_ARCHITECTURE: Option<MassArchitecture> = if cfg!(feature = "q
 fn local_worker_capabilities(
     operation: Option<&Arc<dyn OperationImplementation>>,
 ) -> WorkerCapabilities {
-    let mut operations = vec![black_hole_spec::operation_capability::<
-        black_hole_spec::QwenDarkInference,
-    >()];
+    let mut operations = Vec::new();
+    #[cfg(feature = "qwen")]
+    {
+        let mut qwen =
+            black_hole_spec::operation_capability::<black_hole_spec::QwenDarkInference>();
+        qwen.operations = OperationCapabilities::OPTIMIZING;
+        operations.push(qwen);
+    }
     if let Some(operation) = operation {
         let capability = operation.capability();
         if !operations.contains(&capability) {
@@ -109,13 +295,58 @@ const RESIDUAL_UPDATE_UNSUPPORTED_FRAGMENT: &str =
 pub trait OperationImplementation: Send + Sync + 'static {
     fn capability(&self) -> OperationCapability;
 
-    async fn start(&self, instance_id: Uuid) -> std::result::Result<(), String>;
+    async fn start(
+        &self,
+        instance_id: Uuid,
+        config: Option<&OperationConfig>,
+    ) -> std::result::Result<(), String>;
 
     async fn forward(
         &self,
         instance_id: Uuid,
         input: Vec<u8>,
     ) -> std::result::Result<Vec<u8>, String>;
+
+    async fn reset(&self, _instance_id: Uuid) -> std::result::Result<(), String> {
+        Err("reset capability is not implemented".into())
+    }
+
+    async fn perturb_up(&self, _instance_id: Uuid, _seed: u64) -> std::result::Result<(), String> {
+        Err("perturb capability is not implemented".into())
+    }
+
+    async fn perturb_down(&self, _instance_id: Uuid) -> std::result::Result<(), String> {
+        Err("perturb capability is not implemented".into())
+    }
+
+    async fn optimize(
+        &self,
+        _instance_id: Uuid,
+        _loss_up: f32,
+        _loss_down: f32,
+    ) -> std::result::Result<(), String> {
+        Err("optimize capability is not implemented".into())
+    }
+
+    /// Produce a durable checkpoint payload. Mass publishes it to Void.
+    async fn checkpoint(&self, _instance_id: Uuid) -> std::result::Result<Vec<u8>, String> {
+        Err("checkpoint capability is not implemented".into())
+    }
+
+    /// Fuse a Void-resolved checkpoint payload and return a new durable
+    /// payload for Mass to publish.
+    async fn fuse(
+        &self,
+        _instance_id: Uuid,
+        _checkpoint: Vec<u8>,
+        _contribution: f32,
+    ) -> std::result::Result<Vec<u8>, String> {
+        Err("fuse capability is not implemented".into())
+    }
+
+    async fn query(&self, _instance_id: Uuid) -> std::result::Result<OperationConfig, String> {
+        Err("query capability is not implemented".into())
+    }
 
     async fn shutdown(&self, instance_id: Uuid) -> std::result::Result<(), String>;
 }
@@ -1546,12 +1777,122 @@ where
 // QuZO state — tracks perturb/up-loss between client requests
 // ---------------------------------------------------------------------------
 
-/// Compatibility adapter for the legacy Qwen/QuZO protocol.
+/// Backend boundary for the Qwen implementation. Mass and the hosted-instance
+/// registry never store paramecia's concrete engine type.
+#[async_trait::async_trait]
+trait ModelEngineImplementation: Send + Sync {
+    async fn set_hyper_parameters(
+        &self,
+        update: HyperParameterUpdate,
+    ) -> std::result::Result<(), String>;
+    async fn reset_state(&self) -> std::result::Result<(), String>;
+    async fn perturb_up(&self, seed: Option<u64>) -> std::result::Result<(), String>;
+    async fn perturb_down(&self) -> std::result::Result<(), String>;
+    async fn update(&self, loss_up: f32, loss_down: f32) -> std::result::Result<(), String>;
+    async fn save_checkpoint(&self) -> std::result::Result<PathBuf, String>;
+    async fn unload_model(&self) -> std::result::Result<(), String>;
+    async fn predict_batched(
+        &self,
+        sequences: &[Vec<paramecia_engine::ModelInput>],
+        limit: u32,
+    ) -> std::result::Result<Vec<Vec<paramecia_engine::Predicted>>, String>;
+}
+
+#[async_trait::async_trait]
+impl ModelEngineImplementation for ModelEngine {
+    async fn set_hyper_parameters(
+        &self,
+        update: HyperParameterUpdate,
+    ) -> std::result::Result<(), String> {
+        ModelEngine::set_hyper_parameters(self, update)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn reset_state(&self) -> std::result::Result<(), String> {
+        ModelEngine::reset_state(self)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn perturb_up(&self, seed: Option<u64>) -> std::result::Result<(), String> {
+        ModelEngine::perturb_up(self, seed)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn perturb_down(&self) -> std::result::Result<(), String> {
+        ModelEngine::perturb_down(self)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn update(&self, loss_up: f32, loss_down: f32) -> std::result::Result<(), String> {
+        ModelEngine::update(self, loss_up, loss_down)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn save_checkpoint(&self) -> std::result::Result<PathBuf, String> {
+        ModelEngine::save_checkpoint(self)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn unload_model(&self) -> std::result::Result<(), String> {
+        ModelEngine::unload_model(self)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn predict_batched(
+        &self,
+        sequences: &[Vec<paramecia_engine::ModelInput>],
+        limit: u32,
+    ) -> std::result::Result<Vec<Vec<paramecia_engine::Predicted>>, String> {
+        if limit == 0 {
+            return Ok(vec![Vec::new(); sequences.len()]);
+        }
+        let (mut result_rx, _cancel_tx) = self
+            .predict_completions_batched(sequences)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut results = vec![Vec::new(); sequences.len()];
+        while let Some(result) = result_rx.recv().await {
+            match result {
+                Ok(step) => {
+                    for (index, prediction) in step.into_iter().enumerate() {
+                        if index < results.len() && results[index].len() < limit as usize {
+                            results[index].push(prediction);
+                        }
+                    }
+                    if results
+                        .iter()
+                        .all(|predictions| predictions.len() >= limit as usize)
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    warn!(error = %error, "batched prediction ended with error");
+                    break;
+                }
+            }
+        }
+        Ok(results)
+    }
+}
+
+/// Qwen implementation adapter.
 ///
 /// The generic host never sees paramecia inputs or dark tokens. This adapter
-/// is the boundary that owns those conversions while the old protocol remains
-/// available during migration.
-struct QwenOperationAdapter;
+/// is the boundary that owns those conversions.
+#[derive(Default)]
+struct QwenOperationAdapter {
+    /// Engine and QuZO session state is private to this backend adapter.
+    /// The generic host registry owns identity, routing, and capabilities.
+    instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
+}
 
 impl QwenOperationAdapter {
     fn dark_input(tokens: Vec<DarkToken>) -> paramecia_engine::ModelInput {
@@ -1653,7 +1994,7 @@ struct FrozenOscillation {
 // ---------------------------------------------------------------------------
 
 struct MassInstance {
-    engine: ModelEngine,
+    engine: Arc<dyn ModelEngineImplementation>,
     runtime_config: ModelRuntimeConfig,
     oscillation: Option<FrozenOscillation>,
     checkpoint_path: Option<PathBuf>,
@@ -1715,9 +2056,20 @@ struct TunnelWorker {
     token: Uuid,
     worker_id: Uuid,
     max_instances: Option<usize>,
-    /// Capabilities advertised by the worker at registration. Empty on
-    /// legacy workers that predate capability advertising.
+    /// Complete capabilities advertised by the worker at registration.
     capabilities: WorkerCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImplementationKind {
+    Qwen,
+    Injected,
+}
+
+#[derive(Debug, Clone)]
+struct HostedInstance {
+    capability: OperationCapability,
+    implementation: ImplementationKind,
 }
 
 struct MassContext {
@@ -1732,11 +2084,14 @@ struct MassContext {
     routes: tokio::sync::RwLock<HashMap<Uuid, RouteTarget>>,
     workers: tokio::sync::RwLock<HashMap<Uuid, TunnelWorker>>,
     worker_connections: tokio::sync::RwLock<HashMap<Uuid, TunnelConnectionHandle>>,
-    instances: tokio::sync::RwLock<HashMap<Uuid, ModelSlot>>,
+    /// The sole authoritative registry for locally hosted instances.
+    instances: tokio::sync::RwLock<HashMap<Uuid, HostedInstance>>,
+    /// Qwen is hosted behind the same operation boundary as injected
+    /// backends and owns all of its engine/session state.
+    qwen: QwenOperationAdapter,
     operation: Option<Arc<dyn OperationImplementation>>,
-    operation_instances: tokio::sync::RwLock<HashSet<Uuid>>,
-    /// Architecture requirement of each routed model instance (None when the
-    /// start carried no requirement), tracked for per-architecture capacity.
+    /// Backend-specific architecture requirement for each routed instance,
+    /// tracked only for per-architecture capacity reporting.
     instance_requirements: tokio::sync::RwLock<HashMap<Uuid, Option<MassArchitecture>>>,
 }
 
@@ -1955,8 +2310,7 @@ impl ServerBuilder {
         self
     }
 
-    /// Inject a generic tensor operation hosted alongside the legacy Qwen
-    /// compatibility path.
+    /// Inject a tensor-operation backend into the unified hosted-instance path.
     pub fn operation(mut self, operation: impl OperationImplementation) -> Self {
         self.operation = Some(Arc::new(operation));
         self
@@ -2171,8 +2525,8 @@ impl ServerBuilder {
             workers: tokio::sync::RwLock::new(HashMap::new()),
             worker_connections: tokio::sync::RwLock::new(HashMap::new()),
             instances: tokio::sync::RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: self.operation,
-            operation_instances: tokio::sync::RwLock::new(HashSet::new()),
             instance_requirements: tokio::sync::RwLock::new(HashMap::new()),
         });
 
@@ -2639,49 +2993,52 @@ async fn handle_request(
         MassIn::TunnelForward { token, request } => {
             handle_tunnel_forward(token, request, ctx).await
         }
-        MassIn::Start {
-            model_id,
-            model_config,
-        } => handle_start_routed(model_id, model_config, ctx).await,
-        MassIn::PerturbUp { model_id, seed } => handle_perturb_up_routed(model_id, seed, ctx).await,
-        MassIn::Infer { model_id, input_id } => handle_infer_routed(model_id, input_id, ctx).await,
-        MassIn::Reset { model_id } => handle_reset_routed(model_id, ctx).await,
-        MassIn::PerturbDown { model_id } => handle_perturb_down_routed(model_id, ctx).await,
-        MassIn::Checkpoint { model_id } => handle_checkpoint_routed(model_id, ctx).await,
-        MassIn::Optimize {
-            model_id,
-            loss_up,
-            loss_down,
-        } => handle_optimize_routed(model_id, loss_up, loss_down, ctx).await,
-        MassIn::Shutdown { model_id } => handle_shutdown_routed(model_id, ctx).await,
-        MassIn::QueryModelParams { model_id } => {
-            handle_query_model_params_routed(model_id, ctx).await
-        }
-        MassIn::QueryModelCapacity => handle_query_model_capacity(ctx).await,
-        MassIn::FuseWeights {
-            model_id,
-            checkpoint_id,
-            contribution,
-        } => handle_fuse_weights_routed(model_id, checkpoint_id, contribution, ctx).await,
-        MassIn::StartOperation {
+        MassIn::StartInstance {
             protocol_version,
             instance_id,
             capability,
+            config,
         } => {
             ensure_operation_protocol_version(protocol_version)?;
-            handle_operation_start_routed(instance_id, capability, ctx).await
+            handle_instance_start_routed(instance_id, capability, config, ctx).await
         }
-        MassIn::ForwardOperation {
+        MassIn::Invoke {
             protocol_version,
             instance_id,
             input,
         } => {
             ensure_operation_protocol_version(protocol_version)?;
-            handle_operation_forward_routed(instance_id, input, ctx).await
+            handle_instance_invoke_routed(instance_id, input, ctx).await
         }
-        MassIn::ShutdownOperation { instance_id } => {
-            handle_operation_shutdown_routed(instance_id, ctx).await
+        MassIn::ResetInstance { instance_id } => {
+            handle_instance_reset_routed(instance_id, ctx).await
         }
+        MassIn::PerturbUpInstance { instance_id, seed } => {
+            handle_instance_perturb_up_routed(instance_id, seed, ctx).await
+        }
+        MassIn::PerturbDownInstance { instance_id } => {
+            handle_instance_perturb_down_routed(instance_id, ctx).await
+        }
+        MassIn::CheckpointInstance { instance_id } => {
+            handle_instance_checkpoint_routed(instance_id, ctx).await
+        }
+        MassIn::OptimizeInstance {
+            instance_id,
+            loss_up,
+            loss_down,
+        } => handle_instance_optimize_routed(instance_id, loss_up, loss_down, ctx).await,
+        MassIn::FuseInstance {
+            instance_id,
+            checkpoint_id,
+            contribution,
+        } => handle_instance_fuse_routed(instance_id, checkpoint_id, contribution, ctx).await,
+        MassIn::ShutdownInstance { instance_id } => {
+            handle_instance_shutdown_routed(instance_id, ctx).await
+        }
+        MassIn::QueryInstance { instance_id } => {
+            handle_instance_query_routed(instance_id, ctx).await
+        }
+        MassIn::QueryInstanceCapacity => handle_query_model_capacity(ctx).await,
     }
 }
 
@@ -2708,7 +3065,7 @@ async fn register_tunnel_worker(
                 MassIn::RegisterTunnel {
                     worker_id,
                     max_instances,
-                    capabilities: Some(capabilities),
+                    capabilities,
                 },
             )
             .await?;
@@ -2732,7 +3089,7 @@ async fn register_tunnel_worker(
                 &MassIn::RegisterTunnel {
                     worker_id,
                     max_instances,
-                    capabilities: Some(capabilities),
+                    capabilities,
                 },
             )
             .await?;
@@ -2932,7 +3289,7 @@ async fn maintain_parent_registration_loop(context: Arc<MassContext>) {
 async fn handle_register_tunnel(
     worker_id: Uuid,
     max_instances: Option<usize>,
-    capabilities: Option<WorkerCapabilities>,
+    capabilities: WorkerCapabilities,
     connection: Option<TunnelConnectionHandle>,
     ctx: &MassContext,
 ) -> Result<MassOut> {
@@ -2947,9 +3304,7 @@ async fn handle_register_tunnel(
             worker.max_instances = max_instances;
             // Capabilities are compile-time fixed; refresh them when the
             // (re)registering worker advertises them.
-            if let Some(capabilities) = capabilities {
-                worker.capabilities = capabilities;
-            }
+            worker.capabilities = capabilities;
             *token
         } else {
             let token = Uuid::new_v4();
@@ -2959,7 +3314,7 @@ async fn handle_register_tunnel(
                     token,
                     worker_id,
                     max_instances,
-                    capabilities: capabilities.unwrap_or_default(),
+                    capabilities,
                 },
             );
             token
@@ -3015,66 +3370,61 @@ async fn handle_tunnel_forward(
 
 async fn handle_tunnel_request_local(request: TunnelRequest, ctx: &MassContext) -> Result<MassOut> {
     match request {
-        TunnelRequest::Start {
-            model_id,
-            model_config,
-        } => handle_start_distributed(model_id, model_config, ctx).await,
-        TunnelRequest::PerturbUp { model_id, seed } => {
-            handle_perturb_up_distributed(model_id, seed, ctx).await
-        }
-        TunnelRequest::Infer { model_id, input_id } => {
-            handle_infer_distributed(model_id, input_id, ctx).await
-        }
-        TunnelRequest::Reset { model_id } => handle_reset_distributed(model_id, ctx).await,
-        TunnelRequest::PerturbDown { model_id } => {
-            handle_perturb_down_distributed(model_id, ctx).await
-        }
-        TunnelRequest::Checkpoint { model_id } => {
-            handle_checkpoint_distributed(model_id, ctx).await
-        }
-        TunnelRequest::Optimize {
-            model_id,
-            loss_up,
-            loss_down,
-        } => handle_optimize_distributed(model_id, loss_up, loss_down, ctx).await,
-        TunnelRequest::Shutdown { model_id } => handle_shutdown_distributed(model_id, ctx).await,
-        TunnelRequest::QueryModelParams { model_id } => {
-            handle_query_model_params_distributed(model_id, ctx).await
-        }
-        TunnelRequest::FuseWeights {
-            model_id,
-            checkpoint_id,
-            contribution,
-        } => handle_fuse_weights_distributed(model_id, checkpoint_id, contribution, ctx).await,
-        TunnelRequest::StartOperation {
+        TunnelRequest::StartInstance {
             protocol_version,
             instance_id,
             capability,
+            config,
         } => {
             ensure_operation_protocol_version(protocol_version)?;
-            handle_operation_start_distributed(instance_id, capability, ctx).await
+            handle_instance_start_distributed(instance_id, capability, config, ctx).await
         }
-        TunnelRequest::ForwardOperation {
+        TunnelRequest::Invoke {
             protocol_version,
             instance_id,
             input,
         } => {
             ensure_operation_protocol_version(protocol_version)?;
-            handle_operation_forward_distributed(instance_id, input, ctx).await
+            handle_instance_invoke_distributed(instance_id, input, ctx).await
         }
-        TunnelRequest::ShutdownOperation { instance_id } => {
-            handle_operation_shutdown_distributed(instance_id, ctx).await
+        TunnelRequest::ResetInstance { instance_id } => {
+            handle_instance_reset_distributed(instance_id, ctx).await
+        }
+        TunnelRequest::PerturbUpInstance { instance_id, seed } => {
+            handle_instance_perturb_up_distributed(instance_id, seed, ctx).await
+        }
+        TunnelRequest::PerturbDownInstance { instance_id } => {
+            handle_instance_perturb_down_distributed(instance_id, ctx).await
+        }
+        TunnelRequest::CheckpointInstance { instance_id } => {
+            handle_instance_checkpoint_distributed(instance_id, ctx).await
+        }
+        TunnelRequest::OptimizeInstance {
+            instance_id,
+            loss_up,
+            loss_down,
+        } => handle_instance_optimize_distributed(instance_id, loss_up, loss_down, ctx).await,
+        TunnelRequest::FuseInstance {
+            instance_id,
+            checkpoint_id,
+            contribution,
+        } => handle_instance_fuse_distributed(instance_id, checkpoint_id, contribution, ctx).await,
+        TunnelRequest::ShutdownInstance { instance_id } => {
+            handle_instance_shutdown_distributed(instance_id, ctx).await
+        }
+        TunnelRequest::QueryInstance { instance_id } => {
+            handle_instance_query_distributed(instance_id, ctx).await
         }
     }
 }
 
-async fn route_for_model(model_id: Uuid, ctx: &MassContext) -> Result<RouteTarget> {
+async fn route_for_instance(instance_id: Uuid, ctx: &MassContext) -> Result<RouteTarget> {
     ctx.routes
         .read()
         .await
-        .get(&model_id)
+        .get(&instance_id)
         .copied()
-        .ok_or(ServerError::ModelInstanceNotRunning(model_id))
+        .ok_or(ServerError::ModelInstanceNotRunning(instance_id))
 }
 
 fn has_capacity(limit: Option<usize>, current: usize) -> bool {
@@ -3127,133 +3477,7 @@ fn operation_satisfies(advertised: &OperationCapability, requested: &OperationCa
             .metadata_encodings
             .iter()
             .all(|encoding| advertised.metadata_encodings.contains(encoding))
-}
-
-async fn select_operation_target(
-    ctx: &MassContext,
-    requested: &OperationCapability,
-) -> Result<RouteTarget> {
-    validate_capability(requested)?;
-    let routes = ctx.routes.read().await;
-    let local_count = routes
-        .values()
-        .filter(|target| matches!(target, RouteTarget::Local))
-        .count();
-    let mut worker_counts: HashMap<Uuid, usize> = HashMap::new();
-    for target in routes.values() {
-        if let RouteTarget::Worker(token) = target {
-            *worker_counts.entry(*token).or_insert(0) += 1;
-        }
-    }
-    drop(routes);
-
-    let local_eligible = local_worker_capabilities(ctx.operation.as_ref())
-        .operations
-        .iter()
-        .any(|advertised| operation_satisfies(advertised, requested));
-    let mut best = local_eligible
-        .then_some((RouteTarget::Local, local_count))
-        .filter(|_| has_capacity(ctx.max_instances, local_count));
-    let mut eligible_exists = local_eligible;
-
-    let mut workers: Vec<TunnelWorker> = ctx.workers.read().await.values().cloned().collect();
-    workers.sort_by_key(|worker| worker.token);
-    for worker in workers {
-        if !worker
-            .capabilities
-            .operations
-            .iter()
-            .any(|advertised| operation_satisfies(advertised, requested))
-        {
-            continue;
-        }
-        eligible_exists = true;
-        let current = worker_counts
-            .get(&worker.token)
-            .copied()
-            .unwrap_or_default();
-        if !has_capacity(worker.max_instances, current) {
-            continue;
-        }
-        match best {
-            Some((_, best_count)) if best_count <= current => {}
-            _ => best = Some((RouteTarget::Worker(worker.token), current)),
-        }
-    }
-
-    match (best, eligible_exists) {
-        (Some((target, _)), _) => Ok(target),
-        (None, true) => Err(ServerError::NoTunnelCapacity),
-        (None, false) => Err(ServerError::NoCompatibleOperation {
-            id: requested.descriptor.id,
-            version: requested.descriptor.version,
-        }),
-    }
-}
-
-async fn select_start_target(
-    ctx: &MassContext,
-    required_architecture: Option<MassArchitecture>,
-) -> Result<RouteTarget> {
-    let routes = ctx.routes.read().await;
-    let local_count = ctx.instances.read().await.len();
-    let mut worker_counts: HashMap<Uuid, usize> = HashMap::new();
-    for target in routes.values() {
-        match target {
-            RouteTarget::Local => {}
-            RouteTarget::Worker(token) => {
-                *worker_counts.entry(*token).or_insert(0) += 1;
-            }
-        }
-    }
-    drop(routes);
-
-    let local_eligible = architecture_satisfies(
-        &WorkerCapabilities {
-            architectures: std::iter::once(COMPILED_ARCHITECTURE)
-                .filter_map(|architecture| architecture)
-                .collect(),
-            operations: Vec::new(),
-        },
-        required_architecture,
-    );
-
-    let mut best: Option<(RouteTarget, usize)> = None;
-    let mut eligible_exists = local_eligible;
-    if local_eligible && has_capacity(ctx.max_instances, local_count) {
-        best = Some((RouteTarget::Local, local_count));
-    }
-
-    let mut workers: Vec<TunnelWorker> = ctx.workers.read().await.values().cloned().collect();
-    workers.sort_by_key(|worker| worker.token);
-    for worker in workers {
-        if !architecture_satisfies(&worker.capabilities, required_architecture) {
-            continue;
-        }
-        eligible_exists = true;
-        let current = worker_counts
-            .get(&worker.token)
-            .copied()
-            .unwrap_or_default();
-        if !has_capacity(worker.max_instances, current) {
-            continue;
-        }
-        match best {
-            Some((_, best_count)) if best_count <= current => {}
-            _ => best = Some((RouteTarget::Worker(worker.token), current)),
-        }
-    }
-
-    match (best, eligible_exists) {
-        (Some((target, _)), _) => Ok(target),
-        // Eligible engines exist but are all at capacity.
-        (None, true) => Err(ServerError::NoTunnelCapacity),
-        // No engine matches the required architecture at all.
-        (None, false) if required_architecture.is_some() => Err(
-            ServerError::NoCompatibleTunnelCapacity(required_architecture.expect("checked above")),
-        ),
-        (None, false) => Err(ServerError::NoTunnelCapacity),
-    }
+        && advertised.operations.satisfies(requested.operations)
 }
 
 async fn get_worker(token: Uuid, ctx: &MassContext) -> Result<TunnelWorker> {
@@ -3296,251 +3520,145 @@ async fn forward_tunnel_request(
     }
 }
 
-async fn handle_start_routed(
-    model_id: Uuid,
-    model_config: Option<MassModelConfig>,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_start_distributed(model_id, model_config, ctx).await
+fn qwen_capability() -> OperationCapability {
+    let mut capability =
+        black_hole_spec::operation_capability::<black_hole_spec::QwenDarkInference>();
+    capability.operations = OperationCapabilities::OPTIMIZING;
+    capability
 }
 
-async fn handle_start_distributed(
-    model_id: Uuid,
-    model_config: Option<MassModelConfig>,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    // Keep distributed starts serialized so routed and local model initialization
-    // cannot overlap on the same mass context.
-    let _start_dispatch_guard = ctx.start_dispatch.lock().await;
-
-    if ctx.routes.read().await.contains_key(&model_id)
-        || ctx.instances.read().await.contains_key(&model_id)
-    {
-        return Err(ServerError::ModelInstanceAlreadyRunning(model_id));
-    }
-
-    let required_architecture = model_config
-        .as_ref()
-        .and_then(|config| config.required_architecture);
-    let target = select_start_target(ctx, required_architecture).await?;
-    let out = match target {
-        RouteTarget::Local => handle_start(model_id, model_config, ctx).await?,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(
-                token,
-                TunnelRequest::Start {
-                    model_id,
-                    model_config,
-                },
-                ctx,
-            )
-            .await?
-        }
+fn decode_qwen_config(config: Option<&OperationConfig>) -> Result<Option<MassModelConfig>> {
+    let Some(config) = config else {
+        return Ok(None);
     };
-
-    if !matches!(out, MassOut::Ack) {
-        return Err(ServerError::UnexpectedTunnelResponse("start response"));
+    if config.encoding != black_hole_type::EncodingId::POSTCARD_V1 {
+        return Err(ServerError::OperationConfigInvalid(
+            "Qwen configuration must use postcard v1".into(),
+        ));
     }
-
-    ctx.routes.write().await.insert(model_id, target);
-    ctx.instance_requirements
-        .write()
-        .await
-        .insert(model_id, required_architecture);
-    Ok(MassOut::Ack)
+    from_bytes(&config.data)
+        .map(Some)
+        .map_err(|error| ServerError::OperationConfigInvalid(error.to_string()))
 }
 
-async fn handle_perturb_up_routed(model_id: Uuid, seed: u64, ctx: &MassContext) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_perturb_up_distributed(model_id, seed, ctx).await
+fn required_architecture(
+    capability: &OperationCapability,
+    config: Option<&OperationConfig>,
+) -> Result<Option<MassArchitecture>> {
+    if operation_satisfies(&qwen_capability(), capability) {
+        Ok(decode_qwen_config(config)?.and_then(|config| config.required_architecture))
+    } else {
+        Ok(None)
+    }
 }
 
-async fn handle_perturb_up_distributed(
-    model_id: Uuid,
-    seed: u64,
+async fn select_instance_target(
     ctx: &MassContext,
-) -> Result<MassOut> {
-    match route_for_model(model_id, ctx).await? {
-        RouteTarget::Local => handle_perturb_up(model_id, seed, ctx).await,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(token, TunnelRequest::PerturbUp { model_id, seed }, ctx).await
+    requested: &OperationCapability,
+    required_architecture: Option<MassArchitecture>,
+) -> Result<RouteTarget> {
+    validate_capability(requested)?;
+    let routes = ctx.routes.read().await;
+    let local_count = routes
+        .values()
+        .filter(|target| matches!(target, RouteTarget::Local))
+        .count();
+    let mut worker_counts: HashMap<Uuid, usize> = HashMap::new();
+    for target in routes.values() {
+        if let RouteTarget::Worker(token) = target {
+            *worker_counts.entry(*token).or_insert(0) += 1;
         }
+    }
+    drop(routes);
+
+    let local_capabilities = local_worker_capabilities(ctx.operation.as_ref());
+    let local_eligible = architecture_satisfies(&local_capabilities, required_architecture)
+        && local_capabilities
+            .operations
+            .iter()
+            .any(|advertised| operation_satisfies(advertised, requested));
+    let mut best = local_eligible
+        .then_some((RouteTarget::Local, local_count))
+        .filter(|_| has_capacity(ctx.max_instances, local_count));
+    let mut eligible_exists = local_eligible;
+
+    let mut workers: Vec<TunnelWorker> = ctx.workers.read().await.values().cloned().collect();
+    workers.sort_by_key(|worker| worker.token);
+    for worker in workers {
+        if !architecture_satisfies(&worker.capabilities, required_architecture)
+            || !worker
+                .capabilities
+                .operations
+                .iter()
+                .any(|advertised| operation_satisfies(advertised, requested))
+        {
+            continue;
+        }
+        eligible_exists = true;
+        let current = worker_counts
+            .get(&worker.token)
+            .copied()
+            .unwrap_or_default();
+        if !has_capacity(worker.max_instances, current) {
+            continue;
+        }
+        match best {
+            Some((_, best_count)) if best_count <= current => {}
+            _ => best = Some((RouteTarget::Worker(worker.token), current)),
+        }
+    }
+
+    match (best, eligible_exists) {
+        (Some((target, _)), _) => Ok(target),
+        (None, true) => Err(ServerError::NoTunnelCapacity),
+        (None, false) if required_architecture.is_some() => Err(
+            ServerError::NoCompatibleTunnelCapacity(required_architecture.expect("checked above")),
+        ),
+        (None, false) => Err(ServerError::NoCompatibleOperation {
+            id: requested.descriptor.id,
+            version: requested.descriptor.version,
+        }),
     }
 }
 
-async fn handle_infer_routed(
-    model_id: Uuid,
-    input_id: ObjectId,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_infer_distributed(model_id, input_id, ctx).await
-}
-
-async fn handle_infer_distributed(
-    model_id: Uuid,
-    input_id: ObjectId,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    match route_for_model(model_id, ctx).await? {
-        RouteTarget::Local => handle_infer(model_id, input_id, ctx).await,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(token, TunnelRequest::Infer { model_id, input_id }, ctx).await
-        }
-    }
-}
-
-async fn handle_reset_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_reset_distributed(model_id, ctx).await
-}
-
-async fn handle_reset_distributed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    match route_for_model(model_id, ctx).await? {
-        RouteTarget::Local => handle_reset(model_id, ctx).await,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(token, TunnelRequest::Reset { model_id }, ctx).await
-        }
-    }
-}
-
-async fn handle_perturb_down_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_perturb_down_distributed(model_id, ctx).await
-}
-
-async fn handle_perturb_down_distributed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    match route_for_model(model_id, ctx).await? {
-        RouteTarget::Local => handle_perturb_down(model_id, ctx).await,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(token, TunnelRequest::PerturbDown { model_id }, ctx).await
-        }
-    }
-}
-
-async fn handle_checkpoint_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_checkpoint_distributed(model_id, ctx).await
-}
-
-async fn handle_checkpoint_distributed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    match route_for_model(model_id, ctx).await? {
-        RouteTarget::Local => handle_checkpoint(model_id, ctx).await,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(token, TunnelRequest::Checkpoint { model_id }, ctx).await
-        }
-    }
-}
-
-async fn handle_optimize_routed(
-    model_id: Uuid,
-    loss_up: f32,
-    loss_down: f32,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_optimize_distributed(model_id, loss_up, loss_down, ctx).await
-}
-
-async fn handle_optimize_distributed(
-    model_id: Uuid,
-    loss_up: f32,
-    loss_down: f32,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    match route_for_model(model_id, ctx).await? {
-        RouteTarget::Local => handle_optimize(model_id, loss_up, loss_down, ctx).await,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(
-                token,
-                TunnelRequest::Optimize {
-                    model_id,
-                    loss_up,
-                    loss_down,
-                },
-                ctx,
-            )
-            .await
-        }
-    }
-}
-
-async fn handle_shutdown_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_shutdown_distributed(model_id, ctx).await
-}
-
-async fn handle_shutdown_distributed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    let target = route_for_model(model_id, ctx).await?;
-    let out = match target {
-        RouteTarget::Local => handle_shutdown(model_id, ctx).await?,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(token, TunnelRequest::Shutdown { model_id }, ctx).await?
-        }
-    };
-    if matches!(out, MassOut::Ack) {
-        let mut routes = ctx.routes.write().await;
-        routes.remove(&model_id);
-        drop(routes);
-        ctx.instance_requirements.write().await.remove(&model_id);
-    }
-    Ok(out)
-}
-
-async fn handle_query_model_params_routed(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_query_model_params_distributed(model_id, ctx).await
-}
-
-async fn handle_query_model_params_distributed(
-    model_id: Uuid,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    match route_for_model(model_id, ctx).await? {
-        RouteTarget::Local => handle_query_model_params(model_id, ctx).await,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(token, TunnelRequest::QueryModelParams { model_id }, ctx).await
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Generic operation lifecycle
-// ---------------------------------------------------------------------------
-
-async fn handle_operation_start_routed(
+async fn handle_instance_start_routed(
     instance_id: Uuid,
     capability: OperationCapability,
+    config: Option<OperationConfig>,
     ctx: &MassContext,
 ) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
-    handle_operation_start_distributed(instance_id, capability, ctx).await
+    handle_instance_start_distributed(instance_id, capability, config, ctx).await
 }
 
-async fn handle_operation_start_distributed(
+async fn handle_instance_start_distributed(
     instance_id: Uuid,
     capability: OperationCapability,
+    config: Option<OperationConfig>,
     ctx: &MassContext,
 ) -> Result<MassOut> {
-    let _start_dispatch_guard = ctx.start_dispatch.lock().await;
+    let _guard = ctx.start_dispatch.lock().await;
     if ctx.routes.read().await.contains_key(&instance_id)
         || ctx.instances.read().await.contains_key(&instance_id)
-        || ctx.operation_instances.read().await.contains(&instance_id)
     {
         return Err(ServerError::ModelInstanceAlreadyRunning(instance_id));
     }
 
-    let target = select_operation_target(ctx, &capability).await?;
+    let architecture = required_architecture(&capability, config.as_ref())?;
+    let target = select_instance_target(ctx, &capability, architecture).await?;
     let out = match target {
-        RouteTarget::Local => handle_operation_start_local(instance_id, &capability, ctx).await?,
+        RouteTarget::Local => {
+            handle_instance_start_local(instance_id, capability.clone(), config.as_ref(), ctx)
+                .await?
+        }
         RouteTarget::Worker(token) => {
             forward_tunnel_request(
                 token,
-                TunnelRequest::StartOperation {
+                TunnelRequest::StartInstance {
                     protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
                     instance_id,
                     capability: capability.clone(),
+                    config,
                 },
                 ctx,
             )
@@ -3549,72 +3667,94 @@ async fn handle_operation_start_distributed(
     };
     if !matches!(out, MassOut::Ack) {
         return Err(ServerError::UnexpectedTunnelResponse(
-            "generic operation start response",
+            "hosted instance start response",
         ));
     }
     ctx.routes.write().await.insert(instance_id, target);
+    ctx.instance_requirements
+        .write()
+        .await
+        .insert(instance_id, architecture);
     Ok(MassOut::Ack)
 }
 
-async fn handle_operation_start_local(
+async fn handle_instance_start_local(
     instance_id: Uuid,
-    requested: &OperationCapability,
+    capability: OperationCapability,
+    config: Option<&OperationConfig>,
     ctx: &MassContext,
 ) -> Result<MassOut> {
-    let qwen =
-        black_hole_spec::operation_capability::<black_hole_spec::QwenDarkInference>();
-    if operation_satisfies(&qwen, requested) {
-        let out = handle_start(instance_id, None, ctx).await?;
-        ctx.operation_instances.write().await.insert(instance_id);
-        return Ok(out);
-    }
-    let operation = ctx
-        .operation
-        .as_ref()
-        .ok_or(ServerError::OperationNotConfigured)?;
-    let advertised = operation.capability();
-    if !operation_satisfies(&advertised, requested) {
-        return Err(ServerError::OperationContractMismatch);
-    }
-    {
-        let mut instances = ctx.operation_instances.write().await;
-        if let Some(limit) = ctx.max_instances {
-            let legacy = ctx.instances.read().await.len();
-            if instances.len().saturating_add(legacy) >= limit {
-                return Err(ServerError::NoLocalCapacity(limit));
+    let implementation =
+        if cfg!(feature = "qwen") && operation_satisfies(&qwen_capability(), &capability) {
+            handle_start(instance_id, decode_qwen_config(config)?, ctx).await?;
+            ImplementationKind::Qwen
+        } else {
+            let operation = ctx
+                .operation
+                .as_ref()
+                .ok_or(ServerError::OperationNotConfigured)?;
+            if !operation_satisfies(&operation.capability(), &capability) {
+                return Err(ServerError::OperationContractMismatch);
             }
-        }
-        if !instances.insert(instance_id) {
-            return Err(ServerError::ModelInstanceAlreadyRunning(instance_id));
-        }
-    }
-    if let Err(message) = operation.start(instance_id).await {
-        ctx.operation_instances.write().await.remove(&instance_id);
-        return Err(ServerError::OperationError(message));
-    }
+            if let Some(limit) = ctx.max_instances {
+                if ctx.instances.read().await.len() >= limit {
+                    return Err(ServerError::NoLocalCapacity(limit));
+                }
+            }
+            operation
+                .start(instance_id, config)
+                .await
+                .map_err(ServerError::OperationError)?;
+            ImplementationKind::Injected
+        };
+
+    ctx.instances.write().await.insert(
+        instance_id,
+        HostedInstance {
+            capability,
+            implementation,
+        },
+    );
     Ok(MassOut::Ack)
 }
 
-async fn handle_operation_forward_routed(
+async fn hosted_instance(instance_id: Uuid, ctx: &MassContext) -> Result<HostedInstance> {
+    ctx.instances
+        .read()
+        .await
+        .get(&instance_id)
+        .cloned()
+        .ok_or(ServerError::ModelInstanceNotRunning(instance_id))
+}
+
+fn require_capability(available: bool, name: &'static str) -> Result<()> {
+    if available {
+        Ok(())
+    } else {
+        Err(ServerError::OperationCapabilityUnavailable(name))
+    }
+}
+
+async fn handle_instance_invoke_routed(
     instance_id: Uuid,
     input: OperationArtifactRef,
     ctx: &MassContext,
 ) -> Result<MassOut> {
     ensure_root_mode(ctx)?;
-    handle_operation_forward_distributed(instance_id, input, ctx).await
+    handle_instance_invoke_distributed(instance_id, input, ctx).await
 }
 
-async fn handle_operation_forward_distributed(
+async fn handle_instance_invoke_distributed(
     instance_id: Uuid,
     input: OperationArtifactRef,
     ctx: &MassContext,
 ) -> Result<MassOut> {
-    match route_for_model(instance_id, ctx).await? {
-        RouteTarget::Local => handle_operation_forward_local(instance_id, input, ctx).await,
+    match route_for_instance(instance_id, ctx).await? {
+        RouteTarget::Local => handle_instance_invoke_local(instance_id, input, ctx).await,
         RouteTarget::Worker(token) => {
             forward_tunnel_request(
                 token,
-                TunnelRequest::ForwardOperation {
+                TunnelRequest::Invoke {
                     protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
                     instance_id,
                     input,
@@ -3626,43 +3766,372 @@ async fn handle_operation_forward_distributed(
     }
 }
 
-async fn handle_operation_forward_local(
+async fn handle_instance_invoke_local(
     instance_id: Uuid,
     input: OperationArtifactRef,
     ctx: &MassContext,
 ) -> Result<MassOut> {
-    if !ctx.operation_instances.read().await.contains(&instance_id) {
-        return Err(ServerError::ModelInstanceNotRunning(instance_id));
-    }
-    let operation = ctx.operation.as_ref();
-    if ctx.instances.read().await.contains_key(&instance_id) {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.forward, "forward")?;
+    if instance.implementation == ImplementationKind::Qwen {
         return handle_qwen_operation_forward(instance_id, input, ctx).await;
     }
-    let operation = operation.ok_or(ServerError::OperationNotConfigured)?;
-    let capability = operation.capability();
-    let void = require_void_client(ctx, "generic operation forward")?;
+
+    let operation = ctx
+        .operation
+        .as_ref()
+        .ok_or(ServerError::OperationNotConfigured)?;
+    let void = require_void_client(ctx, "operation forward")?;
     let input_bytes = void.download_artifact(input).await?;
     black_hole_spec::validate_artifact(
-        &capability.descriptor,
+        &instance.capability.descriptor,
         ContractSide::Input,
         &input_bytes,
     )
     .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
-
     let output_bytes = operation
         .forward(instance_id, input_bytes)
         .await
         .map_err(ServerError::OperationError)?;
     black_hole_spec::validate_artifact(
-        &capability.descriptor,
+        &instance.capability.descriptor,
         ContractSide::Output,
         &output_bytes,
     )
     .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
     let output = void
-        .publish_artifact(capability.descriptor, ContractSide::Output, output_bytes)
+        .publish_artifact(
+            instance.capability.descriptor,
+            ContractSide::Output,
+            output_bytes,
+        )
         .await?;
-    Ok(MassOut::Forwarded { output })
+    Ok(MassOut::Invoked { output })
+}
+
+macro_rules! routed_instance_ack {
+    ($routed:ident, $distributed:ident, $local:ident, $request:ident) => {
+        async fn $routed(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
+            ensure_root_mode(ctx)?;
+            $distributed(instance_id, ctx).await
+        }
+
+        async fn $distributed(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
+            match route_for_instance(instance_id, ctx).await? {
+                RouteTarget::Local => $local(instance_id, ctx).await,
+                RouteTarget::Worker(token) => {
+                    forward_tunnel_request(token, TunnelRequest::$request { instance_id }, ctx)
+                        .await
+                }
+            }
+        }
+    };
+}
+
+routed_instance_ack!(
+    handle_instance_reset_routed,
+    handle_instance_reset_distributed,
+    handle_instance_reset_local,
+    ResetInstance
+);
+routed_instance_ack!(
+    handle_instance_perturb_down_routed,
+    handle_instance_perturb_down_distributed,
+    handle_instance_perturb_down_local,
+    PerturbDownInstance
+);
+routed_instance_ack!(
+    handle_instance_checkpoint_routed,
+    handle_instance_checkpoint_distributed,
+    handle_instance_checkpoint_local,
+    CheckpointInstance
+);
+routed_instance_ack!(
+    handle_instance_query_routed,
+    handle_instance_query_distributed,
+    handle_instance_query_local,
+    QueryInstance
+);
+
+async fn handle_instance_reset_local(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.reset, "reset")?;
+    match instance.implementation {
+        ImplementationKind::Qwen => handle_reset(instance_id, ctx).await,
+        ImplementationKind::Injected => {
+            ctx.operation
+                .as_ref()
+                .ok_or(ServerError::OperationNotConfigured)?
+                .reset(instance_id)
+                .await
+                .map_err(ServerError::OperationError)?;
+            Ok(MassOut::Ack)
+        }
+    }
+}
+
+async fn handle_instance_perturb_up_routed(
+    instance_id: Uuid,
+    seed: u64,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    ensure_root_mode(ctx)?;
+    handle_instance_perturb_up_distributed(instance_id, seed, ctx).await
+}
+
+async fn handle_instance_perturb_up_distributed(
+    instance_id: Uuid,
+    seed: u64,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    match route_for_instance(instance_id, ctx).await? {
+        RouteTarget::Local => handle_instance_perturb_up_local(instance_id, seed, ctx).await,
+        RouteTarget::Worker(token) => {
+            forward_tunnel_request(
+                token,
+                TunnelRequest::PerturbUpInstance { instance_id, seed },
+                ctx,
+            )
+            .await
+        }
+    }
+}
+
+async fn handle_instance_perturb_up_local(
+    instance_id: Uuid,
+    seed: u64,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.perturb, "perturb")?;
+    match instance.implementation {
+        ImplementationKind::Qwen => handle_perturb_up(instance_id, seed, ctx).await,
+        ImplementationKind::Injected => {
+            ctx.operation
+                .as_ref()
+                .ok_or(ServerError::OperationNotConfigured)?
+                .perturb_up(instance_id, seed)
+                .await
+                .map_err(ServerError::OperationError)?;
+            Ok(MassOut::Ack)
+        }
+    }
+}
+
+async fn handle_instance_perturb_down_local(
+    instance_id: Uuid,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.perturb, "perturb")?;
+    match instance.implementation {
+        ImplementationKind::Qwen => handle_perturb_down(instance_id, ctx).await,
+        ImplementationKind::Injected => {
+            ctx.operation
+                .as_ref()
+                .ok_or(ServerError::OperationNotConfigured)?
+                .perturb_down(instance_id)
+                .await
+                .map_err(ServerError::OperationError)?;
+            Ok(MassOut::Ack)
+        }
+    }
+}
+
+async fn handle_instance_optimize_routed(
+    instance_id: Uuid,
+    loss_up: f32,
+    loss_down: f32,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    ensure_root_mode(ctx)?;
+    handle_instance_optimize_distributed(instance_id, loss_up, loss_down, ctx).await
+}
+
+async fn handle_instance_optimize_distributed(
+    instance_id: Uuid,
+    loss_up: f32,
+    loss_down: f32,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    match route_for_instance(instance_id, ctx).await? {
+        RouteTarget::Local => {
+            handle_instance_optimize_local(instance_id, loss_up, loss_down, ctx).await
+        }
+        RouteTarget::Worker(token) => {
+            forward_tunnel_request(
+                token,
+                TunnelRequest::OptimizeInstance {
+                    instance_id,
+                    loss_up,
+                    loss_down,
+                },
+                ctx,
+            )
+            .await
+        }
+    }
+}
+
+async fn handle_instance_optimize_local(
+    instance_id: Uuid,
+    loss_up: f32,
+    loss_down: f32,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.optimize, "optimize")?;
+    match instance.implementation {
+        ImplementationKind::Qwen => handle_optimize(instance_id, loss_up, loss_down, ctx).await,
+        ImplementationKind::Injected => {
+            ctx.operation
+                .as_ref()
+                .ok_or(ServerError::OperationNotConfigured)?
+                .optimize(instance_id, loss_up, loss_down)
+                .await
+                .map_err(ServerError::OperationError)?;
+            Ok(MassOut::Ack)
+        }
+    }
+}
+
+async fn handle_instance_checkpoint_local(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.checkpoint, "checkpoint")?;
+    if instance.implementation == ImplementationKind::Qwen {
+        return handle_checkpoint(instance_id, ctx).await;
+    }
+    let payload = ctx
+        .operation
+        .as_ref()
+        .ok_or(ServerError::OperationNotConfigured)?
+        .checkpoint(instance_id)
+        .await
+        .map_err(ServerError::OperationError)?;
+    let checkpoint_id = require_void_client(ctx, "checkpoint upload")?
+        .upload(payload)
+        .await?;
+    Ok(MassOut::Checkpointed { checkpoint_id })
+}
+
+async fn handle_instance_fuse_routed(
+    instance_id: Uuid,
+    checkpoint_id: ObjectId,
+    contribution: f32,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    ensure_root_mode(ctx)?;
+    handle_instance_fuse_distributed(instance_id, checkpoint_id, contribution, ctx).await
+}
+
+async fn handle_instance_fuse_distributed(
+    instance_id: Uuid,
+    checkpoint_id: ObjectId,
+    contribution: f32,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    match route_for_instance(instance_id, ctx).await? {
+        RouteTarget::Local => {
+            handle_instance_fuse_local(instance_id, checkpoint_id, contribution, ctx).await
+        }
+        RouteTarget::Worker(token) => {
+            forward_tunnel_request(
+                token,
+                TunnelRequest::FuseInstance {
+                    instance_id,
+                    checkpoint_id,
+                    contribution,
+                },
+                ctx,
+            )
+            .await
+        }
+    }
+}
+
+async fn handle_instance_fuse_local(
+    instance_id: Uuid,
+    checkpoint_id: ObjectId,
+    contribution: f32,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.fuse, "fuse")?;
+    if instance.implementation == ImplementationKind::Qwen {
+        return handle_fuse_weights(instance_id, checkpoint_id, contribution, ctx).await;
+    }
+    let void = require_void_client(ctx, "operation fuse")?;
+    let checkpoint = void.download(checkpoint_id).await?;
+    let fused = ctx
+        .operation
+        .as_ref()
+        .ok_or(ServerError::OperationNotConfigured)?
+        .fuse(instance_id, checkpoint, contribution)
+        .await
+        .map_err(ServerError::OperationError)?;
+    let fused_id = void.upload(fused).await?;
+    Ok(MassOut::Fused { fused_id })
+}
+
+async fn handle_instance_query_local(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.query, "query")?;
+    match instance.implementation {
+        ImplementationKind::Qwen => handle_query_model_params(instance_id, ctx).await,
+        ImplementationKind::Injected => {
+            let params = ctx
+                .operation
+                .as_ref()
+                .ok_or(ServerError::OperationNotConfigured)?
+                .query(instance_id)
+                .await
+                .map_err(ServerError::OperationError)?;
+            Ok(MassOut::Instance { params })
+        }
+    }
+}
+
+async fn handle_instance_shutdown_routed(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
+    ensure_root_mode(ctx)?;
+    handle_instance_shutdown_distributed(instance_id, ctx).await
+}
+
+async fn handle_instance_shutdown_distributed(
+    instance_id: Uuid,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    let target = route_for_instance(instance_id, ctx).await?;
+    let out = match target {
+        RouteTarget::Local => handle_instance_shutdown_local(instance_id, ctx).await?,
+        RouteTarget::Worker(token) => {
+            forward_tunnel_request(token, TunnelRequest::ShutdownInstance { instance_id }, ctx)
+                .await?
+        }
+    };
+    if matches!(out, MassOut::Ack) {
+        ctx.routes.write().await.remove(&instance_id);
+        ctx.instance_requirements.write().await.remove(&instance_id);
+    }
+    Ok(out)
+}
+
+async fn handle_instance_shutdown_local(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    match instance.implementation {
+        ImplementationKind::Qwen => {
+            handle_shutdown(instance_id, ctx).await?;
+        }
+        ImplementationKind::Injected => {
+            ctx.operation
+                .as_ref()
+                .ok_or(ServerError::OperationNotConfigured)?
+                .shutdown(instance_id)
+                .await
+                .map_err(ServerError::OperationError)?;
+        }
+    }
+    ctx.instances.write().await.remove(&instance_id);
+    Ok(MassOut::Ack)
 }
 
 async fn handle_qwen_operation_forward(
@@ -3670,83 +4139,88 @@ async fn handle_qwen_operation_forward(
     input: OperationArtifactRef,
     ctx: &MassContext,
 ) -> Result<MassOut> {
-    use black_hole_spec::{decode_input, encode_output, QwenDarkInference, RawTensor};
+    use black_hole_spec::{
+        decode_input, encode_output, QwenDarkInference, QwenInferenceMetadata, RawTensor,
+    };
 
-    let void = require_void_client(ctx, "generic Qwen forward")?;
+    let void = require_void_client(ctx, "Qwen operation forward")?;
     let input_bytes = void.download_artifact(input).await?;
     let decoded = decode_input::<QwenDarkInference>(&input_bytes)
         .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
-    let predictions = &decoded.tensors[0];
-    let token_ids = &decoded.tensors[1];
-    let log_probs = &decoded.tensors[2];
-    let [batch, sequence]: [usize; 2] = predictions
-        .shape
-        .as_slice()
-        .try_into()
-        .expect("Qwen contract validation guarantees rank 2");
-    let top_k = token_ids.shape[2];
+    let request = match decoded.metadata {
+        QwenInferenceMetadata::Request(request) => request,
+        QwenInferenceMetadata::Dark { limit } => {
+            let predictions = &decoded.tensors[0];
+            let token_ids = &decoded.tensors[1];
+            let log_probs = &decoded.tensors[2];
+            let [batch, sequence]: [usize; 2] = predictions
+                .shape
+                .as_slice()
+                .try_into()
+                .expect("Qwen contract validation guarantees rank 2");
+            let top_k = token_ids.shape[2];
 
-    let predictions: Vec<u32> = predictions
-        .data
-        .chunks_exact(4)
-        .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
-        .collect();
-    let token_ids: Vec<u32> = token_ids
-        .data
-        .chunks_exact(4)
-        .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
-        .collect();
-    let log_probs: Vec<f32> = log_probs
-        .data
-        .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
-        .collect();
-    let mut sequences = Vec::with_capacity(batch);
-    for batch_index in 0..batch {
-        let mut dark = Vec::with_capacity(sequence);
-        for sequence_index in 0..sequence {
-            let position = batch_index * sequence + sequence_index;
-            let distribution_start = position * top_k;
-            let dark_knowledge = (0..top_k)
-                .map(|offset| LogitEntry {
-                    token_id: token_ids[distribution_start + offset],
-                    log_prob: log_probs[distribution_start + offset],
-                })
+            let predictions: Vec<u32> = predictions
+                .data
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
                 .collect();
-            dark.push(DarkToken {
-                predicted: predictions[position],
-                dark_knowledge,
-            });
+            let token_ids: Vec<u32> = token_ids
+                .data
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
+                .collect();
+            let log_probs: Vec<f32> = log_probs
+                .data
+                .chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
+                .collect();
+            let mut sequences = Vec::with_capacity(batch);
+            for batch_index in 0..batch {
+                let mut dark = Vec::with_capacity(sequence);
+                for sequence_index in 0..sequence {
+                    let position = batch_index * sequence + sequence_index;
+                    let distribution_start = position * top_k;
+                    let dark_knowledge = (0..top_k)
+                        .map(|offset| LogitEntry {
+                            token_id: token_ids[distribution_start + offset],
+                            log_prob: log_probs[distribution_start + offset],
+                        })
+                        .collect();
+                    dark.push(DarkToken {
+                        predicted: predictions[position],
+                        dark_knowledge,
+                    });
+                }
+                sequences.push(vec![InferenceInput::Dark(dark)]);
+            }
+            InferenceRequest::Sequences { sequences, limit }
         }
-        sequences.push(vec![InferenceInput::Dark(dark)]);
-    }
-
-    let legacy_request = InferenceRequest::Sequences {
-        sequences,
-        limit: None,
     };
-    let legacy_request_id = void
-        .upload(to_allocvec(&legacy_request).map_err(ServerError::EncodeFrame)?)
+    let request_id = void
+        .upload(to_allocvec(&request).map_err(ServerError::EncodeFrame)?)
         .await?;
-    let MassOut::Inferred { output_id } = handle_infer(instance_id, legacy_request_id, ctx).await?
+    let MassOut::Invoked {
+        output: OperationArtifactRef::Committed(output_id),
+    } = handle_infer(instance_id, request_id, ctx).await?
     else {
         return Err(ServerError::UnexpectedTunnelResponse(
-            "Qwen compatibility forward response",
+            "Qwen backend forward response",
         ));
     };
-    let legacy_output: InferenceOutput =
+    let qwen_output: InferenceOutput =
         from_bytes(&void.download(output_id).await?).map_err(ServerError::DecodeFrame)?;
-    let output_batch = legacy_output.results.len();
-    let output_sequence = legacy_output
+    let output_batch = qwen_output.results.len();
+    let output_sequence = qwen_output
         .results
         .first()
         .map_or(0, |sequence| sequence.0.len());
-    let output_top_k = legacy_output
+    let output_top_k = qwen_output
         .results
         .first()
         .and_then(|sequence| sequence.0.first())
         .map_or(0, |token| token.dark_knowledge.len());
-    if legacy_output.results.iter().any(|result| {
+    if qwen_output.results.iter().any(|result| {
         result.0.len() != output_sequence
             || result
                 .0
@@ -3754,14 +4228,14 @@ async fn handle_qwen_operation_forward(
                 .any(|token| token.dark_knowledge.len() != output_top_k)
     }) {
         return Err(ServerError::OperationError(
-            "Qwen compatibility output is ragged and cannot be encoded as a dense bundle".into(),
+            "Qwen output is ragged and cannot be encoded as a dense bundle".into(),
         ));
     }
 
     let mut output_predictions = Vec::new();
     let mut output_token_ids = Vec::new();
     let mut output_log_probs = Vec::new();
-    for result in legacy_output.results {
+    for result in qwen_output.results {
         for token in result.0 {
             output_predictions.extend_from_slice(&token.predicted.to_le_bytes());
             for entry in token.dark_knowledge {
@@ -3790,8 +4264,11 @@ async fn handle_qwen_operation_forward(
             data: output_log_probs,
         },
     ];
-    let output_bytes = encode_output::<QwenDarkInference>(&output_tensors, &())
-        .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
+    let output_bytes = encode_output::<QwenDarkInference>(
+        &output_tensors,
+        &QwenInferenceMetadata::Dark { limit: None },
+    )
+    .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
     let output = void
         .publish_artifact(
             <black_hole_spec::QwenDarkInference as black_hole_spec::TensorContract>::descriptor(),
@@ -3799,53 +4276,11 @@ async fn handle_qwen_operation_forward(
             output_bytes,
         )
         .await?;
-    Ok(MassOut::Forwarded { output })
-}
-
-async fn handle_operation_shutdown_routed(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_operation_shutdown_distributed(instance_id, ctx).await
-}
-
-async fn handle_operation_shutdown_distributed(
-    instance_id: Uuid,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    let target = route_for_model(instance_id, ctx).await?;
-    let out = match target {
-        RouteTarget::Local => handle_operation_shutdown_local(instance_id, ctx).await?,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(token, TunnelRequest::ShutdownOperation { instance_id }, ctx)
-                .await?
-        }
-    };
-    if matches!(out, MassOut::Ack) {
-        ctx.routes.write().await.remove(&instance_id);
-    }
-    Ok(out)
-}
-
-async fn handle_operation_shutdown_local(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
-    if !ctx.operation_instances.read().await.contains(&instance_id) {
-        return Err(ServerError::ModelInstanceNotRunning(instance_id));
-    }
-    let operation = ctx.operation.as_ref();
-    if ctx.instances.read().await.contains_key(&instance_id) {
-        let out = handle_shutdown(instance_id, ctx).await?;
-        ctx.operation_instances.write().await.remove(&instance_id);
-        return Ok(out);
-    }
-    let operation = operation.ok_or(ServerError::OperationNotConfigured)?;
-    operation
-        .shutdown(instance_id)
-        .await
-        .map_err(ServerError::OperationError)?;
-    ctx.operation_instances.write().await.remove(&instance_id);
-    Ok(MassOut::Ack)
+    Ok(MassOut::Invoked { output })
 }
 
 // ---------------------------------------------------------------------------
-// Model instance lifecycle
+// Qwen implementation lifecycle
 // ---------------------------------------------------------------------------
 
 async fn handle_start(
@@ -3869,12 +4304,7 @@ async fn handle_start(
     }
 
     {
-        let mut instances = ctx.instances.write().await;
-        if let Some(limit) = ctx.max_instances {
-            if instances.len() >= limit {
-                return Err(ServerError::NoLocalCapacity(limit));
-            }
-        }
+        let mut instances = ctx.qwen.instances.write().await;
         match instances.entry(model_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(ModelSlot::Starting);
@@ -3889,7 +4319,7 @@ async fn handle_start(
     let resolved_source = match resolve_model_source(model_id, model_config.as_ref(), ctx).await {
         Ok(source) => source,
         Err(error) => {
-            ctx.instances.write().await.remove(&model_id);
+            ctx.qwen.instances.write().await.remove(&model_id);
             return Err(error);
         }
     };
@@ -3919,7 +4349,7 @@ async fn handle_start(
     let oscillation = match resolve_model_oscillation(model_config.as_ref()) {
         Ok(oscillation) => oscillation,
         Err(error) => {
-            ctx.instances.write().await.remove(&model_id);
+            ctx.qwen.instances.write().await.remove(&model_id);
             if let Some(path) = checkpoint_path.as_ref() {
                 cleanup_checkpoint_file(path);
             }
@@ -3969,7 +4399,7 @@ async fn handle_start(
     {
         Ok(result) => result,
         Err(error) => {
-            ctx.instances.write().await.remove(&model_id);
+            ctx.qwen.instances.write().await.remove(&model_id);
             if let Some(path) = checkpoint_path.as_ref() {
                 cleanup_checkpoint_file(path);
             }
@@ -3979,10 +4409,10 @@ async fn handle_start(
         }
     };
 
-    let engine = match engine_result {
-        Ok(engine) => engine,
+    let engine: Arc<dyn ModelEngineImplementation> = match engine_result {
+        Ok(engine) => Arc::new(engine),
         Err(error) => {
-            ctx.instances.write().await.remove(&model_id);
+            ctx.qwen.instances.write().await.remove(&model_id);
             if let Some(path) = checkpoint_path.as_ref() {
                 cleanup_checkpoint_file(path);
             }
@@ -4003,7 +4433,7 @@ async fn handle_start(
             error = %error,
             "failed to set initial hyper parameters"
         );
-        ctx.instances.write().await.remove(&model_id);
+        ctx.qwen.instances.write().await.remove(&model_id);
         if let Some(path) = checkpoint_path.as_ref() {
             cleanup_checkpoint_file(path);
         }
@@ -4021,7 +4451,8 @@ async fn handle_start(
         checkpoint_path,
         session: tokio::sync::Mutex::new(session),
     });
-    ctx.instances
+    ctx.qwen
+        .instances
         .write()
         .await
         .insert(model_id, ModelSlot::Running(instance));
@@ -4032,7 +4463,7 @@ async fn handle_start(
 
 async fn handle_shutdown(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     let instance = {
-        let mut instances = ctx.instances.write().await;
+        let mut instances = ctx.qwen.instances.write().await;
         let slot = instances
             .get_mut(&model_id)
             .ok_or(ServerError::ModelInstanceNotRunning(model_id))?;
@@ -4058,7 +4489,7 @@ async fn handle_shutdown(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     if let Some(path) = instance.checkpoint_path.as_ref() {
         cleanup_checkpoint_file(path);
     }
-    ctx.instances.write().await.remove(&model_id);
+    ctx.qwen.instances.write().await.remove(&model_id);
     unload_result?;
 
     info!(%model_id, "model instance shut down");
@@ -4066,7 +4497,7 @@ async fn handle_shutdown(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
 }
 
 async fn get_instance(model_id: Uuid, ctx: &MassContext) -> Result<Arc<MassInstance>> {
-    match ctx.instances.read().await.get(&model_id) {
+    match ctx.qwen.instances.read().await.get(&model_id) {
         Some(ModelSlot::Running(instance)) => Ok(Arc::clone(instance)),
         Some(ModelSlot::Starting | ModelSlot::ShuttingDown) | None => {
             Err(ServerError::ModelInstanceNotRunning(model_id))
@@ -4114,8 +4545,13 @@ async fn handle_query_model_params(model_id: Uuid, ctx: &MassContext) -> Result<
     let instance = get_instance(model_id, ctx).await?;
     let session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
-    Ok(MassOut::ModelParams {
-        params: build_model_params(instance.runtime_config, instance.oscillation, &session),
+    let params = build_model_params(instance.runtime_config, instance.oscillation, &session);
+    let data = to_allocvec(&params).map_err(ServerError::EncodeFrame)?;
+    Ok(MassOut::Instance {
+        params: OperationConfig {
+            encoding: black_hole_type::EncodingId::POSTCARD_V1,
+            data,
+        },
     })
 }
 
@@ -4209,7 +4645,7 @@ async fn handle_query_model_capacity(ctx: &MassContext) -> Result<MassOut> {
     };
 
     let available = total.map(|total| total.saturating_sub(occupied));
-    Ok(MassOut::ModelCapacity {
+    Ok(MassOut::InstanceCapacity {
         capacity: MassModelCapacity {
             total,
             available,
@@ -4401,7 +4837,7 @@ fn void_not_configured_error(ctx: &MassContext, operation: &'static str) -> Serv
     }
 }
 
-async fn reset_model(engine: &ModelEngine) -> Result<()> {
+async fn reset_model(engine: &dyn ModelEngineImplementation) -> Result<()> {
     engine
         .reset_state()
         .await
@@ -4448,7 +4884,7 @@ fn optimization_model_error(error_message: &str, hint: Option<&str>) -> ServerEr
 }
 
 /// Save the engine's current weights to a GGUF file on disk.
-async fn save_model_checkpoint(engine: &ModelEngine) -> Result<PathBuf> {
+async fn save_model_checkpoint(engine: &dyn ModelEngineImplementation) -> Result<PathBuf> {
     engine
         .save_checkpoint()
         .await
@@ -4491,7 +4927,7 @@ async fn handle_reset(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
     let instance = get_instance(model_id, ctx).await?;
     let session = instance.session.lock().await;
     ensure_running(&session, model_id)?;
-    reset_model(&instance.engine).await?;
+    reset_model(instance.engine.as_ref()).await?;
     Ok(MassOut::Ack)
 }
 
@@ -4560,7 +4996,7 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &MassContext) -> 
     let limit = limit.unwrap_or(instance.runtime_config.inference_limit);
 
     // Run batched inference.
-    let seq_results = run_batched_inference(&instance.engine, &sequences, limit).await?;
+    let seq_results = run_batched_inference(instance.engine.as_ref(), &sequences, limit).await?;
 
     // Convert per-sequence predictions to serializable output.
     let output = QwenOperationAdapter::output(seq_results);
@@ -4578,7 +5014,9 @@ async fn handle_infer(model_id: Uuid, input_id: ObjectId, ctx: &MassContext) -> 
     };
 
     debug!(%model_id, "finished processing inference request");
-    Ok(MassOut::Inferred { output_id })
+    Ok(MassOut::Invoked {
+        output: OperationArtifactRef::Committed(output_id),
+    })
 }
 
 async fn handle_perturb_down(model_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
@@ -4615,7 +5053,7 @@ async fn handle_checkpoint(model_id: Uuid, ctx: &MassContext) -> Result<MassOut>
     ensure_running(&session, model_id)?;
 
     let void = require_void_client(ctx, "checkpoint upload")?;
-    let checkpoint_path = save_model_checkpoint(&instance.engine).await?;
+    let checkpoint_path = save_model_checkpoint(instance.engine.as_ref()).await?;
     let checkpoint_id = match void.upload_file(&checkpoint_path).await {
         Ok(id) => id,
         Err(error) => {
@@ -4627,40 +5065,6 @@ async fn handle_checkpoint(model_id: Uuid, ctx: &MassContext) -> Result<MassOut>
 
     Ok(MassOut::Checkpointed { checkpoint_id })
 }
-
-async fn handle_fuse_weights_routed(
-    model_id: Uuid,
-    checkpoint_id: ObjectId,
-    contribution: f32,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    ensure_root_mode(ctx)?;
-    handle_fuse_weights_distributed(model_id, checkpoint_id, contribution, ctx).await
-}
-
-async fn handle_fuse_weights_distributed(
-    model_id: Uuid,
-    checkpoint_id: ObjectId,
-    contribution: f32,
-    ctx: &MassContext,
-) -> Result<MassOut> {
-    match route_for_model(model_id, ctx).await? {
-        RouteTarget::Local => handle_fuse_weights(model_id, checkpoint_id, contribution, ctx).await,
-        RouteTarget::Worker(token) => {
-            forward_tunnel_request(
-                token,
-                TunnelRequest::FuseWeights {
-                    model_id,
-                    checkpoint_id,
-                    contribution,
-                },
-                ctx,
-            )
-            .await
-        }
-    }
-}
-
 /// Fuse the instance's current weights with a void-stored checkpoint using
 /// task arithmetic (base = live weights, member = checkpoint at `contribution`),
 /// and upload the fused GGUF back to void.
@@ -4755,7 +5159,7 @@ async fn handle_fuse_weights(
     cleanup_checkpoint_file(&fused_path);
 
     info!(%model_id, %fused_id, "fused weights uploaded to void");
-    Ok(MassOut::FusedWeights { fused_id })
+    Ok(MassOut::Fused { fused_id })
 }
 
 async fn handle_optimize(
@@ -4776,7 +5180,7 @@ async fn handle_optimize(
         )));
     }
 
-    reset_model(&instance.engine).await?;
+    reset_model(instance.engine.as_ref()).await?;
     if session.frozen {
         debug!(%model_id, "skipping optimization because model instance is frozen");
     } else {
@@ -4822,49 +5226,14 @@ async fn handle_optimize(
 // ---------------------------------------------------------------------------
 
 async fn run_batched_inference(
-    engine: &ModelEngine,
+    engine: &dyn ModelEngineImplementation,
     sequences: &[Vec<paramecia_engine::ModelInput>],
     limit: u32,
 ) -> Result<Vec<Vec<paramecia_engine::Predicted>>> {
-    if limit == 0 {
-        return Ok(vec![Vec::new(); sequences.len()]);
-    }
-
-    // Start batched streaming completion — returns (result_rx, cancel_tx).
-    let (mut result_rx, _cancel_tx) = engine
-        .predict_completions_batched(sequences)
+    engine
+        .predict_batched(sequences, limit)
         .await
-        .map_err(|e| ServerError::ModelError(e.to_string()))?;
-
-    let n_seqs = sequences.len();
-    // Accumulate per-sequence predictions: seq_results[i] holds all Predicted for sequence i.
-    let mut seq_results: Vec<Vec<paramecia_engine::Predicted>> = vec![Vec::new(); n_seqs];
-    let mut done = false;
-
-    while !done {
-        let Some(result) = result_rx.recv().await else {
-            break;
-        };
-        match result {
-            Ok(step_predictions) => {
-                // step_predictions has one Predicted per sequence for this decode step.
-                for (i, pred) in step_predictions.into_iter().enumerate() {
-                    if i < n_seqs && seq_results[i].len() < limit as usize {
-                        seq_results[i].push(pred);
-                    }
-                }
-                // Stop when all sequences have reached the limit.
-                done = seq_results.iter().all(|s| s.len() >= limit as usize);
-            }
-            Err(e) => {
-                // Non-fatal errors (e.g. max length) are fine.
-                warn!(error = %e, "batched prediction ended with error");
-                break;
-            }
-        }
-    }
-
-    Ok(seq_results)
+        .map_err(ServerError::ModelError)
 }
 
 // Certificate helpers
@@ -4966,25 +5335,29 @@ pub enum ServerError {
     LocalAddr(#[source] io::Error),
     #[error("model error: {0}")]
     ModelError(String),
-    #[error("generic operation is not configured on this mass")]
+    #[error("operation backend is not configured on this mass")]
     OperationNotConfigured,
-    #[error("unsupported generic operation protocol version {0}")]
+    #[error("unsupported operation protocol version {0}")]
     UnsupportedOperationProtocolVersion(u16),
-    #[error("generic operation contract does not match the injected implementation")]
+    #[error("operation contract does not match the selected implementation")]
     OperationContractMismatch,
-    #[error("generic operation contract descriptor hash mismatch")]
+    #[error("operation contract descriptor hash mismatch")]
     OperationContractHashMismatch,
-    #[error("generic operation must declare at least one tensor and metadata codec")]
+    #[error("operation must declare at least one tensor and metadata codec")]
     OperationCodecSetEmpty,
-    #[error("generic operation payload validation failed: {0}")]
+    #[error("operation payload validation failed: {0}")]
     OperationPayloadInvalid(String),
-    #[error("generic operation failed: {0}")]
+    #[error("operation configuration is invalid: {0}")]
+    OperationConfigInvalid(String),
+    #[error("operation does not advertise the requested {0} capability")]
+    OperationCapabilityUnavailable(&'static str),
+    #[error("operation backend failed: {0}")]
     OperationError(String),
     #[error("no mass advertises operation contract {id:?} version {version}")]
     NoCompatibleOperation { id: ContractId, version: u32 },
-    #[error("model instance {0} is already running")]
+    #[error("hosted instance {0} is already running")]
     ModelInstanceAlreadyRunning(Uuid),
-    #[error("model instance {0} is not running")]
+    #[error("hosted instance {0} is not running")]
     ModelInstanceNotRunning(Uuid),
     #[error("invalid Mass state machine transition: {0}")]
     InvalidMassState(String),
@@ -5131,13 +5504,13 @@ mod tests {
     use super::{
         apply_frozen_oscillation, apply_initial_frozen_oscillation, build_model_params,
         client_bind_addr_for, ensure_operation_protocol_version, handle_query_model_capacity,
-        handle_register_tunnel, handle_start, repair_duplicated_absolute_model_path,
-        resolve_max_instances, resolve_model_frozen, resolve_model_oscillation, route_for_model,
-        select_operation_target, select_start_target, to_engine_error_feedback,
-        to_engine_perturbation_mode, to_mass_perturbation_mode, FrozenOscillation, MassContext,
-        MassMode, MassServerDefaults, MassSession, MassState, ModelRuntimeConfig, ModelSlot,
-        RouteTarget, ServerBuilder, ServerError, TransportMode, TunnelWorker,
-        DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        handle_register_tunnel, handle_start, qwen_capability,
+        repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
+        resolve_model_oscillation, route_for_instance, select_instance_target,
+        to_engine_error_feedback, to_engine_perturbation_mode, to_mass_perturbation_mode,
+        FrozenOscillation, MassContext, MassMode, MassServerDefaults, MassSession, MassState,
+        ModelRuntimeConfig, QwenOperationAdapter, RouteTarget, ServerBuilder, ServerError,
+        TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{
         encode_output,
@@ -5874,15 +6247,15 @@ mod tests {
             workers: RwLock::new(workers),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: None,
-            operation_instances: RwLock::new(Default::default()),
             instance_requirements: RwLock::new(HashMap::new()),
         };
 
         let out = handle_query_model_capacity(&ctx)
             .await
             .expect("capacity query should succeed");
-        let black_hole_type::MassOut::ModelCapacity { capacity } = out else {
+        let black_hole_type::MassOut::InstanceCapacity { capacity } = out else {
             panic!("unexpected query response");
         };
         assert_eq!(
@@ -5926,15 +6299,15 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: None,
-            operation_instances: RwLock::new(Default::default()),
             instance_requirements: RwLock::new(HashMap::new()),
         };
 
         let out = handle_query_model_capacity(&ctx)
             .await
             .expect("capacity query should succeed");
-        let black_hole_type::MassOut::ModelCapacity { capacity } = out else {
+        let black_hole_type::MassOut::InstanceCapacity { capacity } = out else {
             panic!("unexpected query response");
         };
         assert_eq!(
@@ -5975,13 +6348,19 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: None,
-            operation_instances: RwLock::new(Default::default()),
             instance_requirements: RwLock::new(HashMap::new()),
         };
         let worker_id = uuid::Uuid::new_v4();
 
-        let out = handle_register_tunnel(worker_id, None, None, None, &ctx)
+        let out = handle_register_tunnel(
+            worker_id,
+            None,
+            WorkerCapabilities::default(),
+            None,
+            &ctx,
+        )
             .await
             .expect("registration should succeed");
         let token = match out {
@@ -6014,14 +6393,20 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: None,
-            operation_instances: RwLock::new(Default::default()),
             instance_requirements: RwLock::new(HashMap::new()),
         };
         let worker_id = uuid::Uuid::new_v4();
         let requested = Some(3usize);
 
-        let out = handle_register_tunnel(worker_id, requested, None, None, &ctx)
+        let out = handle_register_tunnel(
+            worker_id,
+            requested,
+            WorkerCapabilities::default(),
+            None,
+            &ctx,
+        )
             .await
             .expect("registration should succeed");
         let token = match out {
@@ -6040,7 +6425,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_start_target_uses_starting_local_instances_for_capacity() {
+    async fn select_instance_target_uses_host_registry_for_capacity() {
         let worker_token = uuid::Uuid::new_v4();
         let mut workers = HashMap::new();
         workers.insert(
@@ -6049,11 +6434,14 @@ mod tests {
                 token: worker_token,
                 worker_id: uuid::Uuid::new_v4(),
                 max_instances: Some(1),
-                capabilities: WorkerCapabilities::default(),
+                capabilities: WorkerCapabilities {
+                    architectures: Vec::new(),
+                    operations: vec![qwen_capability()],
+                },
             },
         );
-        let mut instances = HashMap::new();
-        instances.insert(uuid::Uuid::new_v4(), ModelSlot::Starting);
+        let local_instance = uuid::Uuid::new_v4();
+        let routes = HashMap::from([(local_instance, RouteTarget::Local)]);
         let ctx = MassContext {
             model_path: PathBuf::from("model-is-not-loaded-for-this-test"),
             transport_mode: TransportMode::Tcp,
@@ -6063,16 +6451,16 @@ mod tests {
             max_instances: Some(1),
             mode: MassMode::Root,
             start_dispatch: Mutex::new(()),
-            routes: RwLock::new(HashMap::new()),
+            routes: RwLock::new(routes),
             workers: RwLock::new(workers),
             worker_connections: RwLock::new(HashMap::new()),
-            instances: RwLock::new(instances),
+            instances: RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: None,
-            operation_instances: RwLock::new(Default::default()),
             instance_requirements: RwLock::new(HashMap::new()),
         };
 
-        let selected = select_start_target(&ctx, None)
+        let selected = select_instance_target(&ctx, &qwen_capability(), None)
             .await
             .expect("worker should be selected when local start is in progress");
         assert_eq!(selected, RouteTarget::Worker(worker_token));
@@ -6095,8 +6483,8 @@ mod tests {
             workers: RwLock::new(workers),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: None,
-            operation_instances: RwLock::new(Default::default()),
             instance_requirements: RwLock::new(HashMap::new()),
         }
     }
@@ -6125,10 +6513,13 @@ mod tests {
         )]);
         let ctx = ctx_with_workers(workers, HashMap::new());
 
-        let error =
-            select_operation_target(&ctx, &operation_capability::<SameShapeOtherOperation>())
-                .await
-                .expect_err("shape equality must not imply contract compatibility");
+        let error = select_instance_target(
+            &ctx,
+            &operation_capability::<SameShapeOtherOperation>(),
+            None,
+        )
+        .await
+        .expect_err("shape equality must not imply contract compatibility");
         assert!(matches!(error, ServerError::NoCompatibleOperation { .. }));
     }
 
@@ -6141,7 +6532,7 @@ mod tests {
         )]);
         let ctx = ctx_with_workers(workers, HashMap::new());
 
-        let error = select_operation_target(&ctx, &operation_capability::<FakeOperationV2>())
+        let error = select_instance_target(&ctx, &operation_capability::<FakeOperationV2>(), None)
             .await
             .expect_err("contract versions must match");
         assert!(matches!(error, ServerError::NoCompatibleOperation { .. }));
@@ -6158,7 +6549,7 @@ mod tests {
         let mut requested = operation_capability::<FakeOperation>();
         requested.tensor_encodings.push(EncodingId(99));
 
-        let error = select_operation_target(&ctx, &requested)
+        let error = select_instance_target(&ctx, &requested, None)
             .await
             .expect_err("unsupported codecs must fail closed");
         assert!(matches!(error, ServerError::NoCompatibleOperation { .. }));
@@ -6173,7 +6564,7 @@ mod tests {
         )]);
         let instance_id = Uuid::new_v4();
         let ctx = ctx_with_workers(workers, HashMap::new());
-        let target = select_operation_target(&ctx, &operation_capability::<FakeOperation>())
+        let target = select_instance_target(&ctx, &operation_capability::<FakeOperation>(), None)
             .await
             .expect("matching worker should be selected");
         ctx.routes.write().await.insert(instance_id, target);
@@ -6187,7 +6578,7 @@ mod tests {
             .clear();
 
         assert_eq!(
-            route_for_model(instance_id, &ctx).await.unwrap(),
+            route_for_instance(instance_id, &ctx).await.unwrap(),
             RouteTarget::Worker(token)
         );
     }
@@ -6207,8 +6598,8 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: None,
-            operation_instances: RwLock::new(Default::default()),
             instance_requirements: RwLock::new(HashMap::new()),
         };
         let worker_id = uuid::Uuid::new_v4();
@@ -6217,7 +6608,7 @@ mod tests {
             operations: Vec::new(),
         };
 
-        let out = handle_register_tunnel(worker_id, None, Some(capabilities.clone()), None, &ctx)
+        let out = handle_register_tunnel(worker_id, None, capabilities.clone(), None, &ctx)
             .await
             .expect("registration should succeed");
         let token = match out {
@@ -6235,7 +6626,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_start_target_routes_required_architecture_to_matching_worker() {
+    async fn select_instance_target_routes_required_architecture_to_matching_worker() {
         // Test builds have COMPILED_ARCHITECTURE == None, so the local engine
         // never satisfies a requirement; only matching workers are eligible.
         let teacher_token = Uuid::new_v4();
@@ -6249,7 +6640,7 @@ mod tests {
                 max_instances: Some(1),
                 capabilities: WorkerCapabilities {
                     architectures: vec![MassArchitecture::Qwen38_27b],
-                    operations: Vec::new(),
+                    operations: vec![qwen_capability()],
                 },
             },
         );
@@ -6261,20 +6652,25 @@ mod tests {
                 max_instances: Some(1),
                 capabilities: WorkerCapabilities {
                     architectures: vec![MassArchitecture::Qwen35_0p8b],
-                    operations: Vec::new(),
+                    operations: vec![qwen_capability()],
                 },
             },
         );
         let ctx = ctx_with_workers(workers, HashMap::new());
 
-        let selected = select_start_target(&ctx, Some(MassArchitecture::Qwen38_27b))
-            .await
-            .expect("compatible worker should be selected");
+        let selected =
+            select_instance_target(&ctx, &qwen_capability(), Some(MassArchitecture::Qwen38_27b))
+                .await
+                .expect("compatible worker should be selected");
         assert_eq!(selected, RouteTarget::Worker(teacher_token));
 
-        let selected = select_start_target(&ctx, Some(MassArchitecture::Qwen35_0p8b))
-            .await
-            .expect("compatible worker should be selected");
+        let selected = select_instance_target(
+            &ctx,
+            &qwen_capability(),
+            Some(MassArchitecture::Qwen35_0p8b),
+        )
+        .await
+        .expect("compatible worker should be selected");
         assert_eq!(
             selected,
             if super::COMPILED_ARCHITECTURE == Some(MassArchitecture::Qwen35_0p8b) {
@@ -6286,7 +6682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_start_target_rejects_unknown_architecture() {
+    async fn select_instance_target_rejects_unknown_architecture() {
         let teacher_token = Uuid::new_v4();
         let mut workers = HashMap::new();
         workers.insert(
@@ -6297,15 +6693,16 @@ mod tests {
                 max_instances: Some(1),
                 capabilities: WorkerCapabilities {
                     architectures: vec![MassArchitecture::Qwen38_27b],
-                    operations: Vec::new(),
+                    operations: vec![qwen_capability()],
                 },
             },
         );
         let ctx = ctx_with_workers(workers, HashMap::new());
 
-        let error = select_start_target(&ctx, Some(MassArchitecture::Qwen35_2b))
-            .await
-            .expect_err("no engine serves the required architecture");
+        let error =
+            select_instance_target(&ctx, &qwen_capability(), Some(MassArchitecture::Qwen35_2b))
+                .await
+                .expect_err("no engine serves the required architecture");
         assert!(matches!(
             error,
             ServerError::NoCompatibleTunnelCapacity(MassArchitecture::Qwen35_2b)
@@ -6313,7 +6710,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_start_target_prefers_matching_worker_over_local() {
+    async fn select_instance_target_prefers_matching_worker_over_local() {
         // Local engine (None in test builds) is ineligible for a required
         // architecture even when it has free capacity.
         let worker_token = Uuid::new_v4();
@@ -6326,15 +6723,19 @@ mod tests {
                 max_instances: Some(1),
                 capabilities: WorkerCapabilities {
                     architectures: vec![MassArchitecture::Qwen35_0p8b],
-                    operations: Vec::new(),
+                    operations: vec![qwen_capability()],
                 },
             },
         );
         let ctx = ctx_with_workers(workers, HashMap::new());
 
-        let selected = select_start_target(&ctx, Some(MassArchitecture::Qwen35_0p8b))
-            .await
-            .expect("matching worker should be selected");
+        let selected = select_instance_target(
+            &ctx,
+            &qwen_capability(),
+            Some(MassArchitecture::Qwen35_0p8b),
+        )
+        .await
+        .expect("matching worker should be selected");
         assert_eq!(
             selected,
             if super::COMPILED_ARCHITECTURE == Some(MassArchitecture::Qwen35_0p8b) {
@@ -6346,9 +6747,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_start_target_without_requirement_matches_any_engine() {
-        // Legacy behavior: a requirement-less start matches engines with no
-        // advertised capabilities (local in test builds).
+    async fn select_instance_target_without_architecture_uses_contract_capability() {
         let worker_token = Uuid::new_v4();
         let mut workers = HashMap::new();
         workers.insert(
@@ -6363,7 +6762,7 @@ mod tests {
         let ctx = ctx_with_workers(workers, HashMap::new());
 
         // Local is free and eligible, so it wins the tie.
-        let selected = select_start_target(&ctx, None)
+        let selected = select_instance_target(&ctx, &qwen_capability(), None)
             .await
             .expect("any engine should be eligible");
         assert_eq!(selected, RouteTarget::Local);
@@ -6384,8 +6783,8 @@ mod tests {
             workers: RwLock::new(HashMap::new()),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: None,
-            operation_instances: RwLock::new(Default::default()),
             instance_requirements: RwLock::new(HashMap::new()),
         };
         let model_config = MassModelConfig {
@@ -6433,15 +6832,15 @@ mod tests {
             workers: RwLock::new(workers),
             worker_connections: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
+            qwen: QwenOperationAdapter::default(),
             operation: None,
-            operation_instances: RwLock::new(Default::default()),
             instance_requirements: RwLock::new(requirements),
         };
 
         let out = handle_query_model_capacity(&ctx)
             .await
             .expect("capacity query should succeed");
-        let black_hole_type::MassOut::ModelCapacity { capacity } = out else {
+        let black_hole_type::MassOut::InstanceCapacity { capacity } = out else {
             panic!("unexpected query response");
         };
         let teacher_architecture = MassArchitecture::Qwen38_27b;

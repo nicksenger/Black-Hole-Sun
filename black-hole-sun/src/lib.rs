@@ -19,8 +19,9 @@ pub use mass_client::MassClient;
 pub use prompt_ops::{InferPromptOps, SeqPromptOps, TokenOps};
 #[cfg(feature = "test")]
 pub use test_utils::{
-    make_client_endpoint, NoCertVerifier, RunningTestMassServer, RunningTestVoidServer,
-    TestMassServer, TestVoidServer,
+    make_client_endpoint, DeterministicFakeContract, DeterministicFakeOperation, NoCertVerifier,
+    QuadraticContract, QuadraticOperation, RunningTestMassServer, RunningTestVoidServer,
+    TensorSlicerContract, TensorSlicerOperation, TestMassServer, TestVoidServer,
 };
 pub use tokenizer::{Tokenizer, TokenizerBuilder};
 pub use void_client::{PreparedTransfer, VoidClient};
@@ -29,13 +30,13 @@ pub use void_client::{PreparedTransfer, VoidClient};
 pub use black_hole_flux::nodes::{atom, cell, fusion, warp};
 pub use black_hole_flux::{compile, forward, programs, topology};
 pub use black_hole_flux::{
-    ops, AtomError, Boundary, BoundaryInit, BoundaryInner,
-    BoundaryMicrostep, BoundaryState, CellInit, CheckpointOps, DefaultConfig, ErrorFeedbackPolicy,
-    ForwardOperationCell, ForwardOperationPrimordium, FuseOps, Fusion, FusionSeed, FusionState,
-    InitBoundaryRecvId, MassOps, ModelConfig, NoErrorFeedback, NoModelBoundary, NoOscillation,
-    OperationAtom, OperationCell, OperationNode, OperationPrimordium, OptimizeOps,
-    OscillationSchedule, PerturbOps, QuzoFusion, QuzoFusionWithModelConfig, QwenAdapterOps, Ray,
-    ResetOps, VoidInferOps, VoidOps, Warp,
+    ops, AtomError, Boundary, BoundaryInit, BoundaryInner, BoundaryMicrostep, BoundaryState,
+    CellInit, CheckpointOps, DefaultConfig, ErrorFeedbackPolicy, ForwardOperationCell,
+    ForwardOperationPrimordium, FuseOps, Fusion, FusionSeed, FusionState, InitBoundaryRecvId,
+    MassOps, ModelConfig, NoErrorFeedback, NoModelBoundary, NoOscillation, OperationAtom,
+    OperationCell, OperationNode, OperationPrimordium, OptimizeOps, OscillationSchedule,
+    PerturbOps, QuzoFusion, QuzoFusionWithModelConfig, QwenAdapterOps, Ray, ResetOps, VoidInferOps,
+    VoidOps, Warp,
 };
 
 // Convenience re-exports — spec types
@@ -45,19 +46,20 @@ pub use black_hole_type::{
     EncodingId, InferenceInput, InferenceOutput, InferenceOutputId, InferenceRequest,
     LayoutConstraint, LogitEntry, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassIn,
     MassModelCapacity, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode, ObjectId,
-    ObjectRef, OperationArtifactRef, OperationCapability, OperationalControl, Potentiation,
-    SequenceOutput, StreamRef, StreamingChunkOrder, StreamingFinalization, TensorDtype,
-    TensorEnvelope, TensorPortDescriptor, TransferAbort, TransferBegin, TransferChunk,
-    TransferHash, TransferManifest, TransferRecord, TransferRef, TransferStreamFrame,
-    TransferTicket, Transmission, TRANSFER_PROTOCOL_VERSION,
+    ObjectRef, OperationArtifactRef, OperationCapabilities, OperationCapability, OperationConfig,
+    OperationalControl, Potentiation, SequenceOutput, StreamRef, StreamingChunkOrder,
+    StreamingFinalization, TensorDtype, TensorEnvelope, TensorPortDescriptor, TransferAbort,
+    TransferBegin, TransferChunk, TransferHash, TransferManifest, TransferRecord, TransferRef,
+    TransferStreamFrame, TransferTicket, Transmission, TRANSFER_PROTOCOL_VERSION,
 };
 
 // Convenience re-exports — typed operation contracts and tensor codec
 pub use black_hole_spec::{
-    decode_input, decode_output, descriptor_hash, encode_input, encode_output,
-    operation_capability, tensor_stream_header, validate_artifact, CodecError, DecodedTensorBundle,
-    PortList, QwenDarkInference, RawTensor, SingleTensorSpec, StreamingTensorOp, TensorBundleSpec,
-    TensorContract, TensorPortSpec, TensorSpec, ValidatedArtifact,
+    decode_input, decode_output, decode_qwen_output, descriptor_hash, encode_input, encode_output,
+    encode_qwen_request, operation_capability, tensor_stream_header, validate_artifact, CodecError,
+    DecodedTensorBundle, PortList, QwenDarkInference, QwenInferenceMetadata, RawTensor,
+    SingleTensorSpec, StreamingTensorOp, TensorBundleSpec, TensorContract, TensorPortSpec,
+    TensorSpec, ValidatedArtifact,
 };
 
 // Convenience re-exports — void types

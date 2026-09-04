@@ -9,9 +9,10 @@ use std::{
 };
 
 use black_hole_type::{
-    ContractDescriptor, ContractHash, ContractId, ContractSide, DimensionDescriptor,
-    DtypeConstraint, EncodingId, LayoutConstraint, OperationCapability, StreamingChunkOrder,
-    StreamingFinalization, TensorDtype, TensorEnvelope, TensorPortDescriptor,
+    ContractDescriptor, ContractHash, ContractId, ContractSide, DarkToken, DimensionDescriptor,
+    DtypeConstraint, EncodingId, InferenceOutput, InferenceRequest, LayoutConstraint, LogitEntry,
+    OperationCapability, SequenceOutput, StreamingChunkOrder, StreamingFinalization, TensorDtype,
+    TensorEnvelope, TensorPortDescriptor,
 };
 use glowstick::Shape;
 use postcard::{from_bytes, to_allocvec};
@@ -166,6 +167,18 @@ pub struct QwenBatch;
 pub struct QwenSequence;
 pub struct QwenTopK;
 
+/// Qwen-specific invocation metadata. Text/token requests stay behind the
+/// Qwen implementation boundary; the Mass protocol carries only a normal
+/// typed artifact.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum QwenInferenceMetadata {
+    /// Interpret the three tensors as a dense dark-token batch.
+    Dark { limit: Option<u32> },
+    /// Let the Qwen backend resolve text, token, dark, or Void-referenced
+    /// inputs without adding a backend-specific Mass message.
+    Request(InferenceRequest),
+}
+
 impl TensorPortSpec for QwenPredictions {
     type Shape = glowstick::Shape2<glowstick::Dyn<QwenBatch>, glowstick::Dyn<QwenSequence>>;
 
@@ -230,11 +243,85 @@ impl TensorPortSpec for QwenDarkLogProbs {
 impl TensorContract for QwenDarkInference {
     type Input = TensorBundleSpec<(QwenPredictions, QwenDarkTokenIds, QwenDarkLogProbs)>;
     type Output = TensorBundleSpec<(QwenPredictions, QwenDarkTokenIds, QwenDarkLogProbs)>;
-    type Metadata = ();
+    type Metadata = QwenInferenceMetadata;
 
     // Application-assigned, stable ID; never derived from the Rust type name.
     const ID: ContractId = ContractId::from_u128(0x7177_656e_2d64_6172_6b2d_696e_6665_7231);
     const VERSION: u32 = 1;
+}
+
+/// Encode a Qwen request as an ordinary typed input artifact. Empty dense
+/// tensors satisfy the contract while the backend-owned request lives in
+/// metadata; dark tensor pipelines use [`QwenInferenceMetadata::Dark`]
+/// instead.
+pub fn encode_qwen_request(request: InferenceRequest) -> Result<Vec<u8>, CodecError> {
+    let tensors = [
+        RawTensor {
+            name: "predictions".into(),
+            dtype: TensorDtype::U32,
+            shape: vec![0, 0],
+            data: Vec::new(),
+        },
+        RawTensor {
+            name: "dark_token_ids".into(),
+            dtype: TensorDtype::U32,
+            shape: vec![0, 0, 0],
+            data: Vec::new(),
+        },
+        RawTensor {
+            name: "dark_log_probs".into(),
+            dtype: TensorDtype::F32,
+            shape: vec![0, 0, 0],
+            data: Vec::new(),
+        },
+    ];
+    encode_input::<QwenDarkInference>(&tensors, &QwenInferenceMetadata::Request(request))
+}
+
+/// Decode the dense Qwen output bundle into the application-level dark-token
+/// value used by prompt and loss policies.
+pub fn decode_qwen_output(bytes: &[u8]) -> Result<InferenceOutput, CodecError> {
+    let decoded = decode_output::<QwenDarkInference>(bytes)?;
+    let predictions = &decoded.tensors[0];
+    let token_ids = &decoded.tensors[1];
+    let log_probs = &decoded.tensors[2];
+    let batch = predictions.shape[0];
+    let sequence = predictions.shape[1];
+    let top_k = token_ids.shape[2];
+    let predictions: Vec<u32> = predictions
+        .data
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("four-byte chunk")))
+        .collect();
+    let token_ids: Vec<u32> = token_ids
+        .data
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("four-byte chunk")))
+        .collect();
+    let log_probs: Vec<f32> = log_probs
+        .data
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four-byte chunk")))
+        .collect();
+    let mut results = Vec::with_capacity(batch);
+    for batch_index in 0..batch {
+        let mut tokens = Vec::with_capacity(sequence);
+        for sequence_index in 0..sequence {
+            let position = batch_index * sequence + sequence_index;
+            let distribution_start = position * top_k;
+            tokens.push(DarkToken {
+                predicted: predictions[position],
+                dark_knowledge: (0..top_k)
+                    .map(|offset| LogitEntry {
+                        token_id: token_ids[distribution_start + offset],
+                        log_prob: log_probs[distribution_start + offset],
+                    })
+                    .collect(),
+            });
+        }
+        results.push(SequenceOutput(tokens));
+    }
+    Ok(InferenceOutput { results })
 }
 
 /// Owned backend-neutral dense tensor value.
@@ -352,6 +439,7 @@ pub fn operation_capability<C: TensorContract>() -> OperationCapability {
         descriptor,
         tensor_encodings: vec![EncodingId::SAFETENSORS_V1],
         metadata_encodings: vec![EncodingId::POSTCARD_V1],
+        operations: black_hole_type::OperationCapabilities::FORWARD_ONLY,
     }
 }
 

@@ -5,14 +5,16 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-metal = ["paramecia-engine/metal"]
-qwen35_0p8b = ["paramecia-engine/qwen35_0p8b"]
-qwen35_2b = ["paramecia-engine/qwen35_2b"]
-qwen35_4b = ["paramecia-engine/qwen35_4b"]
-qwen35_9b = ["paramecia-engine/qwen35_9b"]
-qwen35_27b = ["paramecia-engine/qwen35_27b"]
-qwen38_27b = ["paramecia-engine/qwen38_27b"]
-cuda = ["paramecia-engine/cuda"]
+default = ["qwen"]
+qwen = ["dep:paramecia-engine"]
+metal = ["qwen", "paramecia-engine/metal"]
+qwen35_0p8b = ["qwen", "paramecia-engine/qwen35_0p8b"]
+qwen35_2b = ["qwen", "paramecia-engine/qwen35_2b"]
+qwen35_4b = ["qwen", "paramecia-engine/qwen35_4b"]
+qwen35_9b = ["qwen", "paramecia-engine/qwen35_9b"]
+qwen35_27b = ["qwen", "paramecia-engine/qwen35_27b"]
+qwen38_27b = ["qwen", "paramecia-engine/qwen38_27b"]
+cuda = ["qwen", "paramecia-engine/cuda"]
 
 [dependencies]
 async-trait = "0.1"
@@ -20,7 +22,7 @@ black-hole-spec = { path = "../_black_hole_spec" }
 black-hole-type = { path = "../_black_hole_type" }
 clap = { version = "4", features = ["derive"] }
 directories-next = "2"
-paramecia-engine = { git = "https://github.com/nicksenger/paramecia.git", branch = "blackholesun" }
+paramecia-engine = { git = "https://github.com/nicksenger/paramecia.git", branch = "blackholesun", optional = true }
 postcard = { version = "1", features = ["alloc"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = "0.14"
@@ -38,3 +40,8 @@ black-hole-void = { path = "../_black_hole_void", default-features = false }
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "black-hole-mass"
+path = "src/main.rs"
+required-features = ["qwen"]

@@ -4,91 +4,18 @@ mod common;
 
 use black_hole_sun::{
     decode_output, encode_input, encode_output, operation_capability, ArtifactRef, ContractId,
-    DarkToken, DimensionDescriptor, DtypeConstraint, InferenceInput, InferenceRequest, LogitEntry,
-    MassClient, MassModelCapacity, MassModelConfig, OperationCapability, OperationImplementation,
-    RawTensor, SingleTensorSpec, TensorContract, TensorDtype, TensorPortSpec, TestMassServer,
+    DarkToken, DeterministicFakeContract, DeterministicFakeOperation, DimensionDescriptor,
+    DtypeConstraint, InferenceInput, InferenceRequest, LogitEntry, MassClient, MassModelCapacity,
+    MassModelConfig, OperationCapabilities, OperationCapability, OperationImplementation,
+    QuadraticContract, QuadraticOperation, RawTensor, SingleTensorSpec, TensorContract,
+    TensorDtype, TensorPortSpec, TensorSlicerContract, TensorSlicerOperation, TestMassServer,
     TestVoidServer, Tokenizer, VoidClient,
 };
 use postcard::{from_bytes, to_allocvec};
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 use common::*;
-
-struct FakeValues;
-struct FakeLength;
-struct DeterministicFakeContract;
-
-impl TensorPortSpec for FakeValues {
-    type Shape = black_hole_sun::black_hole_spec::glowstick::Shape1<
-        black_hole_sun::black_hole_spec::glowstick::Dyn<FakeLength>,
-    >;
-
-    const NAME: &'static str = "values";
-
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![DimensionDescriptor::Symbolic("length".into())]
-    }
-
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::U32)
-    }
-}
-
-impl TensorContract for DeterministicFakeContract {
-    type Input = SingleTensorSpec<FakeValues>;
-    type Output = SingleTensorSpec<FakeValues>;
-    type Metadata = ();
-
-    const ID: ContractId = ContractId::from_u128(0x6465_7465_726d_696e_6973_7469_632d_6f70);
-    const VERSION: u32 = 1;
-}
-
-#[derive(Default)]
-struct DeterministicFakeOperation {
-    instances: Mutex<HashSet<Uuid>>,
-}
-
-#[async_trait::async_trait]
-impl OperationImplementation for DeterministicFakeOperation {
-    fn capability(&self) -> OperationCapability {
-        operation_capability::<DeterministicFakeContract>()
-    }
-
-    async fn start(&self, instance_id: Uuid) -> Result<(), String> {
-        if !self.instances.lock().unwrap().insert(instance_id) {
-            return Err("fake instance already started".into());
-        }
-        Ok(())
-    }
-
-    async fn forward(&self, instance_id: Uuid, input: Vec<u8>) -> Result<Vec<u8>, String> {
-        if !self.instances.lock().unwrap().contains(&instance_id) {
-            return Err("fake instance is not running".into());
-        }
-        let decoded =
-            black_hole_sun::black_hole_spec::decode_input::<DeterministicFakeContract>(&input)
-                .map_err(|error| error.to_string())?;
-        let mut tensor = decoded.tensors.into_iter().next().unwrap();
-        for bytes in tensor.data.chunks_exact_mut(4) {
-            let value = u32::from_le_bytes(bytes.try_into().unwrap()).wrapping_add(1);
-            bytes.copy_from_slice(&value.to_le_bytes());
-        }
-        encode_output::<DeterministicFakeContract>(&[tensor], &())
-            .map_err(|error| error.to_string())
-    }
-
-    async fn shutdown(&self, instance_id: Uuid) -> Result<(), String> {
-        if !self.instances.lock().unwrap().remove(&instance_id) {
-            return Err("fake instance is not running".into());
-        }
-        Ok(())
-    }
-}
 
 fn fake_input(values: &[u32]) -> Vec<u8> {
     let tensor = RawTensor {
@@ -111,6 +38,34 @@ fn fake_output_values(bytes: &[u8]) -> Vec<u32> {
         .chunks_exact(4)
         .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
         .collect()
+}
+
+fn quadratic_input() -> Vec<u8> {
+    encode_input::<QuadraticContract>(
+        &[RawTensor {
+            name: "parameter".into(),
+            dtype: TensorDtype::F32,
+            shape: vec![1],
+            data: 0.0f32.to_le_bytes().to_vec(),
+        }],
+        &(),
+    )
+    .unwrap()
+}
+
+async fn quadratic_value(
+    client: &MassClient<QuadraticContract>,
+    void: &VoidClient,
+    instance_id: Uuid,
+    input_id: Uuid,
+) -> f32 {
+    let output = client
+        .forward(instance_id, ArtifactRef::from_object_id(input_id))
+        .await
+        .unwrap();
+    let bytes = void.receive_artifact(&output).await.unwrap();
+    let decoded = decode_output::<QuadraticContract>(&bytes).unwrap();
+    f32::from_le_bytes(decoded.tensors[0].data.as_slice().try_into().unwrap())
 }
 
 #[tokio::test]
@@ -150,8 +105,207 @@ async fn generic_mass_hosts_injected_operation_and_validates_payloads() {
         .expect_err("Mass must validate the actual input before calling the operation");
     assert!(error.contains("payload validation failed"), "{error}");
 
+    let error = mass_client
+        .reset_operation(instance_id)
+        .await
+        .expect_err("undeclared lifecycle capabilities must fail closed");
+    assert!(error.contains("does not advertise the requested reset"), "{error}");
+
+    mass_client.shutdown_operation(instance_id).await.unwrap();
+
+    let optimizing_client =
+        MassClient::<DeterministicFakeContract>::new_tcp_typed(mass_server.local_addr())
+            .requiring(OperationCapabilities::OPTIMIZING);
+    let error = optimizing_client
+        .start_operation(Uuid::new_v4())
+        .await
+        .expect_err("placement must reject an unsupported required lifecycle surface");
+    assert!(error.contains("no mass advertises operation contract"), "{error}");
+    mass_server.abort();
+    void_server.abort();
+}
+
+#[tokio::test]
+async fn generic_quzo_backend_converges_on_quadratic_loss() {
+    init_tracing();
+    let void_server = TestVoidServer::new().tcp().serve().await.unwrap();
+    let operation = Arc::new(QuadraticOperation::default());
+    let mass_server = TestMassServer::new("unused-by-quadratic-operation")
+        .tcp()
+        .void_addr(void_server.local_addr())
+        .operation(operation.clone())
+        .serve()
+        .await
+        .unwrap();
+    let void_client = VoidClient::new_tcp(void_server.local_addr());
+    let mass_client = MassClient::<QuadraticContract>::new_tcp_typed(mass_server.local_addr())
+        .requiring(OperationCapabilities::OPTIMIZING);
+    let instance_id = Uuid::new_v4();
+    let input_id = void_client.upload(quadratic_input()).await.unwrap();
+
+    mass_client.start_operation(instance_id).await.unwrap();
+    let initial = quadratic_value(&mass_client, &void_client, instance_id, input_id).await;
+    for seed in 0..12 {
+        mass_client
+            .perturb_up_operation(instance_id, seed)
+            .await
+            .unwrap();
+        let up = quadratic_value(&mass_client, &void_client, instance_id, input_id).await;
+        mass_client.reset_operation(instance_id).await.unwrap();
+        mass_client
+            .perturb_down_operation(instance_id)
+            .await
+            .unwrap();
+        let down = quadratic_value(&mass_client, &void_client, instance_id, input_id).await;
+        mass_client.reset_operation(instance_id).await.unwrap();
+        mass_client
+            .optimize_operation(instance_id, up * up, down * down)
+            .await
+            .unwrap();
+    }
+    let final_value = quadratic_value(&mass_client, &void_client, instance_id, input_id).await;
+    assert!(
+        final_value * final_value < initial * initial * 0.01,
+        "quadratic loss did not converge: initial={initial}, final={final_value}"
+    );
+
+    let checkpoint_id = mass_client.checkpoint_operation(instance_id).await.unwrap();
+    assert_eq!(void_client.download(checkpoint_id).await.unwrap().len(), 4);
     mass_client.shutdown_operation(instance_id).await.unwrap();
     mass_server.abort();
+    void_server.abort();
+}
+
+#[tokio::test]
+async fn mass_hosts_tensor_slicer_and_operation_chain_as_black_boxes() {
+    init_tracing();
+    let void_server = TestVoidServer::new().tcp().serve().await.unwrap();
+    let void_client = VoidClient::new_tcp(void_server.local_addr());
+
+    let slicer_server = TestMassServer::new("unused-by-slicer")
+        .tcp()
+        .void_addr(void_server.local_addr())
+        .operation(Arc::new(TensorSlicerOperation::default()))
+        .serve()
+        .await
+        .unwrap();
+    let slicer = MassClient::<TensorSlicerContract>::new_tcp_typed(slicer_server.local_addr());
+    let slicer_id = Uuid::new_v4();
+    slicer.start_operation(slicer_id).await.unwrap();
+    let input = encode_input::<TensorSlicerContract>(
+        &[RawTensor {
+            name: "values".into(),
+            dtype: TensorDtype::U32,
+            shape: vec![4],
+            data: [1u32, 2, 3, 4]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        }],
+        &(),
+    )
+    .unwrap();
+    let input_id = void_client.upload(input).await.unwrap();
+    let sliced = slicer
+        .forward(slicer_id, ArtifactRef::from_object_id(input_id))
+        .await
+        .unwrap();
+    let sliced = void_client.receive_artifact(&sliced).await.unwrap();
+    let sliced = decode_output::<TensorSlicerContract>(&sliced).unwrap();
+    assert_eq!(sliced.tensors[0].shape, vec![2]);
+    assert_eq!(sliced.tensors[0].data.len(), 8);
+    slicer.shutdown_operation(slicer_id).await.unwrap();
+
+    let operation = Arc::new(DeterministicFakeOperation::default());
+    let chain_server = TestMassServer::new("unused-by-chain")
+        .tcp()
+        .max_instances(2)
+        .void_addr(void_server.local_addr())
+        .operation(operation.clone())
+        .serve()
+        .await
+        .unwrap();
+    let client = MassClient::<DeterministicFakeContract>::new_tcp_typed(chain_server.local_addr());
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    client.start_operation(first).await.unwrap();
+    client.start_operation(second).await.unwrap();
+    let input_id = void_client.upload(fake_input(&[1, 2])).await.unwrap();
+    let first_output = client
+        .forward(first, ArtifactRef::from_object_id(input_id))
+        .await
+        .unwrap();
+    let first_values =
+        fake_output_values(&void_client.receive_artifact(&first_output).await.unwrap());
+    let second_input = void_client.upload(fake_input(&first_values)).await.unwrap();
+    let second_output = client
+        .forward(second, ArtifactRef::from_object_id(second_input))
+        .await
+        .unwrap();
+    assert_eq!(
+        fake_output_values(&void_client.receive_artifact(&second_output).await.unwrap()),
+        vec![3, 4]
+    );
+    assert_eq!(operation.calls(), 2);
+    client.shutdown_operation(first).await.unwrap();
+    client.shutdown_operation(second).await.unwrap();
+
+    slicer_server.abort();
+    chain_server.abort();
+    void_server.abort();
+}
+
+#[tokio::test]
+async fn tunnel_routes_unified_instance_lifecycle_to_injected_backend() {
+    init_tracing();
+    let void_server = TestVoidServer::new().tcp().serve().await.unwrap();
+    let root = TestMassServer::new("unused-root")
+        .tcp()
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .unwrap();
+    let operation = Arc::new(DeterministicFakeOperation::default());
+    let worker = TestMassServer::new("unused-worker")
+        .tcp()
+        .void_addr(void_server.local_addr())
+        .tunnel(root.local_addr())
+        .operation(operation.clone())
+        .serve()
+        .await
+        .unwrap();
+    let client = MassClient::<DeterministicFakeContract>::new_tcp_typed(root.local_addr());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if client
+                .query_instance_capacity()
+                .await
+                .is_ok_and(|capacity| capacity.total == Some(2))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("injected worker did not register");
+
+    let instance_id = Uuid::new_v4();
+    client.start_operation(instance_id).await.unwrap();
+    let void = VoidClient::new_tcp(void_server.local_addr());
+    let input_id = void.upload(fake_input(&[9])).await.unwrap();
+    let output = client
+        .forward(instance_id, ArtifactRef::from_object_id(input_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        fake_output_values(&void.receive_artifact(&output).await.unwrap()),
+        vec![10]
+    );
+    assert_eq!(operation.calls(), 1, "operation must execute on the worker");
+    client.shutdown_operation(instance_id).await.unwrap();
+    worker.abort();
+    root.abort();
     void_server.abort();
 }
 
@@ -171,7 +325,7 @@ async fn rejects_requests_for_unknown_model_instance() {
 
     for _ in 0..2 {
         let error = mass_client
-            .start(model_id, None)
+            .start_qwen(model_id, None)
             .await
             .expect_err("invalid model path should fail to start");
         assert!(
@@ -181,14 +335,17 @@ async fn rejects_requests_for_unknown_model_instance() {
     }
 
     for result in [
-        mass_client.infer(model_id, Uuid::nil()).await.map(|_| ()),
-        mass_client.reset(model_id).await,
-        mass_client.perturb_up(model_id, 42).await,
-        mass_client.perturb_down(model_id).await,
-        mass_client.checkpoint(model_id).await.map(|_| ()),
-        mass_client.optimize(model_id, 0.0, 0.0).await,
-        mass_client.shutdown(model_id).await,
-        mass_client.query_model_params(model_id).await.map(|_| ()),
+        mass_client
+            .forward(model_id, ArtifactRef::from_object_id(Uuid::nil()))
+            .await
+            .map(|_| ()),
+        mass_client.reset_operation(model_id).await,
+        mass_client.perturb_up_operation(model_id, 42).await,
+        mass_client.perturb_down_operation(model_id).await,
+        mass_client.checkpoint_operation(model_id).await.map(|_| ()),
+        mass_client.optimize_operation(model_id, 0.0, 0.0).await,
+        mass_client.shutdown_operation(model_id).await,
+        mass_client.query_qwen(model_id).await.map(|_| ()),
     ] {
         let error = result.expect_err("unknown model request should fail");
         assert!(
@@ -219,7 +376,7 @@ async fn tunnel_worker_rejects_direct_model_requests() {
     let worker_client = MassClient::new(&client, worker_server.local_addr(), "localhost");
     let model_id = Uuid::new_v4();
     let error = worker_client
-        .start(model_id, None)
+        .start_qwen(model_id, None)
         .await
         .expect_err("direct requests to tunnel worker should fail");
     assert!(
@@ -251,7 +408,7 @@ async fn tunnel_root_forwards_start_to_registered_worker() {
     let root_client = MassClient::new(&client, root_server.local_addr(), "localhost");
     let model_id = Uuid::new_v4();
     let error = root_client
-        .start(model_id, None)
+        .start_qwen(model_id, None)
         .await
         .expect_err("start should be forwarded to worker and fail on invalid model path");
     assert!(
@@ -284,7 +441,7 @@ async fn tcp_tunnel_root_forwards_start_to_registered_worker() {
     let root_client = MassClient::new_tcp(root_server.local_addr());
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(capacity) = root_client.query_model_capacity().await {
+            if let Ok(capacity) = root_client.query_instance_capacity().await {
                 if capacity.total == Some(1) && capacity.available == Some(1) {
                     break;
                 }
@@ -297,7 +454,7 @@ async fn tcp_tunnel_root_forwards_start_to_registered_worker() {
 
     let model_id = Uuid::new_v4();
     let error = root_client
-        .start(model_id, None)
+        .start_qwen(model_id, None)
         .await
         .expect_err("start should be forwarded to worker and fail on invalid model path");
     assert!(
@@ -310,6 +467,7 @@ async fn tcp_tunnel_root_forwards_start_to_registered_worker() {
 }
 
 #[tokio::test]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 async fn tcp_tunnel_root_forwards_model_load_and_inference_to_registered_worker() {
     init_tracing();
 
@@ -345,7 +503,7 @@ async fn tcp_tunnel_root_forwards_model_load_and_inference_to_registered_worker(
     let root_client = MassClient::new_tcp(root_server.local_addr());
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(capacity) = root_client.query_model_capacity().await {
+            if let Ok(capacity) = root_client.query_instance_capacity().await {
                 if capacity.total == Some(1) && capacity.available == Some(1) {
                     break;
                 }
@@ -358,7 +516,7 @@ async fn tcp_tunnel_root_forwards_model_load_and_inference_to_registered_worker(
 
     let model_id = Uuid::new_v4();
     root_client
-        .start(
+        .start_qwen(
             model_id,
             Some(MassModelConfig {
                 inference_limit: Some(1),
@@ -378,7 +536,7 @@ async fn tcp_tunnel_root_forwards_model_load_and_inference_to_registered_worker(
     let input_id = void_client.upload(request_bytes).await.unwrap();
 
     let output_id = root_client
-        .infer(model_id, input_id)
+        .invoke_qwen_object(&void_client, model_id, input_id)
         .await
         .expect("root should forward inference to tcp tunnel worker");
     let output_bytes = void_client
@@ -395,7 +553,7 @@ async fn tcp_tunnel_root_forwards_model_load_and_inference_to_registered_worker(
     );
 
     root_client
-        .shutdown(model_id)
+        .shutdown_operation(model_id)
         .await
         .expect("shutdown should succeed through tcp tunnel root");
 
@@ -466,7 +624,7 @@ async fn tunnel_worker_retries_parent_registration_until_root_starts() {
     let client = make_client_endpoint().await;
     let root_client = MassClient::new(&client, root_server.local_addr(), "localhost");
     let capacity = root_client
-        .query_model_capacity()
+        .query_instance_capacity()
         .await
         .expect("capacity query should succeed");
 
@@ -527,7 +685,7 @@ async fn tunnel_worker_re_registers_after_root_restart() {
     let root_client = MassClient::new(&client, root_addr, "localhost");
 
     let initial_capacity = root_client
-        .query_model_capacity()
+        .query_instance_capacity()
         .await
         .expect("initial capacity query should succeed");
     assert_eq!(initial_capacity.total, Some(1));
@@ -546,7 +704,7 @@ async fn tunnel_worker_re_registers_after_root_restart() {
 
     tokio::time::timeout(Duration::from_secs(12), async {
         loop {
-            if let Ok(capacity) = root_client.query_model_capacity().await {
+            if let Ok(capacity) = root_client.query_instance_capacity().await {
                 if capacity.total == Some(1)
                     && capacity.available == Some(1)
                     && capacity.occupied == 0
@@ -583,7 +741,7 @@ async fn recursive_capacity_query_reports_total_available_and_occupied() {
     let client = make_client_endpoint().await;
     let root_client = MassClient::new(&client, root_server.local_addr(), "localhost");
     let capacity = root_client
-        .query_model_capacity()
+        .query_instance_capacity()
         .await
         .expect("capacity query should succeed");
     assert_eq!(capacity.total, Some(5));
@@ -595,6 +753,7 @@ async fn recursive_capacity_query_reports_total_available_and_occupied() {
 }
 
 #[tokio::test]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 async fn inference() {
     init_tracing();
 
@@ -620,7 +779,7 @@ async fn inference() {
     let mass_endpoint = make_client_endpoint().await;
     let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
     let model_id = Uuid::new_v4();
-    mass_client.start(model_id, None).await.unwrap();
+    mass_client.start_qwen(model_id, None).await.unwrap();
 
     let tokenizer = Tokenizer::init();
 
@@ -638,7 +797,10 @@ async fn inference() {
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
 
-    let output_id = mass_client.infer(model_id, input_id).await.unwrap();
+    let output_id = mass_client
+        .invoke_qwen_object(&void_client, model_id, input_id)
+        .await
+        .unwrap();
 
     let output_bytes = void_client.download(output_id).await.unwrap();
     let output: black_hole_sun::InferenceOutput =
@@ -661,14 +823,14 @@ async fn inference() {
         );
     }
 
-    let checkpoint_id = mass_client.checkpoint(model_id).await.unwrap();
+    let checkpoint_id = mass_client.checkpoint_operation(model_id).await.unwrap();
     let checkpoint_bytes = void_client.download(checkpoint_id).await.unwrap();
     assert!(
         !checkpoint_bytes.is_empty(),
         "checkpoint output should upload non-empty model bytes"
     );
 
-    mass_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown_operation(model_id).await.unwrap();
     drop(void_endpoint);
     drop(mass_endpoint);
     void_server.abort();
@@ -714,7 +876,7 @@ async fn qwen3_8_27b_q3_k_s_initialize_and_single_token_inference() {
 
     let model_id = Uuid::new_v4();
     mass_client
-        .start(
+        .start_qwen(
             model_id,
             Some(MassModelConfig {
                 inference_limit: Some(1),
@@ -736,12 +898,12 @@ async fn qwen3_8_27b_q3_k_s_initialize_and_single_token_inference() {
     let input_id = void_client.upload(request_bytes).await.unwrap();
 
     mass_client
-        .perturb_up(model_id, 42)
+        .perturb_up_operation(model_id, 42)
         .await
         .expect("perturb-up should succeed before inference");
 
     let output_id = mass_client
-        .infer(model_id, input_id)
+        .invoke_qwen_object(&void_client, model_id, input_id)
         .await
         .expect("inference with perturbed-up weights should succeed");
     let output_bytes = void_client.download(output_id).await.unwrap();
@@ -760,7 +922,7 @@ async fn qwen3_8_27b_q3_k_s_initialize_and_single_token_inference() {
     let output_text = tokenizer.decode(&output.results[0].0);
     println!("Output: {output_text}");
 
-    mass_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown_operation(model_id).await.unwrap();
     drop(void_endpoint);
     drop(mass_endpoint);
     void_server.abort();
@@ -768,6 +930,7 @@ async fn qwen3_8_27b_q3_k_s_initialize_and_single_token_inference() {
 }
 
 #[tokio::test]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 async fn dark_inference() {
     init_tracing();
 
@@ -793,7 +956,7 @@ async fn dark_inference() {
     let mass_endpoint = make_client_endpoint().await;
     let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
     let model_id = Uuid::new_v4();
-    mass_client.start(model_id, None).await.unwrap();
+    mass_client.start_qwen(model_id, None).await.unwrap();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -826,7 +989,10 @@ async fn dark_inference() {
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
 
-    let output_id = mass_client.infer(model_id, input_id).await.unwrap();
+    let output_id = mass_client
+        .invoke_qwen_object(&void_client, model_id, input_id)
+        .await
+        .unwrap();
 
     let output_bytes = void_client.download(output_id).await.unwrap();
     let output: black_hole_sun::InferenceOutput =
@@ -849,7 +1015,7 @@ async fn dark_inference() {
         );
     }
 
-    mass_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown_operation(model_id).await.unwrap();
     drop(void_endpoint);
     drop(mass_endpoint);
     void_server.abort();
@@ -857,6 +1023,7 @@ async fn dark_inference() {
 }
 
 #[tokio::test]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 async fn start_model_applies_instance_default_inference_limit_override() {
     init_tracing();
 
@@ -885,7 +1052,7 @@ async fn start_model_applies_instance_default_inference_limit_override() {
 
     let model_id = Uuid::new_v4();
     mass_client
-        .start(
+        .start_qwen(
             model_id,
             Some(MassModelConfig {
                 inference_limit: Some(0),
@@ -904,7 +1071,10 @@ async fn start_model_applies_instance_default_inference_limit_override() {
     let request_bytes = to_allocvec(&request).expect("failed to serialize inference request");
     let input_id = void_client.upload(request_bytes).await.unwrap();
 
-    let output_id = mass_client.infer(model_id, input_id).await.unwrap();
+    let output_id = mass_client
+        .invoke_qwen_object(&void_client, model_id, input_id)
+        .await
+        .unwrap();
     let output_bytes = void_client.download(output_id).await.unwrap();
     let output: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes).expect("failed to decode inference output");
@@ -915,7 +1085,7 @@ async fn start_model_applies_instance_default_inference_limit_override() {
         "instance default inference limit override should produce zero decoded tokens"
     );
 
-    mass_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown_operation(model_id).await.unwrap();
     drop(void_endpoint);
     drop(mass_endpoint);
     void_server.abort();
@@ -923,6 +1093,7 @@ async fn start_model_applies_instance_default_inference_limit_override() {
 }
 
 #[tokio::test]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 async fn optimization() {
     init_tracing();
 
@@ -948,7 +1119,7 @@ async fn optimization() {
     let mass_endpoint = make_client_endpoint().await;
     let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
     let model_id = Uuid::new_v4();
-    mass_client.start(model_id, None).await.unwrap();
+    mass_client.start_qwen(model_id, None).await.unwrap();
 
     let tokenizer = Tokenizer::init();
 
@@ -972,12 +1143,18 @@ async fn optimization() {
 
     // Step 1: PerturbUp
     println!("\n--- Step 1: PerturbUp (seed=42) ---");
-    mass_client.perturb_up(model_id, 42).await.unwrap();
+    mass_client
+        .perturb_up_operation(model_id, 42)
+        .await
+        .unwrap();
 
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
-    let output_id_up = mass_client.infer(model_id, input_id).await.unwrap();
-    mass_client.reset(model_id).await.unwrap();
+    let output_id_up = mass_client
+        .invoke_qwen_object(&void_client, model_id, input_id)
+        .await
+        .unwrap();
+    mass_client.reset_operation(model_id).await.unwrap();
     let output_bytes_up = void_client.download(output_id_up).await.unwrap();
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
@@ -999,12 +1176,15 @@ async fn optimization() {
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
-    mass_client.perturb_down(model_id).await.unwrap();
+    mass_client.perturb_down_operation(model_id).await.unwrap();
 
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
-    let output_id_down = mass_client.infer(model_id, input_id).await.unwrap();
-    mass_client.reset(model_id).await.unwrap();
+    let output_id_down = mass_client
+        .invoke_qwen_object(&void_client, model_id, input_id)
+        .await
+        .unwrap();
+    mass_client.reset_operation(model_id).await.unwrap();
     let output_bytes_down = void_client.download(output_id_down).await.unwrap();
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
@@ -1032,14 +1212,17 @@ async fn optimization() {
         fake_loss_up, fake_loss_down
     );
     mass_client
-        .optimize(model_id, fake_loss_up, fake_loss_down)
+        .optimize_operation(model_id, fake_loss_up, fake_loss_down)
         .await
         .unwrap();
 
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
-    let output_id_final = mass_client.infer(model_id, input_id).await.unwrap();
-    mass_client.reset(model_id).await.unwrap();
+    let output_id_final = mass_client
+        .invoke_qwen_object(&void_client, model_id, input_id)
+        .await
+        .unwrap();
+    mass_client.reset_operation(model_id).await.unwrap();
     let output_bytes_final = void_client.download(output_id_final).await.unwrap();
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
@@ -1074,7 +1257,7 @@ async fn optimization() {
         "post-optimize sequence 1 predicted tokens had no decoded text"
     );
 
-    mass_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown_operation(model_id).await.unwrap();
     drop(void_endpoint);
     drop(mass_endpoint);
     void_server.abort();
@@ -1082,6 +1265,7 @@ async fn optimization() {
 }
 
 #[tokio::test]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 async fn dark_optimization() {
     init_tracing();
 
@@ -1107,7 +1291,7 @@ async fn dark_optimization() {
     let mass_endpoint = make_client_endpoint().await;
     let mass_client = MassClient::new(&mass_endpoint, mass_local, "localhost");
     let model_id = Uuid::new_v4();
-    mass_client.start(model_id, None).await.unwrap();
+    mass_client.start_qwen(model_id, None).await.unwrap();
 
     let input_text =
         "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
@@ -1150,12 +1334,18 @@ async fn dark_optimization() {
 
     // Step 1: PerturbUp
     println!("\n--- Step 1: PerturbUp (seed=42) ---");
-    mass_client.perturb_up(model_id, 42).await.unwrap();
+    mass_client
+        .perturb_up_operation(model_id, 42)
+        .await
+        .unwrap();
 
     // Step 2: Inference with perturbed-up weights
     println!("--- Step 2: Infer (up) ---");
-    let output_id_up = mass_client.infer(model_id, input_id).await.unwrap();
-    mass_client.reset(model_id).await.unwrap();
+    let output_id_up = mass_client
+        .invoke_qwen_object(&void_client, model_id, input_id)
+        .await
+        .unwrap();
+    mass_client.reset_operation(model_id).await.unwrap();
     let output_bytes_up = void_client.download(output_id_up).await.unwrap();
     let output_up: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_up).expect("failed to decode inference output (up)");
@@ -1177,12 +1367,15 @@ async fn dark_optimization() {
 
     // Step 3: PerturbDown
     println!("\n--- Step 3: PerturbDown ---");
-    mass_client.perturb_down(model_id).await.unwrap();
+    mass_client.perturb_down_operation(model_id).await.unwrap();
 
     // Step 4: Inference with perturbed-down weights
     println!("--- Step 4: Infer (down) ---");
-    let output_id_down = mass_client.infer(model_id, input_id).await.unwrap();
-    mass_client.reset(model_id).await.unwrap();
+    let output_id_down = mass_client
+        .invoke_qwen_object(&void_client, model_id, input_id)
+        .await
+        .unwrap();
+    mass_client.reset_operation(model_id).await.unwrap();
     let output_bytes_down = void_client.download(output_id_down).await.unwrap();
     let output_down: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_down).expect("failed to decode inference output (down)");
@@ -1210,14 +1403,17 @@ async fn dark_optimization() {
         fake_loss_up, fake_loss_down
     );
     mass_client
-        .optimize(model_id, fake_loss_up, fake_loss_down)
+        .optimize_operation(model_id, fake_loss_up, fake_loss_down)
         .await
         .unwrap();
 
     // Step 6: Final inference after optimization (back to Idle state)
     println!("--- Step 6: Infer (post-optimize) ---");
-    let output_id_final = mass_client.infer(model_id, input_id).await.unwrap();
-    mass_client.reset(model_id).await.unwrap();
+    let output_id_final = mass_client
+        .invoke_qwen_object(&void_client, model_id, input_id)
+        .await
+        .unwrap();
+    mass_client.reset_operation(model_id).await.unwrap();
     let output_bytes_final = void_client.download(output_id_final).await.unwrap();
     let output_final: black_hole_sun::InferenceOutput =
         from_bytes(&output_bytes_final).expect("failed to decode inference output (final)");
@@ -1252,7 +1448,7 @@ async fn dark_optimization() {
         "post-optimize sequence 1 predicted tokens had no decoded text"
     );
 
-    mass_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown_operation(model_id).await.unwrap();
     drop(void_endpoint);
     drop(mass_endpoint);
     void_server.abort();
@@ -1417,6 +1613,7 @@ async fn mass_void_client_multipart_roundtrip() {
 // Current-thread flavor (like every other model test): paramecia's model
 // actor must stay pinned to one OS thread or CUDA loses its device context.
 #[tokio::test]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 async fn fuse_weights_with_checkpoint() {
     init_tracing();
 
@@ -1441,10 +1638,10 @@ async fn fuse_weights_with_checkpoint() {
     let mass_client = MassClient::new(&mass_endpoint, mass_server.local_addr(), "localhost");
 
     let model_id = Uuid::new_v4();
-    mass_client.start(model_id, None).await.unwrap();
+    mass_client.start_qwen(model_id, None).await.unwrap();
 
     // Checkpoint the fresh weights into void.
-    let checkpoint_id = mass_client.checkpoint(model_id).await.unwrap();
+    let checkpoint_id = mass_client.checkpoint_operation(model_id).await.unwrap();
     let checkpoint_path = std::env::temp_dir().join(format!("bhs-ckpt-{checkpoint_id}.gguf"));
     let checkpoint_len = void_client
         .download_to_file(checkpoint_id, &checkpoint_path)
@@ -1454,7 +1651,7 @@ async fn fuse_weights_with_checkpoint() {
 
     // Fuse live weights with the checkpoint at 50/50.
     let fused_id = mass_client
-        .fuse_weights(model_id, checkpoint_id, 0.5)
+        .fuse_operation(model_id, checkpoint_id, 0.5)
         .await
         .unwrap_or_else(|e| panic!("fuse_weights should succeed: {e}"));
 
@@ -1487,7 +1684,7 @@ async fn fuse_weights_with_checkpoint() {
 
     // Fusing an unknown model must fail cleanly.
     let error = mass_client
-        .fuse_weights(Uuid::new_v4(), checkpoint_id, 0.5)
+        .fuse_operation(Uuid::new_v4(), checkpoint_id, 0.5)
         .await
         .expect_err("fusing an unknown model should fail");
     assert!(
@@ -1497,7 +1694,7 @@ async fn fuse_weights_with_checkpoint() {
 
     // Fusing against a missing void object must fail cleanly.
     let error = mass_client
-        .fuse_weights(model_id, Uuid::new_v4(), 0.5)
+        .fuse_operation(model_id, Uuid::new_v4(), 0.5)
         .await
         .expect_err("fusing a missing checkpoint should fail");
     assert!(
@@ -1509,7 +1706,8 @@ async fn fuse_weights_with_checkpoint() {
     // non-destructive: it only produced a new void object).
     let tokenizer = Tokenizer::init();
     let output_id = mass_client
-        .infer(
+        .invoke_qwen_object(
+            &void_client,
             model_id,
             void_client
                 .upload(
@@ -1533,7 +1731,7 @@ async fn fuse_weights_with_checkpoint() {
     );
     let _ = tokenizer.decode(&output.results[0].0);
 
-    mass_client.shutdown(model_id).await.unwrap();
+    mass_client.shutdown_operation(model_id).await.unwrap();
     void_server.abort();
     mass_server.abort();
 }

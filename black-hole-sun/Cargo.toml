@@ -33,6 +33,7 @@ serde = "1"
 sha2 = "0.10"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 tokio = { version = "1", features = ["io-util", "fs", "macros", "rt-multi-thread", "time"] }
+uuid = { version = "1", features = ["v4"] }
 
 [lints]
 workspace = true

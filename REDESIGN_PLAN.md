@@ -1,8 +1,28 @@
 # Black Hole Sun Redesign Plan
 
 This redesign will be delivered as a sequence of independently testable
-migrations. The current Qwen/QuZO path will remain operational until the
-generic tensor-operation path has feature parity.
+migrations.
+
+## Non-negotiable invariants
+
+A Mass server is a black box identified by two things: the tensor contract it
+hosts (including input/output shapes and encodings) and the capabilities it
+advertises. There is no protocol-level distinction between a "model" and an
+"operation". A Qwen forward pass, a tensor slice, and a chain of tensor
+operations are different implementations of the same hosted-instance
+abstraction.
+
+Capabilities belong to the implementation. Forward, reset, perturb,
+optimize, checkpoint, and fuse are advertised per hosted implementation and
+validated fail-closed at start and invocation. Any backend may implement the
+full zeroth-order lifecycle, and the backend owns all state required to do so.
+Mass owns identity, routing, validation, and durable artifact publication.
+
+This project has no compatibility requirement for the pre-redesign API or
+wire protocol. Migration is complete only when the unified path expresses all
+required behavior and the parallel legacy path has been deleted. Temporary
+aliases, duplicate registries, and duplicate message dialects are not an
+acceptable end state.
 
 ## 1. Establish the operation contract and tensor wire format
 
@@ -68,29 +88,33 @@ generic tensor-operation path has feature parity.
     conversions.
 
 - Make `MassClient<Op>` typed, deriving its request and response artifact
-  types from `Op`. Keep temporary aliases or adapters for `InferenceRequest`,
-  `InferenceOutput`, and `VoidInferOps` so the existing probes can migrate
-  incrementally instead of requiring a flag-day patch.
+  types from `Op`. Update all callers in the workspace in the same migration;
+  do not retain aliases or adapters for the replaced Mass protocol.
 - Define a first `QwenDarkInference` contract and adapter that maps the current
   DarkToken/postcard behavior onto the generic API. This is the compatibility
   backend and proves that the abstraction preserves existing behavior.
 
-## 3. Make Mass an injected operation host
+## 3. Unify Mass around hosted operations
 
-- Refactor local execution in `_black_hole_mass/src/lib.rs` behind an injected
-  operation implementation. The generic server owns instance, routing, and
-  lifecycle concerns. The Qwen adapter owns
+- Refactor all local execution in `_black_hole_mass/src/lib.rs` behind an
+  injected operation implementation. The server owns instance identity,
+  routing, contract validation, capability gating, and durable publication.
+  Implementations own operation state and execution. The Qwen adapter owns
   `paramecia_engine::ModelInput`, DarkToken conversion, tokenizer/model
-  configuration, and QuZO-specific state.
-- Add versioned generic start/forward protocol variants alongside the existing
-  `MassIn::Start` and `MassIn::Infer` variants during migration. Start carries
-  the complete contract descriptor/hash and declared codec set; forward
-  carries a typed artifact or transfer reference. The server validates at
-  start and validates the actual tensor again while decoding it.
-- Replace or supplement `WorkerCapabilities.architectures` with advertised
-  operation contracts and encodings. Selection must match the complete
-  contract rather than shapes alone, and `routes` must continue pinning every
-  later operation for an instance to its selected worker.
+  configuration, the paramecia engine, and QuZO-specific state. This is an
+  engine boundary, not merely a data-conversion adapter.
+- Replace the two instance registries and protocol dialects with one hosted
+  instance registry and one versioned protocol: start, invoke, optional
+  lifecycle verbs, and shutdown. Start carries the complete contract
+  descriptor/hash, codec set, required capabilities, and opaque
+  implementation configuration. Every subsequent verb routes by the same
+  instance ID. Checkpoint and fuse inputs/results are durable Void objects
+  addressed by `ObjectId`.
+- Replace architecture-only placement with advertised operation contracts,
+  encodings, and lifecycle capabilities. Backend-specific configuration may
+  still contain an architecture requirement, but selection must first match
+  the complete hosted-operation capability. Routes pin every later operation
+  for an instance to its selected worker.
 - Preserve lifecycle operations as separate capability bounds. A forward-only
   server is not required to implement perturb, optimize, or checkpoint, while
   the Qwen QuZO adapter implements the full set.
@@ -102,6 +126,13 @@ generic tensor-operation path has feature parity.
   - unsupported codecs;
   - worker pinning; and
   - validation of a malformed actual payload.
+- Add a fake backend implementing perturb/optimize over a tiny parameter
+  buffer. An end-to-end `TwoSidedZo` run must measurably reduce a quadratic
+  loss in ordinary CI. Add tensor-slicer and two-operation-chain tests so the
+  abstraction is exercised beyond a single identity-shaped fake.
+- Make `paramecia-engine` optional behind the Qwen backend feature. A Mass
+  binary hosting only an injected tensor operation must not link Candle or
+  paramecia.
 
 ## 4. Carry operation types through Flux and make topology edges checkable
 
@@ -200,12 +231,14 @@ compatibility contract introduced in the first or second merge request. Every
 merge request must leave `cargo test --workspace` green and keep the current
 public facade in `black-hole-sun/src/lib.rs` usable.
 
-Do not remove the legacy protocol or types until all of the following pass:
+Delete the legacy protocol and types as part of this redesign. The deletion
+gate is that all of the following pass through the unified protocol:
 
 - the generic fake-operation path;
 - the Qwen adapter;
 - generic tunnel routing;
-- `TwoSidedZo` behavioral parity; and
+- `TwoSidedZo` behavioral parity, including convergence against a non-Qwen
+  optimizing backend; and
 - a forward-only Sun program.
 
 Direct QUIC streaming is deliberately last. The contract/envelope, typed

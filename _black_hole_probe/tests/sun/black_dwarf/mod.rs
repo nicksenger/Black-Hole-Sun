@@ -18,7 +18,7 @@ const BLACK_DWARF_DEFAULT_INFERENCE_LIMIT: u32 = 512;
 /// Runs the same U0 -> U1 -> U2 Sun topology as `diamond_dog`, with real Progenitor
 /// cells backed by a mass model.
 #[cfg(test)]
-#[ignore]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 #[tokio::test]
 async fn primordia() {
     init_tracing();
@@ -41,7 +41,7 @@ async fn primordia() {
 
 /// Runs the same topology as `primordia`, but with dark_star's generator/policy.
 #[cfg(test)]
-#[ignore]
+#[ignore = "requires BLACK_HOLE_PROBE_MODEL_PATH (GGUF/Qwen backend)"]
 #[tokio::test]
 async fn test_black_dwarf() {
     init_tracing();

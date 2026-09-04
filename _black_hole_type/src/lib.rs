@@ -513,6 +513,65 @@ pub struct OperationCapability {
     pub descriptor_hash: ContractHash,
     pub tensor_encodings: Vec<EncodingId>,
     pub metadata_encodings: Vec<EncodingId>,
+    /// Lifecycle verbs implemented by this operation host.
+    pub operations: OperationCapabilities,
+}
+
+/// Runtime capability set for a hosted operation.
+///
+/// The tensor contract describes the values crossing the operation boundary;
+/// this set describes what the selected implementation can do with its
+/// internal state. Keeping the two independent allows the same contract to be
+/// hosted by forward-only and optimizing backends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationCapabilities {
+    pub forward: bool,
+    pub reset: bool,
+    pub perturb: bool,
+    pub optimize: bool,
+    pub checkpoint: bool,
+    pub fuse: bool,
+    pub query: bool,
+}
+
+impl OperationCapabilities {
+    pub const FORWARD_ONLY: Self = Self {
+        forward: true,
+        reset: false,
+        perturb: false,
+        optimize: false,
+        checkpoint: false,
+        fuse: false,
+        query: false,
+    };
+
+    pub const OPTIMIZING: Self = Self {
+        forward: true,
+        reset: true,
+        perturb: true,
+        optimize: true,
+        checkpoint: true,
+        fuse: true,
+        query: true,
+    };
+
+    pub const fn satisfies(self, required: Self) -> bool {
+        (!required.forward || self.forward)
+            && (!required.reset || self.reset)
+            && (!required.perturb || self.perturb)
+            && (!required.optimize || self.optimize)
+            && (!required.checkpoint || self.checkpoint)
+            && (!required.fuse || self.fuse)
+            && (!required.query || self.query)
+    }
+}
+
+/// Opaque, implementation-owned configuration carried by unified instance
+/// start and query messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationConfig {
+    pub encoding: EncodingId,
+    pub data: Vec<u8>,
 }
 
 /// Location-erased artifact reference used by the generic Mass wire protocol.
@@ -724,46 +783,61 @@ pub enum TransferStreamFrame {
 /// Request sent by a client to the mass QUIC server.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MassIn {
-    /// Start a new model instance with the provided stable ID.
-    ///
-    /// When `model_config` is `None`, mass uses server defaults. When present,
-    /// the provided values override defaults for this specific model instance.
-    Start {
-        model_id: Uuid,
-        model_config: Option<MassModelConfig>,
+    /// Select an implementation and start one black-box operation instance.
+    StartInstance {
+        protocol_version: u16,
+        instance_id: Uuid,
+        /// Complete contract, codec, and required-lifecycle declaration.
+        capability: OperationCapability,
+        /// Backend-owned configuration (for example Qwen sampling options).
+        config: Option<OperationConfig>,
     },
-    /// Perturb model weights in the positive direction.
-    PerturbUp { model_id: Uuid, seed: u64 },
-    /// Run inference on the input object stored in void.
-    /// Returns MassOut::Inferred(output_id).
-    Infer { model_id: Uuid, input_id: ObjectId },
-    /// Reset model runtime state (for example KV cache) for the instance.
-    Reset { model_id: Uuid },
-    /// Perturb model weights in the negative direction.
-    PerturbDown { model_id: Uuid },
-    /// Upload current model weights to void and return their object ID.
-    Checkpoint { model_id: Uuid },
-    /// Apply the QuZO optimization update with both loss values.
-    Optimize {
-        model_id: Uuid,
+    /// Invoke the instance's forward operation on a typed artifact.
+    Invoke {
+        protocol_version: u16,
+        instance_id: Uuid,
+        input: OperationArtifactRef,
+    },
+    ResetInstance {
+        instance_id: Uuid,
+    },
+    PerturbUpInstance {
+        instance_id: Uuid,
+        seed: u64,
+    },
+    PerturbDownInstance {
+        instance_id: Uuid,
+    },
+    CheckpointInstance {
+        instance_id: Uuid,
+    },
+    OptimizeInstance {
+        instance_id: Uuid,
         loss_up: f32,
         loss_down: f32,
     },
-    /// Shut down the model instance with the provided ID.
-    Shutdown { model_id: Uuid },
-    /// Query the current runtime parameters for a model instance.
-    QueryModelParams { model_id: Uuid },
-    /// Query recursive model instance capacity for this mass subtree.
-    QueryModelCapacity,
+    FuseInstance {
+        instance_id: Uuid,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    },
+    ShutdownInstance {
+        instance_id: Uuid,
+    },
+    /// Query opaque implementation-owned runtime parameters.
+    QueryInstance {
+        instance_id: Uuid,
+    },
+    /// Query recursive hosted-instance capacity for this Mass subtree.
+    QueryInstanceCapacity,
     /// Register a one-hop tunnel worker with a root mass.
     RegisterTunnel {
         /// Stable worker identity used by parent masss to match reconnects.
         worker_id: Uuid,
         /// Optional total model capacity advertised by this worker subtree (defaults to 1).
         max_instances: Option<usize>,
-        /// Capabilities of this worker's compiled engine. `None` on legacy
-        /// workers that predate capability advertising; treated as unknown.
-        capabilities: Option<WorkerCapabilities>,
+        /// Complete operation capabilities advertised by this worker.
+        capabilities: WorkerCapabilities,
     },
     /// Update the advertised tunnel capacity for an already-registered worker token.
     UpdateTunnelCapacity {
@@ -772,41 +846,13 @@ pub enum MassIn {
         /// Optional total model capacity for this worker subtree (defaults to 1).
         max_instances: Option<usize>,
     },
-    /// Forward a model operation through a registered tunnel worker.
+    /// Forward a hosted-instance operation through a registered tunnel worker.
     TunnelForward {
         /// Root-issued token proving this request was authorized for the worker.
         token: Uuid,
-        /// Forwarded model operation.
+        /// Forwarded hosted-instance operation.
         request: TunnelRequest,
     },
-    /// Fuse the current weights of a running model instance with a checkpoint
-    /// stored in void using task arithmetic. The fused weights are uploaded to
-    /// void and their object ID is returned in MassOut::FusedWeights.
-    ///
-    /// The instance must be in its idle state (no perturbation in flight);
-    /// the running instance itself is left unmodified.
-    FuseWeights {
-        model_id: Uuid,
-        /// Void object ID of the GGUF checkpoint to fuse with the live weights.
-        checkpoint_id: ObjectId,
-        /// Task-arithmetic contribution of the checkpoint
-        /// (0.5 = plain average of live and checkpoint weights).
-        contribution: f32,
-    },
-    /// Start a generic tensor-operation instance.
-    StartOperation {
-        protocol_version: u16,
-        instance_id: Uuid,
-        capability: OperationCapability,
-    },
-    /// Run a generic forward operation on a typed artifact.
-    ForwardOperation {
-        protocol_version: u16,
-        instance_id: Uuid,
-        input: OperationArtifactRef,
-    },
-    /// Shut down a generic tensor-operation instance.
-    ShutdownOperation { instance_id: Uuid },
 }
 
 /// Response sent by the mass server to the client.
@@ -814,22 +860,20 @@ pub enum MassIn {
 pub enum MassOut {
     /// Acknowledges a lifecycle, perturb, or optimize step.
     Ack,
-    /// Inference complete; contains the void object ID of the output.
-    Inferred { output_id: ObjectId },
+    /// Forward invocation complete; contains the typed output artifact.
+    Invoked { output: OperationArtifactRef },
     /// Checkpoint upload complete; contains the void object ID of model weights.
     Checkpointed { checkpoint_id: ObjectId },
-    /// Runtime model parameters for a running instance.
-    ModelParams { params: MassModelParams },
-    /// Recursive model instance capacity for this mass subtree.
-    ModelCapacity { capacity: MassModelCapacity },
+    /// Opaque implementation-owned runtime parameters for an instance.
+    Instance { params: OperationConfig },
+    /// Recursive hosted-instance capacity for this mass subtree.
+    InstanceCapacity { capacity: MassModelCapacity },
     /// Tunnel worker registration complete; contains root-issued auth token.
     TunnelRegistered { token: Uuid },
     /// Weight fusion complete; contains the void object ID of the fused weights.
-    FusedWeights { fused_id: ObjectId },
+    Fused { fused_id: ObjectId },
     /// Error from any operation.
     Error { message: String },
-    /// Generic forward complete; contains the output artifact reference.
-    Forwarded { output: OperationArtifactRef },
 }
 
 /// Runtime model parameters resolved for a running mass model instance.
@@ -930,57 +974,47 @@ pub struct WorkerCapabilities {
     pub operations: Vec<OperationCapability>,
 }
 
-/// Forwardable model operation used for root->worker tunnel requests.
+/// Forwardable hosted-instance operation used for root->worker tunnel requests.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum TunnelRequest {
-    Start {
-        model_id: Uuid,
-        model_config: Option<MassModelConfig>,
-    },
-    PerturbUp {
-        model_id: Uuid,
-        seed: u64,
-    },
-    Infer {
-        model_id: Uuid,
-        input_id: ObjectId,
-    },
-    Reset {
-        model_id: Uuid,
-    },
-    PerturbDown {
-        model_id: Uuid,
-    },
-    Checkpoint {
-        model_id: Uuid,
-    },
-    Optimize {
-        model_id: Uuid,
-        loss_up: f32,
-        loss_down: f32,
-    },
-    Shutdown {
-        model_id: Uuid,
-    },
-    QueryModelParams {
-        model_id: Uuid,
-    },
-    FuseWeights {
-        model_id: Uuid,
-        checkpoint_id: ObjectId,
-        contribution: f32,
-    },
-    StartOperation {
+    StartInstance {
         protocol_version: u16,
         instance_id: Uuid,
         capability: OperationCapability,
+        config: Option<OperationConfig>,
     },
-    ForwardOperation {
+    Invoke {
         protocol_version: u16,
         instance_id: Uuid,
         input: OperationArtifactRef,
     },
-    ShutdownOperation {
+    ResetInstance {
+        instance_id: Uuid,
+    },
+    PerturbUpInstance {
+        instance_id: Uuid,
+        seed: u64,
+    },
+    PerturbDownInstance {
+        instance_id: Uuid,
+    },
+    CheckpointInstance {
+        instance_id: Uuid,
+    },
+    OptimizeInstance {
+        instance_id: Uuid,
+        loss_up: f32,
+        loss_down: f32,
+    },
+    FuseInstance {
+        instance_id: Uuid,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    },
+    ShutdownInstance {
+        instance_id: Uuid,
+    },
+    QueryInstance {
         instance_id: Uuid,
     },
 }
@@ -1105,14 +1139,14 @@ pub struct InferenceOutput {
     pub results: Vec<SequenceOutput>,
 }
 
-/// Typed void reference for a legacy Qwen inference output.
+/// Typed void reference for a Qwen inference output.
 pub type InferenceOutputId = ObjectRef<InferenceOutput>;
 
 /// Input / Output from an Atom.
 ///
-/// The payload type is independent from metadata. It defaults to the legacy
-/// Qwen output so existing `Emission<M>` users remain source-compatible while
-/// generic paths can use `Emission<M, Op::Output>`.
+/// The payload type is independent from metadata. Qwen is the default marker
+/// for the application-facing adapter; generic paths use
+/// `Emission<M, Op::Output>`.
 #[derive(Serialize, Deserialize)]
 #[serde(bound(serialize = "M: Serialize", deserialize = "M: Deserialize<'de>"))]
 pub struct Emission<M, T = InferenceOutput> {
@@ -1270,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_inference_id_uses_the_typed_reference_wire_format() {
+    fn qwen_inference_id_uses_the_typed_reference_wire_format() {
         let id = ObjectId::from_u128(13);
         let request = InferenceRequest::VoidId {
             id: InferenceOutputId::new(id),

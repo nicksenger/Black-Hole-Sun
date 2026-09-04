@@ -3,8 +3,8 @@ use std::{marker::PhantomData, net::SocketAddr};
 use black_hole_spec::{operation_capability, QwenDarkInference, TensorContract};
 use black_hole_flux::ops::{CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, ResetOps};
 use black_hole_type::{
-    ArtifactRef, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut, ObjectId,
-    MASS_OPERATION_PROTOCOL_VERSION,
+    ArtifactRef, EncodingId, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut,
+    ObjectId, OperationCapabilities, OperationConfig, MASS_OPERATION_PROTOCOL_VERSION,
 };
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,8 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
 };
+
+use crate::VoidClient;
 
 #[derive(Clone, Debug)]
 enum MassTransport {
@@ -28,6 +30,7 @@ enum MassTransport {
 /// Client for interacting with the Mass service.
 pub struct MassClient<Op = QwenDarkInference> {
     transport: MassTransport,
+    required_capabilities: OperationCapabilities,
     operation: PhantomData<fn() -> Op>,
 }
 
@@ -35,6 +38,7 @@ impl<Op> Clone for MassClient<Op> {
     fn clone(&self) -> Self {
         Self {
             transport: self.transport.clone(),
+            required_capabilities: self.required_capabilities,
             operation: PhantomData,
         }
     }
@@ -56,11 +60,11 @@ impl MassClient<QwenDarkInference> {
         addr: SocketAddr,
         server_name: impl Into<String>,
     ) -> Self {
-        Self::new_typed(endpoint, addr, server_name)
+        Self::new_typed(endpoint, addr, server_name).requiring(OperationCapabilities::OPTIMIZING)
     }
 
     pub fn new_tcp(addr: SocketAddr) -> Self {
-        Self::new_tcp_typed(addr)
+        Self::new_tcp_typed(addr).requiring(OperationCapabilities::OPTIMIZING)
     }
 }
 
@@ -76,6 +80,7 @@ impl<Op> MassClient<Op> {
                 addr,
                 server_name: server_name.into(),
             },
+            required_capabilities: OperationCapabilities::FORWARD_ONLY,
             operation: PhantomData,
         }
     }
@@ -83,6 +88,7 @@ impl<Op> MassClient<Op> {
     pub fn new_tcp_typed(addr: SocketAddr) -> Self {
         Self {
             transport: MassTransport::Tcp { addr },
+            required_capabilities: OperationCapabilities::FORWARD_ONLY,
             operation: PhantomData,
         }
     }
@@ -91,143 +97,16 @@ impl<Op> MassClient<Op> {
     pub fn with_operation<Next>(self) -> MassClient<Next> {
         MassClient {
             transport: self.transport,
+            required_capabilities: OperationCapabilities::FORWARD_ONLY,
             operation: PhantomData,
         }
     }
-}
 
-impl MassClient<QwenDarkInference> {
-    pub async fn start(
-        &self,
-        model_id: ObjectId,
-        model_config: Option<MassModelConfig>,
-    ) -> Result<(), String> {
-        let resp = self
-            .request(&MassIn::Start {
-                model_id,
-                model_config,
-            })
-            .await?;
-        match resp {
-            MassOut::Ack => Ok(()),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for start".to_string()),
-        }
-    }
-
-    pub async fn infer(&self, model_id: ObjectId, input_id: ObjectId) -> Result<ObjectId, String> {
-        let resp = self.request(&MassIn::Infer { model_id, input_id }).await?;
-        match resp {
-            MassOut::Inferred { output_id } => Ok(output_id),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for infer".to_string()),
-        }
-    }
-
-    pub async fn reset(&self, model_id: ObjectId) -> Result<(), String> {
-        let resp = self.request(&MassIn::Reset { model_id }).await?;
-        match resp {
-            MassOut::Ack => Ok(()),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for reset".to_string()),
-        }
-    }
-
-    pub async fn perturb_up(&self, model_id: ObjectId, seed: u64) -> Result<(), String> {
-        let resp = self.request(&MassIn::PerturbUp { model_id, seed }).await?;
-        match resp {
-            MassOut::Ack => Ok(()),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for perturb_up".to_string()),
-        }
-    }
-
-    pub async fn perturb_down(&self, model_id: ObjectId) -> Result<(), String> {
-        let resp = self.request(&MassIn::PerturbDown { model_id }).await?;
-        match resp {
-            MassOut::Ack => Ok(()),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for perturb_down".to_string()),
-        }
-    }
-
-    pub async fn checkpoint(&self, model_id: ObjectId) -> Result<ObjectId, String> {
-        let resp = self.request(&MassIn::Checkpoint { model_id }).await?;
-        match resp {
-            MassOut::Checkpointed { checkpoint_id } => Ok(checkpoint_id),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for checkpoint".to_string()),
-        }
-    }
-
-    /// Fuse the current weights of a running model instance with a
-    /// void-stored checkpoint using task arithmetic. Returns the void object
-    /// ID of the fused weights.
-    pub async fn fuse_weights(
-        &self,
-        model_id: ObjectId,
-        checkpoint_id: ObjectId,
-        contribution: f32,
-    ) -> Result<ObjectId, String> {
-        let resp = self
-            .request(&MassIn::FuseWeights {
-                model_id,
-                checkpoint_id,
-                contribution,
-            })
-            .await?;
-        match resp {
-            MassOut::FusedWeights { fused_id } => Ok(fused_id),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for fuse_weights".to_string()),
-        }
-    }
-
-    pub async fn optimize(
-        &self,
-        model_id: ObjectId,
-        loss_up: f32,
-        loss_down: f32,
-    ) -> Result<(), String> {
-        let resp = self
-            .request(&MassIn::Optimize {
-                model_id,
-                loss_up,
-                loss_down,
-            })
-            .await?;
-        match resp {
-            MassOut::Ack => Ok(()),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for optimize".to_string()),
-        }
-    }
-
-    pub async fn shutdown(&self, model_id: ObjectId) -> Result<(), String> {
-        let resp = self.request(&MassIn::Shutdown { model_id }).await?;
-        match resp {
-            MassOut::Ack => Ok(()),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for shutdown".to_string()),
-        }
-    }
-
-    pub async fn query_model_params(&self, model_id: ObjectId) -> Result<MassModelParams, String> {
-        let resp = self.request(&MassIn::QueryModelParams { model_id }).await?;
-        match resp {
-            MassOut::ModelParams { params } => Ok(params),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for query_model_params".to_string()),
-        }
-    }
-
-    pub async fn query_model_capacity(&self) -> Result<MassModelCapacity, String> {
-        let resp = self.request(&MassIn::QueryModelCapacity).await?;
-        match resp {
-            MassOut::ModelCapacity { capacity } => Ok(capacity),
-            MassOut::Error { message } => Err(message),
-            _ => Err("unexpected mass response for query_model_capacity".to_string()),
-        }
+    /// Require this lifecycle surface when the instance is placed. The host
+    /// rejects the start unless one implementation advertises every bit.
+    pub fn requiring(mut self, capabilities: OperationCapabilities) -> Self {
+        self.required_capabilities = capabilities;
+        self
     }
 }
 
@@ -268,14 +147,25 @@ impl<Op> MassClient<Op>
 where
     Op: TensorContract,
 {
-    /// Start a generic operation instance with its full runtime contract and
-    /// supported v1 codecs.
+    /// Start an operation instance with its full contract and required
+    /// lifecycle surface.
     pub async fn start_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        self.start_operation_with(instance_id, None).await
+    }
+
+    pub async fn start_operation_with(
+        &self,
+        instance_id: ObjectId,
+        config: Option<OperationConfig>,
+    ) -> Result<(), String> {
+        let mut capability = operation_capability::<Op>();
+        capability.operations = self.required_capabilities;
         match self
-            .request(&MassIn::StartOperation {
+            .request(&MassIn::StartInstance {
                 protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
                 instance_id,
-                capability: operation_capability::<Op>(),
+                capability,
+                config,
             })
             .await?
         {
@@ -293,14 +183,14 @@ where
         input: ArtifactRef<Op::Input>,
     ) -> Result<ArtifactRef<Op::Output>, String> {
         match self
-            .request(&MassIn::ForwardOperation {
+            .request(&MassIn::Invoke {
                 protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
                 instance_id,
                 input: input.into(),
             })
             .await?
         {
-            MassOut::Forwarded { output } => Ok(output.into_typed()),
+            MassOut::Invoked { output } => Ok(output.into_typed()),
             MassOut::Error { message } => Err(message),
             _ => Err("unexpected mass response for operation forward".to_string()),
         }
@@ -308,13 +198,182 @@ where
 
     pub async fn shutdown_operation(&self, instance_id: ObjectId) -> Result<(), String> {
         match self
-            .request(&MassIn::ShutdownOperation { instance_id })
+            .request(&MassIn::ShutdownInstance { instance_id })
             .await?
         {
             MassOut::Ack => Ok(()),
             MassOut::Error { message } => Err(message),
             _ => Err("unexpected mass response for operation shutdown".to_string()),
         }
+    }
+
+    pub async fn reset_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        expect_ack(
+            self.request(&MassIn::ResetInstance { instance_id }).await?,
+            "reset",
+        )
+    }
+
+    pub async fn perturb_up_operation(
+        &self,
+        instance_id: ObjectId,
+        seed: u64,
+    ) -> Result<(), String> {
+        expect_ack(
+            self.request(&MassIn::PerturbUpInstance { instance_id, seed })
+                .await?,
+            "perturb up",
+        )
+    }
+
+    pub async fn perturb_down_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        expect_ack(
+            self.request(&MassIn::PerturbDownInstance { instance_id })
+                .await?,
+            "perturb down",
+        )
+    }
+
+    pub async fn optimize_operation(
+        &self,
+        instance_id: ObjectId,
+        loss_up: f32,
+        loss_down: f32,
+    ) -> Result<(), String> {
+        expect_ack(
+            self.request(&MassIn::OptimizeInstance {
+                instance_id,
+                loss_up,
+                loss_down,
+            })
+            .await?,
+            "optimize",
+        )
+    }
+
+    pub async fn checkpoint_operation(&self, instance_id: ObjectId) -> Result<ObjectId, String> {
+        match self
+            .request(&MassIn::CheckpointInstance { instance_id })
+            .await?
+        {
+            MassOut::Checkpointed { checkpoint_id } => Ok(checkpoint_id),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for checkpoint".into()),
+        }
+    }
+
+    pub async fn fuse_operation(
+        &self,
+        instance_id: ObjectId,
+        checkpoint_id: ObjectId,
+        contribution: f32,
+    ) -> Result<ObjectId, String> {
+        match self
+            .request(&MassIn::FuseInstance {
+                instance_id,
+                checkpoint_id,
+                contribution,
+            })
+            .await?
+        {
+            MassOut::Fused { fused_id } => Ok(fused_id),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for fuse".into()),
+        }
+    }
+
+    pub async fn query_operation(&self, instance_id: ObjectId) -> Result<OperationConfig, String> {
+        match self.request(&MassIn::QueryInstance { instance_id }).await? {
+            MassOut::Instance { params } => Ok(params),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for query".into()),
+        }
+    }
+
+    pub async fn query_instance_capacity(&self) -> Result<MassModelCapacity, String> {
+        match self.request(&MassIn::QueryInstanceCapacity).await? {
+            MassOut::InstanceCapacity { capacity } => Ok(capacity),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for capacity query".into()),
+        }
+    }
+}
+
+fn expect_ack(response: MassOut, operation: &str) -> Result<(), String> {
+    match response {
+        MassOut::Ack => Ok(()),
+        MassOut::Error { message } => Err(message),
+        _ => Err(format!("unexpected mass response for {operation}")),
+    }
+}
+
+impl MassClient<QwenDarkInference> {
+    pub async fn start_qwen(
+        &self,
+        instance_id: ObjectId,
+        config: Option<MassModelConfig>,
+    ) -> Result<(), String> {
+        let config = config
+            .map(|config| {
+                to_allocvec(&config)
+                    .map(|data| OperationConfig {
+                        encoding: EncodingId::POSTCARD_V1,
+                        data,
+                    })
+                    .map_err(|error| format!("failed to encode Qwen config: {error}"))
+            })
+            .transpose()?;
+        self.start_operation_with(instance_id, config).await
+    }
+
+    pub async fn query_qwen(&self, instance_id: ObjectId) -> Result<MassModelParams, String> {
+        let config = self.query_operation(instance_id).await?;
+        if config.encoding != EncodingId::POSTCARD_V1 {
+            return Err("Qwen query returned an unsupported config encoding".into());
+        }
+        from_bytes(&config.data).map_err(|error| format!("failed to decode Qwen params: {error}"))
+    }
+
+    /// Qwen application adapter over the unified typed invocation protocol.
+    pub async fn invoke_qwen_request(
+        &self,
+        void: &VoidClient,
+        instance_id: ObjectId,
+        request: black_hole_type::InferenceRequest,
+    ) -> Result<ObjectId, String> {
+        let input = black_hole_spec::encode_qwen_request(request)
+            .map_err(|error| format!("failed to encode Qwen request: {error}"))?;
+        let input_id = void
+            .upload(input)
+            .await
+            .map_err(|error| error.to_string())?;
+        let output = self
+            .forward(instance_id, ArtifactRef::from_object_id(input_id))
+            .await?;
+        let output_bytes = void
+            .receive_artifact(&output)
+            .await
+            .map_err(|error| error.to_string())?;
+        let output = black_hole_spec::decode_qwen_output(&output_bytes)
+            .map_err(|error| format!("failed to decode Qwen output: {error}"))?;
+        let bytes = to_allocvec(&output)
+            .map_err(|error| format!("failed to encode Qwen application output: {error}"))?;
+        void.upload(bytes).await.map_err(|error| error.to_string())
+    }
+
+    pub async fn invoke_qwen_object(
+        &self,
+        void: &VoidClient,
+        instance_id: ObjectId,
+        request_id: ObjectId,
+    ) -> Result<ObjectId, String> {
+        let bytes = void
+            .download(request_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let request = from_bytes(&bytes)
+            .map_err(|error| format!("failed to decode Qwen request: {error}"))?;
+        self.invoke_qwen_request(void, instance_id, request).await
     }
 }
 
@@ -341,52 +400,66 @@ where
 }
 
 #[async_trait::async_trait]
-impl ResetOps<QwenDarkInference> for MassClient<QwenDarkInference> {
+impl<Op> ResetOps<Op> for MassClient<Op>
+where
+    Op: TensorContract + Send + Sync,
+{
     async fn reset_operation(&self, instance_id: ObjectId) -> Result<(), String> {
-        self.reset(instance_id).await
+        MassClient::reset_operation(self, instance_id).await
     }
 }
 
 #[async_trait::async_trait]
-impl PerturbOps<QwenDarkInference> for MassClient<QwenDarkInference> {
+impl<Op> PerturbOps<Op> for MassClient<Op>
+where
+    Op: TensorContract + Send + Sync,
+{
     async fn perturb_up_operation(&self, instance_id: ObjectId, seed: u64) -> Result<(), String> {
-        self.perturb_up(instance_id, seed).await
+        MassClient::perturb_up_operation(self, instance_id, seed).await
     }
 
     async fn perturb_down_operation(&self, instance_id: ObjectId) -> Result<(), String> {
-        self.perturb_down(instance_id).await
+        MassClient::perturb_down_operation(self, instance_id).await
     }
 }
 
 #[async_trait::async_trait]
-impl OptimizeOps<QwenDarkInference> for MassClient<QwenDarkInference> {
+impl<Op> OptimizeOps<Op> for MassClient<Op>
+where
+    Op: TensorContract + Send + Sync,
+{
     async fn optimize_operation(
         &self,
         instance_id: ObjectId,
         loss_up: f32,
         loss_down: f32,
     ) -> Result<(), String> {
-        self.optimize(instance_id, loss_up, loss_down).await
+        MassClient::optimize_operation(self, instance_id, loss_up, loss_down).await
     }
 }
 
 #[async_trait::async_trait]
-impl CheckpointOps<QwenDarkInference> for MassClient<QwenDarkInference> {
+impl<Op> CheckpointOps<Op> for MassClient<Op>
+where
+    Op: TensorContract + Send + Sync,
+{
     async fn checkpoint_operation(&self, instance_id: ObjectId) -> Result<ObjectId, String> {
-        self.checkpoint(instance_id).await
+        MassClient::checkpoint_operation(self, instance_id).await
     }
 }
 
 #[async_trait::async_trait]
-impl FuseOps<QwenDarkInference> for MassClient<QwenDarkInference> {
+impl<Op> FuseOps<Op> for MassClient<Op>
+where
+    Op: TensorContract + Send + Sync,
+{
     async fn fuse_operation(
         &self,
         instance_id: ObjectId,
         checkpoint_id: ObjectId,
         contribution: f32,
     ) -> Result<ObjectId, String> {
-        self.fuse_weights(instance_id, checkpoint_id, contribution)
-            .await
+        MassClient::fuse_operation(self, instance_id, checkpoint_id, contribution).await
     }
 }
 

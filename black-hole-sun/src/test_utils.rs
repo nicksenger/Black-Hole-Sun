@@ -1,12 +1,359 @@
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
 
-use crate::{object_store, persist, MassServerBuilder, VoidServerBuilder};
+use crate::{
+    decode_input, encode_output, object_store, operation_capability, persist, ContractId,
+    DimensionDescriptor, DtypeConstraint, EncodingId, MassServerBuilder, OperationCapabilities,
+    OperationCapability, OperationConfig, OperationImplementation, RawTensor, SingleTensorSpec,
+    TensorContract, TensorDtype, TensorPortSpec, VoidServerBuilder,
+};
+
+pub struct FakeValues;
+pub struct FakeLength;
+pub struct DeterministicFakeContract;
+pub struct SliceValues;
+pub struct TensorSlicerContract;
+
+impl TensorPortSpec for FakeValues {
+    type Shape = crate::black_hole_spec::glowstick::Shape1<
+        crate::black_hole_spec::glowstick::Dyn<FakeLength>,
+    >;
+
+    const NAME: &'static str = "values";
+
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![DimensionDescriptor::Symbolic("length".into())]
+    }
+
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::U32)
+    }
+}
+
+impl TensorContract for DeterministicFakeContract {
+    type Input = SingleTensorSpec<FakeValues>;
+    type Output = SingleTensorSpec<FakeValues>;
+    type Metadata = ();
+
+    const ID: ContractId = ContractId::from_u128(0x6465_7465_726d_696e_6973_7469_632d_6f70);
+    const VERSION: u32 = 1;
+}
+
+impl TensorPortSpec for SliceValues {
+    type Shape = crate::black_hole_spec::glowstick::Shape1<
+        crate::black_hole_spec::glowstick::Dyn<FakeLength>,
+    >;
+    const NAME: &'static str = "slice";
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![DimensionDescriptor::Symbolic("length".into())]
+    }
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::U32)
+    }
+}
+
+impl TensorContract for TensorSlicerContract {
+    type Input = SingleTensorSpec<FakeValues>;
+    type Output = SingleTensorSpec<SliceValues>;
+    type Metadata = ();
+    const ID: ContractId = ContractId::from_u128(0x7465_6e73_6f72_2d73_6c69_6365_7200_0001);
+    const VERSION: u32 = 1;
+}
+
+#[derive(Default)]
+pub struct TensorSlicerOperation {
+    instances: Mutex<HashSet<uuid::Uuid>>,
+}
+
+#[async_trait::async_trait]
+impl OperationImplementation for TensorSlicerOperation {
+    fn capability(&self) -> OperationCapability {
+        operation_capability::<TensorSlicerContract>()
+    }
+    async fn start(
+        &self,
+        instance_id: uuid::Uuid,
+        _config: Option<&OperationConfig>,
+    ) -> Result<(), String> {
+        self.instances.lock().unwrap().insert(instance_id);
+        Ok(())
+    }
+    async fn forward(&self, instance_id: uuid::Uuid, input: Vec<u8>) -> Result<Vec<u8>, String> {
+        if !self.instances.lock().unwrap().contains(&instance_id) {
+            return Err("slicer instance is not running".into());
+        }
+        let decoded =
+            decode_input::<TensorSlicerContract>(&input).map_err(|error| error.to_string())?;
+        let input = &decoded.tensors[0];
+        let output_len = input.shape[0] / 2;
+        encode_output::<TensorSlicerContract>(
+            &[RawTensor {
+                name: "slice".into(),
+                dtype: TensorDtype::U32,
+                shape: vec![output_len],
+                data: input.data[..output_len * 4].to_vec(),
+            }],
+            &(),
+        )
+        .map_err(|error| error.to_string())
+    }
+    async fn shutdown(&self, instance_id: uuid::Uuid) -> Result<(), String> {
+        self.instances.lock().unwrap().remove(&instance_id);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct DeterministicFakeOperation {
+    instances: Mutex<HashSet<uuid::Uuid>>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl DeterministicFakeOperation {
+    pub fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl OperationImplementation for DeterministicFakeOperation {
+    fn capability(&self) -> OperationCapability {
+        operation_capability::<DeterministicFakeContract>()
+    }
+
+    async fn start(
+        &self,
+        instance_id: uuid::Uuid,
+        _config: Option<&OperationConfig>,
+    ) -> Result<(), String> {
+        if !self.instances.lock().unwrap().insert(instance_id) {
+            return Err("fake instance already started".into());
+        }
+        Ok(())
+    }
+
+    async fn forward(&self, instance_id: uuid::Uuid, input: Vec<u8>) -> Result<Vec<u8>, String> {
+        if !self.instances.lock().unwrap().contains(&instance_id) {
+            return Err("fake instance is not running".into());
+        }
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let decoded =
+            decode_input::<DeterministicFakeContract>(&input).map_err(|error| error.to_string())?;
+        let mut tensor = decoded.tensors.into_iter().next().unwrap();
+        for bytes in tensor.data.chunks_exact_mut(4) {
+            let value = u32::from_le_bytes(bytes.try_into().unwrap()).wrapping_add(1);
+            bytes.copy_from_slice(&value.to_le_bytes());
+        }
+        encode_output::<DeterministicFakeContract>(&[tensor], &())
+            .map_err(|error| error.to_string())
+    }
+
+    async fn shutdown(&self, instance_id: uuid::Uuid) -> Result<(), String> {
+        if !self.instances.lock().unwrap().remove(&instance_id) {
+            return Err("fake instance is not running".into());
+        }
+        Ok(())
+    }
+}
+
+pub struct QuadraticValue;
+pub struct QuadraticContract;
+
+impl TensorPortSpec for QuadraticValue {
+    type Shape = crate::black_hole_spec::glowstick::Shape1<
+        crate::black_hole_spec::glowstick::num::U1,
+    >;
+    const NAME: &'static str = "parameter";
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![DimensionDescriptor::Static(1)]
+    }
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::F32)
+    }
+}
+
+impl TensorContract for QuadraticContract {
+    type Input = SingleTensorSpec<QuadraticValue>;
+    type Output = SingleTensorSpec<QuadraticValue>;
+    type Metadata = ();
+    const ID: ContractId = ContractId::from_u128(0x7175_6164_7261_7469_632d_6661_6b65_0001);
+    const VERSION: u32 = 1;
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuadraticState {
+    base: f32,
+    value: f32,
+    epsilon: f32,
+}
+
+pub struct QuadraticOperation {
+    states: Mutex<HashMap<uuid::Uuid, QuadraticState>>,
+    learning_rate: f32,
+}
+
+impl Default for QuadraticOperation {
+    fn default() -> Self {
+        Self {
+            states: Mutex::new(HashMap::new()),
+            learning_rate: 0.2,
+        }
+    }
+}
+
+impl QuadraticOperation {
+    pub fn parameter(&self, instance_id: uuid::Uuid) -> Option<f32> {
+        self.states
+            .lock()
+            .unwrap()
+            .get(&instance_id)
+            .map(|state| state.base)
+    }
+}
+
+#[async_trait::async_trait]
+impl OperationImplementation for QuadraticOperation {
+    fn capability(&self) -> OperationCapability {
+        let mut capability = operation_capability::<QuadraticContract>();
+        capability.operations = OperationCapabilities::OPTIMIZING;
+        capability
+    }
+
+    async fn start(
+        &self,
+        instance_id: uuid::Uuid,
+        _config: Option<&OperationConfig>,
+    ) -> Result<(), String> {
+        let old = self.states.lock().unwrap().insert(
+            instance_id,
+            QuadraticState {
+                base: 4.0,
+                value: 4.0,
+                epsilon: 0.1,
+            },
+        );
+        if old.is_some() {
+            Err("quadratic instance already started".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn forward(&self, instance_id: uuid::Uuid, _input: Vec<u8>) -> Result<Vec<u8>, String> {
+        let value = self
+            .states
+            .lock()
+            .unwrap()
+            .get(&instance_id)
+            .ok_or_else(|| "quadratic instance is not running".to_string())?
+            .value;
+        encode_output::<QuadraticContract>(
+            &[RawTensor {
+                name: "parameter".into(),
+                dtype: TensorDtype::F32,
+                shape: vec![1],
+                data: value.to_le_bytes().to_vec(),
+            }],
+            &(),
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    async fn reset(&self, instance_id: uuid::Uuid) -> Result<(), String> {
+        self.states
+            .lock()
+            .unwrap()
+            .contains_key(&instance_id)
+            .then_some(())
+            .ok_or_else(|| "quadratic instance is not running".into())
+    }
+
+    async fn perturb_up(&self, instance_id: uuid::Uuid, _seed: u64) -> Result<(), String> {
+        let mut states = self.states.lock().unwrap();
+        let state = states
+            .get_mut(&instance_id)
+            .ok_or_else(|| "quadratic instance is not running".to_string())?;
+        state.value = state.base + state.epsilon;
+        Ok(())
+    }
+
+    async fn perturb_down(&self, instance_id: uuid::Uuid) -> Result<(), String> {
+        let mut states = self.states.lock().unwrap();
+        let state = states
+            .get_mut(&instance_id)
+            .ok_or_else(|| "quadratic instance is not running".to_string())?;
+        state.value = state.base - state.epsilon;
+        Ok(())
+    }
+
+    async fn optimize(
+        &self,
+        instance_id: uuid::Uuid,
+        loss_up: f32,
+        loss_down: f32,
+    ) -> Result<(), String> {
+        let mut states = self.states.lock().unwrap();
+        let state = states
+            .get_mut(&instance_id)
+            .ok_or_else(|| "quadratic instance is not running".to_string())?;
+        let gradient = (loss_up - loss_down) / (2.0 * state.epsilon);
+        state.base -= self.learning_rate * gradient;
+        state.value = state.base;
+        Ok(())
+    }
+
+    async fn checkpoint(&self, instance_id: uuid::Uuid) -> Result<Vec<u8>, String> {
+        self.parameter(instance_id)
+            .map(|value| value.to_le_bytes().to_vec())
+            .ok_or_else(|| "quadratic instance is not running".into())
+    }
+
+    async fn fuse(
+        &self,
+        instance_id: uuid::Uuid,
+        checkpoint: Vec<u8>,
+        contribution: f32,
+    ) -> Result<Vec<u8>, String> {
+        let checkpoint = f32::from_le_bytes(
+            checkpoint
+                .as_slice()
+                .try_into()
+                .map_err(|_| "invalid quadratic checkpoint")?,
+        );
+        let current = self
+            .parameter(instance_id)
+            .ok_or_else(|| "quadratic instance is not running".to_string())?;
+        Ok((current * (1.0 - contribution) + checkpoint * contribution)
+            .to_le_bytes()
+            .to_vec())
+    }
+
+    async fn query(&self, instance_id: uuid::Uuid) -> Result<OperationConfig, String> {
+        let value = self
+            .parameter(instance_id)
+            .ok_or_else(|| "quadratic instance is not running".to_string())?;
+        Ok(OperationConfig {
+            encoding: EncodingId::POSTCARD_V1,
+            data: value.to_le_bytes().to_vec(),
+        })
+    }
+
+    async fn shutdown(&self, instance_id: uuid::Uuid) -> Result<(), String> {
+        self.states
+            .lock()
+            .unwrap()
+            .remove(&instance_id)
+            .map(|_| ())
+            .ok_or_else(|| "quadratic instance is not running".into())
+    }
+}
 
 /// Certificate verifier for local self-signed test certificates.
 #[derive(Debug)]
