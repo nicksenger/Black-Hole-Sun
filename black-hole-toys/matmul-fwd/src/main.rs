@@ -20,6 +20,8 @@ use matmul_fwd::{
 };
 use serde::Serialize;
 
+const TARGET_PASSES: usize = 4;
+
 struct MatmulOperation;
 
 #[async_trait]
@@ -404,7 +406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            if LOGGED_OUTPUTS.load(Ordering::Acquire) > 0 {
+            if LOGGED_OUTPUTS.load(Ordering::Acquire) >= TARGET_PASSES {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
