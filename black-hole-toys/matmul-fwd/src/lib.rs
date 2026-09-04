@@ -13,7 +13,9 @@
 //! canonical `<Topology as BlackHole>::Sun<Program>` entrypoint.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use async_trait::async_trait;
 use black_hole_sun::black_hole_spec::{
     glowstick::Shape2, SingleTensorSpec, TensorContract, TensorPortSpec,
 };
@@ -22,14 +24,14 @@ use black_hole_sun::compile::BlackHole;
 use black_hole_sun::forward::ForwardSunState;
 use black_hole_sun::topology::{Edge, TypedEdges, Unary};
 use black_hole_sun::{
-    ArtifactDelivery, ArtifactRef, CellInit, ContractId, DtypeConstraint,
-    Emission, ForwardOnlyWithPolicy, ForwardOperationPrimordium, ObjectId, ObjectRef,
-    OperationNode, RawTensor, TensorDtype, VoidOps,
+    ArtifactDelivery, ArtifactRef, CellInit, ContractId, DtypeConstraint, Emission,
+    ForwardOnlyWithPolicy, ForwardOperationPrimordium, ObjectId, ObjectRef, OperationNode,
+    RawTensor, TensorDtype, VoidOps,
 };
+use jungle_sdk::list;
 use jungle_sdk::prelude::*;
 use tracing::info;
 use typenum::{U0, U1, U2, U3, U4};
-use typosaurus::list;
 
 /// The generator's 2x3 input matrix.
 pub struct InputMatrixPort;
@@ -100,6 +102,14 @@ impl Animal for MatmulCell {
     type Flow = ForwardOperationPrimordium<Matmul>;
 }
 
+impl Observable for MatmulCell {
+    type Observation = NoopObservation;
+}
+
+impl Perturbable for MatmulCell {
+    type Perturbation = NoopPerturbation;
+}
+
 impl OperationNode<Matmul> for MatmulCell {}
 
 pub struct ScaleCell;
@@ -112,6 +122,14 @@ impl Animal for ScaleCell {
     type Flow = ForwardOperationPrimordium<Scale>;
 }
 
+impl Observable for ScaleCell {
+    type Observation = NoopObservation;
+}
+
+impl Perturbable for ScaleCell {
+    type Perturbation = NoopPerturbation;
+}
+
 impl OperationNode<Scale> for ScaleCell {}
 
 pub struct ReluCell;
@@ -122,6 +140,14 @@ impl Animal for ReluCell {
     type State = CellState;
     type Seed = CellInit;
     type Flow = ForwardOperationPrimordium<Relu>;
+}
+
+impl Observable for ReluCell {
+    type Observation = NoopObservation;
+}
+
+impl Perturbable for ReluCell {
+    type Perturbation = NoopPerturbation;
 }
 
 impl OperationNode<Relu> for ReluCell {}
@@ -210,6 +236,16 @@ pub struct LogPolicy(Step<LogTensor>);
 
 pub struct LogTensor;
 
+/// Raw artifact resolution used by the policy so committed and streamed
+/// tensor references are handled through the same Void path.
+#[async_trait]
+pub trait RawArtifactOps: VoidOps {
+    async fn receive_raw_artifact<T: Send>(
+        &self,
+        reference: &ArtifactRef<T>,
+    ) -> Result<Vec<u8>, String>;
+}
+
 #[jungle::action]
 impl Action for LogTensor {
     type Effect = LogTensorEffect;
@@ -230,8 +266,11 @@ impl Action for LogTensor {
 
 pub struct LogTensorEffect;
 
+/// Number of completed policy invocations observed by the runnable example.
+pub static LOGGED_OUTPUTS: AtomicUsize = AtomicUsize::new(0);
+
 #[jungle::effect(id = 102)]
-impl<J: VoidOps> Effect<J> for LogTensorEffect {
+impl<J: RawArtifactOps> Effect<J> for LogTensorEffect {
     type In = ArtifactDelivery<ProductMatrix>;
     type Out = ();
     type Err = String;
@@ -244,10 +283,11 @@ impl<J: VoidOps> Effect<J> for LogTensorEffect {
             let emission_bytes = jungle.download_raw(delivery.emission_id.id()).await?;
             let emission: Emission<(), ProductMatrix> =
                 postcard::from_bytes(&emission_bytes).map_err(|error| error.to_string())?;
-            let tensor_bytes = jungle.download_raw(emission.output_id.object_id()).await?;
+            let tensor_bytes = jungle.receive_raw_artifact(&emission.output_id).await?;
             let tensor = black_hole_sun::decode_output::<Relu>(&tensor_bytes)
                 .map_err(|error| error.to_string())?;
             info!(tensor = ?tensor.tensors, "matmul-fwd output");
+            LOGGED_OUTPUTS.fetch_add(1, Ordering::Release);
             Ok(())
         }
     }
@@ -266,4 +306,12 @@ impl Animal for MatmulForward {
     type State = ForwardSunState;
     type Seed = ();
     type Flow = MatmulSun;
+}
+
+impl Observable for MatmulForward {
+    type Observation = NoopObservation;
+}
+
+impl Perturbable for MatmulForward {
+    type Perturbation = NoopPerturbation;
 }
