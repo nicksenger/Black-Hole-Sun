@@ -1,0 +1,11 @@
+[package]
+name = "corge-qzo"
+description = "Example: corge zero-optimization"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone crate — not a member of the parent workspace
+[workspace]
+
+[dependencies]
+black-hole-sun = { path = "../../black-hole-sun" }

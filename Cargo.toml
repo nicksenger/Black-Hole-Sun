@@ -7,7 +7,6 @@ members = [
     "_black_hole_mass",
     "_black_hole_void",
     "black-hole-sun",
-    "black-hole-toys",
     "_black_hole_probe",
     "_black_hole_type",
 ]

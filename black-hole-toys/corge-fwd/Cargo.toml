@@ -1,0 +1,11 @@
+[package]
+name = "corge-fwd"
+description = "Example: corge forward pass"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone crate — not a member of the parent workspace
+[workspace]
+
+[dependencies]
+black-hole-sun = { path = "../../black-hole-sun" }

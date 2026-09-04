@@ -996,13 +996,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "black-hole-toys"
-version = "0.1.0"
-dependencies = [
- "black-hole-sun",
-]
-
-[[package]]
 name = "black-hole-type"
 version = "0.1.0"
 dependencies = [
