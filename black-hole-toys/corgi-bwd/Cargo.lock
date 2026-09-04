@@ -1441,7 +1441,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "corge-bwd"
+name = "corgi-bwd"
 version = "0.1.0"
 dependencies = [
  "black-hole-sun",

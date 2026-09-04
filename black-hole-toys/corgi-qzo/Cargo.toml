@@ -1,6 +1,6 @@
 [package]
-name = "corge-fwd"
-description = "Example: corge forward pass"
+name = "corgi-qzo"
+description = "Example: corgi zero-optimization"
 version = "0.1.0"
 edition = "2021"
 

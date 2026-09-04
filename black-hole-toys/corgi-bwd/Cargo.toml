@@ -1,6 +1,6 @@
 [package]
-name = "corge-bwd"
-description = "Example: corge backward pass"
+name = "corgi-bwd"
+description = "Example: corgi backward pass"
 version = "0.1.0"
 edition = "2021"
 
