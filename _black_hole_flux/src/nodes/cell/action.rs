@@ -529,6 +529,40 @@ impl<S> Action for WaitForPropagation<S> {
     }
 }
 
+/// Operation-typed variant of [`WaitForPropagation`].
+///
+/// The two-sided ZO scheduler transports its graph messages as
+/// `Transmission::Propagation`. Convert the untyped emission reference at
+/// this boundary so the operation atom can still retain its typed contract.
+pub struct WaitForOperationPropagation<Op, S = ()>(PhantomData<fn() -> (Op, S)>);
+
+#[jungle::action]
+impl<Op, S> Action for WaitForOperationPropagation<Op, S>
+where
+    Op: TensorContract + Send + Sync + 'static,
+    Op::Input: Send,
+{
+    type Effect = WaitForPropagationEffect;
+    type Input = ();
+    type Output = EmissionId<Op::Input>;
+
+    fn emit(state: &CellState<S>, _input: Self::Input) -> ObjectId {
+        state.recv_id
+    }
+
+    fn absorb(
+        state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let propagation = output.map_err(|error| {
+            Failure::Message(format!("wait for operation propagation failed: {error}"))
+        })?;
+        state.recv_id = propagation.recv_id;
+        state.send_id = propagation.send_id;
+        Ok(EmissionId::new(propagation.emission_id.id()))
+    }
+}
+
 /// Waits for a typed artifact delivery and advances the cell mailboxes.
 pub struct WaitForArtifact<T, S = ()>(PhantomData<fn() -> (T, S)>);
 
@@ -643,6 +677,31 @@ impl<S> Action for Transmit<S> {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|e| Failure::Message(format!("transmit failed: {e}")))
+    }
+}
+
+/// Operation-typed variant of [`Transmit`] for the two-sided ZO wire format.
+pub struct TransmitOperation<Op, S = ()>(PhantomData<fn() -> (Op, S)>);
+
+#[jungle::action]
+impl<Op, S> Action for TransmitOperation<Op, S>
+where
+    Op: TensorContract + Send + Sync + 'static,
+    Op::Output: Send,
+{
+    type Effect = TransmitEffect;
+    type Input = EmissionId<Op::Output>;
+    type Output = ();
+
+    fn emit(state: &CellState<S>, emission_id: Self::Input) -> (EmissionId, ObjectId) {
+        (EmissionId::new(emission_id.id()), state.send_id)
+    }
+
+    fn absorb(
+        _state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("transmit operation failed: {error}")))
     }
 }
 

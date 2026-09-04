@@ -13,7 +13,9 @@ use action::{
     PerturbOperationUp as PerturbOperationUp_, PerturbUp as PerturbUp_, Potentiation,
     PrepareAtomInput as PrepareAtomInput_, PrepareOperationInput as PrepareOperationInput_,
     StartModel as StartModel_, StartOperation as StartOperation_, Transmit as Transmit_,
-    TransmitArtifact as TransmitArtifact_, WaitForArtifact as WaitForArtifact_,
+    TransmitArtifact as TransmitArtifact_, TransmitOperation as TransmitOperation_,
+    WaitForArtifact as WaitForArtifact_,
+    WaitForOperationPropagation as WaitForOperationPropagation_,
     WaitForOperationalControl as WaitForOperationalControl_,
     WaitForPotentiation as WaitForPotentiation_, WaitForPropagation as WaitForPropagation_,
 };
@@ -183,10 +185,10 @@ pub struct OperationInnerWithState<
 >(
     Step<BeginGradientAccumulation_<S>>,
     Step<PerturbOperationUp_<Op, S>>,
-    While<HasPendingGradientStep<S>, OperationPropagationMicrostepWithState<N, Op, S>>,
+    While<HasPendingGradientStep<S>, OperationZoPropagationMicrostepWithState<N, Op, S>>,
     Step<BeginGradientAccumulation_<S>>,
     Step<PerturbOperationDown_<Op, S>>,
-    While<HasPendingGradientStep<S>, OperationPropagationMicrostepWithState<N, Op, S>>,
+    While<HasPendingGradientStep<S>, OperationZoPropagationMicrostepWithState<N, Op, S>>,
     Step<WaitForOperationalControl_<Potentiation, S>>,
     Step<OptimizeOperation_<Op, S>>,
 );
@@ -202,6 +204,25 @@ pub struct OperationPropagationMicrostepWithState<
     Step<PrepareOperationInput_<Op::Input, S>>,
     N,
     Step<TransmitArtifact_<Op::Output, S>>,
+    Step<AdvanceGradientStep_<S>>,
+);
+
+/// One two-sided ZO microstep using the strategy's propagation envelope.
+///
+/// Operation atoms use typed emission IDs, but `TwoSidedZo` routes the
+/// surrounding graph with `Transmission::Propagation`. The adapter actions
+/// convert only at the cell boundary; the model operation remains fully
+/// contract-typed.
+#[derive(Flow)]
+pub struct OperationZoPropagationMicrostepWithState<
+    N,
+    Op: TensorContract<Input: Send, Output: Send> + Send + Sync + 'static,
+    S,
+>(
+    Step<WaitForOperationPropagation_<Op, S>>,
+    Step<PrepareOperationInput_<Op::Input, S>>,
+    N,
+    Step<TransmitOperation_<Op, S>>,
     Step<AdvanceGradientStep_<S>>,
 );
 
