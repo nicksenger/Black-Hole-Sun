@@ -32,8 +32,19 @@ pub struct SendRootArtifactDeliveryInput<T> {
     pub delivery: black_hole_type::ArtifactDelivery<T>,
 }
 
+/// One request-specific root delivery in a forward pipeline.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(bound = "")]
+pub struct RootArtifactDeliverySend<T> {
+    pub target: PropagationTarget,
+    pub delivery: black_hole_type::ArtifactDelivery<T>,
+}
+
 /// Sends an operation-typed input to every root port.
 pub struct SendRootArtifactDeliveryEffect<T>(PhantomData<fn() -> T>);
+
+/// Sends all roots that became available on the current pipeline tick.
+pub struct SendReadyRootArtifactDeliveriesEffect<T>(PhantomData<fn() -> T>);
 
 /// Typed counterpart to [`WaitForNodeTransmissionInput`].
 ///
@@ -107,6 +118,31 @@ where
             for target in input.targets {
                 send_artifact_delivery(jungle, &target, input.delivery).await?;
                 sent_node_ids.insert(target.node_id);
+            }
+            Ok(sent_node_ids.into_iter().collect())
+        }
+    }
+}
+
+#[jungle::effect(id = 87)]
+impl<T, J> Effect<J> for SendReadyRootArtifactDeliveriesEffect<T>
+where
+    T: Send + 'static,
+    J: VoidOps,
+{
+    type In = Vec<RootArtifactDeliverySend<T>>;
+    type Out = Vec<u32>;
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        sends: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let mut sent_node_ids = BTreeSet::new();
+            for send in sends {
+                send_artifact_delivery(jungle, &send.target, send.delivery).await?;
+                sent_node_ids.insert(send.target.node_id);
             }
             Ok(sent_node_ids.into_iter().collect())
         }

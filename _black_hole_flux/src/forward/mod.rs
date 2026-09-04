@@ -8,7 +8,7 @@
 pub mod action;
 pub mod effect;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
@@ -31,6 +31,24 @@ pub struct ForwardRuntime<S> {
     pub next_inputs: HashMap<u32, ObjectId>,
     pub outputs: HashMap<u32, ObjectId>,
     pub sink_id: Option<u32>,
+    /// Inputs collected for the current pipeline window.
+    pub pipeline_inputs: Vec<black_hole_type::ArtifactDelivery<()>>,
+    /// Per-input mailboxes used to drive each input port.
+    pub pipeline_input_ids: Vec<HashMap<u32, ObjectId>>,
+    /// Per-input mailboxes used to collect each node output.
+    pub pipeline_output_ids: Vec<HashMap<u32, ObjectId>>,
+    /// Number of inputs completed by each node in the current window.
+    pub node_completed: HashMap<u32, usize>,
+    /// Number of inputs sent to each root in the current window.
+    pub root_sent: HashMap<u32, usize>,
+    /// Sink outputs waiting to be consumed by the serving policy.
+    pub completed_outputs: VecDeque<black_hole_type::ArtifactDelivery<()>>,
+    /// Number of node/input tasks completed in the current window.
+    pub pipeline_completions: usize,
+    /// Total node/input tasks in the current window.
+    pub pipeline_target_completions: usize,
+    /// Number of inputs collected for each pipeline window.
+    pub pipeline_window: usize,
 }
 
 /// State for forward programs; it contains no two-sided strategy fields.
@@ -195,19 +213,110 @@ pub struct ServeRequest<Source, Input: Send + 'static, Output: Send + 'static, S
     Step<action::DiscardForwardOutput<S, Output>>,
 );
 
-/// Minimal serving driver: finalize once, then execute one neutral forward
-/// pass for every artifact emitted by `Source`.
+/// Predicate that fills one bounded forward pipeline window.
+pub struct PendingForwardPipelineInputs<S>(PhantomData<fn() -> S>);
+
+impl<S> Predicate<(&ForwardSunState<S>, &())> for PendingForwardPipelineInputs<S> {
+    fn eval((state, _): &(&ForwardSunState<S>, &())) -> bool {
+        state.runtime.pipeline_inputs.len() < state.runtime.pipeline_window
+    }
+}
+
+/// Predicate that advances the scheduler until every node/input task completes.
+pub struct PendingForwardPipelineWork<S>(PhantomData<fn() -> S>);
+
+impl<S> Predicate<(&ForwardSunState<S>, &())> for PendingForwardPipelineWork<S> {
+    fn eval((state, _): &(&ForwardSunState<S>, &())) -> bool {
+        state.runtime.pipeline_completions < state.runtime.pipeline_target_completions
+    }
+}
+
+/// Predicate that drains completed sink outputs through a policy or sink.
+pub struct PendingForwardOutputs<S>(PhantomData<fn() -> S>);
+
+impl<S> Predicate<(&ForwardSunState<S>, &())> for PendingForwardOutputs<S> {
+    fn eval((state, _): &(&ForwardSunState<S>, &())) -> bool {
+        !state.runtime.completed_outputs.is_empty()
+    }
+}
+
+/// Generates and stores one input for the current pipeline window.
+#[derive(Flow)]
+pub struct CollectForwardPipelineInput<Source, Input: Send + 'static, S>(
+    Source,
+    Step<action::StoreForwardPipelineInput<S, Input>>,
+);
+
+/// Sends newly-ready roots and consumes the next ready node completion.
+#[derive(Flow)]
+pub struct ForwardPipelineProgress<S>(
+    Step<action::SendReadyForwardRoots<S>>,
+    Step<action::ProcessReadyForwardPipelineNode<S>>,
+);
+
+/// Applies the serving policy to one completed sink output.
+#[derive(Flow)]
+pub struct ApplyForwardPolicy<Output: Send + 'static, S, Policy>(
+    Step<action::TakeForwardPipelineOutput<S, Output>>,
+    Policy,
+);
+
+/// Discards one completed sink output.
+#[derive(Flow)]
+pub struct DiscardForwardPipelineOutput<Output: Send + 'static, S>(
+    Step<action::TakeForwardPipelineOutput<S, Output>>,
+    Step<action::DiscardForwardOutput<S, Output>>,
+);
+
+/// One pipelined serving window without a policy.
+#[derive(Flow)]
+pub struct ServePipelineWindow<Source, Input: Send + 'static, Output: Send + 'static, S>(
+    Step<action::BeginForwardPipeline<S>>,
+    While<PendingForwardPipelineInputs<S>, CollectForwardPipelineInput<Source, Input, S>>,
+    Step<action::PrepareForwardPipeline<S>>,
+    While<PendingForwardPipelineWork<S>, ForwardPipelineProgress<S>>,
+    While<PendingForwardOutputs<S>, DiscardForwardPipelineOutput<Output, S>>,
+);
+
+/// One pipelined serving window with a policy applied as sink outputs arrive.
+#[derive(Flow)]
+pub struct ServePipelineWindowWithPolicy<
+    Source,
+    Input: Send + 'static,
+    Output: Send + 'static,
+    S,
+    Policy,
+>(
+    Step<action::BeginForwardPipeline<S>>,
+    While<PendingForwardPipelineInputs<S>, CollectForwardPipelineInput<Source, Input, S>>,
+    Step<action::PrepareForwardPipeline<S>>,
+    While<PendingForwardPipelineWork<S>, ForwardPipelineProgressWithPolicy<Output, S, Policy>>,
+);
+
+/// One scheduler tick followed by any policy work made ready by that tick.
+#[derive(Flow)]
+pub struct ForwardPipelineProgressWithPolicy<Output: Send + 'static, S, Policy>(
+    ForwardPipelineProgress<S>,
+    While<PendingForwardOutputs<S>, ApplyForwardPolicy<Output, S, Policy>>,
+);
+
+/// Serving driver: finalize once, then continuously execute bounded pipeline
+/// windows. The window is sized from the compiled graph, allowing successive
+/// inputs to occupy different nodes concurrently.
 #[derive(Flow)]
 pub struct ServeFlow<Source, Input: Send + 'static, Output: Send + 'static, S>(
     Step<crate::compile::action::FinalizeForwardGraph<S>>,
-    While<Always<ForwardSunState<S>, ()>, ServeRequest<Source, Input, Output, S>>,
+    While<Always<ForwardSunState<S>, ()>, ServePipelineWindow<Source, Input, Output, S>>,
 );
 
 /// Serving driver variant that applies a policy to each completed sink.
 #[derive(Flow)]
 pub struct ServeFlowWithPolicy<Source, Input: Send + 'static, Output: Send + 'static, S, Policy>(
     Step<crate::compile::action::FinalizeForwardGraph<S>>,
-    While<Always<ForwardSunState<S>, ()>, ServeRequestWithPolicy<Source, Input, Output, S, Policy>>,
+    While<
+        Always<ForwardSunState<S>, ()>,
+        ServePipelineWindowWithPolicy<Source, Input, Output, S, Policy>,
+    >,
 );
 
 #[derive(Flow)]

@@ -523,6 +523,15 @@ impl<S> Action for FinalizeForwardGraph<S> {
         state.runtime.ready.clear();
         state.runtime.next_inputs.clear();
         state.runtime.outputs.clear();
+        state.runtime.pipeline_inputs.clear();
+        state.runtime.pipeline_input_ids.clear();
+        state.runtime.pipeline_output_ids.clear();
+        state.runtime.node_completed.clear();
+        state.runtime.root_sent.clear();
+        state.runtime.completed_outputs.clear();
+        state.runtime.pipeline_completions = 0;
+        state.runtime.pipeline_target_completions = 0;
+        state.runtime.pipeline_window = 0;
         state.runtime.sink_id = Some(sink);
         Ok(())
     }
