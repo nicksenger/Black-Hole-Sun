@@ -125,13 +125,14 @@ impl<S> super::ForwardSunState<S> {
     }
 }
 
-/// Starts a bounded pipeline window. Its capacity is the number of compiled
-/// nodes, which is enough to fill every stage of a linear graph and remains a
-/// conservative bounded queue for a branching DAG.
-pub struct BeginForwardPipeline<S>(PhantomData<fn() -> S>);
+/// Starts a bounded pipeline window using the limit selected by the forward
+/// strategy. The source is not invoked again until every input in this window
+/// has reached its sink, providing backpressure without coupling source flows
+/// to their consumers.
+pub struct BeginForwardPipeline<S, const MAX_IN_FLIGHT: usize>(PhantomData<fn() -> S>);
 
 #[jungle::action]
-impl<S> Action for BeginForwardPipeline<S> {
+impl<S, const MAX_IN_FLIGHT: usize> Action for BeginForwardPipeline<S, MAX_IN_FLIGHT> {
     type Effect = NoEffect;
     type Input = ();
     type Output = ();
@@ -143,10 +144,9 @@ impl<S> Action for BeginForwardPipeline<S> {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<(), Failure> {
         output.map_err(|_| Failure::Message("begin forward pipeline failed".to_string()))?;
-        let window = vertex_ids(&state.topology.lock().unwrap()).len().max(1);
         state.runtime.pipeline_inputs.clear();
         state.runtime.completed_outputs.clear();
-        state.runtime.pipeline_window = window;
+        state.runtime.pipeline_window = MAX_IN_FLIGHT.max(1);
         Ok(())
     }
 }
@@ -705,7 +705,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forward::PendingForwardPipelineInputs;
     use crate::topology::PortTarget;
+
+    struct TestForwardAnimal;
+
+    impl Animal for TestForwardAnimal {
+        type Id = ();
+        type Generation = ();
+        type State = super::super::ForwardSunState;
+        type Seed = ();
+        type Flow = ();
+    }
+
+    fn begin_pipeline<const MAX_IN_FLIGHT: usize>(state: &mut super::super::ForwardSunState) {
+        type Begin<const N: usize> =
+            <BeginForwardPipeline<(), N> as Action>::Bind<TestForwardAnimal>;
+        <Begin<MAX_IN_FLIGHT> as BoundAction<TestForwardAnimal>>::absorb(state, Ok(())).unwrap();
+    }
 
     fn delivery(seed: u128) -> black_hole_type::ArtifactDelivery<()> {
         black_hole_type::ArtifactDelivery {
@@ -713,6 +730,30 @@ mod tests {
             recv: Uuid::nil(),
             send: Uuid::nil(),
         }
+    }
+
+    #[test]
+    fn strategy_limit_bounds_generated_pipeline_inputs() {
+        let mut state = super::super::ForwardSunState::default();
+        state.runtime.pipeline_inputs = vec![delivery(1), delivery(2), delivery(3)];
+        state.runtime.completed_outputs.push_back(delivery(4));
+
+        begin_pipeline::<2>(&mut state);
+
+        assert_eq!(state.runtime.pipeline_window, 2);
+        assert!(state.runtime.pipeline_inputs.is_empty());
+        assert!(state.runtime.completed_outputs.is_empty());
+        assert!(PendingForwardPipelineInputs::<()>::eval(&(&state, &())));
+
+        state.runtime.pipeline_inputs = vec![delivery(5), delivery(6)];
+        assert!(!PendingForwardPipelineInputs::<()>::eval(&(&state, &())));
+    }
+
+    #[test]
+    fn zero_strategy_limit_still_allows_one_input() {
+        let mut state = super::super::ForwardSunState::default();
+        begin_pipeline::<0>(&mut state);
+        assert_eq!(state.runtime.pipeline_window, 1);
     }
 
     #[test]

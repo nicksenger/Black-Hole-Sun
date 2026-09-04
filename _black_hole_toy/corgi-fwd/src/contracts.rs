@@ -25,6 +25,8 @@ use typenum::consts::{
 
 use crate::model::{CARDIGAN_LABEL, PEMBROKE_LABEL};
 
+const GENERATOR_MAX_IN_FLIGHT: usize = 1;
+
 pub struct ImagePort;
 impl TensorPortSpec for ImagePort {
     type Shape = Shape4<U4, U3, U224, U224>;
@@ -256,8 +258,10 @@ impl<J: VoidOps> Effect<J> for LogPredictionEffect {
     }
 }
 
-pub type CorgiSun =
-    <CorgiGraph as BlackHole>::Sun<ForwardOnlyWithPolicy<Generator, StemOp, HeadOp, LogPolicy>>;
+/// Keep only one image batch resident while the CPU pipeline consumes it.
+pub type CorgiSun = <CorgiGraph as BlackHole>::Sun<
+    ForwardOnlyWithPolicy<Generator, StemOp, HeadOp, LogPolicy, (), GENERATOR_MAX_IN_FLIGHT>,
+>;
 
 pub struct CorgiForward;
 impl Animal for CorgiForward {

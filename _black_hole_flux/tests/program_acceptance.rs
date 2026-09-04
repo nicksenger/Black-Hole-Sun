@@ -74,7 +74,7 @@ type Graph = List<(
     List<(Unary<U1, ScoreNode, Empty, Score>, Empty)>,
 )>;
 
-type HeterogeneousForward = ForwardOnly<(), Featurize, Score>;
+type HeterogeneousForward = ForwardOnly<(), Featurize, Score, (), 2>;
 #[derive(Default)]
 struct EvaluationState;
 type CheckpointStage = Step<Noop<NeutralSunState<EvaluationState>>>;

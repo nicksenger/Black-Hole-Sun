@@ -121,7 +121,9 @@ pub use forward::effect::{
     SchedulerDelivery, SendRootArtifactDeliveryEffect, SendRootArtifactDeliveryInput,
     WaitForNodeArtifactDeliveryEffect, WaitForNodeArtifactDeliveryInput,
 };
-pub use forward::{ForwardPass, ForwardSunState, NeutralSunState, ServeFlow};
+pub use forward::{
+    ForwardPass, ForwardSunState, NeutralSunState, ServeFlow, ServeFlowWithBackpressure,
+};
 pub use programs::checkpoint_evaluate::{CheckpointEvaluate, CheckpointEvaluateFlow};
 pub use programs::forward_only::{ForwardOnly, ForwardOnlyWithPolicy};
 pub use programs::pipeline_backward::{

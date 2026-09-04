@@ -270,8 +270,14 @@ pub struct DiscardForwardPipelineOutput<Output: Send + 'static, S>(
 
 /// One pipelined serving window without a policy.
 #[derive(Flow)]
-pub struct ServePipelineWindow<Source, Input: Send + 'static, Output: Send + 'static, S>(
-    Step<action::BeginForwardPipeline<S>>,
+pub struct ServePipelineWindow<
+    Source,
+    Input: Send + 'static,
+    Output: Send + 'static,
+    S,
+    const MAX_IN_FLIGHT: usize,
+>(
+    Step<action::BeginForwardPipeline<S, MAX_IN_FLIGHT>>,
     While<PendingForwardPipelineInputs<S>, CollectForwardPipelineInput<Source, Input, S>>,
     Step<action::PrepareForwardPipeline<S>>,
     While<PendingForwardPipelineWork<S>, ForwardPipelineProgress<S>>,
@@ -286,8 +292,9 @@ pub struct ServePipelineWindowWithPolicy<
     Output: Send + 'static,
     S,
     Policy,
+    const MAX_IN_FLIGHT: usize,
 >(
-    Step<action::BeginForwardPipeline<S>>,
+    Step<action::BeginForwardPipeline<S, MAX_IN_FLIGHT>>,
     While<PendingForwardPipelineInputs<S>, CollectForwardPipelineInput<Source, Input, S>>,
     Step<action::PrepareForwardPipeline<S>>,
     While<PendingForwardPipelineWork<S>, ForwardPipelineProgressWithPolicy<Output, S, Policy>>,
@@ -300,24 +307,50 @@ pub struct ForwardPipelineProgressWithPolicy<Output: Send + 'static, S, Policy>(
     While<PendingForwardOutputs<S>, ApplyForwardPolicy<Output, S, Policy>>,
 );
 
-/// Serving driver: finalize once, then continuously execute bounded pipeline
-/// windows. The window is sized from the compiled graph, allowing successive
-/// inputs to occupy different nodes concurrently.
+/// Serving driver: finalize once, then continuously execute pipeline windows
+/// with at most `MAX_IN_FLIGHT` generated inputs. A zero limit is treated as
+/// one so source generation can never become unbounded or stall completely.
 #[derive(Flow)]
-pub struct ServeFlow<Source, Input: Send + 'static, Output: Send + 'static, S>(
+pub struct ServeFlowWithBackpressure<
+    Source,
+    Input: Send + 'static,
+    Output: Send + 'static,
+    S,
+    const MAX_IN_FLIGHT: usize,
+>(
     Step<crate::compile::action::FinalizeForwardGraph<S>>,
-    While<Always<ForwardSunState<S>, ()>, ServePipelineWindow<Source, Input, Output, S>>,
+    While<
+        Always<ForwardSunState<S>, ()>,
+        ServePipelineWindow<Source, Input, Output, S, MAX_IN_FLIGHT>,
+    >,
 );
 
 /// Serving driver variant that applies a policy to each completed sink.
 #[derive(Flow)]
-pub struct ServeFlowWithPolicy<Source, Input: Send + 'static, Output: Send + 'static, S, Policy>(
+pub struct ServeFlowWithPolicyAndBackpressure<
+    Source,
+    Input: Send + 'static,
+    Output: Send + 'static,
+    S,
+    Policy,
+    const MAX_IN_FLIGHT: usize,
+>(
     Step<crate::compile::action::FinalizeForwardGraph<S>>,
     While<
         Always<ForwardSunState<S>, ()>,
-        ServePipelineWindowWithPolicy<Source, Input, Output, S, Policy>,
+        ServePipelineWindowWithPolicy<Source, Input, Output, S, Policy, MAX_IN_FLIGHT>,
     >,
 );
+
+/// Compatibility alias for a serving flow that allows one generated input at
+/// a time.
+pub type ServeFlow<Source, Input, Output, S> =
+    ServeFlowWithBackpressure<Source, Input, Output, S, 1>;
+
+/// Compatibility alias for a policy-serving flow that allows one generated
+/// input at a time.
+pub type ServeFlowWithPolicy<Source, Input, Output, S, Policy> =
+    ServeFlowWithPolicyAndBackpressure<Source, Input, Output, S, Policy, 1>;
 
 #[derive(Flow)]
 pub struct ServeRequestWithPolicy<Source, Input: Send + 'static, Output: Send + 'static, S, Policy>(

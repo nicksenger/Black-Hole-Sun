@@ -7,7 +7,9 @@ use black_hole_type::ObjectId;
 use uuid::Uuid;
 
 use crate::compile::SunProgram;
-use crate::forward::{ForwardSunState, ServeFlow, ServeFlowWithPolicy};
+use crate::forward::{
+    ForwardSunState, ServeFlowWithBackpressure, ServeFlowWithPolicyAndBackpressure,
+};
 use crate::nodes::fusion::action::FusionSeed;
 use crate::topology::BoundaryInit;
 
@@ -15,8 +17,15 @@ use crate::topology::BoundaryInit;
 ///
 /// Nodes used with this program can run [`crate::ForwardOperationCell`] and
 /// therefore require only `MassOps<Op>`; no perturb or optimize capability is
-/// part of the driver.
-pub struct ForwardOnly<Source, InputOp: TensorContract, OutputOp: TensorContract = InputOp, S = ()>(
+/// part of the driver. `MAX_IN_FLIGHT` bounds how many source values the
+/// compiled driver generates before waiting for their sink completions.
+pub struct ForwardOnly<
+    Source,
+    InputOp: TensorContract,
+    OutputOp: TensorContract = InputOp,
+    S = (),
+    const MAX_IN_FLIGHT: usize = 1,
+>(
     PhantomData<Source>,
     PhantomData<InputOp>,
     PhantomData<OutputOp>,
@@ -24,13 +33,15 @@ pub struct ForwardOnly<Source, InputOp: TensorContract, OutputOp: TensorContract
 );
 
 /// Forward-only Sun program with a policy flow applied to each completed
-/// sink artifact.
+/// sink artifact. `MAX_IN_FLIGHT` provides source backpressure in the compiled
+/// driver and defaults to one.
 pub struct ForwardOnlyWithPolicy<
     Source,
     InputOp: TensorContract,
     OutputOp: TensorContract = InputOp,
     Policy = (),
     S = (),
+    const MAX_IN_FLIGHT: usize = 1,
 >(
     PhantomData<Source>,
     PhantomData<InputOp>,
@@ -39,8 +50,8 @@ pub struct ForwardOnlyWithPolicy<
     PhantomData<fn() -> S>,
 );
 
-impl<Source, InputOp, OutputOp, Policy, S> SunProgram
-    for ForwardOnlyWithPolicy<Source, InputOp, OutputOp, Policy, S>
+impl<Source, InputOp, OutputOp, Policy, S, const MAX_IN_FLIGHT: usize> SunProgram
+    for ForwardOnlyWithPolicy<Source, InputOp, OutputOp, Policy, S, MAX_IN_FLIGHT>
 where
     InputOp: TensorContract,
     OutputOp: TensorContract,
@@ -48,7 +59,14 @@ where
     OutputOp::Output: Send + 'static,
 {
     type State = ForwardSunState<S>;
-    type Driver = ServeFlowWithPolicy<Source, InputOp::Input, OutputOp::Output, S, Policy>;
+    type Driver = ServeFlowWithPolicyAndBackpressure<
+        Source,
+        InputOp::Input,
+        OutputOp::Output,
+        S,
+        Policy,
+        MAX_IN_FLIGHT,
+    >;
     type UnarySeed = crate::nodes::cell::action::Init;
     type BinarySeed = FusionSeed;
     type WarpSeed = BoundaryInit;
@@ -84,7 +102,8 @@ where
     }
 }
 
-impl<Source, InputOp, OutputOp, S> SunProgram for ForwardOnly<Source, InputOp, OutputOp, S>
+impl<Source, InputOp, OutputOp, S, const MAX_IN_FLIGHT: usize> SunProgram
+    for ForwardOnly<Source, InputOp, OutputOp, S, MAX_IN_FLIGHT>
 where
     InputOp: TensorContract,
     OutputOp: TensorContract,
@@ -92,7 +111,8 @@ where
     OutputOp::Output: Send + 'static,
 {
     type State = ForwardSunState<S>;
-    type Driver = ServeFlow<Source, InputOp::Input, OutputOp::Output, S>;
+    type Driver =
+        ServeFlowWithBackpressure<Source, InputOp::Input, OutputOp::Output, S, MAX_IN_FLIGHT>;
     type UnarySeed = crate::nodes::cell::action::Init;
     type BinarySeed = FusionSeed;
     type WarpSeed = BoundaryInit;

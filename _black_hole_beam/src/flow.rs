@@ -4,7 +4,7 @@
 use black_hole_flux::compile::{
     BinarySunStepWithProgram, SunNode, SunProgram, UnarySunStepWithProgram,
 };
-use black_hole_flux::forward::ServeFlow;
+use black_hole_flux::forward::ServeFlowWithBackpressure;
 use black_hole_flux::programs::two_sided_zo::Sun;
 use black_hole_flux::topology::{NodeIdsFromList, OperationNode, SunAppearance, SunStateView};
 use black_hole_flux::{DeclaredEdges, TensorContract};
@@ -45,8 +45,8 @@ impl<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize> private::De
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
 
-impl<Source, Input: Send + 'static, Output: Send + 'static, S> private::DescribeSun
-    for ServeFlow<Source, Input, Output, S>
+impl<Source, Input: Send + 'static, Output: Send + 'static, S, const MAX_IN_FLIGHT: usize>
+    private::DescribeSun for ServeFlowWithBackpressure<Source, Input, Output, S, MAX_IN_FLIGHT>
 {
     fn append_cells(_cells: &mut Vec<CellDefinition>) {}
 }
