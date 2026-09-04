@@ -15,4 +15,4 @@ pub use contracts::*;
 pub use model::*;
 
 /// Re-exported so the other corgi examples can share one dataset definition.
-pub use toys_common::dataset::{DATASET_SAMPLES, SampleMetadata};
+pub use toy_common::dataset::{DATASET_SAMPLES, SampleMetadata};

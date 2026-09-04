@@ -15,8 +15,8 @@ use corgi_zo::operations::{
     Stage4Operation, StemOperation,
 };
 use jungle_sdk::FusedClient;
-use toys_common::dataset::{DATASET_SAMPLES, configure_hf_cache, model_path};
-use toys_common::runtime::{RunCheck, ServerSpecs, run_until};
+use toy_common::dataset::{DATASET_SAMPLES, configure_hf_cache, model_path};
+use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
 
 #[derive(Debug, Parser)]
 #[command(about = "Run two-sided zeroth-order optimization on ResNet-18")]
@@ -40,7 +40,7 @@ fn mutable_stage<C, F>(
     build: F,
 ) -> Result<ModelOperation<C, candle_nn::Func<'static>>, Box<dyn std::error::Error>>
 where
-    C: black_hole_sun::TensorContract<Metadata = toys_common::dataset::SampleMetadata>,
+    C: black_hole_sun::TensorContract<Metadata = toy_common::dataset::SampleMetadata>,
     F: FnOnce(VarBuilder<'_>) -> candle::Result<candle_nn::Func<'static>>,
 {
     let mut varmap = VarMap::new();

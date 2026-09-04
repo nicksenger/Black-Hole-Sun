@@ -17,7 +17,7 @@ use black_hole_sun::{
 };
 use jungle_sdk::list;
 use jungle_sdk::prelude::*;
-use toys_common::dataset::SampleMetadata;
+use toy_common::dataset::SampleMetadata;
 use tracing::warn;
 use typenum::consts::{
     U0, U1, U128, U14, U2, U224, U256, U28, U3, U4, U5, U512, U56, U6, U64, U7,
@@ -188,7 +188,7 @@ impl<J: VoidOps> Effect<J> for GenerateImageEffect {
         jungle: &J,
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
-        toys_common::dataset::generate_image::<J, StemOp>(jungle)
+        toy_common::dataset::generate_image::<J, StemOp>(jungle)
     }
 }
 

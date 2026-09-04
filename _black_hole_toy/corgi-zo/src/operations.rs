@@ -11,7 +11,7 @@ use black_hole_sun::{
 use candle::{Device, Tensor, Var};
 use candle_nn::{Linear, Module, VarMap};
 use corgi_fwd::model::pool_stage4;
-use toys_common::dataset::SampleMetadata;
+use toy_common::dataset::SampleMetadata;
 
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 

@@ -14,7 +14,7 @@ use candle::backprop::GradStore;
 use candle::{Device, Tensor, Var};
 use candle_nn::{Module, Optimizer, SGD};
 use serde::{Deserialize, Serialize};
-use toys_common::dataset::SampleMetadata;
+use toy_common::dataset::SampleMetadata;
 
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 

@@ -15,8 +15,8 @@ use corgi_fwd::model::{
     build_stage1, build_stage2, build_stage3, build_stage4, build_trainable_stem, pool_stage4,
 };
 use jungle_sdk::{FusedClient, JourneyStatus, JungleClient};
-use toys_common::dataset::{DATASET_SAMPLES, configure_hf_cache, model_path};
-use toys_common::runtime::{RunCheck, ServerSpecs, run_until};
+use toy_common::dataset::{DATASET_SAMPLES, configure_hf_cache, model_path};
+use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
 
 #[derive(Debug, Parser)]
 #[command(about = "Train a pipeline-parallel ResNet-18 corgi identifier")]

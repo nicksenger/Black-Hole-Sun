@@ -1,5 +1,5 @@
 [package]
-name = "black-hole-toys-common"
+name = "black-hole-toy-common"
 description = "Shared runtime and dataset plumbing for black-hole toy examples"
 version = "0.1.0"
 edition = "2021"
@@ -8,7 +8,7 @@ edition = "2021"
 [workspace]
 
 [lib]
-name = "toys_common"
+name = "toy_common"
 path = "src/lib.rs"
 
 [features]

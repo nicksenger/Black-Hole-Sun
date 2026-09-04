@@ -10,7 +10,7 @@ use black_hole_sun::{
 use jungle_sdk::prelude::*;
 use jungle_sdk::{FusedClient, JungleClient};
 use serde::{Serialize, de::DeserializeOwned};
-use toys_common::dataset::SampleMetadata;
+use toy_common::dataset::SampleMetadata;
 
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 

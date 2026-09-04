@@ -6,7 +6,7 @@ use jungle_sdk::FusedClient;
 use tensor_fwd::contracts::{MatmulForward, LOGGED_OUTPUTS};
 use tensor_fwd::jungle::{TensorJungle, forward_reset_capabilities};
 use tensor_fwd::operations::{MatmulOperation, ReluOperation, ScaleOperation};
-use toys_common::runtime::{RunCheck, ServerSpecs, run_until};
+use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
 
 const TARGET_PASSES: usize = 4;
 

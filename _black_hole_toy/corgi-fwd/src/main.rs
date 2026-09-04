@@ -15,8 +15,8 @@ use corgi_fwd::operations::{
     StemOperation, ModelOperation,
 };
 use jungle_sdk::FusedClient;
-use toys_common::dataset::{DATASET_SAMPLES, configure_hf_cache, model_path};
-use toys_common::runtime::{RunCheck, ServerSpecs, run_until};
+use toy_common::dataset::{DATASET_SAMPLES, configure_hf_cache, model_path};
+use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
 
 #[derive(Debug, Parser)]
 #[command(about = "Run ResNet-18 over Stanford Dogs images")]

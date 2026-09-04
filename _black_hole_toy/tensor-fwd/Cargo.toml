@@ -10,7 +10,7 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1"
 black-hole-sun = { path = "../../black-hole-sun" }
-black-hole-toys-common = { path = "../common" }
+black-hole-toy-common = { path = "../common" }
 jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun", features = ["fjall", "fusion"] }
 postcard = { version = "1", features = ["alloc"] }
 serde = "1"
