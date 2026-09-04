@@ -114,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     servers.shutdown();
 
     println!(
-        "corgi-zo completed {} epoch(s) (dataset contains {DATASET_SAMPLES})",
+        "corgi-zo completed {} epoch(s) (source dataset contains {DATASET_SAMPLES})",
         args.epochs
     );
     result

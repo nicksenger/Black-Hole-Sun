@@ -1031,7 +1031,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "black-hole-toys-common"
+name = "black-hole-toy-common"
 version = "0.1.0"
 dependencies = [
  "black-hole-sun",
@@ -1040,6 +1040,7 @@ dependencies = [
  "image",
  "jungle-sdk",
  "parquet",
+ "rand 0.10.2",
  "serde",
  "tokio",
 ]
@@ -1741,7 +1742,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "black-hole-sun",
- "black-hole-toys-common",
+ "black-hole-toy-common",
  "candle-core",
  "candle-nn",
  "clap",
@@ -1761,7 +1762,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "black-hole-sun",
- "black-hole-toys-common",
+ "black-hole-toy-common",
  "candle-core",
  "candle-nn",
  "clap",

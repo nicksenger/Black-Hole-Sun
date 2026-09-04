@@ -18,6 +18,7 @@ dataset = [
     "dep:hf-hub",
     "dep:image",
     "dep:parquet",
+    "dep:rand",
     "dep:serde",
 ]
 
@@ -44,6 +45,10 @@ optional = true
 
 [dependencies.parquet]
 version = "59"
+optional = true
+
+[dependencies.rand]
+version = "0.10"
 optional = true
 
 [dependencies.serde]

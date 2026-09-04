@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     servers.shutdown();
 
     println!(
-        "corgi-fwd processed {} sample(s) (dataset contains {DATASET_SAMPLES})",
+        "corgi-fwd processed {} sample(s) (source dataset contains {DATASET_SAMPLES})",
         args.n_samples
     );
     result

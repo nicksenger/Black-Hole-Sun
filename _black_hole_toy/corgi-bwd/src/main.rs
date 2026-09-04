@@ -167,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     servers.shutdown();
 
     println!(
-        "corgi-bwd completed {} optimizer step(s), {} micro-batches each (dataset contains {DATASET_SAMPLES})",
+        "corgi-bwd completed {} optimizer step(s), {} micro-batches each (source dataset contains {DATASET_SAMPLES})",
         args.epochs, MICRO_BATCHES
     );
     result
