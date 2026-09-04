@@ -9,13 +9,13 @@ use serde::Serialize;
 use tracing::debug;
 use uuid::Uuid;
 
-pub use black_hole_spec::{Emission, EmissionId, InferenceOutputId, InferenceRequest};
+pub use black_hole_type::{Emission, EmissionId, InferenceOutputId, InferenceRequest};
 
 use crate::mass::DefaultConfig;
 use crate::ops::VoidInferOps;
 use crate::ops::{MassOps, ResetOps, VoidOps};
 use crate::AtomError;
-use black_hole_contract::TensorContract;
+use black_hole_spec::TensorContract;
 
 // ---------------------------------------------------------------------------
 // MassInfer — download -> infer -> upload in a single effect
@@ -40,8 +40,8 @@ where
     Op::Output: Send,
     J: VoidOps + MassOps<Op> + ResetOps<Op>,
 {
-    type In = (Uuid, black_hole_spec::EmissionId<Op::Input>);
-    type Out = black_hole_spec::EmissionId<Op::Output>;
+    type In = (Uuid, black_hole_type::EmissionId<Op::Input>);
+    type Out = black_hole_type::EmissionId<Op::Output>;
     type Err = AtomError;
 
     fn effect(
@@ -52,7 +52,7 @@ where
             let bytes = VoidOps::download_raw(jungle, input_id.id())
                 .await
                 .map_err(AtomError::Download)?;
-            let emission: black_hole_spec::Emission<M, Op::Input> = postcard::from_bytes(&bytes)?;
+            let emission: black_hole_type::Emission<M, Op::Input> = postcard::from_bytes(&bytes)?;
             let output = MassOps::<Op>::forward(jungle, instance_id, emission.output_id)
                 .await
                 .map_err(AtomError::Inference)?;
@@ -60,7 +60,7 @@ where
                 .await
                 .map_err(AtomError::ModelReset)?;
 
-            let output_emission = black_hole_spec::Emission::<M, Op::Output> {
+            let output_emission = black_hole_type::Emission::<M, Op::Output> {
                 metadata: emission.metadata,
                 output_id: output,
             };
@@ -68,7 +68,7 @@ where
             let id = VoidOps::upload_to_void(jungle, bytes)
                 .await
                 .map_err(AtomError::Upload)?;
-            Ok(black_hole_spec::EmissionId::new(id))
+            Ok(black_hole_type::EmissionId::new(id))
         }
     }
 }

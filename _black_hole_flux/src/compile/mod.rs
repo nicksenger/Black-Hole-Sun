@@ -8,8 +8,8 @@
 pub mod action;
 pub mod effect;
 
-use black_hole_contract::{QwenDarkInference, TensorContract};
-use black_hole_spec::ObjectId;
+use black_hole_spec::{QwenDarkInference, TensorContract};
+use black_hole_type::ObjectId;
 use jungle_sdk::prelude::*;
 use typenum::Unsigned;
 use typosaurus::collections::list::{Empty, List};

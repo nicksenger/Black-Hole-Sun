@@ -1,15 +1,18 @@
 [package]
 name = "black-hole-spec"
-description = "Interface types for black-hole-sun"
+description = "Typed tensor contracts and codecs for black-hole-sun"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-
-[dev-dependencies]
+black-hole-type = { path = "../_black_hole_type" }
+glowstick = "0.3"
 postcard = { version = "1", features = ["alloc"] }
+safetensors = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10"
+thiserror = "2"
 
 [lints]
 workspace = true

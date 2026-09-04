@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use black_hole_spec::ObjectId;
+use black_hole_type::ObjectId;
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 
@@ -162,10 +162,10 @@ fn neutral_appearance(topology: &SunTopology) -> SunAppearance {
 /// Predicate for a neutral dependency-aware forward pass.
 pub struct PendingForwardWork<S>(PhantomData<fn() -> S>);
 
-impl<S> Predicate<(&ForwardSunState<S>, &black_hole_spec::ArtifactDelivery<()>)>
+impl<S> Predicate<(&ForwardSunState<S>, &black_hole_type::ArtifactDelivery<()>)>
     for PendingForwardWork<S>
 {
-    fn eval((state, _): &(&ForwardSunState<S>, &black_hole_spec::ArtifactDelivery<()>)) -> bool {
+    fn eval((state, _): &(&ForwardSunState<S>, &black_hole_type::ArtifactDelivery<()>)) -> bool {
         !state.runtime.pending.is_empty()
     }
 }

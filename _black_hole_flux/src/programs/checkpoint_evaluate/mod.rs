@@ -3,7 +3,7 @@
 
 use std::marker::PhantomData;
 
-use black_hole_spec::ObjectId;
+use black_hole_type::ObjectId;
 use jungle_sdk::prelude::*;
 use uuid::Uuid;
 

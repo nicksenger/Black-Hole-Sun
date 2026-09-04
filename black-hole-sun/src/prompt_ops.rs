@@ -1,10 +1,10 @@
 //! Prompt-preparation operations for spec datatypes.
 //!
-//! `black-hole-spec` is intentionally datatypes only; behavior such as token
+//! `black-hole-type` is intentionally datatypes only; behavior such as token
 //! construction and shaping sequences for prompting (trimming, padding,
 //! framing) lives here instead.
 
-use black_hole_spec::{DarkToken, InferenceOutput, LogitEntry, SequenceOutput, IM_END, PAD};
+use black_hole_type::{DarkToken, InferenceOutput, LogitEntry, SequenceOutput, IM_END, PAD};
 
 /// Operations for constructing dark tokens.
 pub trait TokenOps: Sized {

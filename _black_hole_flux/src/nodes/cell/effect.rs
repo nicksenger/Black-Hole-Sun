@@ -7,13 +7,13 @@ use jungle_sdk::prelude::*;
 use tracing::debug;
 use uuid::Uuid;
 
-use black_hole_spec::{ObjectId, Transmission};
+use black_hole_type::{ObjectId, Transmission};
 
 use super::action::{Potentiation, Propagation};
 use crate::mass::{DefaultConfig, ModelConfig};
 use crate::ops::{MassOps, OptimizeOps, PerturbOps, VoidInferOps, VoidOps};
 use crate::AtomError;
-use black_hole_contract::TensorContract;
+use black_hole_spec::TensorContract;
 
 // ---------------------------------------------------------------------------
 // Model instance lifecycle
@@ -289,7 +289,7 @@ where
     J: VoidOps,
 {
     type In = ObjectId;
-    type Out = black_hole_spec::ArtifactDelivery<T>;
+    type Out = black_hole_type::ArtifactDelivery<T>;
     type Err = AtomError;
 
     fn effect(
@@ -313,7 +313,7 @@ where
     J: VoidOps,
 {
     type In = ObjectId;
-    type Out = black_hole_spec::OperationalControl<C>;
+    type Out = black_hole_type::OperationalControl<C>;
     type Err = AtomError;
 
     fn effect(
@@ -336,7 +336,7 @@ where
     T: Send + 'static,
     J: VoidOps,
 {
-    type In = (black_hole_spec::EmissionId<T>, ObjectId);
+    type In = (black_hole_type::EmissionId<T>, ObjectId);
     type Out = ();
     type Err = AtomError;
 
@@ -345,7 +345,7 @@ where
         (emission_id, send_id): Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let delivery = black_hole_spec::ArtifactDelivery {
+            let delivery = black_hole_type::ArtifactDelivery {
                 emission_id,
                 recv: ObjectId::nil(),
                 send: ObjectId::nil(),
@@ -458,12 +458,12 @@ impl<J: VoidInferOps> Effect<J> for WaitForPotentiationEffect {
 // Transmit — propagate an emission to the next cell
 // ---------------------------------------------------------------------------
 
-/// Effect that propagates an [`EmissionId`](black_hole_spec::EmissionId) to the next cell.
+/// Effect that propagates an [`EmissionId`](black_hole_type::EmissionId) to the next cell.
 pub struct Transmit;
 
 #[jungle::effect(id = 67)]
 impl<J: VoidInferOps> Effect<J> for Transmit {
-    type In = (black_hole_spec::EmissionId, ObjectId);
+    type In = (black_hole_type::EmissionId, ObjectId);
     type Out = ();
     type Err = AtomError;
 

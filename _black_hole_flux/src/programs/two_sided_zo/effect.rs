@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 
-use black_hole_spec::{ObjectId, Transmission};
+use black_hole_type::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use tracing::debug;
 use uuid::Uuid;
@@ -19,7 +19,7 @@ pub struct NodeTransmission {
     /// The node id (u32) that received this transmission.
     pub node_id: u32,
     /// The transmission received.
-    pub transmission: black_hole_spec::Transmission,
+    pub transmission: black_hole_type::Transmission,
     /// Downstream nodes that were sent this transmission.
     pub sent_node_ids: Vec<u32>,
 }
@@ -269,7 +269,7 @@ impl<J: VoidInferOps> Effect<J> for BroadcastPotentiationEffect {
 
             for &(port_id, potentiation_input_id) in &input.port_endpoints {
                 let next_p1_tx = Uuid::new_v4();
-                let potentiation = black_hole_spec::Transmission::Potentiation {
+                let potentiation = black_hole_type::Transmission::Potentiation {
                     potentiation: input.potentiation.clone(),
                     recv: next_p1_tx,
                 };

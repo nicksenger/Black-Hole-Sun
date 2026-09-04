@@ -1,8 +1,8 @@
 use std::{marker::PhantomData, net::SocketAddr};
 
-use black_hole_contract::{operation_capability, QwenDarkInference, TensorContract};
+use black_hole_spec::{operation_capability, QwenDarkInference, TensorContract};
 use black_hole_flux::ops::{CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, ResetOps};
-use black_hole_spec::{
+use black_hole_type::{
     ArtifactRef, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut, ObjectId,
     MASS_OPERATION_PROTOCOL_VERSION,
 };
@@ -449,7 +449,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use black_hole_spec::ContractId;
+    use black_hole_type::ContractId;
 
     use super::*;
 

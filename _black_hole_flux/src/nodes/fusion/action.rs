@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use black_hole_spec::{EmissionId, ObjectId};
+use black_hole_type::{EmissionId, ObjectId};
 
 use super::effect::{
     FusionPotentiationEnvelope, GenerateTransformIdEffect, WaitForFusionPotentiationEffect,

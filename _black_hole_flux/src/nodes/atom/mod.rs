@@ -14,7 +14,7 @@ use crate::mass::{DefaultConfig, ModelConfig};
 use crate::EmissionId;
 use action::MassInferStep;
 use action::OperationMassInferStep;
-use black_hole_contract::TensorContract;
+use black_hole_spec::TensorContract;
 
 const MASS_INFER_BACKOFF_INITIAL_DELAY_MS: u64 = 100;
 const MASS_INFER_BACKOFF_MAX_DELAY_MS: u64 = 10_000;

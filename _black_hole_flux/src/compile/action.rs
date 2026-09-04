@@ -4,8 +4,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 
-use black_hole_contract::{QwenDarkInference, TensorContract};
-use black_hole_spec::ObjectId;
+use black_hole_spec::{QwenDarkInference, TensorContract};
+use black_hole_type::ObjectId;
 use jungle_sdk::prelude::*;
 use typosaurus::num::Unsigned;
 use uuid::Uuid;
@@ -22,7 +22,7 @@ pub(crate) fn register_vertex<Program: super::SunProgram>(
     vertex_id: u32,
     node_label: String,
     ports: &[(u32, ObjectId)],
-    contract: black_hole_spec::ContractDescriptor,
+    contract: black_hole_type::ContractDescriptor,
     declared_edges: Vec<crate::topology::DeclaredEdge>,
     journey_id: Uuid,
     warp_journey_id: Option<Uuid>,
@@ -653,7 +653,7 @@ mod tests {
             <BroadcastPotentiation<Payload> as Action>::Bind<TestSunAnimalWithPayload>;
         <BroadcastBound as BoundAction<TestSunAnimalWithPayload>>::emit(
             &state,
-            black_hole_spec::Potentiation {
+            black_hole_type::Potentiation {
                 loss_up: 0.1,
                 loss_down: 0.2,
                 seed: 7,
@@ -798,8 +798,8 @@ mod tests {
         type Finalize = <FinalizeForwardGraph<()> as Action>::Bind<TestForwardAnimal>;
         <Finalize as BoundAction<TestForwardAnimal>>::absorb(&mut state, Ok(())).unwrap();
 
-        let delivery = black_hole_spec::ArtifactDelivery::<()> {
-            emission_id: black_hole_spec::EmissionId::new(Uuid::new_v4()),
+        let delivery = black_hole_type::ArtifactDelivery::<()> {
+            emission_id: black_hole_type::EmissionId::new(Uuid::new_v4()),
             recv: Uuid::new_v4(),
             send: Uuid::new_v4(),
         };

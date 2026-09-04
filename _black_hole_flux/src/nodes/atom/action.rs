@@ -3,7 +3,7 @@ pub use crate::nodes::cell::action::MassInferStep;
 
 use std::marker::PhantomData;
 
-use black_hole_contract::TensorContract;
+use black_hole_spec::TensorContract;
 use jungle_sdk::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -21,8 +21,8 @@ where
     Op::Output: Send,
 {
     type Effect = super::effect::OperationMassInfer<M, Op>;
-    type Input = (Uuid, black_hole_spec::EmissionId<Op::Input>);
-    type Output = black_hole_spec::EmissionId<Op::Output>;
+    type Input = (Uuid, black_hole_type::EmissionId<Op::Input>);
+    type Output = black_hole_type::EmissionId<Op::Output>;
 
     fn emit(_state: &crate::nodes::cell::action::CellState<S>, input: Self::Input) -> Self::Input {
         input

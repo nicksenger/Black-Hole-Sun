@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Once, time::Duration};
 
-use black_hole_spec::MassPerturbationMode;
+use black_hole_type::MassPerturbationMode;
 use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]

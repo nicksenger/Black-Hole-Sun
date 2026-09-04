@@ -1,9 +1,9 @@
-use black_hole_contract::{
+use black_hole_spec::{
     glowstick::{Dyn, Shape1},
     TensorBundleSpec, TensorContract, TensorPortSpec,
 };
 use black_hole_flux::{DeclaredEdges, Edge, TypedEdges};
-use black_hole_spec::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
+use black_hole_type::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
 use typenum::{U1, U3};
 use typosaurus::list;
 

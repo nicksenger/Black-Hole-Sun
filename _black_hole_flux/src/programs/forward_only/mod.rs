@@ -2,8 +2,8 @@
 
 use std::marker::PhantomData;
 
-use black_hole_contract::TensorContract;
-use black_hole_spec::ObjectId;
+use black_hole_spec::TensorContract;
+use black_hole_type::ObjectId;
 use uuid::Uuid;
 
 use crate::compile::SunProgram;

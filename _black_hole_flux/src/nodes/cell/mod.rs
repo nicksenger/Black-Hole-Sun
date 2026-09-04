@@ -17,8 +17,8 @@ use action::{
     WaitForOperationalControl as WaitForOperationalControl_,
     WaitForPotentiation as WaitForPotentiation_, WaitForPropagation as WaitForPropagation_,
 };
-use black_hole_contract::TensorContract;
-use black_hole_spec::EmissionId;
+use black_hole_spec::TensorContract;
+use black_hole_type::EmissionId;
 use jungle_sdk::prelude::*;
 use jungle_zoo::backoff::Backoff;
 use jungle_zoo::predicate::Always;
@@ -98,7 +98,7 @@ pub struct OptimizeWithBackoff<S>(
 );
 
 /// A Cell wraps a atom flow in an infinite QuZO training loop driven by
-/// [`Transmission`](black_hole_spec::Transmission) messages from void.
+/// [`Transmission`](black_hole_type::Transmission) messages from void.
 #[derive(Flow)]
 pub struct CellWithState<N, S, H: ModelConfig>(
     Step<InitRecvId_<S>>,
@@ -112,8 +112,8 @@ pub type Cell<N, S = (), H = DefaultConfig> = CellWithState<N, S, H>;
 /// QuZO-compatible Cell whose data plane is typed by an operation contract.
 ///
 /// This is the executable generic counterpart to [`Cell`]. It uses
-/// [`ArtifactDelivery`](black_hole_spec::ArtifactDelivery) for inference data
-/// and [`OperationalControl`](black_hole_spec::OperationalControl) for the
+/// [`ArtifactDelivery`](black_hole_type::ArtifactDelivery) for inference data
+/// and [`OperationalControl`](black_hole_type::OperationalControl) for the
 /// strategy-selected optimization command.
 #[derive(Flow)]
 pub struct OperationCellWithState<

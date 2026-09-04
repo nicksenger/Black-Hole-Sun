@@ -31,10 +31,10 @@ pub struct BoundaryState<S = ()> {
     pub model_id: Uuid,
     /// Stable ID of the warp journey associated with this boundary.
     pub warp_journey_id: Uuid,
-    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
-    pub recv_id: black_hole_spec::ObjectId,
-    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to upload.
-    pub send_id: black_hole_spec::ObjectId,
+    /// Void key of the next [`Transmission`](black_hole_type::Transmission) to download.
+    pub recv_id: black_hole_type::ObjectId,
+    /// Void key of the next [`Transmission`](black_hole_type::Transmission) to upload.
+    pub send_id: black_hole_type::ObjectId,
     /// Random seed passed to the perturb-up step each iteration.
     pub perturbation_seed: u64,
     /// Last known frozen status for this model instance.

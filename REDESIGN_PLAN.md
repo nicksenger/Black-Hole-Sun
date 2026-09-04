@@ -6,7 +6,7 @@ generic tensor-operation path has feature parity.
 
 ## 1. Establish the operation contract and tensor wire format
 
-- Add wire-only types to `black-hole-spec`: `ContractId`,
+- Add wire-only types to `black-hole-type`: `ContractId`,
   `ContractDescriptor`, input and output port descriptors,
   static/symbolic/dynamic dimensions, dtype and layout constraints,
   `EncodingId`, and a versioned `TensorEnvelope`.
@@ -51,7 +51,7 @@ generic tensor-operation path has feature parity.
 ## 2. Introduce typed artifact references and split the capability traits
 
 - Replace the erased `InferenceOutputId`/`EmissionId` path in
-  `_black_hole_spec/src/lib.rs` with zero-cost typed references such as
+  `_black_hole_type/src/lib.rs` with zero-cost typed references such as
   `ObjectRef<T>` and then `ArtifactRef<T>`. `ArtifactRef` is the abstraction
   carried by a Flow. Initially it can resolve only to a committed Void object;
   later it can also resolve to an in-progress transfer or live stream.

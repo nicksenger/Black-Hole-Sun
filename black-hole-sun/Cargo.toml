@@ -20,9 +20,9 @@ qwen38_27b = ["black-hole-mass/qwen38_27b"]
 [dependencies]
 async-trait = "0.1"
 black-hole-beam = { path = "../_black_hole_beam" }
-black-hole-contract = { path = "../_black_hole_contract" }
-black-hole-flux = { path = "../_black_hole_flux" }
 black-hole-spec = { path = "../_black_hole_spec" }
+black-hole-flux = { path = "../_black_hole_flux" }
+black-hole-type = { path = "../_black_hole_type" }
 black-hole-void = { path = "../_black_hole_void", default-features = false }
 black-hole-mass = { path = "../_black_hole_mass" }
 hf-hub = "0.4"

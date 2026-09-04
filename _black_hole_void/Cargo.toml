@@ -10,7 +10,7 @@ postgres = ["dep:sqlx"]
 
 [dependencies]
 aws-sdk-s3 = "1.140"
-black-hole-spec = { path = "../_black_hole_spec" }
+black-hole-type = { path = "../_black_hole_type" }
 clap = { version = "4", features = ["derive"] }
 directories-next = "2"
 futures = "0.3"

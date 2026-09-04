@@ -28,7 +28,7 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use black_hole_spec::{
+use black_hole_type::{
     ContractDescriptor, ContractId, ContractSide, DarkToken, DurabilityPolicy, InferenceInput,
     InferenceOutput, InferenceRequest, LogitEntry, MassArchitecture, MassErrorFeedbackConfig,
     MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode,
@@ -76,8 +76,8 @@ pub const COMPILED_ARCHITECTURE: Option<MassArchitecture> = if cfg!(feature = "q
 fn local_worker_capabilities(
     operation: Option<&Arc<dyn OperationImplementation>>,
 ) -> WorkerCapabilities {
-    let mut operations = vec![black_hole_contract::operation_capability::<
-        black_hole_contract::QwenDarkInference,
+    let mut operations = vec![black_hole_spec::operation_capability::<
+        black_hole_spec::QwenDarkInference,
     >()];
     if let Some(operation) = operation {
         let capability = operation.capability();
@@ -540,9 +540,9 @@ impl VoidClient {
         side: ContractSide,
         data: Vec<u8>,
     ) -> Result<OperationArtifactRef> {
-        let validated = black_hole_contract::validate_artifact(&descriptor, side, &data)
+        let validated = black_hole_spec::validate_artifact(&descriptor, side, &data)
             .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
-        let tensor_header = black_hole_contract::tensor_stream_header(&data)
+        let tensor_header = black_hole_spec::tensor_stream_header(&data)
             .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
         let expected_len = data.len() as u64;
         let expected_hash = transfer_hash(&data);
@@ -976,7 +976,7 @@ async fn finish_transfer_upload(
 fn validate_transfer_ticket(ticket: &TransferTicket) -> Result<()> {
     if ticket.descriptor.id != ticket.envelope.contract_id
         || ticket.descriptor.version != ticket.envelope.contract_version
-        || black_hole_contract::descriptor_hash(&ticket.descriptor) != ticket.envelope.contract_hash
+        || black_hole_spec::descriptor_hash(&ticket.descriptor) != ticket.envelope.contract_hash
     {
         return Err(ServerError::VoidError(
             "transfer ticket descriptor does not match its tensor envelope".into(),
@@ -987,7 +987,7 @@ fn validate_transfer_ticket(ticket: &TransferTicket) -> Result<()> {
             "transfer ticket durable object does not match its transfer ID".into(),
         ));
     }
-    let declared_len = black_hole_contract::validate_tensor_stream_header(
+    let declared_len = black_hole_spec::validate_tensor_stream_header(
         &ticket.descriptor,
         ticket.envelope.side,
         &ticket.tensor_header,
@@ -1149,7 +1149,7 @@ fn validate_received_transfer(ticket: &TransferTicket, bytes: Vec<u8>) -> Result
             "received tensor does not match its transfer ticket".into(),
         ));
     }
-    black_hole_contract::validate_artifact(&ticket.descriptor, ticket.envelope.side, &bytes)
+    black_hole_spec::validate_artifact(&ticket.descriptor, ticket.envelope.side, &bytes)
         .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
     Ok(bytes)
 }
@@ -3095,7 +3095,7 @@ fn architecture_satisfies(
 }
 
 fn validate_capability(capability: &OperationCapability) -> Result<()> {
-    let actual_hash = black_hole_contract::descriptor_hash(&capability.descriptor);
+    let actual_hash = black_hole_spec::descriptor_hash(&capability.descriptor);
     if capability.descriptor_hash != actual_hash {
         return Err(ServerError::OperationContractHashMismatch);
     }
@@ -3562,7 +3562,7 @@ async fn handle_operation_start_local(
     ctx: &MassContext,
 ) -> Result<MassOut> {
     let qwen =
-        black_hole_contract::operation_capability::<black_hole_contract::QwenDarkInference>();
+        black_hole_spec::operation_capability::<black_hole_spec::QwenDarkInference>();
     if operation_satisfies(&qwen, requested) {
         let out = handle_start(instance_id, None, ctx).await?;
         ctx.operation_instances.write().await.insert(instance_id);
@@ -3642,7 +3642,7 @@ async fn handle_operation_forward_local(
     let capability = operation.capability();
     let void = require_void_client(ctx, "generic operation forward")?;
     let input_bytes = void.download_artifact(input).await?;
-    black_hole_contract::validate_artifact(
+    black_hole_spec::validate_artifact(
         &capability.descriptor,
         ContractSide::Input,
         &input_bytes,
@@ -3653,7 +3653,7 @@ async fn handle_operation_forward_local(
         .forward(instance_id, input_bytes)
         .await
         .map_err(ServerError::OperationError)?;
-    black_hole_contract::validate_artifact(
+    black_hole_spec::validate_artifact(
         &capability.descriptor,
         ContractSide::Output,
         &output_bytes,
@@ -3670,7 +3670,7 @@ async fn handle_qwen_operation_forward(
     input: OperationArtifactRef,
     ctx: &MassContext,
 ) -> Result<MassOut> {
-    use black_hole_contract::{decode_input, encode_output, QwenDarkInference, RawTensor};
+    use black_hole_spec::{decode_input, encode_output, QwenDarkInference, RawTensor};
 
     let void = require_void_client(ctx, "generic Qwen forward")?;
     let input_bytes = void.download_artifact(input).await?;
@@ -3773,19 +3773,19 @@ async fn handle_qwen_operation_forward(
     let output_tensors = [
         RawTensor {
             name: "predictions".into(),
-            dtype: black_hole_spec::TensorDtype::U32,
+            dtype: black_hole_type::TensorDtype::U32,
             shape: vec![output_batch, output_sequence],
             data: output_predictions,
         },
         RawTensor {
             name: "dark_token_ids".into(),
-            dtype: black_hole_spec::TensorDtype::U32,
+            dtype: black_hole_type::TensorDtype::U32,
             shape: vec![output_batch, output_sequence, output_top_k],
             data: output_token_ids,
         },
         RawTensor {
             name: "dark_log_probs".into(),
-            dtype: black_hole_spec::TensorDtype::F32,
+            dtype: black_hole_type::TensorDtype::F32,
             shape: vec![output_batch, output_sequence, output_top_k],
             data: output_log_probs,
         },
@@ -3794,7 +3794,7 @@ async fn handle_qwen_operation_forward(
         .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
     let output = void
         .publish_artifact(
-            <black_hole_contract::QwenDarkInference as black_hole_contract::TensorContract>::descriptor(),
+            <black_hole_spec::QwenDarkInference as black_hole_spec::TensorContract>::descriptor(),
             ContractSide::Output,
             output_bytes,
         )
@@ -5139,13 +5139,13 @@ mod tests {
         RouteTarget, ServerBuilder, ServerError, TransportMode, TunnelWorker,
         DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
     };
-    use black_hole_contract::{
+    use black_hole_spec::{
         encode_output,
         glowstick::{Dyn, Shape1},
         operation_capability, QwenDarkInference, RawTensor, SingleTensorSpec, TensorContract,
         TensorPortSpec,
     };
-    use black_hole_spec::{
+    use black_hole_type::{
         ContractId, DimensionDescriptor, DtypeConstraint, EncodingId, MassArchitecture,
         MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig, MassPerturbationMode,
         OperationArtifactRef, TensorDtype, WorkerCapabilities,
@@ -5283,11 +5283,11 @@ mod tests {
     #[test]
     fn generic_protocol_versions_fail_closed() {
         assert!(ensure_operation_protocol_version(
-            black_hole_spec::MASS_OPERATION_PROTOCOL_VERSION
+            black_hole_type::MASS_OPERATION_PROTOCOL_VERSION
         )
         .is_ok());
         assert!(matches!(
-            ensure_operation_protocol_version(black_hole_spec::MASS_OPERATION_PROTOCOL_VERSION + 1),
+            ensure_operation_protocol_version(black_hole_type::MASS_OPERATION_PROTOCOL_VERSION + 1),
             Err(ServerError::UnsupportedOperationProtocolVersion(_))
         ));
     }
@@ -5882,7 +5882,7 @@ mod tests {
         let out = handle_query_model_capacity(&ctx)
             .await
             .expect("capacity query should succeed");
-        let black_hole_spec::MassOut::ModelCapacity { capacity } = out else {
+        let black_hole_type::MassOut::ModelCapacity { capacity } = out else {
             panic!("unexpected query response");
         };
         assert_eq!(
@@ -5934,7 +5934,7 @@ mod tests {
         let out = handle_query_model_capacity(&ctx)
             .await
             .expect("capacity query should succeed");
-        let black_hole_spec::MassOut::ModelCapacity { capacity } = out else {
+        let black_hole_type::MassOut::ModelCapacity { capacity } = out else {
             panic!("unexpected query response");
         };
         assert_eq!(
@@ -5985,7 +5985,7 @@ mod tests {
             .await
             .expect("registration should succeed");
         let token = match out {
-            black_hole_spec::MassOut::TunnelRegistered { token } => token,
+            black_hole_type::MassOut::TunnelRegistered { token } => token,
             other => panic!("unexpected registration response: {other:?}"),
         };
         let worker = ctx
@@ -6025,7 +6025,7 @@ mod tests {
             .await
             .expect("registration should succeed");
         let token = match out {
-            black_hole_spec::MassOut::TunnelRegistered { token } => token,
+            black_hole_type::MassOut::TunnelRegistered { token } => token,
             other => panic!("unexpected registration response: {other:?}"),
         };
         let worker = ctx
@@ -6103,7 +6103,7 @@ mod tests {
 
     fn operation_worker(
         token: Uuid,
-        operations: Vec<black_hole_spec::OperationCapability>,
+        operations: Vec<black_hole_type::OperationCapability>,
     ) -> TunnelWorker {
         TunnelWorker {
             token,
@@ -6221,7 +6221,7 @@ mod tests {
             .await
             .expect("registration should succeed");
         let token = match out {
-            black_hole_spec::MassOut::TunnelRegistered { token } => token,
+            black_hole_type::MassOut::TunnelRegistered { token } => token,
             other => panic!("unexpected registration response: {other:?}"),
         };
         let worker = ctx
@@ -6441,7 +6441,7 @@ mod tests {
         let out = handle_query_model_capacity(&ctx)
             .await
             .expect("capacity query should succeed");
-        let black_hole_spec::MassOut::ModelCapacity { capacity } = out else {
+        let black_hole_type::MassOut::ModelCapacity { capacity } = out else {
             panic!("unexpected query response");
         };
         let teacher_architecture = MassArchitecture::Qwen38_27b;

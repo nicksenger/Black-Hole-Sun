@@ -1,1289 +1,1362 @@
-//! Shared types for the black-hole workspace.
+//! Compile-time tensor contracts and the backend-neutral v1 wire codec.
+//!
+//! The contract side depends on glowstick for shape identity, but neither the
+//! wire schema nor the codec depends on Candle (or any other tensor backend).
 
-use std::{fmt, marker::PhantomData};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    marker::PhantomData,
+};
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use uuid::Uuid;
+use black_hole_type::{
+    ContractDescriptor, ContractHash, ContractId, ContractSide, DimensionDescriptor,
+    DtypeConstraint, EncodingId, LayoutConstraint, OperationCapability, StreamingChunkOrder,
+    StreamingFinalization, TensorDtype, TensorEnvelope, TensorPortDescriptor,
+};
+use glowstick::Shape;
+use postcard::{from_bytes, to_allocvec};
+use safetensors::{
+    tensor::{Dtype, Metadata as SafeTensorMetadata, SafeTensors, TensorInfo, TensorView},
+    SafeTensorError,
+};
+use serde::{de::DeserializeOwned, Serialize};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
 
-pub const IM_START: u32 = 248045;
-pub const IM_END: u32 = 248046;
-pub const PAD: u32 = 248044;
-pub const THINK_OPEN: u32 = 248068;
-pub const THINK_CLOSE: u32 = 248069;
-/// Current generic Mass start/forward protocol version.
-pub const MASS_OPERATION_PROTOCOL_VERSION: u16 = 1;
-/// Current progressive artifact-transfer protocol version.
-pub const TRANSFER_PROTOCOL_VERSION: u16 = 1;
+pub use glowstick;
 
-/// Opaque identifier for objects stored in void.
-pub type ObjectId = Uuid;
+const FRAME_MAGIC: &[u8; 8] = b"BHSTEN01";
+const FRAME_PREFIX_LEN: usize = FRAME_MAGIC.len() + size_of::<u32>();
 
-/// A zero-cost, typed reference to an object stored in void.
+/// One named, glowstick-shaped port in a tensor bundle.
 ///
-/// Only the UUID is serialized. The payload type exists solely to prevent an
-/// object containing one kind of value from being used where another kind is
-/// expected.
-#[repr(transparent)]
-pub struct ObjectRef<T> {
-    id: ObjectId,
-    marker: PhantomData<fn() -> T>,
-}
+/// Implementors provide runtime dimension descriptors explicitly. This is
+/// intentional: glowstick's numeric shape iterator cannot preserve the label
+/// of `Dyn<Label>`, while the distributed contract must preserve symbolic
+/// identity in order to verify repeated bindings.
+pub trait TensorPortSpec {
+    type Shape: glowstick::Shape;
 
-impl<T> ObjectRef<T> {
-    pub const fn new(id: ObjectId) -> Self {
-        Self {
-            id,
-            marker: PhantomData,
+    const NAME: &'static str;
+    const LAYOUT: LayoutConstraint = LayoutConstraint::Contiguous;
+
+    fn dimensions() -> Vec<DimensionDescriptor>;
+    fn dtype() -> DtypeConstraint;
+
+    fn descriptor() -> TensorPortDescriptor {
+        let dimensions = Self::dimensions();
+        assert_eq!(
+            dimensions.len(),
+            Self::Shape::RANK,
+            "runtime descriptor rank does not match glowstick shape rank for {}",
+            Self::NAME,
+        );
+        for (axis, (compile_time, runtime)) in
+            Self::Shape::iter().zip(dimensions.iter()).enumerate()
+        {
+            if compile_time != 0 {
+                assert_eq!(
+                    runtime,
+                    &DimensionDescriptor::Static(compile_time as u64),
+                    "static glowstick dimension {axis} does not match the runtime descriptor for {}",
+                    Self::NAME,
+                );
+            }
+        }
+        TensorPortDescriptor {
+            name: Self::NAME.to_owned(),
+            dimensions,
+            dtype: Self::dtype(),
+            layout: Self::LAYOUT,
         }
     }
-
-    pub const fn id(&self) -> ObjectId {
-        self.id
-    }
-
-    pub const fn into_id(self) -> ObjectId {
-        self.id
-    }
 }
 
-impl<T> Clone for ObjectRef<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
+/// Type-level list of named tensor ports.
+pub trait PortList {
+    fn descriptors() -> Vec<TensorPortDescriptor>;
 }
 
-impl<T> Copy for ObjectRef<T> {}
-
-impl<T> PartialEq for ObjectRef<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
+macro_rules! port_list {
+    ($($name:ident),+) => {
+        impl<$($name: TensorPortSpec),+> PortList for ($($name,)+) {
+            fn descriptors() -> Vec<TensorPortDescriptor> {
+                vec![$($name::descriptor()),+]
+            }
+        }
+    };
 }
 
-impl<T> Eq for ObjectRef<T> {}
+port_list!(A);
+port_list!(A, B);
+port_list!(A, B, C);
+port_list!(A, B, C, D);
+port_list!(A, B, C, D, E);
+port_list!(A, B, C, D, E, F);
+port_list!(A, B, C, D, E, F, G);
+port_list!(A, B, C, D, E, F, G, H);
 
-impl<T> std::hash::Hash for ObjectRef<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
+/// A named bundle of one or more tensor ports.
+pub struct TensorBundleSpec<Ports>(PhantomData<Ports>);
+
+/// Compile-time tensor bundle used as a contract input or output.
+pub trait TensorSpec {
+    fn descriptor() -> Vec<TensorPortDescriptor>;
 }
 
-impl<T> fmt::Debug for ObjectRef<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("ObjectRef").field(&self.id).finish()
-    }
-}
-
-impl<T> fmt::Display for ObjectRef<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.id.fmt(formatter)
+impl<Ports: PortList> TensorSpec for TensorBundleSpec<Ports> {
+    fn descriptor() -> Vec<TensorPortDescriptor> {
+        Ports::descriptors()
     }
 }
 
-impl<T> From<ObjectId> for ObjectRef<T> {
-    fn from(id: ObjectId) -> Self {
-        Self::new(id)
-    }
-}
+/// Convenience alias for the common one-tensor bundle.
+pub type SingleTensorSpec<Port> = TensorBundleSpec<(Port,)>;
 
-impl<T> From<ObjectRef<T>> for ObjectId {
-    fn from(reference: ObjectRef<T>) -> Self {
-        reference.id
-    }
-}
+/// Compile-time half of a distributed tensor operation contract.
+pub trait TensorContract {
+    type Input: TensorSpec;
+    type Output: TensorSpec;
+    type Metadata;
 
-impl<T> Serialize for ObjectRef<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.id.serialize(serializer)
-    }
-}
+    const ID: ContractId;
+    const VERSION: u32;
 
-impl<'de, T> Deserialize<'de> for ObjectRef<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        ObjectId::deserialize(deserializer).map(Self::new)
-    }
-}
-
-/// Typed handle for an artifact assembled from immutable Void chunks.
-#[repr(transparent)]
-pub struct TransferRef<T> {
-    id: ObjectId,
-    marker: PhantomData<fn() -> T>,
-}
-
-impl<T> TransferRef<T> {
-    pub const fn new(id: ObjectId) -> Self {
-        Self {
-            id,
-            marker: PhantomData,
+    fn descriptor() -> ContractDescriptor {
+        ContractDescriptor {
+            id: Self::ID,
+            version: Self::VERSION,
+            inputs: Self::Input::descriptor(),
+            outputs: Self::Output::descriptor(),
         }
     }
-
-    pub const fn id(&self) -> ObjectId {
-        self.id
-    }
 }
 
-impl<T> Clone for TransferRef<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T> Copy for TransferRef<T> {}
-
-impl<T> PartialEq for TransferRef<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl<T> Eq for TransferRef<T> {}
-
-impl<T> std::hash::Hash for TransferRef<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
-
-impl<T> fmt::Debug for TransferRef<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("TransferRef")
-            .field(&self.id)
-            .finish()
-    }
-}
-
-impl<T> Serialize for TransferRef<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.id.serialize(serializer)
-    }
-}
-
-impl<'de, T> Deserialize<'de> for TransferRef<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        ObjectId::deserialize(deserializer).map(Self::new)
-    }
-}
-
-/// Typed live-stream location with a durable chunk-transfer fallback.
+/// Explicit opt-in contract for operators that can execute before a complete
+/// tensor artifact has arrived.
 ///
-/// The ticket is persisted separately so the location remains compact enough
-/// to pass through schedulers while still carrying everything needed to
-/// reconnect to the source.
-pub struct StreamRef<T> {
-    pub ticket_id: ObjectId,
-    pub fallback_transfer_id: ObjectId,
-    marker: PhantomData<fn() -> T>,
-}
-
-impl<T> StreamRef<T> {
-    pub const fn new(ticket_id: ObjectId, fallback_transfer_id: ObjectId) -> Self {
-        Self {
-            ticket_id,
-            fallback_transfer_id,
-            marker: PhantomData,
-        }
-    }
-}
-
-impl<T> Clone for StreamRef<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T> Copy for StreamRef<T> {}
-
-impl<T> PartialEq for StreamRef<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.ticket_id == other.ticket_id && self.fallback_transfer_id == other.fallback_transfer_id
-    }
-}
-
-impl<T> Eq for StreamRef<T> {}
-
-impl<T> std::hash::Hash for StreamRef<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.ticket_id.hash(state);
-        self.fallback_transfer_id.hash(state);
-    }
-}
-
-impl<T> fmt::Debug for StreamRef<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("StreamRef")
-            .field("ticket_id", &self.ticket_id)
-            .field("fallback_transfer_id", &self.fallback_transfer_id)
-            .finish()
-    }
-}
-
-impl<T> Serialize for StreamRef<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        (self.ticket_id, self.fallback_transfer_id).serialize(serializer)
-    }
-}
-
-impl<'de, T> Deserialize<'de> for StreamRef<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let (ticket_id, fallback_transfer_id) = <(ObjectId, ObjectId)>::deserialize(deserializer)?;
-        Ok(Self::new(ticket_id, fallback_transfer_id))
-    }
-}
-
-/// Location-independent reference carried between typed flows.
-///
-/// A normal resolver accepts only committed data. `Transfer` resolves a
-/// committed transfer manifest and its immutable chunks; `Stream` may use the
-/// live source but always retains the transfer fallback for replay.
-#[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub enum ArtifactRef<T> {
-    Committed(ObjectRef<T>),
-    Transfer(TransferRef<T>),
-    Stream(StreamRef<T>),
-}
-
-impl<T> ArtifactRef<T> {
-    pub const fn committed(reference: ObjectRef<T>) -> Self {
-        Self::Committed(reference)
-    }
-
-    pub const fn from_object_id(id: ObjectId) -> Self {
-        Self::Committed(ObjectRef::new(id))
-    }
-
-    pub const fn transfer(reference: TransferRef<T>) -> Self {
-        Self::Transfer(reference)
-    }
-
-    pub const fn stream(reference: StreamRef<T>) -> Self {
-        Self::Stream(reference)
-    }
-
-    pub const fn committed_object_ref(&self) -> Option<ObjectRef<T>> {
-        match self {
-            Self::Committed(reference) => Some(*reference),
-            Self::Transfer(_) | Self::Stream(_) => None,
-        }
-    }
-
-    /// Durable object or transfer ID used to resolve this artifact.
-    pub const fn durable_id(&self) -> ObjectId {
-        match self {
-            Self::Committed(reference) => reference.id(),
-            Self::Transfer(reference) => reference.id(),
-            Self::Stream(reference) => reference.fallback_transfer_id,
-        }
-    }
-
-    /// Compatibility accessor for callers that can consume only committed
-    /// objects. New generic code should branch on the location or use
-    /// `durable_id`.
-    pub const fn object_id(&self) -> ObjectId {
-        self.durable_id()
-    }
-}
-
-impl<T> Clone for ArtifactRef<T> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Committed(reference) => Self::Committed(*reference),
-            Self::Transfer(reference) => Self::Transfer(*reference),
-            Self::Stream(reference) => Self::Stream(*reference),
-        }
-    }
-}
-
-impl<T> Copy for ArtifactRef<T> {}
-
-impl<T> PartialEq for ArtifactRef<T> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Committed(left), Self::Committed(right)) => left == right,
-            (Self::Transfer(left), Self::Transfer(right)) => left == right,
-            (Self::Stream(left), Self::Stream(right)) => left == right,
-            _ => false,
-        }
-    }
-}
-
-impl<T> Eq for ArtifactRef<T> {}
-
-impl<T> std::hash::Hash for ArtifactRef<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
-        match self {
-            Self::Committed(reference) => reference.hash(state),
-            Self::Transfer(reference) => reference.hash(state),
-            Self::Stream(reference) => reference.hash(state),
-        }
-    }
-}
-
-impl<T> fmt::Debug for ArtifactRef<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Committed(reference) => formatter
-                .debug_tuple("ArtifactRef::Committed")
-                .field(reference)
-                .finish(),
-            Self::Transfer(reference) => formatter
-                .debug_tuple("ArtifactRef::Transfer")
-                .field(reference)
-                .finish(),
-            Self::Stream(reference) => formatter
-                .debug_tuple("ArtifactRef::Stream")
-                .field(reference)
-                .finish(),
-        }
-    }
-}
-
-impl<T> From<ObjectRef<T>> for ArtifactRef<T> {
-    fn from(reference: ObjectRef<T>) -> Self {
-        Self::committed(reference)
-    }
+/// Ordinary [`TensorContract`] implementations remain full-artifact
+/// operations. Implementing this trait declares the chunk axis, required
+/// ordering, and finalization boundary that a streaming runtime must enforce.
+pub trait StreamingTensorOp: TensorContract {
+    const CHUNK_AXIS: usize;
+    const CHUNK_ORDER: StreamingChunkOrder;
+    const FINALIZATION: StreamingFinalization;
 }
 
 // ---------------------------------------------------------------------------
-// Tensor operation contract and artifact wire format
+// Legacy Qwen compatibility contract
 // ---------------------------------------------------------------------------
 
-/// Stable, application-assigned identity for a tensor operation contract.
+/// Stable operation contract for the existing dark-token Qwen path.
 ///
-/// Contract IDs are deliberately explicit rather than derived from Rust type
-/// names, which are not stable across compilers or builds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ContractId(pub [u8; 16]);
+/// The compatibility adapter continues to encode `InferenceRequest` and
+/// `InferenceOutput` with postcard. These port specs define the tensor bundle
+/// that the adapter will expose when the generic Mass protocol lands in Stage
+/// 3: predicted tokens plus their top-k dark-knowledge distribution. Input
+/// and output deliberately use the same bundle because the legacy path feeds
+/// an `InferenceOutput` back as the next operation's dark input.
+pub struct QwenDarkInference;
 
-impl ContractId {
-    pub const fn from_u128(value: u128) -> Self {
-        Self(value.to_be_bytes())
+pub struct QwenPredictions;
+pub struct QwenDarkTokenIds;
+pub struct QwenDarkLogProbs;
+
+pub struct QwenBatch;
+pub struct QwenSequence;
+pub struct QwenTopK;
+
+impl TensorPortSpec for QwenPredictions {
+    type Shape = glowstick::Shape2<glowstick::Dyn<QwenBatch>, glowstick::Dyn<QwenSequence>>;
+
+    const NAME: &'static str = "predictions";
+
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![
+            DimensionDescriptor::Symbolic("batch".into()),
+            DimensionDescriptor::Symbolic("sequence".into()),
+        ]
+    }
+
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::U32)
     }
 }
 
-/// SHA-256 digest of the canonical postcard representation of a contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ContractHash(pub [u8; 32]);
+impl TensorPortSpec for QwenDarkTokenIds {
+    type Shape = glowstick::Shape3<
+        glowstick::Dyn<QwenBatch>,
+        glowstick::Dyn<QwenSequence>,
+        glowstick::Dyn<QwenTopK>,
+    >;
 
-/// Concrete data types understood by the v1 dense tensor codec.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TensorDtype {
-    Bool,
-    U8,
-    U16,
-    U32,
-    U64,
-    I8,
-    I16,
-    I32,
-    I64,
-    F8E4M3,
-    F8E5M2,
-    F16,
-    BF16,
-    F32,
-    F64,
-    F4,
-    F6E2M3,
-    F6E3M2,
-    F8E8M0,
-    C64,
-}
+    const NAME: &'static str = "dark_token_ids";
 
-/// Dtype constraint for a named tensor port.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DtypeConstraint {
-    Any,
-    Exact(TensorDtype),
-    OneOf(Vec<TensorDtype>),
-}
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![
+            DimensionDescriptor::Symbolic("batch".into()),
+            DimensionDescriptor::Symbolic("sequence".into()),
+            DimensionDescriptor::Symbolic("top_k".into()),
+        ]
+    }
 
-impl DtypeConstraint {
-    pub fn accepts(&self, dtype: TensorDtype) -> bool {
-        match self {
-            Self::Any => true,
-            Self::Exact(expected) => *expected == dtype,
-            Self::OneOf(expected) => expected.contains(&dtype),
-        }
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::U32)
     }
 }
 
-/// Runtime dimension rule for a tensor port.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DimensionDescriptor {
-    /// A dimension whose concrete size is fixed by the contract.
-    Static(u64),
-    /// A runtime dimension shared by every occurrence of this label.
-    Symbolic(String),
-    /// An unconstrained runtime dimension.
-    Dynamic,
+impl TensorPortSpec for QwenDarkLogProbs {
+    type Shape = glowstick::Shape3<
+        glowstick::Dyn<QwenBatch>,
+        glowstick::Dyn<QwenSequence>,
+        glowstick::Dyn<QwenTopK>,
+    >;
+
+    const NAME: &'static str = "dark_log_probs";
+
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        vec![
+            DimensionDescriptor::Symbolic("batch".into()),
+            DimensionDescriptor::Symbolic("sequence".into()),
+            DimensionDescriptor::Symbolic("top_k".into()),
+        ]
+    }
+
+    fn dtype() -> DtypeConstraint {
+        DtypeConstraint::Exact(TensorDtype::F32)
+    }
 }
 
-/// Memory-layout constraint for a tensor port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum LayoutConstraint {
-    Any,
-    /// Dense row-major storage. This is the only layout emitted by the v1
-    /// safetensors codec.
-    Contiguous,
+impl TensorContract for QwenDarkInference {
+    type Input = TensorBundleSpec<(QwenPredictions, QwenDarkTokenIds, QwenDarkLogProbs)>;
+    type Output = TensorBundleSpec<(QwenPredictions, QwenDarkTokenIds, QwenDarkLogProbs)>;
+    type Metadata = ();
+
+    // Application-assigned, stable ID; never derived from the Rust type name.
+    const ID: ContractId = ContractId::from_u128(0x7177_656e_2d64_6172_6b2d_696e_6665_7231);
+    const VERSION: u32 = 1;
 }
 
-/// Descriptor for one named tensor in an input or output bundle.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TensorPortDescriptor {
+/// Owned backend-neutral dense tensor value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTensor {
     pub name: String,
-    pub dimensions: Vec<DimensionDescriptor>,
-    pub dtype: DtypeConstraint,
-    pub layout: LayoutConstraint,
+    pub dtype: TensorDtype,
+    pub shape: Vec<usize>,
+    /// Little-endian, contiguous row-major element bytes.
+    pub data: Vec<u8>,
 }
 
-/// Complete distributed identity and schema for an operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContractDescriptor {
-    pub id: ContractId,
-    pub version: u32,
-    pub inputs: Vec<TensorPortDescriptor>,
-    pub outputs: Vec<TensorPortDescriptor>,
-}
-
-/// Extensible identifier for an on-wire encoding.
-///
-/// Unknown values deserialize successfully so protocol implementations can
-/// reject them explicitly instead of coupling wire compatibility to an enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct EncodingId(pub u16);
-
-impl EncodingId {
-    pub const SAFETENSORS_V1: Self = Self(1);
-    pub const POSTCARD_V1: Self = Self(2);
-}
-
-/// Identifies which half of a contract a tensor bundle inhabits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ContractSide {
-    Input,
-    Output,
-}
-
-/// Authoritative Black Hole Sun header surrounding an encoded tensor bundle.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TensorEnvelope {
-    pub envelope_version: u16,
-    pub contract_id: ContractId,
-    pub contract_version: u32,
-    pub contract_hash: ContractHash,
-    pub side: ContractSide,
-    pub tensor_encoding: EncodingId,
-    pub metadata_encoding: EncodingId,
-    pub metadata_len: u64,
-    pub tensor_len: u64,
-}
-
-/// Runtime contract and codec declaration used by Mass discovery and start.
-///
-/// The hash covers `descriptor`'s canonical postcard representation. Keeping
-/// both values on the wire lets a receiver reject descriptors that were
-/// corrupted or paired with the wrong distributed identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OperationCapability {
-    pub descriptor: ContractDescriptor,
-    pub descriptor_hash: ContractHash,
-    pub tensor_encodings: Vec<EncodingId>,
-    pub metadata_encodings: Vec<EncodingId>,
-}
-
-/// Location-erased artifact reference used by the generic Mass wire protocol.
-///
-/// Operation-typed clients convert this to and from `ArtifactRef<Op::Input>`
-/// and `ArtifactRef<Op::Output>`. Future transfer and stream locations can be
-/// added without changing the generic start/forward variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum OperationArtifactRef {
-    Committed(ObjectId),
-    Transfer(ObjectId),
-    Stream {
-        ticket_id: ObjectId,
-        fallback_transfer_id: ObjectId,
-    },
-}
-
-impl OperationArtifactRef {
-    pub const fn committed(id: ObjectId) -> Self {
-        Self::Committed(id)
-    }
-
-    pub const fn object_id(self) -> ObjectId {
-        match self {
-            Self::Committed(id) => id,
-            Self::Transfer(id) => id,
-            Self::Stream {
-                fallback_transfer_id,
-                ..
-            } => fallback_transfer_id,
-        }
-    }
-
-    pub const fn durable_id(self) -> ObjectId {
-        self.object_id()
-    }
-
-    pub const fn into_typed<T>(self) -> ArtifactRef<T> {
-        match self {
-            Self::Committed(id) => ArtifactRef::Committed(ObjectRef::new(id)),
-            Self::Transfer(id) => ArtifactRef::Transfer(TransferRef::new(id)),
-            Self::Stream {
-                ticket_id,
-                fallback_transfer_id,
-            } => ArtifactRef::Stream(StreamRef::new(ticket_id, fallback_transfer_id)),
-        }
-    }
-}
-
-impl<T> From<ArtifactRef<T>> for OperationArtifactRef {
-    fn from(reference: ArtifactRef<T>) -> Self {
-        match reference {
-            ArtifactRef::Committed(reference) => Self::Committed(reference.id()),
-            ArtifactRef::Transfer(reference) => Self::Transfer(reference.id()),
-            ArtifactRef::Stream(reference) => Self::Stream {
-                ticket_id: reference.ticket_id,
-                fallback_transfer_id: reference.fallback_transfer_id,
-            },
-        }
-    }
-}
-
-impl TensorEnvelope {
-    pub const VERSION: u16 = 1;
-}
-
-// ---------------------------------------------------------------------------
-// Progressive artifact transfer protocol
-// ---------------------------------------------------------------------------
-
-/// SHA-256 digest used for individual chunks and complete transfers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TransferHash(pub [u8; 32]);
-
-/// Immutable declaration written before any transfer chunks.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferBegin {
-    pub protocol_version: u16,
-    pub transfer_id: ObjectId,
+/// Validated decoded tensor artifact, tagged with its compile-time spec.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedTensorBundle<S, M> {
     pub envelope: TensorEnvelope,
-    /// Safetensors header bytes sent before payload frames so receivers can
-    /// validate concrete names, dtypes, and dimensions before allocation.
-    pub tensor_header: Vec<u8>,
-    pub expected_chunks: u32,
-    pub expected_len: u64,
-    pub expected_hash: TransferHash,
-    /// Unix timestamp in milliseconds. An uncommitted transfer is aborted
-    /// after this lease expires.
-    pub deadline_unix_ms: u64,
-    /// SHA-256 digest of the bearer token in a [`TransferTicket`].
-    pub authorization_hash: TransferHash,
-}
-
-/// Descriptor for one immutable Void object in a progressive transfer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferChunk {
-    pub index: u32,
-    pub object_id: ObjectId,
-    pub len: u64,
-    pub hash: TransferHash,
-}
-
-/// Durable manifest that makes all chunks authoritative and replayable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferManifest {
-    pub begin: TransferBegin,
-    pub chunks: Vec<TransferChunk>,
-    pub committed_unix_ms: u64,
-}
-
-/// Terminal record for an explicitly aborted or expired transfer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferAbort {
-    pub begin: TransferBegin,
-    pub reason: String,
-    pub aborted_unix_ms: u64,
-}
-
-/// Durable transfer state stored under `TransferBegin::transfer_id`.
-///
-/// Replay resolvers accept only `Committed`; begin/chunk state is observable
-/// for progressive staging but never authoritative.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TransferRecord {
-    InProgress {
-        begin: TransferBegin,
-        chunks: Vec<TransferChunk>,
-        revision: u64,
-    },
-    Committed(TransferManifest),
-    Aborted(TransferAbort),
-}
-
-impl TransferRecord {
-    pub fn begin(&self) -> &TransferBegin {
-        match self {
-            Self::InProgress { begin, .. } => begin,
-            Self::Committed(manifest) => &manifest.begin,
-            Self::Aborted(abort) => &abort.begin,
-        }
-    }
-}
-
-/// Durability required before a streamed operation may publish its result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum DurabilityPolicy {
-    /// The stream is a latency optimization; the transfer must commit to Void
-    /// before dependent externally visible output can commit.
-    ReplayRequired,
-    /// The stream may be consumed without a durable replay artifact.
-    Ephemeral,
-}
-
-/// Ordering guarantee an operation requires for progressive tensor chunks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum StreamingChunkOrder {
-    Sequential,
-    Unordered,
-}
-
-/// Point at which a streaming operation may finalize its output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum StreamingFinalization {
-    WholeArtifact,
-    EndOfAxis,
-}
-
-/// Authorization and routing information for a live QUIC tensor stream.
-///
-/// `source` is an authority string (`ip:port`) rather than a socket type so
-/// tickets remain stable across IPv4 and IPv6 deployments.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferTicket {
-    pub descriptor: ContractDescriptor,
-    pub envelope: TensorEnvelope,
-    pub tensor_header: Vec<u8>,
-    pub transfer_id: ObjectId,
-    pub source: String,
-    pub authorization: [u8; 32],
-    pub expected_len: u64,
-    pub expected_hash: TransferHash,
-    pub deadline_unix_ms: u64,
-    pub durability: DurabilityPolicy,
-    pub eventual_void_id: ObjectId,
-}
-
-/// Frames carried on a live transfer stream. The begin descriptor is always
-/// sent first, so a receiver can validate and allocate before tensor bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TransferStreamFrame {
-    Begin(TransferBegin),
-    Chunk {
-        index: u32,
-        data: Vec<u8>,
-        hash: TransferHash,
-    },
-    Commit {
-        aggregate_hash: TransferHash,
-    },
-    Abort {
-        reason: String,
-    },
-}
-
-// ---------------------------------------------------------------------------
-// Mass wire protocol (black-hole-mass <-> client)
-// ---------------------------------------------------------------------------
-
-/// Request sent by a client to the mass QUIC server.
-#[derive(Debug, Serialize, Deserialize)]
-pub enum MassIn {
-    /// Start a new model instance with the provided stable ID.
-    ///
-    /// When `model_config` is `None`, mass uses server defaults. When present,
-    /// the provided values override defaults for this specific model instance.
-    Start {
-        model_id: Uuid,
-        model_config: Option<MassModelConfig>,
-    },
-    /// Perturb model weights in the positive direction.
-    PerturbUp { model_id: Uuid, seed: u64 },
-    /// Run inference on the input object stored in void.
-    /// Returns MassOut::Inferred(output_id).
-    Infer { model_id: Uuid, input_id: ObjectId },
-    /// Reset model runtime state (for example KV cache) for the instance.
-    Reset { model_id: Uuid },
-    /// Perturb model weights in the negative direction.
-    PerturbDown { model_id: Uuid },
-    /// Upload current model weights to void and return their object ID.
-    Checkpoint { model_id: Uuid },
-    /// Apply the QuZO optimization update with both loss values.
-    Optimize {
-        model_id: Uuid,
-        loss_up: f32,
-        loss_down: f32,
-    },
-    /// Shut down the model instance with the provided ID.
-    Shutdown { model_id: Uuid },
-    /// Query the current runtime parameters for a model instance.
-    QueryModelParams { model_id: Uuid },
-    /// Query recursive model instance capacity for this mass subtree.
-    QueryModelCapacity,
-    /// Register a one-hop tunnel worker with a root mass.
-    RegisterTunnel {
-        /// Stable worker identity used by parent masss to match reconnects.
-        worker_id: Uuid,
-        /// Optional total model capacity advertised by this worker subtree (defaults to 1).
-        max_instances: Option<usize>,
-        /// Capabilities of this worker's compiled engine. `None` on legacy
-        /// workers that predate capability advertising; treated as unknown.
-        capabilities: Option<WorkerCapabilities>,
-    },
-    /// Update the advertised tunnel capacity for an already-registered worker token.
-    UpdateTunnelCapacity {
-        /// Root/parent-issued token for the registered worker.
-        token: Uuid,
-        /// Optional total model capacity for this worker subtree (defaults to 1).
-        max_instances: Option<usize>,
-    },
-    /// Forward a model operation through a registered tunnel worker.
-    TunnelForward {
-        /// Root-issued token proving this request was authorized for the worker.
-        token: Uuid,
-        /// Forwarded model operation.
-        request: TunnelRequest,
-    },
-    /// Fuse the current weights of a running model instance with a checkpoint
-    /// stored in void using task arithmetic. The fused weights are uploaded to
-    /// void and their object ID is returned in MassOut::FusedWeights.
-    ///
-    /// The instance must be in its idle state (no perturbation in flight);
-    /// the running instance itself is left unmodified.
-    FuseWeights {
-        model_id: Uuid,
-        /// Void object ID of the GGUF checkpoint to fuse with the live weights.
-        checkpoint_id: ObjectId,
-        /// Task-arithmetic contribution of the checkpoint
-        /// (0.5 = plain average of live and checkpoint weights).
-        contribution: f32,
-    },
-    /// Start a generic tensor-operation instance.
-    StartOperation {
-        protocol_version: u16,
-        instance_id: Uuid,
-        capability: OperationCapability,
-    },
-    /// Run a generic forward operation on a typed artifact.
-    ForwardOperation {
-        protocol_version: u16,
-        instance_id: Uuid,
-        input: OperationArtifactRef,
-    },
-    /// Shut down a generic tensor-operation instance.
-    ShutdownOperation { instance_id: Uuid },
-}
-
-/// Response sent by the mass server to the client.
-#[derive(Debug, Serialize, Deserialize)]
-pub enum MassOut {
-    /// Acknowledges a lifecycle, perturb, or optimize step.
-    Ack,
-    /// Inference complete; contains the void object ID of the output.
-    Inferred { output_id: ObjectId },
-    /// Checkpoint upload complete; contains the void object ID of model weights.
-    Checkpointed { checkpoint_id: ObjectId },
-    /// Runtime model parameters for a running instance.
-    ModelParams { params: MassModelParams },
-    /// Recursive model instance capacity for this mass subtree.
-    ModelCapacity { capacity: MassModelCapacity },
-    /// Tunnel worker registration complete; contains root-issued auth token.
-    TunnelRegistered { token: Uuid },
-    /// Weight fusion complete; contains the void object ID of the fused weights.
-    FusedWeights { fused_id: ObjectId },
-    /// Error from any operation.
-    Error { message: String },
-    /// Generic forward complete; contains the output artifact reference.
-    Forwarded { output: OperationArtifactRef },
-}
-
-/// Runtime model parameters resolved for a running mass model instance.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MassModelParams {
-    pub inference_limit: u32,
-    pub top_k: usize,
-    pub temperature: f64,
-    pub top_p: Option<f64>,
-    pub repeat_penalty: f32,
-    pub presence_penalty: f32,
-    pub training_lr: f64,
-    pub training_epsilon: f64,
-    pub training_z_loss: f64,
-    pub training_lb_loss: f64,
-    pub training_clip_threshold: f64,
-    pub training_perturbation_mode: MassPerturbationMode,
-    pub training_error_feedback: MassErrorFeedbackConfig,
-    pub is_frozen: bool,
-    pub optimize_steps: u32,
-    pub oscillation_period_steps: Option<u32>,
-    pub oscillation_train_steps: Option<u32>,
-    pub oscillation_phase_steps: Option<u32>,
-    pub oscillation_warmup_steps: Option<u32>,
-}
-
-/// Recursive model-capacity snapshot for a mass server subtree.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MassModelCapacity {
-    /// Total model-instance capacity (local + descendants). None means unbounded.
-    pub total: Option<usize>,
-    /// Available model-instance capacity (total minus occupied). None means unbounded.
-    pub available: Option<usize>,
-    /// Occupied model-instance slots currently routed in this subtree.
-    pub occupied: usize,
-    /// Per-architecture capacity view across the subtree.
-    ///
-    /// One entry per architecture any engine in the subtree can serve; empty
-    /// when no engine advertises an architecture (legacy builds). For workers
-    /// advertising multiple architectures, shared slots count against each.
-    pub per_architecture: Vec<(MassArchitecture, MassModelCapacity)>,
-}
-
-/// Error-feedback mode selector for QuZO optimization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MassErrorFeedbackMode {
-    Off,
-    Persistent,
-    Replay,
-}
-
-/// Per-model QuZO error-feedback configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum MassErrorFeedbackConfig {
-    Off,
-    Persistent { decay: f64, gain: f64 },
-    Replay { steps: u32, decay: f64, gain: f64 },
-}
-
-/// QuZO perturbation direction mode selector.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MassPerturbationMode {
-    /// Sample perturbations in the full weight space (default).
-    #[default]
-    Weight,
-    /// Sample factored low-rank activation-space directions for linear weights
-    /// using `rank` factors (`LowRank(1)` is the narrowest factored direction).
-    LowRank(usize),
-}
-
-/// Model architectures a mass engine binary can be compiled for.
-///
-/// paramecia selects model shapes at compile time via cargo features, so a
-/// given `black-hole-mass` build serves exactly one of these (or none).
-/// Tunnel workers advertise which one they are so roots can place model
-/// instances only on compatible engines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum MassArchitecture {
-    Qwen35_0p8b,
-    Qwen35_2b,
-    Qwen35_4b,
-    Qwen35_9b,
-    Qwen35_27b,
-    Qwen38_27b,
-}
-
-/// Capabilities advertised by a tunnel worker at registration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerCapabilities {
-    /// Architectures this worker's compiled engine can load.
-    ///
-    /// Empty means the worker predates capability advertising (or was built
-    /// without an architecture feature); such workers only receive starts
-    /// that carry no architecture requirement.
-    pub architectures: Vec<MassArchitecture>,
-    /// Complete operation contracts and codecs this worker can host.
-    #[serde(default)]
-    pub operations: Vec<OperationCapability>,
-}
-
-/// Forwardable model operation used for root->worker tunnel requests.
-#[derive(Debug, Serialize, Deserialize)]
-pub enum TunnelRequest {
-    Start {
-        model_id: Uuid,
-        model_config: Option<MassModelConfig>,
-    },
-    PerturbUp {
-        model_id: Uuid,
-        seed: u64,
-    },
-    Infer {
-        model_id: Uuid,
-        input_id: ObjectId,
-    },
-    Reset {
-        model_id: Uuid,
-    },
-    PerturbDown {
-        model_id: Uuid,
-    },
-    Checkpoint {
-        model_id: Uuid,
-    },
-    Optimize {
-        model_id: Uuid,
-        loss_up: f32,
-        loss_down: f32,
-    },
-    Shutdown {
-        model_id: Uuid,
-    },
-    QueryModelParams {
-        model_id: Uuid,
-    },
-    FuseWeights {
-        model_id: Uuid,
-        checkpoint_id: ObjectId,
-        contribution: f32,
-    },
-    StartOperation {
-        protocol_version: u16,
-        instance_id: Uuid,
-        capability: OperationCapability,
-    },
-    ForwardOperation {
-        protocol_version: u16,
-        instance_id: Uuid,
-        input: OperationArtifactRef,
-    },
-    ShutdownOperation {
-        instance_id: Uuid,
-    },
-}
-
-/// Per-model-instance mass configuration overrides.
-///
-/// Each field is optional; omitted values fall back to server defaults.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct MassModelConfig {
-    pub top_k: Option<usize>,
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub repeat_penalty: Option<f32>,
-    pub presence_penalty: Option<f32>,
-    pub inference_limit: Option<u32>,
-    pub training_lr: Option<f64>,
-    pub training_epsilon: Option<f64>,
-    pub training_z_loss: Option<f64>,
-    pub training_lb_loss: Option<f64>,
-    pub training_clip_threshold: Option<f64>,
-    /// Optional QuZO perturbation direction mode for this instance.
-    ///
-    /// When `None`, mass uses its configured server default.
-    pub training_perturbation_mode: Option<MassPerturbationMode>,
-    pub training_error_feedback: Option<MassErrorFeedbackConfig>,
-    pub frozen: Option<bool>,
-    /// Optional optimize-step period for train/freeze oscillation scheduling.
-    ///
-    /// When set (with `oscillation_train_steps`), mass applies a deterministic
-    /// train window each cycle after warmup instead of flipping prior state.
-    pub oscillation_period_steps: Option<u32>,
-    /// Optional count of trainable optimize steps in each oscillation cycle.
-    ///
-    /// Must be less than or equal to `oscillation_period_steps`.
-    pub oscillation_train_steps: Option<u32>,
-    /// Optional per-instance phase shift (in optimize steps), modulo period.
-    pub oscillation_phase_steps: Option<u32>,
-    /// Optional number of optimize steps to wait before schedule activation.
-    ///
-    /// Ignored when `oscillation_period_steps` is `None`.
-    pub oscillation_warmup_steps: Option<u32>,
-    /// Optional checkpoint object to load model weights from for this instance.
-    ///
-    /// When `None`, mass loads weights from its configured server model path.
-    pub checkpoint_id: Option<ObjectId>,
-    /// Architecture the serving mass engine must be compiled for.
-    ///
-    /// When set, a root only routes this instance to local/worker engines
-    /// whose advertised capabilities include this architecture, and workers
-    /// reject starts their compiled engine cannot serve. When `None`, any
-    /// engine may serve the instance.
-    pub required_architecture: Option<MassArchitecture>,
-}
-
-// ---------------------------------------------------------------------------
-// Inference input format (stored in void objects)
-// ---------------------------------------------------------------------------
-
-/// A single logit entry (token ID + log probability) for dark prompting.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogitEntry {
-    pub token_id: u32,
-    pub log_prob: f32,
-}
-
-/// A dark token position for dark-knowledge transfer between model forward passes.
-/// Carries the predicted (committed) token ID and a top-K distribution from a teacher model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DarkToken {
-    /// The predicted (committed) token ID for this position.
-    pub predicted: u32,
-    /// Top-K logit entries representing the teacher model's distribution at this position.
-    pub dark_knowledge: Vec<LogitEntry>,
-}
-
-/// Serializable inference input, mirroring paramecia-engine's ModelInput.
-/// Stored inside void objects and converted to ModelInput by the mass service.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum InferenceInput {
-    /// Text context (tokenized by the model host).
-    Text(String),
-    /// Specific token IDs.
-    Tokens(Vec<u32>),
-    /// Dark prompt: a sequence of dark tokens carrying predicted token IDs and
-    /// dark-knowledge distributions.
-    Dark(Vec<DarkToken>),
-}
-
-/// Serializable inference request stored in void objects.
-/// Either contains inline sequences or points to an existing InferenceOutput
-/// in void that should be converted to dark input for inference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum InferenceRequest {
-    /// Inline sequences with explicit inputs.
-    Sequences {
-        /// Each element is one sequence (a list of inputs concatenated in order).
-        sequences: Vec<Vec<InferenceInput>>,
-        /// Optional generation cap. If `None`, mass applies its server default.
-        limit: Option<u32>,
-    },
-    /// Reference to an existing InferenceOutput in void.
-    /// Mass downloads it, converts the results to dark input, and proceeds.
-    VoidId {
-        /// Void object ID of the InferenceOutput to use as input.
-        id: InferenceOutputId,
-        /// Optional generation cap. If `None`, mass applies its server default.
-        limit: Option<u32>,
-    },
-}
-
-// ---------------------------------------------------------------------------
-// Inference output format (stored in void objects)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SequenceOutput(pub Vec<DarkToken>);
-
-/// Serializable inference output stored in void objects.
-/// Contains per-sequence results from a batched forward pass.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InferenceOutput {
-    pub results: Vec<SequenceOutput>,
-}
-
-/// Typed void reference for a legacy Qwen inference output.
-pub type InferenceOutputId = ObjectRef<InferenceOutput>;
-
-/// Input / Output from an Atom.
-///
-/// The payload type is independent from metadata. It defaults to the legacy
-/// Qwen output so existing `Emission<M>` users remain source-compatible while
-/// generic paths can use `Emission<M, Op::Output>`.
-#[derive(Serialize, Deserialize)]
-#[serde(bound(serialize = "M: Serialize", deserialize = "M: Deserialize<'de>"))]
-pub struct Emission<M, T = InferenceOutput> {
     pub metadata: M,
-    pub output_id: ArtifactRef<T>,
+    pub tensors: Vec<RawTensor>,
+    marker: PhantomData<S>,
 }
 
-impl<M: Clone, T> Clone for Emission<M, T> {
-    fn clone(&self) -> Self {
-        Self {
-            metadata: self.metadata.clone(),
-            output_id: self.output_id,
+/// Runtime-validated artifact used by type-erased operation hosts.
+///
+/// Metadata stays encoded because an injected operation, rather than the Mass
+/// router, owns its concrete type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidatedArtifact {
+    pub envelope: TensorEnvelope,
+    pub metadata: Vec<u8>,
+    pub tensors: Vec<RawTensor>,
+}
+
+/// Fail-closed validation or encoding error.
+#[derive(Debug, Error)]
+pub enum CodecError {
+    #[error("tensor frame is truncated")]
+    Truncated,
+    #[error("invalid tensor frame magic")]
+    InvalidMagic,
+    #[error("unsupported envelope version {0}")]
+    UnsupportedEnvelopeVersion(u16),
+    #[error("unsupported tensor encoding {0:?}")]
+    UnsupportedTensorEncoding(EncodingId),
+    #[error("unsupported metadata encoding {0:?}")]
+    UnsupportedMetadataEncoding(EncodingId),
+    #[error("contract id mismatch")]
+    ContractIdMismatch,
+    #[error("contract version mismatch: expected {expected}, got {actual}")]
+    ContractVersionMismatch { expected: u32, actual: u32 },
+    #[error("contract descriptor hash mismatch")]
+    ContractHashMismatch,
+    #[error("artifact is for the {actual:?} side, not {expected:?}")]
+    ContractSideMismatch {
+        expected: ContractSide,
+        actual: ContractSide,
+    },
+    #[error("frame length does not match its envelope")]
+    LengthMismatch,
+    #[error("contract contains duplicate tensor port {0:?}")]
+    DuplicatePort(String),
+    #[error("tensor bundle contains duplicate tensor {0:?}")]
+    DuplicateTensor(String),
+    #[error("missing tensor {0:?}")]
+    MissingTensor(String),
+    #[error("unexpected tensor {0:?}")]
+    UnexpectedTensor(String),
+    #[error("dtype mismatch for {name:?}: expected {expected:?}, got {actual:?}")]
+    DtypeMismatch {
+        name: String,
+        expected: DtypeConstraint,
+        actual: TensorDtype,
+    },
+    #[error("rank mismatch for {name:?}: expected {expected}, got {actual}")]
+    RankMismatch {
+        name: String,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("dimension mismatch for {name:?} axis {axis}: expected {expected}, got {actual}")]
+    DimensionMismatch {
+        name: String,
+        axis: usize,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("symbolic dimension {label:?} was bound to both {first} and {second}")]
+    SymbolicDimensionMismatch {
+        label: String,
+        first: usize,
+        second: usize,
+    },
+    #[error("safetensors dtype {0:?} is not supported by the v1 contract schema")]
+    UnsupportedDtype(Dtype),
+    #[error("integer length does not fit on this platform")]
+    LengthOverflow,
+    #[error("safetensors: {0}")]
+    Safetensors(#[from] SafeTensorError),
+    #[error("postcard: {0}")]
+    Postcard(#[from] postcard::Error),
+    #[error("safetensors header JSON: {0}")]
+    HeaderJson(#[from] serde_json::Error),
+}
+
+/// Stable hash of a contract's canonical postcard representation.
+pub fn descriptor_hash(descriptor: &ContractDescriptor) -> ContractHash {
+    let bytes = to_allocvec(descriptor).expect("ContractDescriptor serialization is infallible");
+    ContractHash(Sha256::digest(bytes).into())
+}
+
+/// V1 runtime capability declaration for a compile-time contract.
+pub fn operation_capability<C: TensorContract>() -> OperationCapability {
+    let descriptor = C::descriptor();
+    OperationCapability {
+        descriptor_hash: descriptor_hash(&descriptor),
+        descriptor,
+        tensor_encodings: vec![EncodingId::SAFETENSORS_V1],
+        metadata_encodings: vec![EncodingId::POSTCARD_V1],
+    }
+}
+
+/// Encode a contract input bundle with postcard metadata and safetensors data.
+pub fn encode_input<C>(tensors: &[RawTensor], metadata: &C::Metadata) -> Result<Vec<u8>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: Serialize,
+{
+    encode::<C>(ContractSide::Input, tensors, metadata)
+}
+
+/// Encode a contract output bundle with postcard metadata and safetensors data.
+pub fn encode_output<C>(
+    tensors: &[RawTensor],
+    metadata: &C::Metadata,
+) -> Result<Vec<u8>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: Serialize,
+{
+    encode::<C>(ContractSide::Output, tensors, metadata)
+}
+
+/// Decode and validate a contract input bundle.
+pub fn decode_input<C>(
+    frame: &[u8],
+) -> Result<DecodedTensorBundle<C::Input, C::Metadata>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: DeserializeOwned,
+{
+    decode::<C, C::Input>(ContractSide::Input, frame)
+}
+
+/// Decode and validate a contract output bundle.
+pub fn decode_output<C>(
+    frame: &[u8],
+) -> Result<DecodedTensorBundle<C::Output, C::Metadata>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: DeserializeOwned,
+{
+    decode::<C, C::Output>(ContractSide::Output, frame)
+}
+
+/// Decode and validate a tensor artifact against a runtime contract.
+///
+/// This is the distributed counterpart to `decode_input::<C>`: Mass can
+/// validate an injected operation's actual payload after Rust types have been
+/// erased at the process boundary.
+pub fn validate_artifact(
+    descriptor: &ContractDescriptor,
+    expected_side: ContractSide,
+    frame: &[u8],
+) -> Result<ValidatedArtifact, CodecError> {
+    if frame.len() < FRAME_PREFIX_LEN {
+        return Err(CodecError::Truncated);
+    }
+    if &frame[..FRAME_MAGIC.len()] != FRAME_MAGIC {
+        return Err(CodecError::InvalidMagic);
+    }
+    let envelope_len = u32::from_le_bytes(
+        frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+            .try_into()
+            .expect("fixed-size prefix"),
+    ) as usize;
+    let envelope_end = FRAME_PREFIX_LEN
+        .checked_add(envelope_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let envelope_bytes = frame
+        .get(FRAME_PREFIX_LEN..envelope_end)
+        .ok_or(CodecError::Truncated)?;
+    let envelope: TensorEnvelope = from_bytes(envelope_bytes)?;
+    validate_runtime_envelope(&envelope, descriptor, expected_side)?;
+
+    let metadata_len: usize = envelope
+        .metadata_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let tensor_len: usize = envelope
+        .tensor_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let metadata_end = envelope_end
+        .checked_add(metadata_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let tensor_end = metadata_end
+        .checked_add(tensor_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    if tensor_end != frame.len() {
+        return Err(CodecError::LengthMismatch);
+    }
+    let metadata = frame
+        .get(envelope_end..metadata_end)
+        .ok_or(CodecError::Truncated)?
+        .to_vec();
+    let tensor_bytes = frame
+        .get(metadata_end..tensor_end)
+        .ok_or(CodecError::Truncated)?;
+    let safetensors = SafeTensors::deserialize(tensor_bytes)?;
+    let mut tensors = Vec::with_capacity(safetensors.len());
+    for (name, view) in safetensors.tensors() {
+        tensors.push(RawTensor {
+            name,
+            dtype: from_safetensors_dtype(view.dtype())?,
+            shape: view.shape().to_vec(),
+            data: view.data().to_vec(),
+        });
+    }
+
+    let ports = ports_for(descriptor, expected_side);
+    validate_schema(ports)?;
+    validate_tensors(ports, &tensors)?;
+    tensors.sort_by_key(|tensor| {
+        ports
+            .iter()
+            .position(|port| port.name == tensor.name)
+            .expect("validated tensor has a matching port")
+    });
+    Ok(ValidatedArtifact {
+        envelope,
+        metadata,
+        tensors,
+    })
+}
+
+/// Return the Black Hole envelope, metadata, and safetensors header prefix
+/// that must lead a live stream. A receiver can validate the concrete tensor
+/// names, dtypes, shapes, and offsets from this prefix before payload bytes
+/// arrive.
+pub fn tensor_stream_header(frame: &[u8]) -> Result<Vec<u8>, CodecError> {
+    if frame.len() < FRAME_PREFIX_LEN {
+        return Err(CodecError::Truncated);
+    }
+    if &frame[..FRAME_MAGIC.len()] != FRAME_MAGIC {
+        return Err(CodecError::InvalidMagic);
+    }
+    let envelope_len = u32::from_le_bytes(
+        frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+            .try_into()
+            .expect("fixed-size prefix"),
+    ) as usize;
+    let envelope_end = FRAME_PREFIX_LEN
+        .checked_add(envelope_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let envelope: TensorEnvelope = from_bytes(
+        frame
+            .get(FRAME_PREFIX_LEN..envelope_end)
+            .ok_or(CodecError::Truncated)?,
+    )?;
+    let metadata_len: usize = envelope
+        .metadata_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let tensor_start = envelope_end
+        .checked_add(metadata_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let safetensors_len_end = tensor_start
+        .checked_add(size_of::<u64>())
+        .ok_or(CodecError::LengthOverflow)?;
+    let safetensors_header_len = u64::from_le_bytes(
+        frame
+            .get(tensor_start..safetensors_len_end)
+            .ok_or(CodecError::Truncated)?
+            .try_into()
+            .expect("fixed-size safetensors header length"),
+    );
+    let safetensors_header_len: usize = safetensors_header_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let header_end = safetensors_len_end
+        .checked_add(safetensors_header_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    Ok(frame
+        .get(..header_end)
+        .ok_or(CodecError::Truncated)?
+        .to_vec())
+}
+
+/// Validate a streamed tensor's complete header before any payload bytes are
+/// accepted or a destination tensor is allocated.
+///
+/// `header` contains the Black Hole envelope, metadata, and the safetensors
+/// header, but no tensor data. The returned length is the exact full frame
+/// length declared by those headers.
+pub fn validate_tensor_stream_header(
+    descriptor: &ContractDescriptor,
+    expected_side: ContractSide,
+    header: &[u8],
+) -> Result<u64, CodecError> {
+    if header.len() < FRAME_PREFIX_LEN {
+        return Err(CodecError::Truncated);
+    }
+    if &header[..FRAME_MAGIC.len()] != FRAME_MAGIC {
+        return Err(CodecError::InvalidMagic);
+    }
+    let envelope_len = u32::from_le_bytes(
+        header[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+            .try_into()
+            .expect("fixed-size prefix"),
+    ) as usize;
+    let envelope_end = FRAME_PREFIX_LEN
+        .checked_add(envelope_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let envelope: TensorEnvelope = from_bytes(
+        header
+            .get(FRAME_PREFIX_LEN..envelope_end)
+            .ok_or(CodecError::Truncated)?,
+    )?;
+    validate_runtime_envelope(&envelope, descriptor, expected_side)?;
+
+    let metadata_len: usize = envelope
+        .metadata_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let tensor_start = envelope_end
+        .checked_add(metadata_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let safetensors_len_end = tensor_start
+        .checked_add(size_of::<u64>())
+        .ok_or(CodecError::LengthOverflow)?;
+    let safetensors_header_len = u64::from_le_bytes(
+        header
+            .get(tensor_start..safetensors_len_end)
+            .ok_or(CodecError::Truncated)?
+            .try_into()
+            .expect("fixed-size safetensors header length"),
+    );
+    let safetensors_header_len: usize = safetensors_header_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let header_end = safetensors_len_end
+        .checked_add(safetensors_header_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    if header_end != header.len() {
+        return Err(CodecError::LengthMismatch);
+    }
+
+    let mut entries: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&header[safetensors_len_end..header_end])?;
+    let metadata = entries
+        .remove("__metadata__")
+        .map(serde_json::from_value)
+        .transpose()?;
+    let mut infos = entries
+        .into_iter()
+        .map(|(name, value)| serde_json::from_value::<TensorInfo>(value).map(|info| (name, info)))
+        .collect::<Result<Vec<_>, _>>()?;
+    infos.sort_by_key(|(_, info)| info.data_offsets.0);
+    let metadata = SafeTensorMetadata::new(metadata, infos)?;
+
+    let safetensors_len = size_of::<u64>()
+        .checked_add(safetensors_header_len)
+        .and_then(|len| len.checked_add(metadata.data_len()))
+        .ok_or(CodecError::LengthOverflow)?;
+    if u64::try_from(safetensors_len).map_err(|_| CodecError::LengthOverflow)?
+        != envelope.tensor_len
+    {
+        return Err(CodecError::LengthMismatch);
+    }
+
+    let tensors = metadata
+        .offset_keys()
+        .into_iter()
+        .map(|name| {
+            let info = metadata
+                .info(&name)
+                .expect("offset key always identifies tensor metadata");
+            Ok(RawTensor {
+                name,
+                dtype: from_safetensors_dtype(info.dtype)?,
+                shape: info.shape.clone(),
+                data: Vec::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, CodecError>>()?;
+    let ports = ports_for(descriptor, expected_side);
+    validate_schema(ports)?;
+    validate_tensors(ports, &tensors)?;
+
+    let full_frame_len = tensor_start
+        .checked_add(safetensors_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    u64::try_from(full_frame_len).map_err(|_| CodecError::LengthOverflow)
+}
+
+fn encode<C>(
+    side: ContractSide,
+    tensors: &[RawTensor],
+    metadata: &C::Metadata,
+) -> Result<Vec<u8>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: Serialize,
+{
+    let descriptor = C::descriptor();
+    let ports = ports_for(&descriptor, side);
+    validate_schema(ports)?;
+    validate_tensors(ports, tensors)?;
+
+    let mut views = BTreeMap::new();
+    for tensor in tensors {
+        let view = TensorView::new(
+            to_safetensors_dtype(tensor.dtype),
+            tensor.shape.clone(),
+            &tensor.data,
+        )?;
+        if views.insert(tensor.name.as_str(), view).is_some() {
+            return Err(CodecError::DuplicateTensor(tensor.name.clone()));
         }
     }
+    let tensor_bytes = safetensors::tensor::serialize(views, None)?;
+    let metadata_bytes = to_allocvec(metadata)?;
+    let envelope = TensorEnvelope {
+        envelope_version: TensorEnvelope::VERSION,
+        contract_id: descriptor.id,
+        contract_version: descriptor.version,
+        contract_hash: descriptor_hash(&descriptor),
+        side,
+        tensor_encoding: EncodingId::SAFETENSORS_V1,
+        metadata_encoding: EncodingId::POSTCARD_V1,
+        metadata_len: metadata_bytes
+            .len()
+            .try_into()
+            .map_err(|_| CodecError::LengthOverflow)?,
+        tensor_len: tensor_bytes
+            .len()
+            .try_into()
+            .map_err(|_| CodecError::LengthOverflow)?,
+    };
+    let envelope_bytes = to_allocvec(&envelope)?;
+    let envelope_len: u32 = envelope_bytes
+        .len()
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+
+    let mut frame = Vec::with_capacity(
+        FRAME_PREFIX_LEN + envelope_bytes.len() + metadata_bytes.len() + tensor_bytes.len(),
+    );
+    frame.extend_from_slice(FRAME_MAGIC);
+    frame.extend_from_slice(&envelope_len.to_le_bytes());
+    frame.extend_from_slice(&envelope_bytes);
+    frame.extend_from_slice(&metadata_bytes);
+    frame.extend_from_slice(&tensor_bytes);
+    Ok(frame)
 }
 
-impl<M: fmt::Debug, T> fmt::Debug for Emission<M, T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Emission")
-            .field("metadata", &self.metadata)
-            .field("output_id", &self.output_id)
-            .finish()
+fn decode<C, S>(
+    expected_side: ContractSide,
+    frame: &[u8],
+) -> Result<DecodedTensorBundle<S, C::Metadata>, CodecError>
+where
+    C: TensorContract,
+    C::Metadata: DeserializeOwned,
+{
+    if frame.len() < FRAME_PREFIX_LEN {
+        return Err(CodecError::Truncated);
+    }
+    if &frame[..FRAME_MAGIC.len()] != FRAME_MAGIC {
+        return Err(CodecError::InvalidMagic);
+    }
+    let envelope_len = u32::from_le_bytes(
+        frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+            .try_into()
+            .expect("fixed-size prefix"),
+    ) as usize;
+    let envelope_end = FRAME_PREFIX_LEN
+        .checked_add(envelope_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let envelope_bytes = frame
+        .get(FRAME_PREFIX_LEN..envelope_end)
+        .ok_or(CodecError::Truncated)?;
+    let envelope: TensorEnvelope = from_bytes(envelope_bytes)?;
+
+    validate_envelope::<C>(&envelope, expected_side)?;
+
+    let metadata_len: usize = envelope
+        .metadata_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let tensor_len: usize = envelope
+        .tensor_len
+        .try_into()
+        .map_err(|_| CodecError::LengthOverflow)?;
+    let metadata_end = envelope_end
+        .checked_add(metadata_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    let tensor_end = metadata_end
+        .checked_add(tensor_len)
+        .ok_or(CodecError::LengthOverflow)?;
+    if tensor_end != frame.len() {
+        return Err(CodecError::LengthMismatch);
+    }
+    let metadata_bytes = frame
+        .get(envelope_end..metadata_end)
+        .ok_or(CodecError::Truncated)?;
+    let tensor_bytes = frame
+        .get(metadata_end..tensor_end)
+        .ok_or(CodecError::Truncated)?;
+    let metadata = from_bytes(metadata_bytes)?;
+    let safetensors = SafeTensors::deserialize(tensor_bytes)?;
+    let mut tensors = Vec::with_capacity(safetensors.len());
+    for (name, view) in safetensors.tensors() {
+        tensors.push(RawTensor {
+            name,
+            dtype: from_safetensors_dtype(view.dtype())?,
+            shape: view.shape().to_vec(),
+            data: view.data().to_vec(),
+        });
+    }
+
+    let descriptor = C::descriptor();
+    let ports = ports_for(&descriptor, expected_side);
+    validate_schema(ports)?;
+    validate_tensors(ports, &tensors)?;
+    tensors.sort_by_key(|tensor| {
+        ports
+            .iter()
+            .position(|port| port.name == tensor.name)
+            .expect("validated tensor has a matching port")
+    });
+    Ok(DecodedTensorBundle {
+        envelope,
+        metadata,
+        tensors,
+        marker: PhantomData,
+    })
+}
+
+fn validate_envelope<C: TensorContract>(
+    envelope: &TensorEnvelope,
+    expected_side: ContractSide,
+) -> Result<(), CodecError> {
+    validate_runtime_envelope(&envelope, &C::descriptor(), expected_side)
+}
+
+fn validate_runtime_envelope(
+    envelope: &TensorEnvelope,
+    descriptor: &ContractDescriptor,
+    expected_side: ContractSide,
+) -> Result<(), CodecError> {
+    if envelope.envelope_version != TensorEnvelope::VERSION {
+        return Err(CodecError::UnsupportedEnvelopeVersion(
+            envelope.envelope_version,
+        ));
+    }
+    if envelope.tensor_encoding != EncodingId::SAFETENSORS_V1 {
+        return Err(CodecError::UnsupportedTensorEncoding(
+            envelope.tensor_encoding,
+        ));
+    }
+    if envelope.metadata_encoding != EncodingId::POSTCARD_V1 {
+        return Err(CodecError::UnsupportedMetadataEncoding(
+            envelope.metadata_encoding,
+        ));
+    }
+    if envelope.contract_id != descriptor.id {
+        return Err(CodecError::ContractIdMismatch);
+    }
+    if envelope.contract_version != descriptor.version {
+        return Err(CodecError::ContractVersionMismatch {
+            expected: descriptor.version,
+            actual: envelope.contract_version,
+        });
+    }
+    if envelope.contract_hash != descriptor_hash(descriptor) {
+        return Err(CodecError::ContractHashMismatch);
+    }
+    if envelope.side != expected_side {
+        return Err(CodecError::ContractSideMismatch {
+            expected: expected_side,
+            actual: envelope.side,
+        });
+    }
+    Ok(())
+}
+
+fn ports_for(descriptor: &ContractDescriptor, side: ContractSide) -> &[TensorPortDescriptor] {
+    match side {
+        ContractSide::Input => &descriptor.inputs,
+        ContractSide::Output => &descriptor.outputs,
     }
 }
 
-/// Type marker for a persisted emission whose output is `T`.
-pub enum EmissionArtifact<T> {
-    #[doc(hidden)]
-    __Marker(std::convert::Infallible, PhantomData<fn() -> T>),
+fn validate_schema(ports: &[TensorPortDescriptor]) -> Result<(), CodecError> {
+    let mut names = HashSet::with_capacity(ports.len());
+    for port in ports {
+        if !names.insert(port.name.as_str()) {
+            return Err(CodecError::DuplicatePort(port.name.clone()));
+        }
+    }
+    Ok(())
 }
 
-/// Typed void ID for an emission.
-///
-/// Metadata remains independently generic and is intentionally not part of
-/// this reference yet; Stage 4 carries the full operation type through Flux.
-pub type EmissionId<T = InferenceOutput> = ObjectRef<EmissionArtifact<T>>;
+fn validate_tensors(
+    ports: &[TensorPortDescriptor],
+    tensors: &[RawTensor],
+) -> Result<(), CodecError> {
+    let mut actual = HashMap::with_capacity(tensors.len());
+    for tensor in tensors {
+        if actual.insert(tensor.name.as_str(), tensor).is_some() {
+            return Err(CodecError::DuplicateTensor(tensor.name.clone()));
+        }
+    }
+    for tensor in tensors {
+        if !ports.iter().any(|port| port.name == tensor.name) {
+            return Err(CodecError::UnexpectedTensor(tensor.name.clone()));
+        }
+    }
 
-/// Neutral data-plane message used by operation-typed schedulers.
-///
-/// Unlike [`Transmission`], this type contains no training-program vocabulary.
-/// `T` is the artifact bundle produced by the source operation, so forwarding
-/// it to a destination retains the compile-time payload identity.
-#[derive(Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct ArtifactDelivery<T> {
-    pub emission_id: EmissionId<T>,
-    pub recv: ObjectId,
-    pub send: ObjectId,
+    let mut bindings = HashMap::<&str, usize>::new();
+    for port in ports {
+        let tensor = actual
+            .get(port.name.as_str())
+            .ok_or_else(|| CodecError::MissingTensor(port.name.clone()))?;
+        if !port.dtype.accepts(tensor.dtype) {
+            return Err(CodecError::DtypeMismatch {
+                name: port.name.clone(),
+                expected: port.dtype.clone(),
+                actual: tensor.dtype,
+            });
+        }
+        if port.layout != LayoutConstraint::Any && port.layout != LayoutConstraint::Contiguous {
+            unreachable!("all current layout variants are handled")
+        }
+        if port.dimensions.len() != tensor.shape.len() {
+            return Err(CodecError::RankMismatch {
+                name: port.name.clone(),
+                expected: port.dimensions.len(),
+                actual: tensor.shape.len(),
+            });
+        }
+        for (axis, (rule, &actual)) in port.dimensions.iter().zip(&tensor.shape).enumerate() {
+            match rule {
+                DimensionDescriptor::Static(expected) => {
+                    let expected: usize = (*expected)
+                        .try_into()
+                        .map_err(|_| CodecError::LengthOverflow)?;
+                    if expected != actual {
+                        return Err(CodecError::DimensionMismatch {
+                            name: port.name.clone(),
+                            axis,
+                            expected,
+                            actual,
+                        });
+                    }
+                }
+                DimensionDescriptor::Symbolic(label) => {
+                    if let Some(&first) = bindings.get(label.as_str()) {
+                        if first != actual {
+                            return Err(CodecError::SymbolicDimensionMismatch {
+                                label: label.clone(),
+                                first,
+                                second: actual,
+                            });
+                        }
+                    } else {
+                        bindings.insert(label, actual);
+                    }
+                }
+                DimensionDescriptor::Dynamic => {}
+            }
+        }
+    }
+    Ok(())
 }
 
-impl<T> Clone for ArtifactDelivery<T> {
-    fn clone(&self) -> Self {
-        *self
+fn to_safetensors_dtype(dtype: TensorDtype) -> Dtype {
+    match dtype {
+        TensorDtype::Bool => Dtype::BOOL,
+        TensorDtype::U8 => Dtype::U8,
+        TensorDtype::U16 => Dtype::U16,
+        TensorDtype::U32 => Dtype::U32,
+        TensorDtype::U64 => Dtype::U64,
+        TensorDtype::I8 => Dtype::I8,
+        TensorDtype::I16 => Dtype::I16,
+        TensorDtype::I32 => Dtype::I32,
+        TensorDtype::I64 => Dtype::I64,
+        TensorDtype::F8E4M3 => Dtype::F8_E4M3,
+        TensorDtype::F8E5M2 => Dtype::F8_E5M2,
+        TensorDtype::F16 => Dtype::F16,
+        TensorDtype::BF16 => Dtype::BF16,
+        TensorDtype::F32 => Dtype::F32,
+        TensorDtype::F64 => Dtype::F64,
+        TensorDtype::F4 => Dtype::F4,
+        TensorDtype::F6E2M3 => Dtype::F6_E2M3,
+        TensorDtype::F6E3M2 => Dtype::F6_E3M2,
+        TensorDtype::F8E8M0 => Dtype::F8_E8M0,
+        TensorDtype::C64 => Dtype::C64,
     }
 }
 
-impl<T> Copy for ArtifactDelivery<T> {}
-
-impl<T> fmt::Debug for ArtifactDelivery<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ArtifactDelivery")
-            .field("emission_id", &self.emission_id)
-            .field("recv", &self.recv)
-            .field("send", &self.send)
-            .finish()
+fn from_safetensors_dtype(dtype: Dtype) -> Result<TensorDtype, CodecError> {
+    match dtype {
+        Dtype::BOOL => Ok(TensorDtype::Bool),
+        Dtype::U8 => Ok(TensorDtype::U8),
+        Dtype::U16 => Ok(TensorDtype::U16),
+        Dtype::U32 => Ok(TensorDtype::U32),
+        Dtype::U64 => Ok(TensorDtype::U64),
+        Dtype::I8 => Ok(TensorDtype::I8),
+        Dtype::I16 => Ok(TensorDtype::I16),
+        Dtype::I32 => Ok(TensorDtype::I32),
+        Dtype::I64 => Ok(TensorDtype::I64),
+        Dtype::F8_E4M3 => Ok(TensorDtype::F8E4M3),
+        Dtype::F8_E5M2 => Ok(TensorDtype::F8E5M2),
+        Dtype::F16 => Ok(TensorDtype::F16),
+        Dtype::BF16 => Ok(TensorDtype::BF16),
+        Dtype::F32 => Ok(TensorDtype::F32),
+        Dtype::F64 => Ok(TensorDtype::F64),
+        Dtype::F4 => Ok(TensorDtype::F4),
+        Dtype::F6_E2M3 => Ok(TensorDtype::F6E2M3),
+        Dtype::F6_E3M2 => Ok(TensorDtype::F6E3M2),
+        Dtype::F8_E8M0 => Ok(TensorDtype::F8E8M0),
+        Dtype::C64 => Ok(TensorDtype::C64),
+        other => Err(CodecError::UnsupportedDtype(other)),
     }
-}
-
-/// Program-selected control-plane message. Generic graph execution carries
-/// artifact deliveries; strategies such as two-sided ZO choose their own
-/// control payload instead of adding variants to the shared data plane.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OperationalControl<C> {
-    pub control: C,
-    pub recv: ObjectId,
-}
-
-/// Input / Output from a Cell
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Transmission {
-    Propagation {
-        emission_id: EmissionId,
-        recv: ObjectId,
-        send: ObjectId,
-    },
-    Potentiation {
-        potentiation: Potentiation,
-        recv: ObjectId,
-    },
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Potentiation {
-    pub loss_up: f32,
-    pub loss_down: f32,
-    pub seed: u64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glowstick::{num::U3, Dyn, Shape1, Shape2};
+    use serde::{Deserialize, Serialize};
 
-    struct Input;
-    struct Output;
+    struct Batch;
+    struct Width;
 
-    #[test]
-    fn object_refs_are_zero_cost_and_serialize_as_the_uuid() {
-        assert_eq!(size_of::<ObjectRef<Input>>(), size_of::<ObjectId>());
-        assert_eq!(size_of::<TransferRef<Input>>(), size_of::<ObjectId>());
-
-        let id = ObjectId::from_u128(7);
-        let reference = ObjectRef::<Input>::new(id);
-        assert_eq!(
-            postcard::to_allocvec(&reference).unwrap(),
-            postcard::to_allocvec(&id).unwrap()
-        );
-        let decoded: ObjectRef<Input> =
-            postcard::from_bytes(&postcard::to_allocvec(&reference).unwrap()).unwrap();
-        assert_eq!(decoded.id(), id);
-    }
-
-    #[test]
-    fn artifact_and_emission_references_retain_payload_types() {
-        fn accepts_input(_: ArtifactRef<Input>) {}
-        fn accepts_output_emission(_: EmissionId<Output>) {}
-
-        let input = ArtifactRef::from_object_id(ObjectId::from_u128(11));
-        let output = EmissionId::<Output>::new(ObjectId::from_u128(12));
-        accepts_input(input);
-        accepts_output_emission(output);
-    }
-
-    #[test]
-    fn artifact_locations_round_trip_through_erased_mass_references() {
-        let transfer = ArtifactRef::<Input>::transfer(TransferRef::new(ObjectId::from_u128(21)));
-        let erased: OperationArtifactRef = transfer.into();
-        assert!(matches!(
-            erased,
-            OperationArtifactRef::Transfer(id) if id == ObjectId::from_u128(21)
-        ));
-        assert!(matches!(
-            erased.into_typed::<Input>(),
-            ArtifactRef::Transfer(reference) if reference.id() == ObjectId::from_u128(21)
-        ));
-
-        let stream = ArtifactRef::<Input>::stream(StreamRef::new(
-            ObjectId::from_u128(22),
-            ObjectId::from_u128(23),
-        ));
-        let encoded = postcard::to_allocvec(&stream).unwrap();
-        let decoded: ArtifactRef<Input> = postcard::from_bytes(&encoded).unwrap();
-        assert_eq!(decoded, stream);
-    }
-
-    #[test]
-    fn legacy_inference_id_uses_the_typed_reference_wire_format() {
-        let id = ObjectId::from_u128(13);
-        let request = InferenceRequest::VoidId {
-            id: InferenceOutputId::new(id),
-            limit: Some(4),
-        };
-        let decoded: InferenceRequest =
-            postcard::from_bytes(&postcard::to_allocvec(&request).unwrap()).unwrap();
-        match decoded {
-            InferenceRequest::VoidId { id: decoded, limit } => {
-                assert_eq!(decoded.id(), id);
-                assert_eq!(limit, Some(4));
-            }
-            InferenceRequest::Sequences { .. } => panic!("wrong request variant"),
+    struct Image;
+    impl TensorPortSpec for Image {
+        type Shape = Shape2<Dyn<Batch>, U3>;
+        const NAME: &'static str = "image";
+        fn dimensions() -> Vec<DimensionDescriptor> {
+            vec![
+                DimensionDescriptor::Symbolic("batch".into()),
+                DimensionDescriptor::Static(3),
+            ]
         }
+        fn dtype() -> DtypeConstraint {
+            DtypeConstraint::Exact(TensorDtype::F32)
+        }
+    }
+
+    struct Mask;
+    impl TensorPortSpec for Mask {
+        type Shape = Shape1<Dyn<Batch>>;
+        const NAME: &'static str = "mask";
+        fn dimensions() -> Vec<DimensionDescriptor> {
+            vec![DimensionDescriptor::Symbolic("batch".into())]
+        }
+        fn dtype() -> DtypeConstraint {
+            DtypeConstraint::Exact(TensorDtype::U8)
+        }
+    }
+
+    struct Scores;
+    impl TensorPortSpec for Scores {
+        type Shape = Shape2<Dyn<Batch>, Dyn<Width>>;
+        const NAME: &'static str = "scores";
+        fn dimensions() -> Vec<DimensionDescriptor> {
+            vec![
+                DimensionDescriptor::Symbolic("batch".into()),
+                DimensionDescriptor::Dynamic,
+            ]
+        }
+        fn dtype() -> DtypeConstraint {
+            DtypeConstraint::Exact(TensorDtype::F32)
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct Metadata {
+        request: u32,
+    }
+
+    struct ExampleContract;
+    impl TensorContract for ExampleContract {
+        type Input = TensorBundleSpec<(Image, Mask)>;
+        type Output = SingleTensorSpec<Scores>;
+        type Metadata = Metadata;
+        const ID: ContractId = ContractId::from_u128(0x112233445566778899aabbccddeeff00);
+        const VERSION: u32 = 7;
+    }
+
+    struct OtherContract;
+    impl TensorContract for OtherContract {
+        type Input = TensorBundleSpec<(Image, Mask)>;
+        type Output = SingleTensorSpec<Scores>;
+        type Metadata = Metadata;
+        const ID: ContractId = ContractId::from_u128(0xff2233445566778899aabbccddeeff00);
+        const VERSION: u32 = 7;
+    }
+
+    #[test]
+    fn qwen_compatibility_contract_has_stable_dark_token_ports() {
+        let descriptor = QwenDarkInference::descriptor();
+        assert_eq!(descriptor.id, QwenDarkInference::ID);
+        assert_eq!(descriptor.version, 1);
+        assert_eq!(
+            descriptor
+                .inputs
+                .iter()
+                .map(|port| port.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["predictions", "dark_token_ids", "dark_log_probs"]
+        );
+        assert_eq!(
+            descriptor
+                .outputs
+                .iter()
+                .map(|port| port.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["predictions", "dark_token_ids", "dark_log_probs"]
+        );
+    }
+
+    fn input_tensors() -> Vec<RawTensor> {
+        vec![
+            RawTensor {
+                name: "image".into(),
+                dtype: TensorDtype::F32,
+                shape: vec![2, 3],
+                data: vec![0; 2 * 3 * 4],
+            },
+            RawTensor {
+                name: "mask".into(),
+                dtype: TensorDtype::U8,
+                shape: vec![2],
+                data: vec![1, 0],
+            },
+        ]
+    }
+
+    fn rewrite_envelope(mut frame: Vec<u8>, update: impl FnOnce(&mut TensorEnvelope)) -> Vec<u8> {
+        let envelope_len = u32::from_le_bytes(
+            frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let end = FRAME_PREFIX_LEN + envelope_len;
+        let mut envelope: TensorEnvelope = from_bytes(&frame[FRAME_PREFIX_LEN..end]).unwrap();
+        let payload = frame[end..].to_vec();
+        update(&mut envelope);
+        let encoded = to_allocvec(&envelope).unwrap();
+        let encoded_len = u32::try_from(encoded.len()).unwrap();
+        frame.truncate(FRAME_MAGIC.len());
+        frame.extend_from_slice(&encoded_len.to_le_bytes());
+        frame.extend_from_slice(&encoded);
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    fn replace_safetensors(frame: Vec<u8>, tensor_bytes: &[u8]) -> Vec<u8> {
+        let envelope_len = u32::from_le_bytes(
+            frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let envelope_end = FRAME_PREFIX_LEN + envelope_len;
+        let mut envelope: TensorEnvelope =
+            from_bytes(&frame[FRAME_PREFIX_LEN..envelope_end]).unwrap();
+        let metadata_end = envelope_end + envelope.metadata_len as usize;
+        envelope.tensor_len = tensor_bytes.len() as u64;
+        let encoded = to_allocvec(&envelope).unwrap();
+        let encoded_len = u32::try_from(encoded.len()).unwrap();
+        let mut replaced = Vec::new();
+        replaced.extend_from_slice(FRAME_MAGIC);
+        replaced.extend_from_slice(&encoded_len.to_le_bytes());
+        replaced.extend_from_slice(&encoded);
+        replaced.extend_from_slice(&frame[envelope_end..metadata_end]);
+        replaced.extend_from_slice(tensor_bytes);
+        replaced
+    }
+
+    fn unchecked_safetensors(tensors: &[RawTensor]) -> Vec<u8> {
+        let views = tensors.iter().map(|tensor| {
+            (
+                tensor.name.as_str(),
+                TensorView::new(
+                    to_safetensors_dtype(tensor.dtype),
+                    tensor.shape.clone(),
+                    &tensor.data,
+                )
+                .unwrap(),
+            )
+        });
+        safetensors::tensor::serialize(views, None).unwrap()
+    }
+
+    fn corrupt_first_data_offset(mut frame: Vec<u8>) -> Vec<u8> {
+        let envelope_len = u32::from_le_bytes(
+            frame[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let envelope_end = FRAME_PREFIX_LEN + envelope_len;
+        let envelope: TensorEnvelope = from_bytes(&frame[FRAME_PREFIX_LEN..envelope_end]).unwrap();
+        let tensor_start = envelope_end + envelope.metadata_len as usize;
+        let needle = b"data_offsets\":[0,";
+        let relative = frame[tensor_start..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("safetensors header contains data offsets");
+        let value_start = tensor_start + relative + needle.len();
+        let closing = frame[value_start..]
+            .iter()
+            .position(|byte| *byte == b']')
+            .map(|index| value_start + index)
+            .unwrap();
+        frame[closing - 1] = if frame[closing - 1] == b'9' {
+            b'8'
+        } else {
+            b'9'
+        };
+        frame
+    }
+
+    #[test]
+    fn round_trip_named_bundle_and_metadata() {
+        let tensors = input_tensors();
+        let frame = encode_input::<ExampleContract>(&tensors, &Metadata { request: 42 }).unwrap();
+        let decoded = decode_input::<ExampleContract>(&frame).unwrap();
+        assert_eq!(decoded.metadata, Metadata { request: 42 });
+        assert_eq!(decoded.tensors, tensors);
+        assert_eq!(decoded.envelope.tensor_encoding, EncodingId::SAFETENSORS_V1);
+    }
+
+    #[test]
+    fn streaming_prefix_contains_the_complete_safetensors_header() {
+        let frame =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 42 }).unwrap();
+        let header = tensor_stream_header(&frame).unwrap();
+        assert!(frame.starts_with(&header));
+        assert!(header.len() < frame.len());
+
+        let envelope_len = u32::from_le_bytes(
+            header[FRAME_MAGIC.len()..FRAME_PREFIX_LEN]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let envelope_end = FRAME_PREFIX_LEN + envelope_len;
+        let envelope: TensorEnvelope = from_bytes(&header[FRAME_PREFIX_LEN..envelope_end]).unwrap();
+        let tensor_start = envelope_end + envelope.metadata_len as usize;
+        let safe_header_len = u64::from_le_bytes(
+            header[tensor_start..tensor_start + size_of::<u64>()]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        assert_eq!(
+            header.len(),
+            tensor_start + size_of::<u64>() + safe_header_len
+        );
+        assert_eq!(
+            validate_tensor_stream_header(
+                &ExampleContract::descriptor(),
+                ContractSide::Input,
+                &header,
+            )
+            .unwrap(),
+            frame.len() as u64,
+        );
+    }
+
+    #[test]
+    fn streaming_prefix_rejects_invalid_schema_before_tensor_data_arrives() {
+        let frame =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 42 }).unwrap();
+        let mut header = tensor_stream_header(&frame).unwrap();
+        let dtype = header
+            .windows(b"F32".len())
+            .position(|window| window == b"F32")
+            .expect("header contains the image dtype");
+        header[dtype..dtype + 3].copy_from_slice(b"I32");
+        assert!(matches!(
+            validate_tensor_stream_header(
+                &ExampleContract::descriptor(),
+                ContractSide::Input,
+                &header,
+            ),
+            Err(CodecError::DtypeMismatch { .. })
+        ));
+
+        let malformed = corrupt_first_data_offset(frame);
+        let header = tensor_stream_header(&malformed).unwrap();
+        assert!(matches!(
+            validate_tensor_stream_header(
+                &ExampleContract::descriptor(),
+                ContractSide::Input,
+                &header,
+            ),
+            Err(CodecError::Safetensors(_))
+        ));
+    }
+
+    #[test]
+    fn contract_descriptor_serialization_and_hash_are_golden() {
+        let descriptor = ExampleContract::descriptor();
+        assert_eq!(
+            to_allocvec(&descriptor).unwrap(),
+            vec![
+                17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255, 0, 7, 2, 5,
+                105, 109, 97, 103, 101, 2, 1, 5, 98, 97, 116, 99, 104, 0, 3, 1, 13, 1, 4, 109, 97,
+                115, 107, 1, 1, 5, 98, 97, 116, 99, 104, 1, 1, 1, 1, 6, 115, 99, 111, 114, 101,
+                115, 2, 1, 5, 98, 97, 116, 99, 104, 2, 1, 13, 1,
+            ]
+        );
+        assert_eq!(
+            descriptor_hash(&descriptor),
+            ContractHash([
+                140, 202, 10, 193, 124, 163, 45, 96, 88, 107, 115, 122, 226, 166, 170, 1, 44, 143,
+                97, 93, 61, 249, 101, 234, 87, 253, 54, 254, 126, 237, 93, 222,
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_contract_and_version() {
+        let frame =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 1 }).unwrap();
+        assert!(matches!(
+            decode_input::<OtherContract>(&frame),
+            Err(CodecError::ContractIdMismatch)
+        ));
+
+        let frame = rewrite_envelope(frame, |envelope| envelope.contract_version += 1);
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::ContractVersionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_wrong_dtype_rank_and_static_dimension() {
+        let base =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 1 }).unwrap();
+
+        let mut wrong_dtype = input_tensors();
+        wrong_dtype[0].dtype = TensorDtype::I32;
+        let frame = replace_safetensors(base.clone(), &unchecked_safetensors(&wrong_dtype));
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::DtypeMismatch { .. })
+        ));
+
+        let mut wrong_rank = input_tensors();
+        wrong_rank[0].shape = vec![6];
+        let frame = replace_safetensors(base.clone(), &unchecked_safetensors(&wrong_rank));
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::RankMismatch { .. })
+        ));
+
+        let mut wrong_dimension = input_tensors();
+        wrong_dimension[0].shape = vec![3, 2];
+        let frame = replace_safetensors(base, &unchecked_safetensors(&wrong_dimension));
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::DimensionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_inconsistent_symbolic_bindings() {
+        let base =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 1 }).unwrap();
+        let mut tensors = input_tensors();
+        tensors[1].shape = vec![3];
+        tensors[1].data = vec![1, 0, 1];
+        let frame = replace_safetensors(base, &unchecked_safetensors(&tensors));
+        assert!(matches!(
+            decode_input::<ExampleContract>(&frame),
+            Err(CodecError::SymbolicDimensionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_offsets_and_unknown_encodings() {
+        let frame =
+            encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 1 }).unwrap();
+        let malformed = corrupt_first_data_offset(frame.clone());
+        assert!(matches!(
+            decode_input::<ExampleContract>(&malformed),
+            Err(CodecError::Safetensors(_))
+        ));
+
+        let unknown = rewrite_envelope(frame.clone(), |envelope| {
+            envelope.tensor_encoding = EncodingId(999)
+        });
+        assert!(matches!(
+            decode_input::<ExampleContract>(&unknown),
+            Err(CodecError::UnsupportedTensorEncoding(EncodingId(999)))
+        ));
+
+        let unknown = rewrite_envelope(frame.clone(), |envelope| {
+            envelope.metadata_encoding = EncodingId(998)
+        });
+        assert!(matches!(
+            decode_input::<ExampleContract>(&unknown),
+            Err(CodecError::UnsupportedMetadataEncoding(EncodingId(998)))
+        ));
+
+        let unknown = rewrite_envelope(frame, |envelope| envelope.envelope_version = 2);
+        assert!(matches!(
+            decode_input::<ExampleContract>(&unknown),
+            Err(CodecError::UnsupportedEnvelopeVersion(2))
+        ));
     }
 }

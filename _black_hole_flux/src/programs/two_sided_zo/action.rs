@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 
-use black_hole_spec::{ObjectId, Transmission};
+use black_hole_type::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use uuid::Uuid;
 
@@ -674,7 +674,7 @@ where
         };
 
         // Parent-side mailboxes where vertices publish their completed emissions.
-        let rx_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = ready
+        let rx_endpoints: Vec<(u32, black_hole_type::ObjectId)> = ready
             .iter()
             .filter_map(|&node_id| output_map.get(&node_id).map(|rx| (node_id, *rx)))
             .collect();
@@ -1375,14 +1375,14 @@ pub struct BroadcastPotentiation<S = ()>(PhantomData<fn() -> S>);
 #[jungle::action]
 impl<S> Action for BroadcastPotentiation<S> {
     type Effect = BroadcastPotentiationEffect;
-    type Input = black_hole_spec::Potentiation;
+    type Input = black_hole_type::Potentiation;
     type Output = ();
     type Carry = ();
 
     fn emit(state: &super::SunState<S>, input: Self::Input) -> BroadcastPotentiationInput {
         let topology = state.topology.lock().unwrap();
         let inner = state.a.shared.lock().unwrap();
-        let mut port_endpoints: Vec<(u32, black_hole_spec::ObjectId)> = topology
+        let mut port_endpoints: Vec<(u32, black_hole_type::ObjectId)> = topology
             .port_vertices
             .keys()
             .filter_map(|&port_id| inner.po_tx.get(&port_id).map(|tx| (port_id, *tx)))
@@ -1445,7 +1445,7 @@ impl<S> Action for BroadcastPotentiation<S> {
 /// Input for the [`BroadcastPotentiation`] effect.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BroadcastPotentiationInput {
-    pub potentiation: black_hole_spec::Potentiation,
+    pub potentiation: black_hole_type::Potentiation,
     /// (port_id, potentiation inbox) pairs.
     pub port_endpoints: Vec<(u32, ObjectId)>,
 }
@@ -1559,7 +1559,7 @@ impl PropagationState for super::PropB {
 mod tests {
     use super::*;
 
-    use black_hole_contract::{QwenDarkInference, TensorContract};
+    use black_hole_spec::{QwenDarkInference, TensorContract};
 
     use crate::compile::action::register_vertex;
     use crate::topology::{advance_frontier, initial_ready_nodes, pending_dependency_counts, sorted_node_ids};
@@ -1655,7 +1655,7 @@ mod tests {
 
     fn propagation(seed: u128) -> Transmission {
         Transmission::Propagation {
-            emission_id: black_hole_spec::EmissionId::new(Uuid::from_u128(seed)),
+            emission_id: black_hole_type::EmissionId::new(Uuid::from_u128(seed)),
             recv: Uuid::new_v4(),
             send: Uuid::new_v4(),
         }

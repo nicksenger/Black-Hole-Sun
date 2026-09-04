@@ -25,26 +25,26 @@ use crate::topology::{
 /// already contract-validated graph is scheduled.
 pub struct PrepareForwardPass<S, Input>(PhantomData<fn() -> (S, Input)>);
 
-#[jungle::action(carry = black_hole_spec::ArtifactDelivery<Input>)]
+#[jungle::action(carry = black_hole_type::ArtifactDelivery<Input>)]
 impl<S, Input> Action for PrepareForwardPass<S, Input>
 where
     Input: Send + 'static,
 {
     type Effect = NoEffect;
-    type Input = black_hole_spec::ArtifactDelivery<Input>;
-    type Output = black_hole_spec::ArtifactDelivery<()>;
+    type Input = black_hole_type::ArtifactDelivery<Input>;
+    type Output = black_hole_type::ArtifactDelivery<()>;
 
     fn emit(
         _state: &super::ForwardSunState<S>,
         input: Self::Input,
-    ) -> ((), black_hole_spec::ArtifactDelivery<Input>) {
+    ) -> ((), black_hole_type::ArtifactDelivery<Input>) {
         ((), input)
     }
 
     fn absorb(
         state: &mut super::ForwardSunState<S>,
         output: EffectCompletion<Self::Effect>,
-        carry: black_hole_spec::ArtifactDelivery<Input>,
+        carry: black_hole_type::ArtifactDelivery<Input>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_| Failure::Message("prepare forward pass failed".to_string()))?;
 
@@ -71,8 +71,8 @@ where
         }
         state.runtime.pending = pending;
         state.runtime.ready = ready;
-        Ok(black_hole_spec::ArtifactDelivery {
-            emission_id: black_hole_spec::ObjectRef::new(carry.emission_id.id()),
+        Ok(black_hole_type::ArtifactDelivery {
+            emission_id: black_hole_type::ObjectRef::new(carry.emission_id.id()),
             recv: carry.recv,
             send: carry.send,
         })
@@ -82,18 +82,18 @@ where
 /// Sends the typed input artifact to every root of a forward pass.
 pub struct SendForwardRoots<S>(PhantomData<fn() -> S>);
 
-#[jungle::action(carry = black_hole_spec::ArtifactDelivery<()>)]
+#[jungle::action(carry = black_hole_type::ArtifactDelivery<()>)]
 impl<S> Action for SendForwardRoots<S> {
     type Effect = SendRootArtifactDeliveryEffect<()>;
-    type Input = black_hole_spec::ArtifactDelivery<()>;
-    type Output = black_hole_spec::ArtifactDelivery<()>;
+    type Input = black_hole_type::ArtifactDelivery<()>;
+    type Output = black_hole_type::ArtifactDelivery<()>;
 
     fn emit(
         state: &super::ForwardSunState<S>,
         input: Self::Input,
     ) -> (
         SendRootArtifactDeliveryInput<()>,
-        black_hole_spec::ArtifactDelivery<()>,
+        black_hole_type::ArtifactDelivery<()>,
     ) {
         let topology = state.topology.lock().unwrap();
         let mut targets = Vec::new();
@@ -136,7 +136,7 @@ impl<S> Action for SendForwardRoots<S> {
     fn absorb(
         state: &mut super::ForwardSunState<S>,
         output: EffectCompletion<Self::Effect>,
-        carry: black_hole_spec::ArtifactDelivery<()>,
+        carry: black_hole_type::ArtifactDelivery<()>,
     ) -> Result<Self::Output, Failure> {
         let sent = output
             .map_err(|error| Failure::Message(format!("send forward roots failed: {error}")))?;
@@ -152,8 +152,8 @@ pub struct ProcessForwardNode<S>(PhantomData<fn() -> S>);
 #[jungle::action]
 impl<S> Action for ProcessForwardNode<S> {
     type Effect = WaitForNodeArtifactDeliveryEffect<()>;
-    type Input = black_hole_spec::ArtifactDelivery<()>;
-    type Output = black_hole_spec::ArtifactDelivery<()>;
+    type Input = black_hole_type::ArtifactDelivery<()>;
+    type Output = black_hole_type::ArtifactDelivery<()>;
 
     fn emit(
         state: &super::ForwardSunState<S>,
@@ -219,32 +219,32 @@ impl<S> Action for ProcessForwardNode<S> {
 /// Rotates each node to the inbox provisioned for the next serving request.
 pub struct CompleteForwardPass<S, Output>(PhantomData<fn() -> (S, Output)>);
 
-#[jungle::action(carry = black_hole_spec::ArtifactDelivery<()>)]
+#[jungle::action(carry = black_hole_type::ArtifactDelivery<()>)]
 impl<S, Output> Action for CompleteForwardPass<S, Output>
 where
     Output: Send + 'static,
 {
     type Effect = NoEffect;
-    type Input = black_hole_spec::ArtifactDelivery<()>;
-    type Output = black_hole_spec::ArtifactDelivery<Output>;
+    type Input = black_hole_type::ArtifactDelivery<()>;
+    type Output = black_hole_type::ArtifactDelivery<Output>;
 
     fn emit(
         _state: &super::ForwardSunState<S>,
         input: Self::Input,
-    ) -> ((), black_hole_spec::ArtifactDelivery<()>) {
+    ) -> ((), black_hole_type::ArtifactDelivery<()>) {
         ((), input)
     }
 
     fn absorb(
         state: &mut super::ForwardSunState<S>,
         output: EffectCompletion<Self::Effect>,
-        carry: black_hole_spec::ArtifactDelivery<()>,
+        carry: black_hole_type::ArtifactDelivery<()>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_| Failure::Message("complete forward pass failed".to_string()))?;
         state.runtime.inputs = std::mem::take(&mut state.runtime.next_inputs);
         state.runtime.outputs.clear();
-        Ok(black_hole_spec::ArtifactDelivery {
-            emission_id: black_hole_spec::ObjectRef::new(carry.emission_id.id()),
+        Ok(black_hole_type::ArtifactDelivery {
+            emission_id: black_hole_type::ObjectRef::new(carry.emission_id.id()),
             recv: carry.recv,
             send: carry.send,
         })
@@ -261,7 +261,7 @@ where
     T: Send + 'static,
 {
     type Effect = NoEffect;
-    type Input = black_hole_spec::ArtifactDelivery<T>;
+    type Input = black_hole_type::ArtifactDelivery<T>;
     type Output = ();
 
     fn emit(_state: &super::ForwardSunState<S>, _input: Self::Input) {}

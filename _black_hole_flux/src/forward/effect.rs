@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::marker::PhantomData;
 
-use black_hole_spec::ObjectId;
+use black_hole_type::ObjectId;
 use jungle_sdk::prelude::*;
 
 use crate::ops::VoidOps;
@@ -20,7 +20,7 @@ use crate::AtomError;
 #[serde(bound = "")]
 pub struct SchedulerDelivery<T> {
     pub node_id: u32,
-    pub delivery: black_hole_spec::ArtifactDelivery<T>,
+    pub delivery: black_hole_type::ArtifactDelivery<T>,
     pub sent_node_ids: Vec<u32>,
 }
 
@@ -30,7 +30,7 @@ pub struct SchedulerDelivery<T> {
 #[serde(bound = "")]
 pub struct SendRootArtifactDeliveryInput<T> {
     pub targets: Vec<PropagationTarget>,
-    pub delivery: black_hole_spec::ArtifactDelivery<T>,
+    pub delivery: black_hole_type::ArtifactDelivery<T>,
 }
 
 /// Sends an operation-typed input to every root port.
@@ -71,9 +71,9 @@ pub struct WaitForNodeArtifactDeliveryEffect<T>(PhantomData<fn() -> T>);
 async fn send_artifact_delivery<J: VoidOps, T>(
     jungle: &J,
     target: &PropagationTarget,
-    delivery: black_hole_spec::ArtifactDelivery<T>,
+    delivery: black_hole_type::ArtifactDelivery<T>,
 ) -> Result<(), AtomError> {
-    let delivery = black_hole_spec::ArtifactDelivery {
+    let delivery = black_hole_type::ArtifactDelivery {
         emission_id: delivery.emission_id,
         recv: target.next_input_id,
         send: target.output_id,

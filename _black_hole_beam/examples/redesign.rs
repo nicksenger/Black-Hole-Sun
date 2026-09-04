@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use black_hole_beam::BeamBuilder;
-use black_hole_contract::{
+use black_hole_spec::{
     glowstick::{Dyn, Shape2},
     SingleTensorSpec, TensorContract, TensorPortSpec,
 };
@@ -26,7 +26,7 @@ use black_hole_flux::{
     BlackHole, CellInit, CellState, Edge, ForwardOnly, ForwardOperationPrimordium, OperationNode,
     Primordium, TypedEdges, Unary,
 };
-use black_hole_spec::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
+use black_hole_type::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
 use iced::futures::stream;
 use jungle_client::MockClient;
 use jungle_sdk::typosaurus::collections::list::{Empty, List};

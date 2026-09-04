@@ -26,8 +26,8 @@ typenum = "1"
 uuid = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
-black-hole-contract = { path = "../_black_hole_contract" }
 black-hole-spec = { path = "../_black_hole_spec" }
+black-hole-type = { path = "../_black_hole_type" }
 jungle-client = { git = "https://github.com/nicksenger/Jungle.git", branch = "blackholesun" }
 
 [[bin]]

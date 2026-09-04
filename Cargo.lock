@@ -874,9 +874,9 @@ name = "black-hole-beam"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "black-hole-contract",
  "black-hole-flux",
  "black-hole-spec",
+ "black-hole-type",
  "clap",
  "cpal",
  "hound",
@@ -895,26 +895,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "black-hole-contract"
-version = "0.1.0"
-dependencies = [
- "black-hole-spec",
- "glowstick 0.3.0",
- "postcard",
- "safetensors",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "black-hole-flux"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "black-hole-contract",
  "black-hole-spec",
+ "black-hole-type",
  "futures",
  "jungle-sdk",
  "jungle-zoo",
@@ -935,8 +921,8 @@ name = "black-hole-mass"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "black-hole-contract",
  "black-hole-spec",
+ "black-hole-type",
  "black-hole-void",
  "clap",
  "directories-next",
@@ -978,9 +964,14 @@ dependencies = [
 name = "black-hole-spec"
 version = "0.1.0"
 dependencies = [
+ "black-hole-type",
+ "glowstick 0.3.0",
  "postcard",
+ "safetensors",
  "serde",
- "uuid",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -989,10 +980,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "black-hole-beam",
- "black-hole-contract",
  "black-hole-flux",
  "black-hole-mass",
  "black-hole-spec",
+ "black-hole-type",
  "black-hole-void",
  "hf-hub",
  "postcard",
@@ -1005,12 +996,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "black-hole-toys"
+version = "0.1.0"
+dependencies = [
+ "black-hole-sun",
+]
+
+[[package]]
+name = "black-hole-type"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "uuid",
+]
+
+[[package]]
 name = "black-hole-void"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-sdk-s3",
- "black-hole-spec",
+ "black-hole-type",
  "clap",
  "directories-next",
  "dyn-clone",

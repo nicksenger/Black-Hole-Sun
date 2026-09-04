@@ -10,13 +10,13 @@ const DEFAULT_TRANSMISSION_LONG_POLL_TIMEOUT_MS: u64 = 30_000;
 // Re-exports — keep common spec types handy alongside the trait
 // ---------------------------------------------------------------------------
 
-pub use black_hole_spec::{
+pub use black_hole_type::{
     ArtifactRef, DarkToken, Emission, EmissionId, InferenceOutput, InferenceOutputId,
     InferenceRequest, MassModelConfig, MassModelParams, ObjectId, ObjectRef, StreamRef,
     TransferHash, TransferRecord, TransferRef, Transmission,
 };
 
-use black_hole_contract::{QwenDarkInference, TensorContract};
+use black_hole_spec::{QwenDarkInference, TensorContract};
 
 use crate::AtomError;
 
@@ -158,7 +158,7 @@ pub trait VoidOps: Send + Sync {
     async fn wait_for_artifact_delivery<T>(
         &self,
         id: ObjectId,
-    ) -> Result<black_hole_spec::ArtifactDelivery<T>, String>
+    ) -> Result<black_hole_type::ArtifactDelivery<T>, String>
     where
         T: Send,
     {
@@ -187,7 +187,7 @@ pub trait VoidOps: Send + Sync {
     async fn wait_for_operational_control<C>(
         &self,
         id: ObjectId,
-    ) -> Result<black_hole_spec::OperationalControl<C>, String>
+    ) -> Result<black_hole_type::OperationalControl<C>, String>
     where
         C: DeserializeOwned + Send,
     {
@@ -782,7 +782,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use black_hole_spec::{LogitEntry, SequenceOutput};
+    use black_hole_type::{LogitEntry, SequenceOutput};
     use futures::executor::block_on;
 
     use super::*;

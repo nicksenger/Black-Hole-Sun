@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use black_hole_spec::{ObjectId, Transmission};
+use black_hole_type::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use tracing::debug;

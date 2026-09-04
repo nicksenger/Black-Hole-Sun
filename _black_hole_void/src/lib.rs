@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use black_hole_spec::{
+use black_hole_type::{
     TransferAbort, TransferBegin, TransferChunk, TransferHash, TransferManifest, TransferRecord,
     TransferStreamFrame, TRANSFER_PROTOCOL_VERSION,
 };

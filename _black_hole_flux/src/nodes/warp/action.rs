@@ -113,7 +113,7 @@ impl<S> Action for WaitForPropagation<S> {
     type Output = EmissionId;
     type Carry = ();
 
-    fn emit(state: &BoundaryState<S>, _input: Self::Input) -> black_hole_spec::ObjectId {
+    fn emit(state: &BoundaryState<S>, _input: Self::Input) -> black_hole_type::ObjectId {
         state.recv_id
     }
 
@@ -147,7 +147,7 @@ impl<S> Action for WaitForPotentiation<S> {
     type Output = Potentiation;
     type Carry = ();
 
-    fn emit(state: &BoundaryState<S>, _input: Self::Input) -> black_hole_spec::ObjectId {
+    fn emit(state: &BoundaryState<S>, _input: Self::Input) -> black_hole_type::ObjectId {
         state.recv_id
     }
 
@@ -180,7 +180,7 @@ impl<S> Action for Transmit<S> {
     fn emit(
         state: &BoundaryState<S>,
         input: Self::Input,
-    ) -> (EmissionId, black_hole_spec::ObjectId) {
+    ) -> (EmissionId, black_hole_type::ObjectId) {
         (input, state.send_id)
     }
 

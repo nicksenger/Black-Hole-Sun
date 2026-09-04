@@ -1,6 +1,6 @@
 //! Model configuration traits for per-instance mass start settings.
 
-use black_hole_spec::{
+use black_hole_type::{
     MassArchitecture, MassErrorFeedbackConfig, MassErrorFeedbackMode, MassModelConfig,
     MassPerturbationMode, ObjectId,
 };
@@ -152,7 +152,7 @@ impl ModelConfig for DefaultConfig {
 #[cfg(test)]
 mod tests {
     use super::{ErrorFeedbackPolicy, ModelConfig, OscillationSchedule};
-    use black_hole_spec::{MassErrorFeedbackConfig, MassErrorFeedbackMode, MassPerturbationMode};
+    use black_hole_type::{MassErrorFeedbackConfig, MassErrorFeedbackMode, MassPerturbationMode};
 
     struct FrozenConfig;
     impl ModelConfig for FrozenConfig {
@@ -229,7 +229,7 @@ mod tests {
         let config = CheckpointConfig::mass_model_config().expect("expected override config");
         assert_eq!(
             config.checkpoint_id,
-            Some(black_hole_spec::ObjectId::from_u128(42))
+            Some(black_hole_type::ObjectId::from_u128(42))
         );
     }
 

@@ -6,7 +6,7 @@ use std::{
 };
 
 use black_hole_flux::ops::VoidOps;
-use black_hole_spec::{
+use black_hole_type::{
     ArtifactRef, ContractDescriptor, DurabilityPolicy, ObjectId, StreamRef, TensorEnvelope,
     TransferBegin, TransferChunk, TransferHash, TransferRecord, TransferRef, TransferStreamFrame,
     TransferTicket, TRANSFER_PROTOCOL_VERSION,
@@ -218,11 +218,11 @@ impl VoidClient {
     ) -> Result<PreparedTransfer<T>, String> {
         if descriptor.id != envelope.contract_id
             || descriptor.version != envelope.contract_version
-            || black_hole_contract::descriptor_hash(&descriptor) != envelope.contract_hash
+            || black_hole_spec::descriptor_hash(&descriptor) != envelope.contract_hash
         {
             return Err("transfer descriptor does not match the tensor envelope".to_string());
         }
-        let declared_len = black_hole_contract::validate_tensor_stream_header(
+        let declared_len = black_hole_spec::validate_tensor_stream_header(
             &descriptor,
             envelope.side,
             &tensor_header,
@@ -736,14 +736,14 @@ fn validate_stream_begin(begin: &TransferBegin, ticket: &TransferTicket) -> Resu
 fn validate_ticket(ticket: &TransferTicket) -> Result<(), String> {
     if ticket.descriptor.id != ticket.envelope.contract_id
         || ticket.descriptor.version != ticket.envelope.contract_version
-        || black_hole_contract::descriptor_hash(&ticket.descriptor) != ticket.envelope.contract_hash
+        || black_hole_spec::descriptor_hash(&ticket.descriptor) != ticket.envelope.contract_hash
     {
         return Err("transfer ticket descriptor does not match its tensor envelope".to_string());
     }
     if ticket.eventual_void_id != ticket.transfer_id {
         return Err("transfer ticket durable object does not match its transfer ID".to_string());
     }
-    let declared_len = black_hole_contract::validate_tensor_stream_header(
+    let declared_len = black_hole_spec::validate_tensor_stream_header(
         &ticket.descriptor,
         ticket.envelope.side,
         &ticket.tensor_header,
@@ -765,7 +765,7 @@ fn validate_received_tensor(ticket: &TransferTicket, bytes: Vec<u8>) -> Result<V
     {
         return Err("received tensor does not match its transfer ticket".to_string());
     }
-    black_hole_contract::validate_artifact(&ticket.descriptor, ticket.envelope.side, &bytes)
+    black_hole_spec::validate_artifact(&ticket.descriptor, ticket.envelope.side, &bytes)
         .map_err(|error| format!("received tensor payload is invalid: {error}"))?;
     Ok(bytes)
 }
@@ -968,12 +968,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use black_hole_contract::{
+    use black_hole_spec::{
         decode_input, encode_input,
         glowstick::{Dyn, Shape1},
         tensor_stream_header, RawTensor, SingleTensorSpec, TensorContract, TensorPortSpec,
     };
-    use black_hole_spec::{
+    use black_hole_type::{
         ContractId, ContractSide, DimensionDescriptor, DtypeConstraint, EncodingId, TensorDtype,
         TransferRecord,
     };
@@ -1039,7 +1039,7 @@ mod tests {
             envelope_version: TensorEnvelope::VERSION,
             contract_id: descriptor.id,
             contract_version: descriptor.version,
-            contract_hash: black_hole_contract::descriptor_hash(&descriptor),
+            contract_hash: black_hole_spec::descriptor_hash(&descriptor),
             side: ContractSide::Input,
             tensor_encoding: EncodingId::SAFETENSORS_V1,
             metadata_encoding: EncodingId::POSTCARD_V1,

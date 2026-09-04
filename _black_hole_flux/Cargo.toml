@@ -6,8 +6,8 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1"
-black-hole-contract = { path = "../_black_hole_contract" }
 black-hole-spec = { path = "../_black_hole_spec" }
+black-hole-type = { path = "../_black_hole_type" }
 futures = "0.3"
 jungle-sdk = { workspace = true }
 jungle-zoo = { workspace = true }

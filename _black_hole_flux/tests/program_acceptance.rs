@@ -1,9 +1,9 @@
-use black_hole_contract::{glowstick::Shape1, TensorBundleSpec, TensorContract, TensorPortSpec};
+use black_hole_spec::{glowstick::Shape1, TensorBundleSpec, TensorContract, TensorPortSpec};
 use black_hole_flux::{
     BlackHole, CellInit, CellState, CheckpointEvaluate, CompileSun, Edge, ForwardOnly,
     ForwardOperationPrimordium, ForwardSunState, NeutralSunState, OperationNode, TypedEdges, Unary,
 };
-use black_hole_spec::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
+use black_hole_type::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
 use jungle_sdk::{Animal, Id, Step};
 use jungle_zoo::Noop;
 use typenum::{U0, U1, U2, U3};

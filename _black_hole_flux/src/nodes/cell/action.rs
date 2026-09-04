@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::mass::{DefaultConfig, ModelConfig};
-use black_hole_contract::TensorContract;
-use black_hole_spec::ObjectId;
+use black_hole_spec::TensorContract;
+use black_hole_type::ObjectId;
 
 // ---------------------------------------------------------------------------
 // CellState — holds the next transmission ID threaded across Cell iterations
@@ -25,10 +25,10 @@ use black_hole_spec::ObjectId;
 pub struct CellState<S = ()> {
     /// Stable ID of the mass model instance owned by this cell.
     pub model_id: Uuid,
-    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to download.
-    pub recv_id: black_hole_spec::ObjectId,
-    /// Void key of the next [`Transmission`](black_hole_spec::Transmission) to upload.
-    pub send_id: black_hole_spec::ObjectId,
+    /// Void key of the next [`Transmission`](black_hole_type::Transmission) to download.
+    pub recv_id: black_hole_type::ObjectId,
+    /// Void key of the next [`Transmission`](black_hole_type::Transmission) to upload.
+    pub send_id: black_hole_type::ObjectId,
     /// Random seed passed to the perturb-up step each iteration.
     pub perturbation_seed: u64,
     /// Last known frozen status for this model instance.
@@ -49,8 +49,8 @@ fn default_gradient_accumulation_steps() -> usize {
     1
 }
 
-pub use black_hole_spec::EmissionId;
-pub use black_hole_spec::Potentiation;
+pub use black_hole_type::EmissionId;
+pub use black_hole_type::Potentiation;
 
 use super::effect::{
     GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown, MassStart,
@@ -67,7 +67,7 @@ use super::effect::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Init {
     /// First propagation mailbox that this cell should await.
-    pub recv_id: black_hole_spec::ObjectId,
+    pub recv_id: black_hole_type::ObjectId,
     /// Number of propagation microsteps to run per perturbation phase.
     #[serde(default = "default_gradient_accumulation_steps")]
     pub grad_steps: usize,
@@ -76,7 +76,7 @@ pub struct Init {
 impl Default for Init {
     fn default() -> Self {
         Self {
-            recv_id: black_hole_spec::ObjectId::nil(),
+            recv_id: black_hole_type::ObjectId::nil(),
             grad_steps: default_gradient_accumulation_steps(),
         }
     }
@@ -282,26 +282,26 @@ where
 /// Adds the cell's operation instance ID to a typed input emission.
 pub struct PrepareOperationInput<T, S = ()>(PhantomData<fn() -> (T, S)>);
 
-#[jungle::action(carry = black_hole_spec::EmissionId<T>)]
+#[jungle::action(carry = black_hole_type::EmissionId<T>)]
 impl<T, S> Action for PrepareOperationInput<T, S>
 where
     T: Send + 'static,
 {
     type Effect = NoEffect;
-    type Input = black_hole_spec::EmissionId<T>;
-    type Output = (ObjectId, black_hole_spec::EmissionId<T>);
+    type Input = black_hole_type::EmissionId<T>;
+    type Output = (ObjectId, black_hole_type::EmissionId<T>);
 
     fn emit(
         _state: &CellState<S>,
         emission_id: Self::Input,
-    ) -> ((), black_hole_spec::EmissionId<T>) {
+    ) -> ((), black_hole_type::EmissionId<T>) {
         ((), emission_id)
     }
 
     fn absorb(
         state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
-        emission_id: black_hole_spec::EmissionId<T>,
+        emission_id: black_hole_type::EmissionId<T>,
     ) -> Result<Self::Output, Failure> {
         output.map_err(|_| Failure::Message("prepare operation input failed".to_string()))?;
         Ok((state.model_id, emission_id))
@@ -316,12 +316,12 @@ where
 // Propagation — payload from a Transmission::Propagation
 // ---------------------------------------------------------------------------
 
-/// Payload carried by a [`Transmission::Propagation`](black_hole_spec::Transmission).
+/// Payload carried by a [`Transmission::Propagation`](black_hole_type::Transmission).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Propagation {
     pub emission_id: EmissionId,
-    pub recv_id: black_hole_spec::ObjectId,
-    pub send_id: black_hole_spec::ObjectId,
+    pub recv_id: black_hole_type::ObjectId,
+    pub send_id: black_hole_type::ObjectId,
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +513,7 @@ impl<S> Action for WaitForPropagation<S> {
     type Output = EmissionId;
     type Carry = ();
 
-    fn emit(state: &CellState<S>, _input: Self::Input) -> black_hole_spec::ObjectId {
+    fn emit(state: &CellState<S>, _input: Self::Input) -> black_hole_type::ObjectId {
         state.recv_id
     }
 
@@ -539,7 +539,7 @@ where
 {
     type Effect = WaitForArtifactDeliveryEffect<T>;
     type Input = ();
-    type Output = black_hole_spec::EmissionId<T>;
+    type Output = black_hole_type::EmissionId<T>;
 
     fn emit(state: &CellState<S>, _input: Self::Input) -> ObjectId {
         state.recv_id
@@ -575,7 +575,7 @@ impl<S> Action for WaitForPotentiation<S> {
     type Output = Potentiation;
     type Carry = ();
 
-    fn emit(state: &CellState<S>, _input: Self::Input) -> black_hole_spec::ObjectId {
+    fn emit(state: &CellState<S>, _input: Self::Input) -> black_hole_type::ObjectId {
         state.recv_id
     }
 
@@ -634,7 +634,7 @@ impl<S> Action for Transmit<S> {
     type Input = EmissionId;
     type Output = ();
 
-    fn emit(state: &CellState<S>, input: Self::Input) -> (EmissionId, black_hole_spec::ObjectId) {
+    fn emit(state: &CellState<S>, input: Self::Input) -> (EmissionId, black_hole_type::ObjectId) {
         (input, state.send_id)
     }
 
@@ -655,13 +655,13 @@ where
     T: Send + 'static,
 {
     type Effect = TransmitArtifactEffect<T>;
-    type Input = black_hole_spec::EmissionId<T>;
+    type Input = black_hole_type::EmissionId<T>;
     type Output = ();
 
     fn emit(
         state: &CellState<S>,
         emission_id: Self::Input,
-    ) -> (black_hole_spec::EmissionId<T>, ObjectId) {
+    ) -> (black_hole_type::EmissionId<T>, ObjectId) {
         (emission_id, state.send_id)
     }
 

@@ -24,8 +24,8 @@ struct FakeLength;
 struct DeterministicFakeContract;
 
 impl TensorPortSpec for FakeValues {
-    type Shape = black_hole_sun::black_hole_contract::glowstick::Shape1<
-        black_hole_sun::black_hole_contract::glowstick::Dyn<FakeLength>,
+    type Shape = black_hole_sun::black_hole_spec::glowstick::Shape1<
+        black_hole_sun::black_hole_spec::glowstick::Dyn<FakeLength>,
     >;
 
     const NAME: &'static str = "values";
@@ -71,7 +71,7 @@ impl OperationImplementation for DeterministicFakeOperation {
             return Err("fake instance is not running".into());
         }
         let decoded =
-            black_hole_sun::black_hole_contract::decode_input::<DeterministicFakeContract>(&input)
+            black_hole_sun::black_hole_spec::decode_input::<DeterministicFakeContract>(&input)
                 .map_err(|error| error.to_string())?;
         let mut tensor = decoded.tensors.into_iter().next().unwrap();
         for bytes in tensor.data.chunks_exact_mut(4) {

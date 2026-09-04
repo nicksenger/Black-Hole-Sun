@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use black_hole_spec::{ObjectId, Transmission};
+use black_hole_type::{ObjectId, Transmission};
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 use uuid::Uuid;

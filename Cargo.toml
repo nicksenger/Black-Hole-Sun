@@ -2,13 +2,14 @@
 resolver = "2"
 members = [
     "_black_hole_beam",
-    "_black_hole_contract",
+    "_black_hole_spec",
     "_black_hole_flux",
     "_black_hole_mass",
     "_black_hole_void",
     "black-hole-sun",
+    "black-hole-toys",
     "_black_hole_probe",
-    "_black_hole_spec",
+    "_black_hole_type",
 ]
 
 [workspace.dependencies]

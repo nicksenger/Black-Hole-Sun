@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use black_hole_contract::{QwenDarkInference, TensorContract};
-use black_hole_spec::{ContractDescriptor, ObjectId};
+use black_hole_spec::{QwenDarkInference, TensorContract};
+use black_hole_type::{ContractDescriptor, ObjectId};
 use jungle_sdk::prelude::*;
 use typenum::Unsigned;
 use typosaurus::collections::list::{Empty, List};

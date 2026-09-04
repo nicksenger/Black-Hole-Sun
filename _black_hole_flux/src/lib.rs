@@ -62,9 +62,9 @@ pub mod programs;
 pub mod ray;
 pub mod topology;
 
-pub use black_hole_contract::{QwenDarkInference, StreamingTensorOp, TensorContract};
+pub use black_hole_spec::{QwenDarkInference, StreamingTensorOp, TensorContract};
 
-pub use black_hole_spec::{
+pub use black_hole_type::{
     ArtifactDelivery, ArtifactRef, ContractId, DarkToken, Emission, EmissionId, InferenceInput,
     InferenceOutput, InferenceOutputId, InferenceRequest, LogitEntry, MassErrorFeedbackConfig,
     MassErrorFeedbackMode, MassIn, MassModelConfig, MassModelParams, MassOut, MassPerturbationMode,
