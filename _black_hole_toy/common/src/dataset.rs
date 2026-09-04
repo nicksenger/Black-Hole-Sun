@@ -31,14 +31,15 @@ pub struct SampleMetadata {
 }
 
 /// One decoded Stanford Dogs sample.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DatasetSample {
     image: Vec<u8>,
     label: u32,
 }
 
 struct DatasetCursor {
-    samples: std::vec::IntoIter<DatasetSample>,
+    samples: Vec<DatasetSample>,
+    next_index: usize,
 }
 
 impl DatasetCursor {
@@ -86,12 +87,22 @@ impl DatasetCursor {
         }
 
         Ok(Self {
-            samples: samples.into_iter(),
+            samples,
+            next_index: 0,
         })
     }
 
     fn next(&mut self) -> Result<Option<DatasetSample>, String> {
-        Ok(self.samples.next())
+        if self.samples.is_empty() {
+            return Ok(None);
+        }
+        if self.next_index == self.samples.len() {
+            self.samples.shuffle(&mut rand::rng());
+            self.next_index = 0;
+        }
+        let sample = self.samples[self.next_index].clone();
+        self.next_index += 1;
+        Ok(Some(sample))
     }
 }
 
@@ -197,6 +208,28 @@ mod tests {
             select_balanced_positions(vec![(0, 0), (0, 1)], vec![(1, 0)], &mut rand::rng());
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn dataset_cursor_shuffles_and_restarts_after_exhaustion() {
+        let mut cursor = DatasetCursor {
+            samples: vec![
+                DatasetSample {
+                    image: vec![1],
+                    label: PEMBROKE_LABEL,
+                },
+                DatasetSample {
+                    image: vec![2],
+                    label: CARDIGAN_LABEL,
+                },
+            ],
+            next_index: 0,
+        };
+
+        assert!(cursor.next().unwrap().is_some());
+        assert!(cursor.next().unwrap().is_some());
+        assert!(cursor.next().unwrap().is_some());
+        assert_eq!(cursor.next_index, 1);
     }
 }
 
