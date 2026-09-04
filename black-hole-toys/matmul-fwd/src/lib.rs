@@ -219,6 +219,8 @@ impl<J: VoidOps> Effect<J> for GenerateTensorEffect {
                 )
                 .await?;
 
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
             Ok(ArtifactDelivery {
                 emission_id: ObjectRef::new(emission_id),
                 recv: ObjectId::nil(),
