@@ -9,10 +9,10 @@ use std::{
 };
 
 use black_hole_type::{
-    ContractDescriptor, ContractHash, ContractId, ContractSide, DarkToken, DimensionDescriptor,
-    DtypeConstraint, EncodingId, InferenceOutput, InferenceRequest, LayoutConstraint, LogitEntry,
-    OperationCapability, SequenceOutput, StreamingChunkOrder, StreamingFinalization, TensorDtype,
-    TensorEnvelope, TensorPortDescriptor,
+    BackwardCapability, ContractDescriptor, ContractHash, ContractId, ContractSide, DarkToken,
+    DimensionDescriptor, DtypeConstraint, EncodingId, InferenceOutput, InferenceRequest,
+    LayoutConstraint, LogitEntry, OperationCapability, SequenceOutput, StreamingChunkOrder,
+    StreamingFinalization, TensorDtype, TensorEnvelope, TensorPortDescriptor,
 };
 use postcard::{from_bytes, to_allocvec};
 use safetensors::{
@@ -148,6 +148,24 @@ pub trait TensorContract {
             version: Self::VERSION,
             inputs: Self::Input::descriptor(),
             outputs: Self::Output::descriptor(),
+        }
+    }
+}
+
+/// Reverse-mode tensor types for an operation that retains its forward graph.
+///
+/// `OutputGrad` is received from the downstream stage (the derivative with
+/// respect to this operation's output); `InputGrad` is returned upstream.
+pub trait BackwardContract: TensorContract {
+    type OutputGrad: TensorSpec;
+    type InputGrad: TensorSpec;
+
+    fn backward_descriptor() -> ContractDescriptor {
+        ContractDescriptor {
+            id: Self::ID,
+            version: Self::VERSION,
+            inputs: Self::OutputGrad::descriptor(),
+            outputs: Self::InputGrad::descriptor(),
         }
     }
 }
@@ -430,7 +448,19 @@ pub fn operation_capability<C: TensorContract>() -> OperationCapability {
         tensor_encodings: vec![EncodingId::SAFETENSORS_V1],
         metadata_encodings: vec![EncodingId::POSTCARD_V1],
         operations: black_hole_type::OperationCapabilities::FORWARD_ONLY,
+        backward: None,
     }
+}
+
+/// V1 runtime declaration for a forward-and-backward contract.
+pub fn backward_operation_capability<C: BackwardContract>() -> OperationCapability {
+    let mut capability = operation_capability::<C>();
+    let descriptor = C::backward_descriptor();
+    capability.backward = Some(Box::new(BackwardCapability {
+        descriptor_hash: descriptor_hash(&descriptor),
+        descriptor,
+    }));
+    capability
 }
 
 /// Encode a contract input bundle with postcard metadata and safetensors data.
@@ -474,6 +504,70 @@ where
     C::Metadata: DeserializeOwned,
 {
     decode::<C, C::Output>(ContractSide::Output, frame)
+}
+
+/// Encode the downstream gradient consumed by `C::backward`.
+pub fn encode_output_gradient<C>(
+    tensors: &[RawTensor],
+    metadata: &C::Metadata,
+) -> Result<Vec<u8>, CodecError>
+where
+    C: BackwardContract,
+    C::Metadata: Serialize,
+{
+    encode_descriptor::<C::Metadata>(
+        C::backward_descriptor(),
+        ContractSide::Input,
+        tensors,
+        metadata,
+    )
+}
+
+/// Decode the downstream gradient consumed by `C::backward`.
+pub fn decode_output_gradient<C>(
+    frame: &[u8],
+) -> Result<DecodedTensorBundle<C::OutputGrad, C::Metadata>, CodecError>
+where
+    C: BackwardContract,
+    C::Metadata: DeserializeOwned,
+{
+    decode_descriptor::<C::OutputGrad, C::Metadata>(
+        &C::backward_descriptor(),
+        ContractSide::Input,
+        frame,
+    )
+}
+
+/// Encode the upstream gradient produced by `C::backward`.
+pub fn encode_input_gradient<C>(
+    tensors: &[RawTensor],
+    metadata: &C::Metadata,
+) -> Result<Vec<u8>, CodecError>
+where
+    C: BackwardContract,
+    C::Metadata: Serialize,
+{
+    encode_descriptor::<C::Metadata>(
+        C::backward_descriptor(),
+        ContractSide::Output,
+        tensors,
+        metadata,
+    )
+}
+
+/// Decode the upstream gradient produced by `C::backward`.
+pub fn decode_input_gradient<C>(
+    frame: &[u8],
+) -> Result<DecodedTensorBundle<C::InputGrad, C::Metadata>, CodecError>
+where
+    C: BackwardContract,
+    C::Metadata: DeserializeOwned,
+{
+    decode_descriptor::<C::InputGrad, C::Metadata>(
+        &C::backward_descriptor(),
+        ContractSide::Output,
+        frame,
+    )
 }
 
 /// Decode and validate a tensor artifact against a runtime contract.
@@ -726,7 +820,15 @@ where
     C: TensorContract,
     C::Metadata: Serialize,
 {
-    let descriptor = C::descriptor();
+    encode_descriptor::<C::Metadata>(C::descriptor(), side, tensors, metadata)
+}
+
+fn encode_descriptor<M: Serialize>(
+    descriptor: ContractDescriptor,
+    side: ContractSide,
+    tensors: &[RawTensor],
+    metadata: &M,
+) -> Result<Vec<u8>, CodecError> {
     let ports = ports_for(&descriptor, side);
     validate_schema(ports)?;
     validate_tensors(ports, tensors)?;
@@ -786,6 +888,17 @@ where
     C: TensorContract,
     C::Metadata: DeserializeOwned,
 {
+    decode_descriptor::<S, C::Metadata>(&C::descriptor(), expected_side, frame)
+}
+
+fn decode_descriptor<S, M>(
+    descriptor: &ContractDescriptor,
+    expected_side: ContractSide,
+    frame: &[u8],
+) -> Result<DecodedTensorBundle<S, M>, CodecError>
+where
+    M: DeserializeOwned,
+{
     if frame.len() < FRAME_PREFIX_LEN {
         return Err(CodecError::Truncated);
     }
@@ -805,7 +918,7 @@ where
         .ok_or(CodecError::Truncated)?;
     let envelope: TensorEnvelope = from_bytes(envelope_bytes)?;
 
-    validate_envelope::<C>(&envelope, expected_side)?;
+    validate_runtime_envelope(&envelope, descriptor, expected_side)?;
 
     let metadata_len: usize = envelope
         .metadata_len
@@ -842,8 +955,7 @@ where
         });
     }
 
-    let descriptor = C::descriptor();
-    let ports = ports_for(&descriptor, expected_side);
+    let ports = ports_for(descriptor, expected_side);
     validate_schema(ports)?;
     validate_tensors(ports, &tensors)?;
     tensors.sort_by_key(|tensor| {
@@ -858,13 +970,6 @@ where
         tensors,
         marker: PhantomData,
     })
-}
-
-fn validate_envelope<C: TensorContract>(
-    envelope: &TensorEnvelope,
-    expected_side: ContractSide,
-) -> Result<(), CodecError> {
-    validate_runtime_envelope(&envelope, &C::descriptor(), expected_side)
 }
 
 fn validate_runtime_envelope(
@@ -1079,6 +1184,20 @@ mod tests {
         const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
     }
 
+    struct ScoresGradient;
+    impl TensorPortSpec for ScoresGradient {
+        type Shape = Shape2<Dyn<Batch>, Dyn<Width>>;
+        const NAME: &'static str = "scores_gradient";
+        const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
+    }
+
+    struct ImageGradient;
+    impl TensorPortSpec for ImageGradient {
+        type Shape = Shape2<Dyn<Batch>, U3>;
+        const NAME: &'static str = "image_gradient";
+        const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct Metadata {
         request: u32,
@@ -1091,6 +1210,53 @@ mod tests {
         type Metadata = Metadata;
         const ID: ContractId = ContractId::from_u128(0x112233445566778899aabbccddeeff00);
         const VERSION: u32 = 7;
+    }
+
+    impl BackwardContract for ExampleContract {
+        type OutputGrad = SingleTensorSpec<ScoresGradient>;
+        type InputGrad = SingleTensorSpec<ImageGradient>;
+    }
+
+    #[test]
+    fn backward_contract_round_trips_both_gradient_directions() {
+        let metadata = Metadata { request: 42 };
+        let output_gradient = RawTensor {
+            name: "scores_gradient".into(),
+            dtype: TensorDtype::F32,
+            shape: vec![2, 4],
+            data: vec![0; 2 * 4 * 4],
+        };
+        let encoded = encode_output_gradient::<ExampleContract>(
+            std::slice::from_ref(&output_gradient),
+            &metadata,
+        )
+        .unwrap();
+        let decoded = decode_output_gradient::<ExampleContract>(&encoded).unwrap();
+        assert_eq!(decoded.metadata, metadata);
+        assert_eq!(decoded.tensors, vec![output_gradient]);
+
+        let input_gradient = RawTensor {
+            name: "image_gradient".into(),
+            dtype: TensorDtype::F32,
+            shape: vec![2, 3],
+            data: vec![0; 2 * 3 * 4],
+        };
+        let encoded = encode_input_gradient::<ExampleContract>(
+            std::slice::from_ref(&input_gradient),
+            &metadata,
+        )
+        .unwrap();
+        let decoded = decode_input_gradient::<ExampleContract>(&encoded).unwrap();
+        assert_eq!(decoded.tensors, vec![input_gradient]);
+
+        let capability = backward_operation_capability::<ExampleContract>();
+        let backward = capability.backward.expect("backward descriptor");
+        assert_eq!(backward.descriptor.inputs[0].name, "scores_gradient");
+        assert_eq!(backward.descriptor.outputs[0].name, "image_gradient");
+        assert_eq!(
+            backward.descriptor_hash,
+            descriptor_hash(&backward.descriptor)
+        );
     }
 
     struct OtherContract;

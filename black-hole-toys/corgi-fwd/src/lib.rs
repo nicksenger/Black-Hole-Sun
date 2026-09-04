@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 use async_trait::async_trait;
 use black_hole_sun::black_hole_spec::{
     glowstick::{Shape2, Shape4},
-    SingleTensorSpec, TensorContract, TensorPortSpec,
+    BackwardContract, SingleTensorSpec, TensorContract, TensorPortSpec,
 };
 use black_hole_sun::cell::CellState;
 use black_hole_sun::compile::BlackHole;
@@ -111,6 +111,10 @@ macro_rules! contract {
             type Metadata = SampleMetadata;
             const ID: ContractId = ContractId::from_u128($id);
             const VERSION: u32 = 1;
+        }
+        impl BackwardContract for $name {
+            type OutputGrad = $output;
+            type InputGrad = $input;
         }
     };
 }

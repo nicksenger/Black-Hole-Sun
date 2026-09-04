@@ -352,7 +352,9 @@ impl<P: super::SunProgram> Action for GenFusionSeed<P> {
     }
 }
 
-fn resolve_neutral_topology(topology: &mut crate::topology::SunTopology) -> Result<u32, Failure> {
+pub(crate) fn resolve_neutral_topology(
+    topology: &mut crate::topology::SunTopology,
+) -> Result<u32, Failure> {
     topology.finalized = false;
     if !topology.duplicate_ports.is_empty() {
         let mut ports = topology.duplicate_ports.iter().copied().collect::<Vec<_>>();

@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use black_hole_spec::{QwenDarkInference, TensorContract};
+use black_hole_spec::{BackwardContract, QwenDarkInference, TensorContract};
 use black_hole_type::{ContractDescriptor, ObjectId};
 use jungle_sdk::prelude::*;
 use typenum::Unsigned;
@@ -74,6 +74,10 @@ pub struct Edge<P: Unsigned, Destination: TensorContract>(PhantomData<(P, Destin
 /// Legacy `list![U1, U2]` output lists remain accepted and mean Qwen-to-Qwen
 /// edges. Generic graphs use `TypedEdges<list![Edge<U1, NextOp>]>`.
 pub struct TypedEdges<E>(PhantomData<E>);
+
+/// Typed edges that additionally prove the counter-propagating gradient
+/// bundle matches (`Destination::InputGrad = Source::OutputGrad`).
+pub struct BackwardTypedEdges<E>(PhantomData<E>);
 
 /// Type-level warp vertex that composes a nested Sun animal behind a boundary
 /// cell that handles ingress/egress behavior in the parent graph.
@@ -296,6 +300,25 @@ where
     }
 }
 
+impl NodeIdsFromList for BackwardTypedEdges<Empty> {
+    fn node_ids() -> Vec<u32> {
+        Vec::new()
+    }
+}
+
+impl<P, Destination, T> NodeIdsFromList for BackwardTypedEdges<List<(Edge<P, Destination>, T)>>
+where
+    P: Unsigned,
+    Destination: BackwardContract,
+    BackwardTypedEdges<T>: NodeIdsFromList,
+{
+    fn node_ids() -> Vec<u32> {
+        let mut ids = vec![P::U32];
+        ids.extend(<BackwardTypedEdges<T> as NodeIdsFromList>::node_ids());
+        ids
+    }
+}
+
 /// Produces runtime edge descriptors while enforcing compile-time bundle
 /// equality between every source output and destination input.
 pub trait DeclaredEdges<Source: TensorContract>: NodeIdsFromList {
@@ -349,6 +372,31 @@ where
             destination_contract: Destination::descriptor(),
         }];
         edges.extend(<TypedEdges<T> as DeclaredEdges<Source>>::declared_edges());
+        edges
+    }
+}
+
+impl<Source: BackwardContract> DeclaredEdges<Source> for BackwardTypedEdges<Empty> {
+    fn declared_edges() -> Vec<DeclaredEdge> {
+        Vec::new()
+    }
+}
+
+impl<Source, P, Destination, T> DeclaredEdges<Source>
+    for BackwardTypedEdges<List<(Edge<P, Destination>, T)>>
+where
+    Source: BackwardContract,
+    Destination: BackwardContract<Input = Source::Output, InputGrad = Source::OutputGrad>,
+    P: Unsigned,
+    BackwardTypedEdges<T>: DeclaredEdges<Source>,
+{
+    fn declared_edges() -> Vec<DeclaredEdge> {
+        let mut edges = vec![DeclaredEdge {
+            port_id: P::U32,
+            source_contract: Source::descriptor(),
+            destination_contract: Destination::descriptor(),
+        }];
+        edges.extend(<BackwardTypedEdges<T> as DeclaredEdges<Source>>::declared_edges());
         edges
     }
 }

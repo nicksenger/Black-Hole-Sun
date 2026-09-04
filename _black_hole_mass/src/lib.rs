@@ -307,6 +307,18 @@ pub trait OperationImplementation: Send + Sync + 'static {
         input: Vec<u8>,
     ) -> std::result::Result<Vec<u8>, String>;
 
+    async fn backward(
+        &self,
+        _instance_id: Uuid,
+        _grad_input: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, String> {
+        Err("backward capability is not implemented".into())
+    }
+
+    async fn step(&self, _instance_id: Uuid) -> std::result::Result<(), String> {
+        Err("step capability is not implemented".into())
+    }
+
     async fn reset(&self, _instance_id: Uuid) -> std::result::Result<(), String> {
         Err("reset capability is not implemented".into())
     }
@@ -3010,6 +3022,15 @@ async fn handle_request(
             ensure_operation_protocol_version(protocol_version)?;
             handle_instance_invoke_routed(instance_id, input, ctx).await
         }
+        MassIn::BackwardInstance {
+            protocol_version,
+            instance_id,
+            grad_input,
+        } => {
+            ensure_operation_protocol_version(protocol_version)?;
+            handle_instance_backward_routed(instance_id, grad_input, ctx).await
+        }
+        MassIn::StepInstance { instance_id } => handle_instance_step_routed(instance_id, ctx).await,
         MassIn::ResetInstance { instance_id } => {
             handle_instance_reset_routed(instance_id, ctx).await
         }
@@ -3387,6 +3408,17 @@ async fn handle_tunnel_request_local(request: TunnelRequest, ctx: &MassContext) 
             ensure_operation_protocol_version(protocol_version)?;
             handle_instance_invoke_distributed(instance_id, input, ctx).await
         }
+        TunnelRequest::BackwardInstance {
+            protocol_version,
+            instance_id,
+            grad_input,
+        } => {
+            ensure_operation_protocol_version(protocol_version)?;
+            handle_instance_backward_distributed(instance_id, grad_input, ctx).await
+        }
+        TunnelRequest::StepInstance { instance_id } => {
+            handle_instance_step_distributed(instance_id, ctx).await
+        }
         TunnelRequest::ResetInstance { instance_id } => {
             handle_instance_reset_distributed(instance_id, ctx).await
         }
@@ -3452,6 +3484,20 @@ fn validate_capability(capability: &OperationCapability) -> Result<()> {
     if capability.tensor_encodings.is_empty() || capability.metadata_encodings.is_empty() {
         return Err(ServerError::OperationCodecSetEmpty);
     }
+    if capability.operations.backward {
+        let backward = capability
+            .backward
+            .as_ref()
+            .ok_or(ServerError::OperationBackwardContractMissing)?;
+        if backward.descriptor_hash != black_hole_spec::descriptor_hash(&backward.descriptor) {
+            return Err(ServerError::OperationContractHashMismatch);
+        }
+        if backward.descriptor.id != capability.descriptor.id
+            || backward.descriptor.version != capability.descriptor.version
+        {
+            return Err(ServerError::OperationBackwardContractMismatch);
+        }
+    }
     Ok(())
 }
 
@@ -3477,6 +3523,7 @@ fn operation_satisfies(advertised: &OperationCapability, requested: &OperationCa
             .metadata_encodings
             .iter()
             .all(|encoding| advertised.metadata_encodings.contains(encoding))
+        && (!requested.operations.backward || advertised.backward == requested.backward)
         && advertised.operations.satisfies(requested.operations)
 }
 
@@ -3809,6 +3856,76 @@ async fn handle_instance_invoke_local(
     Ok(MassOut::Invoked { output })
 }
 
+async fn handle_instance_backward_routed(
+    instance_id: Uuid,
+    grad_input: OperationArtifactRef,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    ensure_root_mode(ctx)?;
+    handle_instance_backward_distributed(instance_id, grad_input, ctx).await
+}
+
+async fn handle_instance_backward_distributed(
+    instance_id: Uuid,
+    grad_input: OperationArtifactRef,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    match route_for_instance(instance_id, ctx).await? {
+        RouteTarget::Local => handle_instance_backward_local(instance_id, grad_input, ctx).await,
+        RouteTarget::Worker(token) => {
+            forward_tunnel_request(
+                token,
+                TunnelRequest::BackwardInstance {
+                    protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
+                    instance_id,
+                    grad_input,
+                },
+                ctx,
+            )
+            .await
+        }
+    }
+}
+
+async fn handle_instance_backward_local(
+    instance_id: Uuid,
+    grad_input: OperationArtifactRef,
+    ctx: &MassContext,
+) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.backward, "backward")?;
+    if instance.implementation == ImplementationKind::Qwen {
+        return Err(ServerError::OperationCapabilityUnavailable("backward"));
+    }
+    let backward = instance
+        .capability
+        .backward
+        .as_ref()
+        .ok_or(ServerError::OperationBackwardContractMissing)?;
+    let operation = ctx
+        .operation
+        .as_ref()
+        .ok_or(ServerError::OperationNotConfigured)?;
+    let void = require_void_client(ctx, "operation backward")?;
+    let input_bytes = void.download_artifact(grad_input).await?;
+    black_hole_spec::validate_artifact(&backward.descriptor, ContractSide::Input, &input_bytes)
+        .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
+    let output_bytes = operation
+        .backward(instance_id, input_bytes)
+        .await
+        .map_err(ServerError::OperationError)?;
+    black_hole_spec::validate_artifact(&backward.descriptor, ContractSide::Output, &output_bytes)
+        .map_err(|error| ServerError::OperationPayloadInvalid(error.to_string()))?;
+    let output = void
+        .publish_artifact(
+            backward.descriptor.clone(),
+            ContractSide::Output,
+            output_bytes,
+        )
+        .await?;
+    Ok(MassOut::Invoked { output })
+}
+
 macro_rules! routed_instance_ack {
     ($routed:ident, $distributed:ident, $local:ident, $request:ident) => {
         async fn $routed(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
@@ -3833,6 +3950,12 @@ routed_instance_ack!(
     handle_instance_reset_distributed,
     handle_instance_reset_local,
     ResetInstance
+);
+routed_instance_ack!(
+    handle_instance_step_routed,
+    handle_instance_step_distributed,
+    handle_instance_step_local,
+    StepInstance
 );
 routed_instance_ack!(
     handle_instance_perturb_down_routed,
@@ -3863,6 +3986,23 @@ async fn handle_instance_reset_local(instance_id: Uuid, ctx: &MassContext) -> Re
                 .as_ref()
                 .ok_or(ServerError::OperationNotConfigured)?
                 .reset(instance_id)
+                .await
+                .map_err(ServerError::OperationError)?;
+            Ok(MassOut::Ack)
+        }
+    }
+}
+
+async fn handle_instance_step_local(instance_id: Uuid, ctx: &MassContext) -> Result<MassOut> {
+    let instance = hosted_instance(instance_id, ctx).await?;
+    require_capability(instance.capability.operations.step, "step")?;
+    match instance.implementation {
+        ImplementationKind::Qwen => Err(ServerError::OperationCapabilityUnavailable("step")),
+        ImplementationKind::Injected => {
+            ctx.operation
+                .as_ref()
+                .ok_or(ServerError::OperationNotConfigured)?
+                .step(instance_id)
                 .await
                 .map_err(ServerError::OperationError)?;
             Ok(MassOut::Ack)
@@ -5343,6 +5483,10 @@ pub enum ServerError {
     OperationContractMismatch,
     #[error("operation contract descriptor hash mismatch")]
     OperationContractHashMismatch,
+    #[error("backward or step capability requires a backward contract")]
+    OperationBackwardContractMissing,
+    #[error("backward contract identity does not match the forward contract")]
+    OperationBackwardContractMismatch,
     #[error("operation must declare at least one tensor and metadata codec")]
     OperationCodecSetEmpty,
     #[error("operation payload validation failed: {0}")]
@@ -5508,20 +5652,21 @@ mod tests {
         repair_duplicated_absolute_model_path, resolve_max_instances, resolve_model_frozen,
         resolve_model_oscillation, route_for_instance, select_instance_target,
         to_engine_error_feedback, to_engine_perturbation_mode, to_mass_perturbation_mode,
-        FrozenOscillation, MassContext, MassMode, MassServerDefaults, MassSession, MassState,
-        ModelRuntimeConfig, QwenOperationAdapter, RouteTarget, ServerBuilder, ServerError,
-        TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT, DEFAULT_MAX_INSTANCES,
+        validate_capability, FrozenOscillation, MassContext, MassMode, MassServerDefaults,
+        MassSession, MassState, ModelRuntimeConfig, QwenOperationAdapter, RouteTarget,
+        ServerBuilder, ServerError, TransportMode, TunnelWorker, DEFAULT_INFERENCE_LIMIT,
+        DEFAULT_MAX_INSTANCES,
     };
     use black_hole_spec::{
-        encode_output,
+        backward_operation_capability, encode_output,
         glowstick::{Dyn, Shape1},
-        operation_capability, QwenDarkInference, RawTensor, SingleTensorSpec, TensorContract,
-        TensorPortSpec,
+        operation_capability, BackwardContract, QwenDarkInference, RawTensor, SingleTensorSpec,
+        TensorContract, TensorPortSpec,
     };
     use black_hole_type::{
         ContractId, DtypeConstraint, EncodingId, MassArchitecture, MassErrorFeedbackConfig,
         MassModelCapacity, MassModelConfig, MassPerturbationMode, OperationArtifactRef,
-        TensorDtype, WorkerCapabilities,
+        OperationCapabilities, TensorDtype, WorkerCapabilities,
     };
     use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
     use tokio::sync::{Mutex, RwLock};
@@ -5564,6 +5709,10 @@ mod tests {
     }
 
     qwen_shaped_contract!(FakeOperation, 0x6661_6b65_2d6f_7065_7261_7469_6f6e_0001, 1);
+    impl BackwardContract for FakeOperation {
+        type OutputGrad = <Self as TensorContract>::Output;
+        type InputGrad = <Self as TensorContract>::Input;
+    }
     qwen_shaped_contract!(
         SameShapeOtherOperation,
         0x7361_6d65_2d73_6861_7065_2d6f_7468_6572,
@@ -5655,6 +5804,33 @@ mod tests {
         assert!(matches!(
             ensure_operation_protocol_version(black_hole_type::MASS_OPERATION_PROTOCOL_VERSION + 1),
             Err(ServerError::UnsupportedOperationProtocolVersion(_))
+        ));
+    }
+
+    #[test]
+    fn backward_capability_requires_a_matching_reverse_descriptor() {
+        let mut missing = operation_capability::<FakeOperation>();
+        missing.operations = OperationCapabilities {
+            forward: true,
+            backward: true,
+            step: true,
+            ..OperationCapabilities::default()
+        };
+        assert!(matches!(
+            validate_capability(&missing),
+            Err(ServerError::OperationBackwardContractMissing)
+        ));
+
+        let mut valid = backward_operation_capability::<FakeOperation>();
+        valid.operations = missing.operations;
+        assert!(validate_capability(&valid).is_ok());
+
+        valid.backward.as_mut().unwrap().descriptor.version += 1;
+        valid.backward.as_mut().unwrap().descriptor_hash =
+            black_hole_spec::descriptor_hash(&valid.backward.as_ref().unwrap().descriptor);
+        assert!(matches!(
+            validate_capability(&valid),
+            Err(ServerError::OperationBackwardContractMismatch)
         ));
     }
     qwen_shaped_contract!(

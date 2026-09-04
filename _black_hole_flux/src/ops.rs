@@ -16,7 +16,7 @@ pub use black_hole_type::{
     TransferHash, TransferRecord, TransferRef, Transmission,
 };
 
-use black_hole_spec::{QwenDarkInference, TensorContract};
+use black_hole_spec::{BackwardContract, QwenDarkInference, TensorContract};
 
 use crate::AtomError;
 
@@ -88,18 +88,48 @@ pub trait VoidOps: Send + Sync {
         self.persist(value).await.map(ArtifactRef::committed)
     }
 
+    /// Resolve raw bytes from any artifact location. Progressive references
+    /// wait for their durable fallback commit, which keeps strategy code
+    /// independent from a particular live-stream transport.
+    async fn receive_artifact_raw<T: Send>(
+        &self,
+        reference: &ArtifactRef<T>,
+    ) -> Result<Vec<u8>, String> {
+        match reference {
+            ArtifactRef::Committed(reference) => self.download_raw(reference.id()).await,
+            ArtifactRef::Transfer(reference) => self.wait_for_transfer_raw(reference.id()).await,
+            ArtifactRef::Stream(reference) => {
+                self.wait_for_transfer_raw(reference.fallback_transfer_id)
+                    .await
+            }
+        }
+    }
+
+    async fn wait_for_transfer_raw(&self, transfer_id: ObjectId) -> Result<Vec<u8>, String> {
+        loop {
+            let record: TransferRecord = self.resolve(ObjectRef::new(transfer_id)).await?;
+            match record {
+                TransferRecord::Committed(_) => {
+                    return self.resolve_transfer_raw(transfer_id).await
+                }
+                TransferRecord::InProgress { .. } => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                }
+                TransferRecord::Aborted(abort) => {
+                    return Err(format!(
+                        "transfer {transfer_id} was aborted: {}",
+                        abort.reason
+                    ))
+                }
+            }
+        }
+    }
+
     async fn resolve_artifact<T>(&self, reference: &ArtifactRef<T>) -> Result<T, String>
     where
         T: DeserializeOwned + Send,
     {
-        let bytes = match reference {
-            ArtifactRef::Committed(reference) => self.download_raw(reference.id()).await?,
-            ArtifactRef::Transfer(reference) => self.resolve_transfer_raw(reference.id()).await?,
-            ArtifactRef::Stream(reference) => {
-                self.resolve_transfer_raw(reference.fallback_transfer_id)
-                    .await?
-            }
-        };
+        let bytes = self.receive_artifact_raw(reference).await?;
         postcard::from_bytes(&bytes).map_err(|error| error.to_string())
     }
 
@@ -243,6 +273,22 @@ where
 #[async_trait::async_trait]
 pub trait ResetOps<Op: TensorContract>: Send + Sync {
     async fn reset_operation(&self, instance_id: ObjectId) -> Result<(), String>;
+}
+
+/// Reverse-mode execution for an operation's cached forward graph.
+#[async_trait::async_trait]
+pub trait BackwardOps<Op: BackwardContract>: Send + Sync {
+    async fn backward(
+        &self,
+        instance_id: ObjectId,
+        grad_output: ArtifactRef<Op::OutputGrad>,
+    ) -> Result<ArtifactRef<Op::InputGrad>, String>;
+}
+
+/// Apply locally accumulated parameter gradients for one operation instance.
+#[async_trait::async_trait]
+pub trait StepOps<Op: BackwardContract>: Send + Sync {
+    async fn step(&self, instance_id: ObjectId) -> Result<(), String>;
 }
 
 #[async_trait::async_trait]

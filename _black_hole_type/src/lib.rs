@@ -10,8 +10,8 @@ pub const IM_END: u32 = 248046;
 pub const PAD: u32 = 248044;
 pub const THINK_OPEN: u32 = 248068;
 pub const THINK_CLOSE: u32 = 248069;
-/// Current generic Mass start/forward protocol version.
-pub const MASS_OPERATION_PROTOCOL_VERSION: u16 = 1;
+/// Current generic Mass operation protocol version.
+pub const MASS_OPERATION_PROTOCOL_VERSION: u16 = 2;
 /// Current progressive artifact-transfer protocol version.
 pub const TRANSFER_PROTOCOL_VERSION: u16 = 1;
 
@@ -515,6 +515,19 @@ pub struct OperationCapability {
     pub metadata_encodings: Vec<EncodingId>,
     /// Lifecycle verbs implemented by this operation host.
     pub operations: OperationCapabilities,
+    /// Reverse-mode tensor contract. Present only for backward-capable hosts.
+    #[serde(default)]
+    pub backward: Option<Box<BackwardCapability>>,
+}
+
+/// Runtime descriptor for the reverse half of an operation contract.
+///
+/// `descriptor.inputs` describes the gradient received from downstream and
+/// `descriptor.outputs` describes the gradient returned upstream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackwardCapability {
+    pub descriptor: ContractDescriptor,
+    pub descriptor_hash: ContractHash,
 }
 
 /// Runtime capability set for a hosted operation.
@@ -526,6 +539,8 @@ pub struct OperationCapability {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationCapabilities {
     pub forward: bool,
+    pub backward: bool,
+    pub step: bool,
     pub reset: bool,
     pub perturb: bool,
     pub optimize: bool,
@@ -537,6 +552,8 @@ pub struct OperationCapabilities {
 impl OperationCapabilities {
     pub const FORWARD_ONLY: Self = Self {
         forward: true,
+        backward: false,
+        step: false,
         reset: false,
         perturb: false,
         optimize: false,
@@ -547,6 +564,8 @@ impl OperationCapabilities {
 
     pub const OPTIMIZING: Self = Self {
         forward: true,
+        backward: false,
+        step: false,
         reset: true,
         perturb: true,
         optimize: true,
@@ -557,6 +576,8 @@ impl OperationCapabilities {
 
     pub const fn satisfies(self, required: Self) -> bool {
         (!required.forward || self.forward)
+            && (!required.backward || self.backward)
+            && (!required.step || self.step)
             && (!required.reset || self.reset)
             && (!required.perturb || self.perturb)
             && (!required.optimize || self.optimize)
@@ -798,6 +819,16 @@ pub enum MassIn {
         instance_id: Uuid,
         input: OperationArtifactRef,
     },
+    /// Run reverse-mode differentiation for one cached forward micro-batch.
+    BackwardInstance {
+        protocol_version: u16,
+        instance_id: Uuid,
+        grad_input: OperationArtifactRef,
+    },
+    /// Apply accumulated parameter gradients and clear step-local state.
+    StepInstance {
+        instance_id: Uuid,
+    },
     ResetInstance {
         instance_id: Uuid,
     },
@@ -987,6 +1018,14 @@ pub enum TunnelRequest {
         protocol_version: u16,
         instance_id: Uuid,
         input: OperationArtifactRef,
+    },
+    BackwardInstance {
+        protocol_version: u16,
+        instance_id: Uuid,
+        grad_input: OperationArtifactRef,
+    },
+    StepInstance {
+        instance_id: Uuid,
     },
     ResetInstance {
         instance_id: Uuid,

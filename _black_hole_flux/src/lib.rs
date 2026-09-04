@@ -100,8 +100,8 @@ pub use nodes::warp::{
     InnerPropagationMicrostep as BoundaryMicrostep, NoModelBoundary,
 };
 pub use ops::{
-    CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, QwenAdapterOps, ResetOps,
-    VoidInferOps, VoidOps,
+    BackwardOps, CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, QwenAdapterOps,
+    ResetOps, StepOps, VoidInferOps, VoidOps,
 };
 pub use ray::Ray;
 
@@ -124,6 +124,10 @@ pub use forward::effect::{
 pub use forward::{ForwardPass, ForwardSunState, NeutralSunState, ServeFlow};
 pub use programs::checkpoint_evaluate::{CheckpointEvaluate, CheckpointEvaluateFlow};
 pub use programs::forward_only::{ForwardOnly, ForwardOnlyWithPolicy};
+pub use programs::pipeline_backward::{
+    BackwardOperationCell, BackwardOperationPrimordium, PipelineBackward, PipelineBackwardState,
+    PipelineCommand, PipelineEpochResult, PipelineResponse,
+};
 pub use programs::two_sided_zo::action::{
     BroadcastPotentiation, BroadcastPotentiationInput, InitializePropagation, ProcessNextNode,
     PropagationState, SendRootPropagation,
@@ -139,9 +143,9 @@ pub use programs::two_sided_zo::{
     TwoSidedZoManifest, TwoSidedZoState, TwoSidedZoWithState,
 };
 pub use topology::{
-    Binary, BoundaryInit, DeclaredEdge, DeclaredEdges, Edge, NodeIdsFromList, OperationNode,
-    SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState, SunStateView, SunTopology,
-    SunTopologyState, TypedEdges, Unary, Warp,
+    BackwardTypedEdges, Binary, BoundaryInit, DeclaredEdge, DeclaredEdges, Edge, NodeIdsFromList,
+    OperationNode, SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState, SunStateView,
+    SunTopology, SunTopologyState, TypedEdges, Unary, Warp,
 };
 
 #[derive(Debug, Error, Serialize, Deserialize)]

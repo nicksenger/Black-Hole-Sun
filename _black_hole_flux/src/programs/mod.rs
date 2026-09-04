@@ -5,4 +5,5 @@
 
 pub mod checkpoint_evaluate;
 pub mod forward_only;
+pub mod pipeline_backward;
 pub mod two_sided_zo;

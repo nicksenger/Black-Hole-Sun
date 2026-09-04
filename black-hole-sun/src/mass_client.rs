@@ -1,7 +1,12 @@
 use std::{marker::PhantomData, net::SocketAddr};
 
-use black_hole_flux::ops::{CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, ResetOps};
-use black_hole_spec::{operation_capability, QwenDarkInference, TensorContract};
+use black_hole_flux::ops::{
+    BackwardOps, CheckpointOps, FuseOps, MassOps, OptimizeOps, PerturbOps, ResetOps, StepOps,
+};
+use black_hole_spec::{
+    backward_operation_capability, operation_capability, BackwardContract, QwenDarkInference,
+    TensorContract,
+};
 use black_hole_type::{
     ArtifactRef, EncodingId, MassIn, MassModelCapacity, MassModelConfig, MassModelParams, MassOut,
     ObjectId, OperationCapabilities, OperationConfig, MASS_OPERATION_PROTOCOL_VERSION,
@@ -299,6 +304,60 @@ where
     }
 }
 
+impl<Op> MassClient<Op>
+where
+    Op: BackwardContract,
+{
+    /// Start an operation with its forward and reverse tensor descriptors.
+    pub async fn start_backward_operation(
+        &self,
+        instance_id: ObjectId,
+        config: Option<OperationConfig>,
+    ) -> Result<(), String> {
+        let mut capability = backward_operation_capability::<Op>();
+        capability.operations = self.required_capabilities;
+        match self
+            .request(&MassIn::StartInstance {
+                protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
+                instance_id,
+                capability,
+                config,
+            })
+            .await?
+        {
+            MassOut::Ack => Ok(()),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for backward operation start".to_owned()),
+        }
+    }
+
+    pub async fn backward(
+        &self,
+        instance_id: ObjectId,
+        grad_output: ArtifactRef<Op::OutputGrad>,
+    ) -> Result<ArtifactRef<Op::InputGrad>, String> {
+        match self
+            .request(&MassIn::BackwardInstance {
+                protocol_version: MASS_OPERATION_PROTOCOL_VERSION,
+                instance_id,
+                grad_input: grad_output.into(),
+            })
+            .await?
+        {
+            MassOut::Invoked { output } => Ok(output.into_typed()),
+            MassOut::Error { message } => Err(message),
+            _ => Err("unexpected mass response for operation backward".to_owned()),
+        }
+    }
+
+    pub async fn step(&self, instance_id: ObjectId) -> Result<(), String> {
+        expect_ack(
+            self.request(&MassIn::StepInstance { instance_id }).await?,
+            "step",
+        )
+    }
+}
+
 fn expect_ack(response: MassOut, operation: &str) -> Result<(), String> {
     match response {
         MassOut::Ack => Ok(()),
@@ -406,6 +465,30 @@ where
 {
     async fn reset_operation(&self, instance_id: ObjectId) -> Result<(), String> {
         MassClient::reset_operation(self, instance_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<Op> BackwardOps<Op> for MassClient<Op>
+where
+    Op: BackwardContract + Send + Sync,
+{
+    async fn backward(
+        &self,
+        instance_id: ObjectId,
+        grad_output: ArtifactRef<Op::OutputGrad>,
+    ) -> Result<ArtifactRef<Op::InputGrad>, String> {
+        MassClient::backward(self, instance_id, grad_output).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<Op> StepOps<Op> for MassClient<Op>
+where
+    Op: BackwardContract + Send + Sync,
+{
+    async fn step(&self, instance_id: ObjectId) -> Result<(), String> {
+        MassClient::step(self, instance_id).await
     }
 }
 
