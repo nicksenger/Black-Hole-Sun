@@ -16,7 +16,6 @@ use action::{
     TransmitArtifact as TransmitArtifact_, TransmitOperation as TransmitOperation_,
     WaitForArtifact as WaitForArtifact_,
     WaitForOperationPropagation as WaitForOperationPropagation_,
-    WaitForOperationalControl as WaitForOperationalControl_,
     WaitForPotentiation as WaitForPotentiation_, WaitForPropagation as WaitForPropagation_,
 };
 use black_hole_spec::TensorContract;
@@ -189,7 +188,7 @@ pub struct OperationInnerWithState<
     Step<BeginGradientAccumulation_<S>>,
     Step<PerturbOperationDown_<Op, S>>,
     While<HasPendingGradientStep<S>, OperationZoPropagationMicrostepWithState<N, Op, S>>,
-    Step<WaitForOperationalControl_<Potentiation, S>>,
+    Step<WaitForPotentiation_<S>>,
     Step<OptimizeOperation_<Op, S>>,
 );
 
