@@ -14,7 +14,6 @@ use black_hole_type::{
     OperationCapability, SequenceOutput, StreamingChunkOrder, StreamingFinalization, TensorDtype,
     TensorEnvelope, TensorPortDescriptor,
 };
-use glowstick::Shape;
 use postcard::{from_bytes, to_allocvec};
 use safetensors::{
     tensor::{Dtype, Metadata as SafeTensorMetadata, SafeTensors, TensorInfo, TensorView},
@@ -31,45 +30,65 @@ const FRAME_PREFIX_LEN: usize = FRAME_MAGIC.len() + size_of::<u32>();
 
 /// One named, glowstick-shaped port in a tensor bundle.
 ///
-/// Implementors provide runtime dimension descriptors explicitly. This is
-/// intentional: glowstick's numeric shape iterator cannot preserve the label
-/// of `Dyn<Label>`, while the distributed contract must preserve symbolic
-/// identity in order to verify repeated bindings.
+/// Dimensions are derived from Glowstick's shape. A zero type-level dimension
+/// denotes a dynamic dimension.
 pub trait TensorPortSpec {
-    type Shape: glowstick::Shape;
+    type Shape: glowstick::Shape + ShapeDimensions;
 
     const NAME: &'static str;
     const LAYOUT: LayoutConstraint = LayoutConstraint::Contiguous;
-
-    fn dimensions() -> Vec<DimensionDescriptor>;
-    fn dtype() -> DtypeConstraint;
+    const DTYPE: DtypeConstraint;
 
     fn descriptor() -> TensorPortDescriptor {
-        let dimensions = Self::dimensions();
-        assert_eq!(
-            dimensions.len(),
-            Self::Shape::RANK,
-            "runtime descriptor rank does not match glowstick shape rank for {}",
-            Self::NAME,
-        );
-        for (axis, (compile_time, runtime)) in
-            Self::Shape::iter().zip(dimensions.iter()).enumerate()
-        {
-            if compile_time != 0 {
-                assert_eq!(
-                    runtime,
-                    &DimensionDescriptor::Static(compile_time as u64),
-                    "static glowstick dimension {axis} does not match the runtime descriptor for {}",
-                    Self::NAME,
-                );
-            }
-        }
         TensorPortDescriptor {
             name: Self::NAME.to_owned(),
-            dimensions,
-            dtype: Self::dtype(),
+            dimensions: <Self::Shape as ShapeDimensions>::dimensions(),
+            dtype: Self::DTYPE.clone(),
             layout: Self::LAYOUT,
         }
+    }
+}
+
+/// Converts a Glowstick shape's type-level dimensions into runtime descriptors.
+pub trait ShapeDimensions {
+    fn dimensions() -> Vec<DimensionDescriptor>;
+}
+
+trait ShapeFragmentDimensions {
+    fn dimensions() -> Vec<DimensionDescriptor>;
+}
+
+fn dimension_descriptor(dimension: usize) -> DimensionDescriptor {
+    match dimension {
+        0 => DimensionDescriptor::Dynamic,
+        dimension => DimensionDescriptor::Static(dimension as u64),
+    }
+}
+
+impl ShapeFragmentDimensions for glowstick::Empty {
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        Vec::new()
+    }
+}
+
+impl<Dimension, Next> ShapeFragmentDimensions for glowstick::Shp<(Dimension, Next)>
+where
+    Dimension: glowstick::Dimension,
+    Next: ShapeFragmentDimensions,
+{
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        let mut dimensions = vec![dimension_descriptor(Dimension::USIZE)];
+        dimensions.extend(Next::dimensions());
+        dimensions
+    }
+}
+
+impl<Fragment> ShapeDimensions for glowstick::TensorShape<Fragment>
+where
+    Fragment: glowstick::ShapeFragment + ShapeFragmentDimensions,
+{
+    fn dimensions() -> Vec<DimensionDescriptor> {
+        Fragment::dimensions()
     }
 }
 
@@ -184,16 +203,7 @@ impl TensorPortSpec for QwenPredictions {
 
     const NAME: &'static str = "predictions";
 
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![
-            DimensionDescriptor::Symbolic("batch".into()),
-            DimensionDescriptor::Symbolic("sequence".into()),
-        ]
-    }
-
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::U32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::U32);
 }
 
 impl TensorPortSpec for QwenDarkTokenIds {
@@ -205,17 +215,7 @@ impl TensorPortSpec for QwenDarkTokenIds {
 
     const NAME: &'static str = "dark_token_ids";
 
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![
-            DimensionDescriptor::Symbolic("batch".into()),
-            DimensionDescriptor::Symbolic("sequence".into()),
-            DimensionDescriptor::Symbolic("top_k".into()),
-        ]
-    }
-
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::U32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::U32);
 }
 
 impl TensorPortSpec for QwenDarkLogProbs {
@@ -227,17 +227,7 @@ impl TensorPortSpec for QwenDarkLogProbs {
 
     const NAME: &'static str = "dark_log_probs";
 
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![
-            DimensionDescriptor::Symbolic("batch".into()),
-            DimensionDescriptor::Symbolic("sequence".into()),
-            DimensionDescriptor::Symbolic("top_k".into()),
-        ]
-    }
-
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::F32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 impl TensorContract for QwenDarkInference {
@@ -1072,42 +1062,21 @@ mod tests {
     impl TensorPortSpec for Image {
         type Shape = Shape2<Dyn<Batch>, U3>;
         const NAME: &'static str = "image";
-        fn dimensions() -> Vec<DimensionDescriptor> {
-            vec![
-                DimensionDescriptor::Symbolic("batch".into()),
-                DimensionDescriptor::Static(3),
-            ]
-        }
-        fn dtype() -> DtypeConstraint {
-            DtypeConstraint::Exact(TensorDtype::F32)
-        }
+        const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
     }
 
     struct Mask;
     impl TensorPortSpec for Mask {
         type Shape = Shape1<Dyn<Batch>>;
         const NAME: &'static str = "mask";
-        fn dimensions() -> Vec<DimensionDescriptor> {
-            vec![DimensionDescriptor::Symbolic("batch".into())]
-        }
-        fn dtype() -> DtypeConstraint {
-            DtypeConstraint::Exact(TensorDtype::U8)
-        }
+        const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::U8);
     }
 
     struct Scores;
     impl TensorPortSpec for Scores {
         type Shape = Shape2<Dyn<Batch>, Dyn<Width>>;
         const NAME: &'static str = "scores";
-        fn dimensions() -> Vec<DimensionDescriptor> {
-            vec![
-                DimensionDescriptor::Symbolic("batch".into()),
-                DimensionDescriptor::Dynamic,
-            ]
-        }
-        fn dtype() -> DtypeConstraint {
-            DtypeConstraint::Exact(TensorDtype::F32)
-        }
+        const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1341,16 +1310,15 @@ mod tests {
             to_allocvec(&descriptor).unwrap(),
             vec![
                 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255, 0, 7, 2, 5,
-                105, 109, 97, 103, 101, 2, 1, 5, 98, 97, 116, 99, 104, 0, 3, 1, 13, 1, 4, 109, 97,
-                115, 107, 1, 1, 5, 98, 97, 116, 99, 104, 1, 1, 1, 1, 6, 115, 99, 111, 114, 101,
-                115, 2, 1, 5, 98, 97, 116, 99, 104, 2, 1, 13, 1,
+                105, 109, 97, 103, 101, 2, 2, 0, 3, 1, 13, 1, 4, 109, 97, 115, 107, 1, 2, 1, 1,
+                1, 1, 6, 115, 99, 111, 114, 101, 115, 2, 2, 2, 1, 13, 1,
             ]
         );
         assert_eq!(
             descriptor_hash(&descriptor),
             ContractHash([
-                140, 202, 10, 193, 124, 163, 45, 96, 88, 107, 115, 122, 226, 166, 170, 1, 44, 143,
-                97, 93, 61, 249, 101, 234, 87, 253, 54, 254, 126, 237, 93, 222,
+                19, 157, 146, 194, 212, 212, 107, 125, 99, 208, 244, 113, 161, 241, 145, 172, 41,
+                101, 112, 78, 41, 108, 179, 127, 141, 127, 18, 77, 172, 154, 222, 231,
             ])
         );
     }
@@ -1402,17 +1370,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_inconsistent_symbolic_bindings() {
+    fn accepts_independent_dynamic_dimensions() {
         let base =
             encode_input::<ExampleContract>(&input_tensors(), &Metadata { request: 1 }).unwrap();
         let mut tensors = input_tensors();
         tensors[1].shape = vec![3];
         tensors[1].data = vec![1, 0, 1];
         let frame = replace_safetensors(base, &unchecked_safetensors(&tensors));
-        assert!(matches!(
-            decode_input::<ExampleContract>(&frame),
-            Err(CodecError::SymbolicDimensionMismatch { .. })
-        ));
+        assert!(decode_input::<ExampleContract>(&frame).is_ok());
     }
 
     #[test]

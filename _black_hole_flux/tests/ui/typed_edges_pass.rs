@@ -3,7 +3,7 @@ use black_hole_spec::{
     TensorBundleSpec, TensorContract, TensorPortSpec,
 };
 use black_hole_flux::{DeclaredEdges, Edge, TypedEdges};
-use black_hole_type::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
+use black_hole_type::{ContractId, DtypeConstraint, TensorDtype};
 use typenum::{U1, U3};
 use typosaurus::list;
 
@@ -11,12 +11,7 @@ struct StaticPort;
 impl TensorPortSpec for StaticPort {
     type Shape = Shape1<U3>;
     const NAME: &'static str = "static";
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![DimensionDescriptor::Static(3)]
-    }
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::F32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 struct Batch;
@@ -24,12 +19,7 @@ struct SymbolicPort;
 impl TensorPortSpec for SymbolicPort {
     type Shape = Shape1<Dyn<Batch>>;
     const NAME: &'static str = "symbolic";
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![DimensionDescriptor::Symbolic("batch".into())]
-    }
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::F32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 type StaticBundle = TensorBundleSpec<(StaticPort,)>;

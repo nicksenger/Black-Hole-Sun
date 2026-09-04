@@ -26,7 +26,7 @@ use black_hole_flux::{
     BlackHole, CellInit, CellState, Edge, ForwardOnly, ForwardOperationPrimordium, OperationNode,
     Primordium, TypedEdges, Unary,
 };
-use black_hole_type::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
+use black_hole_type::{ContractId, DtypeConstraint, TensorDtype};
 use iced::futures::stream;
 use jungle_client::MockClient;
 use jungle_sdk::typosaurus::collections::list::{Empty, List};
@@ -47,17 +47,7 @@ impl TensorPortSpec for FeaturePort {
     type Shape = Shape2<Dyn<Batch>, U8>;
 
     const NAME: &'static str = "features";
-
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![
-            DimensionDescriptor::Symbolic("batch".into()),
-            DimensionDescriptor::Static(8),
-        ]
-    }
-
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::F32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 type FeatureBatch = SingleTensorSpec<FeaturePort>;

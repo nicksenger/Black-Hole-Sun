@@ -1,26 +1,21 @@
 use black_hole_spec::{glowstick::Shape1, TensorBundleSpec, TensorContract, TensorPortSpec};
 use black_hole_flux::{DeclaredEdges, Edge, TypedEdges};
-use black_hole_type::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
+use black_hole_type::{ContractId, DtypeConstraint, TensorDtype};
 use typenum::{U1, U3, U4};
 use typosaurus::list;
 
 macro_rules! port {
-    ($name:ident, $dim:ty, $size:literal) => {
+    ($name:ident, $dim:ty) => {
         struct $name;
         impl TensorPortSpec for $name {
             type Shape = Shape1<$dim>;
             const NAME: &'static str = "value";
-            fn dimensions() -> Vec<DimensionDescriptor> {
-                vec![DimensionDescriptor::Static($size)]
-            }
-            fn dtype() -> DtypeConstraint {
-                DtypeConstraint::Exact(TensorDtype::F32)
-            }
+            const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
         }
     };
 }
-port!(Three, U3, 3);
-port!(Four, U4, 4);
+port!(Three, U3);
+port!(Four, U4);
 struct Source;
 impl TensorContract for Source {
     type Input = TensorBundleSpec<(Three,)>;

@@ -9,7 +9,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
 
 use crate::{
     decode_input, encode_output, object_store, operation_capability, persist, ContractId,
-    DimensionDescriptor, DtypeConstraint, EncodingId, MassServerBuilder, OperationCapabilities,
+    DtypeConstraint, EncodingId, MassServerBuilder, OperationCapabilities,
     OperationCapability, OperationConfig, OperationImplementation, RawTensor, SingleTensorSpec,
     TensorContract, TensorDtype, TensorPortSpec, VoidServerBuilder,
 };
@@ -26,14 +26,7 @@ impl TensorPortSpec for FakeValues {
     >;
 
     const NAME: &'static str = "values";
-
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![DimensionDescriptor::Symbolic("length".into())]
-    }
-
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::U32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::U32);
 }
 
 impl TensorContract for DeterministicFakeContract {
@@ -50,12 +43,7 @@ impl TensorPortSpec for SliceValues {
         crate::black_hole_spec::glowstick::Dyn<FakeLength>,
     >;
     const NAME: &'static str = "slice";
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![DimensionDescriptor::Symbolic("length".into())]
-    }
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::U32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::U32);
 }
 
 impl TensorContract for TensorSlicerContract {
@@ -171,12 +159,7 @@ impl TensorPortSpec for QuadraticValue {
         crate::black_hole_spec::glowstick::num::U1,
     >;
     const NAME: &'static str = "parameter";
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![DimensionDescriptor::Static(1)]
-    }
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::F32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 impl TensorContract for QuadraticContract {

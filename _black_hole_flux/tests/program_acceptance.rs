@@ -3,7 +3,7 @@ use black_hole_flux::{
     BlackHole, CellInit, CellState, CheckpointEvaluate, CompileSun, Edge, ForwardOnly,
     ForwardOperationPrimordium, ForwardSunState, NeutralSunState, OperationNode, TypedEdges, Unary,
 };
-use black_hole_type::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
+use black_hole_type::{ContractId, DtypeConstraint, TensorDtype};
 use jungle_sdk::{Animal, Id, Step};
 use jungle_zoo::Noop;
 use typenum::{U0, U1, U2, U3};
@@ -18,12 +18,7 @@ macro_rules! port {
         impl TensorPortSpec for $name {
             type Shape = Shape1<U3>;
             const NAME: &'static str = $label;
-            fn dimensions() -> Vec<DimensionDescriptor> {
-                vec![DimensionDescriptor::Static(3)]
-            }
-            fn dtype() -> DtypeConstraint {
-                DtypeConstraint::Exact(TensorDtype::F32)
-            }
+            const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
         }
     };
 }

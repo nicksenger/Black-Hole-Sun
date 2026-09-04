@@ -974,7 +974,7 @@ mod tests {
         tensor_stream_header, RawTensor, SingleTensorSpec, TensorContract, TensorPortSpec,
     };
     use black_hole_type::{
-        ContractId, ContractSide, DimensionDescriptor, DtypeConstraint, EncodingId, TensorDtype,
+        ContractId, ContractSide, DtypeConstraint, EncodingId, TensorDtype,
         TransferRecord,
     };
 
@@ -985,14 +985,7 @@ mod tests {
         type Shape = Shape1<Dyn<ByteAxis>>;
 
         const NAME: &'static str = "bytes";
-
-        fn dimensions() -> Vec<DimensionDescriptor> {
-            vec![DimensionDescriptor::Dynamic]
-        }
-
-        fn dtype() -> DtypeConstraint {
-            DtypeConstraint::Exact(TensorDtype::U8)
-        }
+        const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::U8);
     }
 
     struct StreamContract;

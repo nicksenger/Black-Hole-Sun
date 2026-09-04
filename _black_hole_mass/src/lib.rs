@@ -5519,7 +5519,7 @@ mod tests {
         TensorPortSpec,
     };
     use black_hole_type::{
-        ContractId, DimensionDescriptor, DtypeConstraint, EncodingId, MassArchitecture,
+        ContractId, DtypeConstraint, EncodingId, MassArchitecture,
         MassErrorFeedbackConfig, MassModelCapacity, MassModelConfig, MassPerturbationMode,
         OperationArtifactRef, TensorDtype, WorkerCapabilities,
     };
@@ -5538,14 +5538,7 @@ mod tests {
         type Shape = Shape1<Dyn<StreamAxis>>;
 
         const NAME: &'static str = "bytes";
-
-        fn dimensions() -> Vec<DimensionDescriptor> {
-            vec![DimensionDescriptor::Dynamic]
-        }
-
-        fn dtype() -> DtypeConstraint {
-            DtypeConstraint::Exact(TensorDtype::U8)
-        }
+        const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::U8);
     }
 
     impl TensorContract for StreamOperation {

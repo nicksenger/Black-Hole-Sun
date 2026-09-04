@@ -22,7 +22,7 @@ use black_hole_sun::compile::BlackHole;
 use black_hole_sun::forward::ForwardSunState;
 use black_hole_sun::topology::{Edge, TypedEdges, Unary};
 use black_hole_sun::{
-    ArtifactDelivery, ArtifactRef, CellInit, ContractId, DimensionDescriptor, DtypeConstraint,
+    ArtifactDelivery, ArtifactRef, CellInit, ContractId, DtypeConstraint,
     Emission, ForwardOnlyWithPolicy, ForwardOperationPrimordium, ObjectId, ObjectRef,
     OperationNode, RawTensor, TensorDtype, VoidOps,
 };
@@ -39,17 +39,7 @@ impl TensorPortSpec for InputMatrixPort {
     type Shape = Shape2<U2, U3>;
 
     const NAME: &'static str = "input_matrix";
-
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![
-            DimensionDescriptor::Static(2),
-            DimensionDescriptor::Static(3),
-        ]
-    }
-
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::F32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 /// The 2x4 matrix produced by the matmul and carried by downstream cells.
@@ -59,17 +49,7 @@ impl TensorPortSpec for ProductMatrixPort {
     type Shape = Shape2<U2, U4>;
 
     const NAME: &'static str = "product_matrix";
-
-    fn dimensions() -> Vec<DimensionDescriptor> {
-        vec![
-            DimensionDescriptor::Static(2),
-            DimensionDescriptor::Static(4),
-        ]
-    }
-
-    fn dtype() -> DtypeConstraint {
-        DtypeConstraint::Exact(TensorDtype::F32)
-    }
+    const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
 }
 
 pub type InputMatrix = SingleTensorSpec<InputMatrixPort>;

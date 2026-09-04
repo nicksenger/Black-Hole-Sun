@@ -1,6 +1,6 @@
 use black_hole_spec::{glowstick::Shape1, TensorBundleSpec, TensorContract, TensorPortSpec};
 use black_hole_flux::{DeclaredEdges, Edge, TypedEdges};
-use black_hole_type::{ContractId, DimensionDescriptor, DtypeConstraint, TensorDtype};
+use black_hole_type::{ContractId, DtypeConstraint, TensorDtype};
 use typenum::{U1, U3};
 use typosaurus::list;
 
@@ -12,12 +12,7 @@ macro_rules! semantic_port {
         impl TensorPortSpec for $name {
             type Shape = Shape1<U3>;
             const NAME: &'static str = "embedding";
-            fn dimensions() -> Vec<DimensionDescriptor> {
-                vec![DimensionDescriptor::Static(3)]
-            }
-            fn dtype() -> DtypeConstraint {
-                DtypeConstraint::Exact(TensorDtype::F32)
-            }
+            const DTYPE: DtypeConstraint = DtypeConstraint::Exact(TensorDtype::F32);
         }
     };
 }
