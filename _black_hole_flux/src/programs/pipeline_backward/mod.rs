@@ -50,6 +50,10 @@ pub enum PipelineResponse {
         emission_id: ObjectId,
     },
     Stepped,
+    Failed {
+        micro_batch: Option<usize>,
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -296,12 +300,24 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
                     let Some(response) = wait_response(jungle, pending.reply).await? else {
                         continue;
                     };
-                    let PipelineResponse::Artifact {
-                        micro_batch,
-                        emission_id,
-                    } = response
-                    else {
-                        return Err("stage returned step acknowledgement for tensor work".into());
+                    let (micro_batch, emission_id) = match response {
+                        PipelineResponse::Artifact {
+                            micro_batch,
+                            emission_id,
+                        } => (micro_batch, emission_id),
+                        PipelineResponse::Failed {
+                            micro_batch,
+                            message,
+                        } => {
+                            return Err(format!(
+                                "pipeline stage {s} failed for micro-batch {micro_batch:?}: {message}"
+                            ));
+                        }
+                        PipelineResponse::Stepped => {
+                            return Err(
+                                "stage returned step acknowledgement for tensor work".into()
+                            );
+                        }
                     };
                     if micro_batch != pending.micro_batch {
                         return Err("stage returned the wrong micro-batch".into());
@@ -329,8 +345,14 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
             for reply in steps {
                 loop {
                     if let Some(response) = wait_response(jungle, reply).await? {
-                        if !matches!(response, PipelineResponse::Stepped) {
-                            return Err("stage returned artifact for step".into());
+                        match response {
+                            PipelineResponse::Stepped => {}
+                            PipelineResponse::Failed { message, .. } => {
+                                return Err(format!("pipeline step failed: {message}"));
+                            }
+                            PipelineResponse::Artifact { .. } => {
+                                return Err("stage returned artifact for step".into());
+                            }
                         }
                         break;
                     }
@@ -549,98 +571,118 @@ where
         (instance_id, command): Self::In,
     ) -> impl Future<Output = Result<(), AtomError>> + Send {
         async move {
-            let (reply, response) = match command {
+            let (reply, micro_batch) = match &command {
                 PipelineCommand::Forward {
-                    micro_batch,
-                    emission_id,
-                    reply,
-                } => {
-                    let bytes = jungle
-                        .download_raw(emission_id)
-                        .await
-                        .map_err(AtomError::Download)?;
-                    let emission: Emission<M, Op::Input> = postcard::from_bytes(&bytes)?;
-                    let output = MassOps::<Op>::forward(jungle, instance_id, emission.output_id)
-                        .await
-                        .map_err(AtomError::Inference)?;
-                    let emission = Emission::<M, Op::Output> {
-                        metadata: emission.metadata,
-                        output_id: output,
-                    };
-                    let id = jungle
-                        .upload_to_void(postcard::to_allocvec(&emission)?)
-                        .await
-                        .map_err(AtomError::Upload)?;
-                    (
-                        reply,
-                        PipelineResponse::Artifact {
-                            micro_batch,
-                            emission_id: id,
-                        },
-                    )
+                    micro_batch, reply, ..
                 }
-                PipelineCommand::Backward {
-                    micro_batch,
-                    gradient_emission_id,
-                    seed_from_forward,
-                    reply,
-                } => {
-                    let bytes = jungle
-                        .download_raw(gradient_emission_id)
-                        .await
-                        .map_err(AtomError::Download)?;
-                    let emission: Emission<M, Op::OutputGrad> = postcard::from_bytes(&bytes)?;
-                    let gradient = if seed_from_forward {
-                        // The sink seeds reverse mode from its forward output. Reframe
-                        // that tensor under the reverse descriptor before Mass validates it.
+                | PipelineCommand::Backward {
+                    micro_batch, reply, ..
+                } => (*reply, Some(*micro_batch)),
+                PipelineCommand::Step { reply } => (*reply, None),
+            };
+            let response = async {
+                Ok::<PipelineResponse, AtomError>(match command {
+                    PipelineCommand::Forward {
+                        micro_batch,
+                        emission_id,
+                        ..
+                    } => {
                         let bytes = jungle
-                            .receive_artifact_raw(&emission.output_id)
+                            .download_raw(emission_id)
                             .await
                             .map_err(AtomError::Download)?;
-                        let output = black_hole_spec::decode_output::<Op>(&bytes).map_err(|e| {
-                            AtomError::Inference(format!("invalid sink gradient seed: {e}"))
-                        })?;
-                        let bytes = black_hole_spec::encode_output_gradient::<Op>(
-                            &output.tensors,
-                            &output.metadata,
-                        )
-                        .map_err(|e| {
-                            AtomError::Inference(format!("encode sink gradient seed: {e}"))
-                        })?;
+                        let emission: Emission<M, Op::Input> = postcard::from_bytes(&bytes)?;
+                        let output =
+                            MassOps::<Op>::forward(jungle, instance_id, emission.output_id)
+                                .await
+                                .map_err(AtomError::Inference)?;
+                        let emission = Emission::<M, Op::Output> {
+                            metadata: emission.metadata,
+                            output_id: output,
+                        };
                         let id = jungle
-                            .upload_to_void(bytes)
+                            .upload_to_void(postcard::to_allocvec(&emission)?)
                             .await
                             .map_err(AtomError::Upload)?;
-                        black_hole_type::ArtifactRef::from_object_id(id)
-                    } else {
-                        emission.output_id
-                    };
-                    let output = BackwardOps::<Op>::backward(jungle, instance_id, gradient)
-                        .await
-                        .map_err(AtomError::Inference)?;
-                    let emission = Emission::<M, Op::InputGrad> {
-                        metadata: emission.metadata,
-                        output_id: output,
-                    };
-                    let id = jungle
-                        .upload_to_void(postcard::to_allocvec(&emission)?)
-                        .await
-                        .map_err(AtomError::Upload)?;
-                    (
-                        reply,
                         PipelineResponse::Artifact {
                             micro_batch,
                             emission_id: id,
-                        },
-                    )
+                        }
+                    }
+                    PipelineCommand::Backward {
+                        micro_batch,
+                        gradient_emission_id,
+                        seed_from_forward,
+                        ..
+                    } => {
+                        let bytes = jungle
+                            .download_raw(gradient_emission_id)
+                            .await
+                            .map_err(AtomError::Download)?;
+                        let emission: Emission<M, Op::OutputGrad> = postcard::from_bytes(&bytes)?;
+                        let gradient = if seed_from_forward {
+                            // The sink seeds reverse mode from its forward output. Reframe
+                            // that tensor under the reverse descriptor before Mass validates it.
+                            let bytes = jungle
+                                .receive_artifact_raw(&emission.output_id)
+                                .await
+                                .map_err(AtomError::Download)?;
+                            let output =
+                                black_hole_spec::decode_output::<Op>(&bytes).map_err(|e| {
+                                    AtomError::Inference(format!("invalid sink gradient seed: {e}"))
+                                })?;
+                            let bytes = black_hole_spec::encode_output_gradient::<Op>(
+                                &output.tensors,
+                                &output.metadata,
+                            )
+                            .map_err(|e| {
+                                AtomError::Inference(format!("encode sink gradient seed: {e}"))
+                            })?;
+                            let id = jungle
+                                .upload_to_void(bytes)
+                                .await
+                                .map_err(AtomError::Upload)?;
+                            black_hole_type::ArtifactRef::from_object_id(id)
+                        } else {
+                            emission.output_id
+                        };
+                        let output = BackwardOps::<Op>::backward(jungle, instance_id, gradient)
+                            .await
+                            .map_err(AtomError::Inference)?;
+                        let emission = Emission::<M, Op::InputGrad> {
+                            metadata: emission.metadata,
+                            output_id: output,
+                        };
+                        let id = jungle
+                            .upload_to_void(postcard::to_allocvec(&emission)?)
+                            .await
+                            .map_err(AtomError::Upload)?;
+                        PipelineResponse::Artifact {
+                            micro_batch,
+                            emission_id: id,
+                        }
+                    }
+                    PipelineCommand::Step { .. } => {
+                        StepOps::<Op>::step(jungle, instance_id)
+                            .await
+                            .map_err(AtomError::Optimize)?;
+                        PipelineResponse::Stepped
+                    }
+                })
+            }
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    %instance_id,
+                    ?micro_batch,
+                    %error,
+                    "pipeline stage command failed"
+                );
+                PipelineResponse::Failed {
+                    micro_batch,
+                    message: error.to_string(),
                 }
-                PipelineCommand::Step { reply } => {
-                    StepOps::<Op>::step(jungle, instance_id)
-                        .await
-                        .map_err(AtomError::Optimize)?;
-                    (reply, PipelineResponse::Stepped)
-                }
-            };
+            });
             jungle
                 .upload_to_void_with(reply, postcard::to_allocvec(&response)?)
                 .await

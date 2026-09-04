@@ -22,9 +22,9 @@ use candle::{DType, Device, Tensor, Var, D};
 use candle_nn::{Module, Optimizer, VarBuilder, VarMap, SGD};
 use clap::Parser;
 use corgi_bwd::{
-    build_stage1, build_stage2, build_stage3, build_stage4, build_stem, pool_stage4, CorgiBackward,
-    HeadOp, SampleMetadata, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp, COMPLETED_EPOCHS,
-    DATASET_SAMPLES,
+    build_stage1, build_stage2, build_stage3, build_stage4, build_trainable_stem, pool_stage4,
+    CorgiBackward, HeadOp, SampleMetadata, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp,
+    COMPLETED_EPOCHS, DATASET_SAMPLES,
 };
 use hf_hub::HFClientSync;
 use jungle_sdk::core::JungleWorker;
@@ -625,7 +625,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?
         }};
     }
-    let (stem_addr, stem_task) = serve_stage!(build_stem, StemOperation);
+    let (stem_addr, stem_task) = serve_stage!(build_trainable_stem, StemOperation);
     let (stage1_addr, stage1_task) = serve_stage!(build_stage1, Stage1Operation);
     let (stage2_addr, stage2_task) = serve_stage!(build_stage2, Stage2Operation);
     let (stage3_addr, stage3_task) = serve_stage!(build_stage3, Stage3Operation);
@@ -667,7 +667,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         head: MassClient::new_tcp_typed(head_addr).requiring(required),
         optimizer_config,
     };
-    let _parent = client.spawn::<CorgiBackward<MICRO_BATCHES>>(&()).await?;
+    let parent = client.spawn::<CorgiBackward<MICRO_BATCHES>>(&()).await?;
     let worker_error = Arc::new(Mutex::new(None::<String>));
     let workers = (0..8)
         .map(|_| {
@@ -688,6 +688,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Some(error) = worker_error.lock().ok().and_then(|e| e.clone()) {
             break Err(error);
+        }
+        if matches!(
+            parent.journey_details().await?,
+            JourneyStatus::Dead | JourneyStatus::Stopped | JourneyStatus::Completed
+        ) {
+            break Err("corgi-bwd pipeline stopped before completing the requested epochs".into());
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };

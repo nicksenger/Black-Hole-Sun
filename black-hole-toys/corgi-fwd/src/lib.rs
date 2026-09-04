@@ -516,6 +516,34 @@ pub fn build_stem(vb: VarBuilder) -> candle::Result<Func<'static>> {
     }))
 }
 
+/// Builds the ResNet stem with the same overlapping 3x3 max pool expressed
+/// using primitive differentiable ops. Candle's native max-pool backward only
+/// supports equal kernel and stride sizes, while ResNet-18 uses stride 2.
+pub fn build_trainable_stem(vb: VarBuilder) -> candle::Result<Func<'static>> {
+    let conv = conv2d(3, 64, 7, 3, 2, vb.pp("conv1"))?;
+    let bn = batch_norm(64, 1e-5, vb.pp("bn1"))?;
+    Ok(Func::new(move |xs| {
+        let xs = xs
+            .apply(&conv)?
+            .apply_t(&bn, false)?
+            .relu()?
+            .pad_with_same(D::Minus1, 1, 1)?
+            .pad_with_same(D::Minus2, 1, 1)?;
+        let indexes = (0..56).map(|index| index * 2).collect::<Vec<u32>>();
+        let indexes = Tensor::from_vec(indexes, (56,), xs.device())?;
+        let mut windows = Vec::with_capacity(9);
+        for y_offset in 0..3 {
+            let y_indexes = (&indexes + y_offset as f64)?;
+            let rows = xs.index_select(&y_indexes, 2)?;
+            for x_offset in 0..3 {
+                let x_indexes = (&indexes + x_offset as f64)?;
+                windows.push(rows.index_select(&x_indexes, 3)?);
+            }
+        }
+        Tensor::stack(&windows, 0)?.max(0)
+    }))
+}
+
 pub fn build_stage1(vb: VarBuilder) -> candle::Result<Func<'static>> {
     basic_layer(64, 64, 1, 2, vb.pp("layer1"))
 }

@@ -17,7 +17,7 @@ use jungle_sdk::prelude::*;
 use typenum::consts::{U0, U1, U2, U3, U4, U5, U6};
 
 pub use corgi_fwd::{
-    build_stage1, build_stage2, build_stage3, build_stage4, build_stem, generate_image,
+    build_stage1, build_stage2, build_stage3, build_stage4, build_trainable_stem, generate_image,
     pool_stage4, HeadOp, Image, Logits, SampleMetadata, Stage1Op, Stage2Op, Stage3Op, Stage4Op,
     StemOp, DATASET_SAMPLES,
 };
