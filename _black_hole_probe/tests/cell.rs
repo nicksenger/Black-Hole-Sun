@@ -11,9 +11,12 @@ use black_hole_sun::cell::action::CellState;
 use black_hole_sun::cell::Primordium;
 use black_hole_sun::ops::VoidInferOps;
 use black_hole_sun::{
-    CellInit, Emission, EmissionId, InferenceOutput, InferenceOutputId, InferenceRequest,
-    MassClient, MassModelConfig, MassModelParams, ObjectId, Ray, SequenceOutput, TestMassServer,
-    TestVoidServer, Tokenizer, Transmission, VoidClient,
+    encode_input, ArtifactDelivery, ArtifactRef, CellInit, Emission, EmissionId, InferenceOutput,
+    InferenceOutputId, InferenceRequest, MassClient, MassModelConfig, MassModelParams, MassOps,
+    ObjectId, OperationCapabilities, OperationPrimordium, OperationalControl, OptimizeOps,
+    PerturbOps, Potentiation, QuadraticContract, QuadraticOperation, RawTensor, Ray, ResetOps,
+    SequenceOutput, TensorContract, TensorDtype, TestMassServer, TestVoidServer, Tokenizer,
+    Transmission, VoidClient, VoidOps,
 };
 use futures::StreamExt;
 use jungle_sdk::core::JungleWorker;
@@ -62,6 +65,31 @@ fn progenitor_observe_reports_cell_frozen_state() {
 #[derive(Animals)]
 pub struct SpaceAnimals(Progenitor);
 
+/// A model-free operation cell used to prove that Flux's QuZO loop is
+/// backend-neutral.
+#[derive(Clone)]
+pub struct QuadraticProgenitor;
+
+#[jungle::animal(observe, id = 1, generation = 0)]
+impl Animal for QuadraticProgenitor {
+    type State = CellState;
+    type Seed = CellInit;
+    type Flow = OperationPrimordium<QuadraticContract>;
+}
+
+impl Observe for QuadraticProgenitor {
+    type Appearance = Ray;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        Ray {
+            frozen: state.is_frozen,
+        }
+    }
+}
+
+#[derive(Animals)]
+pub struct OperationAnimals(QuadraticProgenitor);
+
 /// A Jungle implementation backed by void + mass servers over QUIC.
 pub struct SpaceJungle {
     void_client: VoidClient,
@@ -82,6 +110,102 @@ impl SpaceJungle {
 impl Ecosystem for SpaceJungle {
     const NAME: &'static str = "space-jungle";
     type Animals = SpaceAnimals;
+}
+
+pub struct OperationSpaceJungle {
+    void_client: VoidClient,
+    mass_client: MassClient<QuadraticContract>,
+}
+
+impl Ecosystem for OperationSpaceJungle {
+    const NAME: &'static str = "operation-space-jungle";
+    type Animals = OperationAnimals;
+}
+
+#[async_trait]
+impl VoidOps for OperationSpaceJungle {
+    async fn download_raw(&self, id: ObjectId) -> Result<Vec<u8>, String> {
+        self.void_client
+            .download(id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn download_raw_wait(
+        &self,
+        id: ObjectId,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.void_client.download_wait(id, timeout_ms).await
+    }
+
+    async fn upload_to_void(&self, data: Vec<u8>) -> Result<ObjectId, String> {
+        self.void_client
+            .upload(data)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn upload_to_void_with(&self, id: ObjectId, data: Vec<u8>) -> Result<(), String> {
+        self.void_client
+            .upload_with(id, data)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[async_trait]
+impl MassOps<QuadraticContract> for OperationSpaceJungle {
+    async fn start_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        self.mass_client.start_operation(instance_id).await
+    }
+
+    async fn forward(
+        &self,
+        instance_id: ObjectId,
+        input: ArtifactRef<<QuadraticContract as TensorContract>::Input>,
+    ) -> Result<ArtifactRef<<QuadraticContract as TensorContract>::Output>, String> {
+        self.mass_client.forward(instance_id, input).await
+    }
+
+    async fn shutdown_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        self.mass_client.shutdown_operation(instance_id).await
+    }
+}
+
+#[async_trait]
+impl ResetOps<QuadraticContract> for OperationSpaceJungle {
+    async fn reset_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        self.mass_client.reset_operation(instance_id).await
+    }
+}
+
+#[async_trait]
+impl PerturbOps<QuadraticContract> for OperationSpaceJungle {
+    async fn perturb_up_operation(&self, instance_id: ObjectId, seed: u64) -> Result<(), String> {
+        self.mass_client
+            .perturb_up_operation(instance_id, seed)
+            .await
+    }
+
+    async fn perturb_down_operation(&self, instance_id: ObjectId) -> Result<(), String> {
+        self.mass_client.perturb_down_operation(instance_id).await
+    }
+}
+
+#[async_trait]
+impl OptimizeOps<QuadraticContract> for OperationSpaceJungle {
+    async fn optimize_operation(
+        &self,
+        instance_id: ObjectId,
+        loss_up: f32,
+        loss_down: f32,
+    ) -> Result<(), String> {
+        self.mass_client
+            .optimize_operation(instance_id, loss_up, loss_down)
+            .await
+    }
 }
 
 #[async_trait]
@@ -204,6 +328,37 @@ async fn upload_transmission(void_client: &VoidClient, transmission: &Transmissi
     void_client.upload(data).await.unwrap()
 }
 
+async fn upload_quadratic_emission(
+    void_client: &VoidClient,
+    artifact: ArtifactRef<<QuadraticContract as TensorContract>::Input>,
+) -> EmissionId<<QuadraticContract as TensorContract>::Input> {
+    let emission = Emission::<(), <QuadraticContract as TensorContract>::Input> {
+        metadata: (),
+        output_id: artifact,
+    };
+    let id = void_client
+        .upload(to_allocvec(&emission).expect("serialize quadratic emission"))
+        .await
+        .unwrap();
+    EmissionId::new(id)
+}
+
+async fn wait_for_artifact_delivery<T>(
+    void_client: VoidClient,
+    id: ObjectId,
+) -> ArtifactDelivery<T> {
+    loop {
+        match void_client.download_wait(id, 30_000).await {
+            Ok(Some(data)) => {
+                return postcard::from_bytes(&data)
+                    .expect("failed to deserialize artifact delivery from void");
+            }
+            Ok(None) => tracing::debug!(%id, "artifact delivery wait timed out, retrying"),
+            Err(error) => tracing::debug!(%id, %error, "artifact delivery wait failed, retrying"),
+        }
+    }
+}
+
 /// Poll void until data appears at `id`, deserializing as `Transmission`.
 async fn wait_for_void_transmission(void_client: VoidClient, id: ObjectId) -> Transmission {
     loop {
@@ -250,6 +405,142 @@ async fn connect_client_with_retry(remote: SocketAddr) -> jungle_sdk::Client {
 }
 
 // ─── Integration test ────────────────────────────────────────────────────────
+
+/// Runs Flux's typed two-sided operation-cell loop against a tiny optimizing
+/// backend. Reaching the third propagation proves that start, perturb up,
+/// invoke, reset, perturb down, invoke, optimize, and the next epoch all ran
+/// through the generic capability traits.
+#[tokio::test]
+async fn operation_cell_optimizes_without_a_model() {
+    init_tracing();
+
+    let void_server = TestVoidServer::new().serve().await.unwrap();
+    let operation = Arc::new(QuadraticOperation::default());
+    let mass_server = TestMassServer::new("unused-by-operation-cell")
+        .void_addr(void_server.local_addr())
+        .operation(operation.clone())
+        .serve()
+        .await
+        .unwrap();
+    let endpoint = make_client_endpoint().await;
+    let void_client = VoidClient::new(&endpoint, void_server.local_addr(), "localhost");
+    let mass_client = MassClient::<QuadraticContract>::new_typed(
+        &endpoint,
+        mass_server.local_addr(),
+        "localhost",
+    )
+    .requiring(OperationCapabilities::OPTIMIZING);
+    let jungle = OperationSpaceJungle {
+        void_client: void_client.clone(),
+        mass_client,
+    };
+
+    let frame = encode_input::<QuadraticContract>(
+        &[RawTensor {
+            name: "parameter".into(),
+            dtype: TensorDtype::F32,
+            shape: vec![1],
+            data: 0.0f32.to_le_bytes().to_vec(),
+        }],
+        &(),
+    )
+    .unwrap();
+    let artifact_id = void_client.upload(frame).await.unwrap();
+    let emission_id =
+        upload_quadratic_emission(&void_client, ArtifactRef::from_object_id(artifact_id)).await;
+
+    let listen_1 = Uuid::new_v4();
+    let listen_2 = Uuid::new_v4();
+    let listen_3 = Uuid::new_v4();
+    let delivery_3 = ArtifactDelivery::<<QuadraticContract as TensorContract>::Input> {
+        emission_id,
+        recv: Uuid::new_v4(),
+        send: listen_3,
+    };
+    let delivery_3_id = void_client
+        .upload(to_allocvec(&delivery_3).unwrap())
+        .await
+        .unwrap();
+    let control = OperationalControl {
+        control: Potentiation {
+            loss_up: 4.1f32.powi(2),
+            loss_down: 3.9f32.powi(2),
+            seed: 17,
+        },
+        recv: delivery_3_id,
+    };
+    let control_id = void_client
+        .upload(to_allocvec(&control).unwrap())
+        .await
+        .unwrap();
+    let delivery_2 = ArtifactDelivery::<<QuadraticContract as TensorContract>::Input> {
+        emission_id,
+        recv: control_id,
+        send: listen_2,
+    };
+    let delivery_2_id = void_client
+        .upload(to_allocvec(&delivery_2).unwrap())
+        .await
+        .unwrap();
+    let delivery_1 = ArtifactDelivery::<<QuadraticContract as TensorContract>::Input> {
+        emission_id,
+        recv: delivery_2_id,
+        send: listen_1,
+    };
+    let delivery_1_id = void_client
+        .upload(to_allocvec(&delivery_1).unwrap())
+        .await
+        .unwrap();
+
+    let listen_addr = reserve_local_addr();
+    let server_handle = tokio::spawn(async move {
+        ServerBuilder::new()
+            .listen(listen_addr)
+            .memory()
+            .run()
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let client = connect_client_with_retry(listen_addr).await;
+    let spawned = client
+        .spawn::<QuadraticProgenitor>(&CellInit {
+            recv_id: delivery_1_id,
+            grad_steps: 1,
+        })
+        .await
+        .expect("spawn generic operation cell");
+    let journey_id = spawned.journey_id;
+
+    let worker = JungleWorker::new(jungle, client.clone());
+    let worker_handle = tokio::spawn(async move {
+        let _ = worker.spawn().await;
+    });
+
+    let completed = tokio::time::timeout(
+        Duration::from_secs(30),
+        wait_for_artifact_delivery::<<QuadraticContract as TensorContract>::Output>(
+            void_client.clone(),
+            listen_3,
+        ),
+    )
+    .await;
+    if let Err(error) = completed {
+        let status = client.journey_details(journey_id).await.unwrap();
+        panic!("typed operation cell timed out: {error}; status: {status:?}");
+    }
+    let parameter = operation
+        .sole_parameter()
+        .expect("cell should own one quadratic instance");
+    assert!(
+        parameter.abs() < 4.0,
+        "Flux two-sided update did not reduce quadratic loss: parameter={parameter}"
+    );
+
+    worker_handle.abort();
+    server_handle.abort();
+    mass_server.abort();
+    void_server.abort();
+}
 
 /// End-to-end test of black-hole-flux constructs through a Jungle Worker.
 ///

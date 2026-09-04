@@ -109,7 +109,10 @@ async fn generic_mass_hosts_injected_operation_and_validates_payloads() {
         .reset_operation(instance_id)
         .await
         .expect_err("undeclared lifecycle capabilities must fail closed");
-    assert!(error.contains("does not advertise the requested reset"), "{error}");
+    assert!(
+        error.contains("does not advertise the requested reset"),
+        "{error}"
+    );
 
     mass_client.shutdown_operation(instance_id).await.unwrap();
 
@@ -120,7 +123,10 @@ async fn generic_mass_hosts_injected_operation_and_validates_payloads() {
         .start_operation(Uuid::new_v4())
         .await
         .expect_err("placement must reject an unsupported required lifecycle surface");
-    assert!(error.contains("no mass advertises operation contract"), "{error}");
+    assert!(
+        error.contains("no mass advertises operation contract"),
+        "{error}"
+    );
     mass_server.abort();
     void_server.abort();
 }
@@ -303,6 +309,71 @@ async fn tunnel_routes_unified_instance_lifecycle_to_injected_backend() {
         vec![10]
     );
     assert_eq!(operation.calls(), 1, "operation must execute on the worker");
+    client.shutdown_operation(instance_id).await.unwrap();
+    worker.abort();
+    root.abort();
+    void_server.abort();
+}
+
+#[tokio::test]
+async fn tunnel_routes_optimizing_lifecycle_and_void_checkpoints() {
+    init_tracing();
+    let void_server = TestVoidServer::new().tcp().serve().await.unwrap();
+    let root = TestMassServer::new("unused-optimizing-root")
+        .tcp()
+        .void_addr(void_server.local_addr())
+        .serve()
+        .await
+        .unwrap();
+    let operation = Arc::new(QuadraticOperation::default());
+    let worker = TestMassServer::new("unused-optimizing-worker")
+        .tcp()
+        .void_addr(void_server.local_addr())
+        .tunnel(root.local_addr())
+        .operation(operation.clone())
+        .serve()
+        .await
+        .unwrap();
+    let client = MassClient::<QuadraticContract>::new_tcp_typed(root.local_addr())
+        .requiring(OperationCapabilities::OPTIMIZING);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !client
+            .query_instance_capacity()
+            .await
+            .is_ok_and(|capacity| capacity.total == Some(2))
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("optimizing worker did not register");
+
+    let void = VoidClient::new_tcp(void_server.local_addr());
+    let input_id = void.upload(quadratic_input()).await.unwrap();
+    let instance_id = Uuid::new_v4();
+    client.start_operation(instance_id).await.unwrap();
+    client.perturb_up_operation(instance_id, 11).await.unwrap();
+    let up = quadratic_value(&client, &void, instance_id, input_id).await;
+    client.reset_operation(instance_id).await.unwrap();
+    client.perturb_down_operation(instance_id).await.unwrap();
+    let down = quadratic_value(&client, &void, instance_id, input_id).await;
+    client.reset_operation(instance_id).await.unwrap();
+    client
+        .optimize_operation(instance_id, up * up, down * down)
+        .await
+        .unwrap();
+    assert!(operation.parameter(instance_id).unwrap().abs() < 4.0);
+
+    let checkpoint_id = client.checkpoint_operation(instance_id).await.unwrap();
+    let fused_id = client
+        .fuse_operation(instance_id, checkpoint_id, 0.5)
+        .await
+        .unwrap();
+    assert_eq!(void.download(checkpoint_id).await.unwrap().len(), 4);
+    assert_eq!(void.download(fused_id).await.unwrap().len(), 4);
+    let params = client.query_operation(instance_id).await.unwrap();
+    assert_eq!(params.data.len(), 4);
+
     client.shutdown_operation(instance_id).await.unwrap();
     worker.abort();
     root.abort();

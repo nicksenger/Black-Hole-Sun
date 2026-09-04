@@ -216,6 +216,15 @@ impl QuadraticOperation {
             .get(&instance_id)
             .map(|state| state.base)
     }
+
+    pub fn sole_parameter(&self) -> Option<f32> {
+        let states = self.states.lock().unwrap();
+        if states.len() == 1 {
+            states.values().next().map(|state| state.base)
+        } else {
+            None
+        }
+    }
 }
 
 #[async_trait::async_trait]
