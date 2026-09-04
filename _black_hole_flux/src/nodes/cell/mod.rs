@@ -222,7 +222,7 @@ pub type OperationPrimordium<Op, S = ()> = OperationCell<
     OperationAtom<
         Step<Noop<CellState<S>, (Uuid, EmissionId<<Op as TensorContract>::Input>)>>,
         Step<Noop<CellState<S>, EmissionId<<Op as TensorContract>::Output>>>,
-        (),
+        <Op as TensorContract>::Metadata,
         Op,
         S,
     >,
@@ -235,7 +235,7 @@ pub type ForwardOperationPrimordium<Op, S = ()> = ForwardOperationCell<
     OperationAtom<
         Step<Noop<CellState<S>, (Uuid, EmissionId<<Op as TensorContract>::Input>)>>,
         Step<Noop<CellState<S>, EmissionId<<Op as TensorContract>::Output>>>,
-        (),
+        <Op as TensorContract>::Metadata,
         Op,
         S,
     >,

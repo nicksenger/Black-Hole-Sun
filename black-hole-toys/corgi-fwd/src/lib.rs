@@ -124,7 +124,7 @@ contract!(HeadOp, Stage4, Logits, 0x636f7267692d686561642d3030303031);
 
 pub struct StemCell;
 impl Animal for StemCell {
-    type Id = Id<U1>;
+    type Id = Id<U0>;
     type Generation = U0;
     type State = CellState;
     type Seed = CellInit;
@@ -157,19 +157,19 @@ macro_rules! operation_cell {
         impl OperationNode<$op> for $cell {}
     };
 }
-operation_cell!(Stage1Cell, U2, Stage1Op);
-operation_cell!(Stage2Cell, U3, Stage2Op);
-operation_cell!(Stage3Cell, U4, Stage3Op);
-operation_cell!(Stage4Cell, U5, Stage4Op);
-operation_cell!(HeadCell, U6, HeadOp);
+operation_cell!(Stage1Cell, U1, Stage1Op);
+operation_cell!(Stage2Cell, U2, Stage2Op);
+operation_cell!(Stage3Cell, U3, Stage3Op);
+operation_cell!(Stage4Cell, U4, Stage4Op);
+operation_cell!(HeadCell, U5, HeadOp);
 
 pub type CorgiGraph = list![
-    Unary<U1, StemCell, TypedEdges<list![Edge<U2, Stage1Op>]>, StemOp>,
-    Unary<U2, Stage1Cell, TypedEdges<list![Edge<U3, Stage2Op>]>, Stage1Op>,
-    Unary<U3, Stage2Cell, TypedEdges<list![Edge<U4, Stage3Op>]>, Stage2Op>,
-    Unary<U4, Stage3Cell, TypedEdges<list![Edge<U5, Stage4Op>]>, Stage3Op>,
-    Unary<U5, Stage4Cell, TypedEdges<list![Edge<U6, HeadOp>]>, Stage4Op>,
-    Unary<U6, HeadCell, TypedEdges<list![]>, HeadOp>
+    Unary<U0, StemCell, TypedEdges<list![Edge<U1, Stage1Op>]>, StemOp>,
+    Unary<U1, Stage1Cell, TypedEdges<list![Edge<U2, Stage2Op>]>, Stage1Op>,
+    Unary<U2, Stage2Cell, TypedEdges<list![Edge<U3, Stage3Op>]>, Stage2Op>,
+    Unary<U3, Stage3Cell, TypedEdges<list![Edge<U4, Stage4Op>]>, Stage3Op>,
+    Unary<U4, Stage4Cell, TypedEdges<list![Edge<U5, HeadOp>]>, Stage4Op>,
+    Unary<U5, HeadCell, TypedEdges<list![]>, HeadOp>
 ];
 
 #[derive(Flow)]
@@ -228,6 +228,10 @@ impl<J: VoidOps> Effect<J> for GenerateImageEffect {
             let emission_id = jungle
                 .upload_to_void(postcard::to_allocvec(&emission).map_err(|e| e.to_string())?)
                 .await?;
+            // Give the forward sun time to observe the emission before the
+            // generator's journey is suspended. This is also how the
+            // matmul-fwd example avoids racing the worker subscription.
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             Ok(ArtifactDelivery {
                 emission_id: ObjectRef::new(emission_id),
                 recv: ObjectId::nil(),
@@ -552,7 +556,7 @@ pub type CorgiSun =
 
 pub struct CorgiForward;
 impl Animal for CorgiForward {
-    type Id = Id<U128>;
+    type Id = Id<U6>;
     type Generation = U0;
     type State = ForwardSunState;
     type Seed = ();

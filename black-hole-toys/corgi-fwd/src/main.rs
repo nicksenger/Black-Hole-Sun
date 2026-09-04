@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::{env, fs};
 
 use async_trait::async_trait;
@@ -128,9 +129,11 @@ macro_rules! operation_impl {
                 _instance_id: uuid::Uuid,
                 input: Vec<u8>,
             ) -> Result<Vec<u8>, String> {
+                tracing::info!(operation = stringify!($operation), "starting operation");
                 let (tensor, metadata) = tensor_from_input::<$contract>(&input, &self.0.device)?;
                 let output =
                     ($forward)(&self.0.model, &tensor).map_err(|error| error.to_string())?;
+                tracing::info!(operation = stringify!($operation), "finished operation");
                 tensor_output::<$contract>(output, &metadata)
             }
 
@@ -293,7 +296,10 @@ impl MassOps<StemOp> for CorgiJungle {
         instance_id: ObjectId,
         input: ArtifactRef<<StemOp as TensorContract>::Input>,
     ) -> Result<ArtifactRef<<StemOp as TensorContract>::Output>, String> {
-        self.stem.forward(instance_id, input).await
+        tracing::info!("sending image to stem operation");
+        let output = self.stem.forward(instance_id, input).await;
+        tracing::info!(success = output.is_ok(), "stem operation request completed");
+        output
     }
     async fn shutdown_operation(&self, instance_id: ObjectId) -> Result<(), String> {
         self.stem.shutdown_operation(instance_id).await
@@ -502,20 +508,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         head: MassClient::new_tcp_typed(head_addr).requiring(capabilities()),
     };
     let _parent = client.spawn::<CorgiForward>(&()).await?;
+    let worker_error = Arc::new(Mutex::new(None::<String>));
     let workers = (0..4)
         .map(|_| {
             let worker = JungleWorker::new(jungle.clone(), client.clone());
+            let worker_error = Arc::clone(&worker_error);
             tokio::spawn(async move {
                 if let Err(error) = worker.spawn().await {
                     eprintln!("corgi-fwd worker stopped: {error}");
+                    if let Ok(mut slot) = worker_error.lock() {
+                        slot.get_or_insert_with(|| error.to_string());
+                    }
                 }
             })
         })
         .collect::<Vec<_>>();
 
-    while LOGGED_OUTPUTS.load(Ordering::Acquire) < args.n_samples {
+    let result = loop {
+        if LOGGED_OUTPUTS.load(Ordering::Acquire) >= args.n_samples {
+            break Ok(());
+        }
+        if let Some(error) = worker_error.lock().ok().and_then(|error| error.clone()) {
+            break Err(error);
+        }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    };
 
     for worker in workers {
         worker.abort();
@@ -532,5 +549,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "corgi-fwd processed {} sample(s) (dataset contains {DATASET_SAMPLES})",
         args.n_samples
     );
-    Ok(())
+    result.map_err(Into::into)
 }
