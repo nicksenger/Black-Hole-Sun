@@ -1,18 +1,24 @@
 //! Client-side jungle glue: the ecosystem and its capability impls.
 
 use async_trait::async_trait;
-use black_hole_sun::ops::{CheckpointOps, MassOps, OptimizeOps, PerturbOps, ResetOps, SunOps, VoidInferOps};
+use black_hole_sun::ops::{
+    CheckpointOps, MassOps, OptimizeOps, PerturbOps, ResetOps, SunOps, VoidInferOps,
+};
 use black_hole_sun::{
-    decode_output, encode_input, ArtifactRef, DarkToken, EmissionId, InferenceRequest,
-    MassClient, MassModelConfig, MassModelParams, ObjectId, OperationCapabilities,
-    TensorContract, Transmission, VoidClient,
+    decode_output, encode_input, ArtifactRef, DarkToken, EmissionId, InferenceRequest, MassClient,
+    MassModelConfig, MassModelParams, ObjectId, OperationCapabilities, TensorContract,
+    Transmission, VoidClient,
 };
 use jungle_sdk::prelude::*;
 use jungle_sdk::{FusedClient, JungleClient};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use toy_common::dataset::SampleMetadata;
 
-use crate::contracts::{CorgiZo, HeadCell, Stage1Cell, Stage2Cell, Stage3Cell, Stage4Cell, StemCell};
+use crate::contracts::{
+    CorgiZo, HeadCell, Stage1Cell, Stage2Cell, Stage3Cell, Stage4Cell, StemCell,
+};
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 
 #[derive(Clone)]
@@ -25,6 +31,9 @@ pub struct CorgiJungle {
     pub stage3: MassClient<Stage3Op>,
     pub stage4: MassClient<Stage4Op>,
     pub head: MassClient<HeadOp>,
+    /// Counts stage updates so completion is reported after all six models
+    /// finish an optimization step.
+    pub completed_optimization_calls: Arc<AtomicUsize>,
 }
 
 #[derive(Animals)]
@@ -191,7 +200,17 @@ macro_rules! mass_ops {
                 up: f32,
                 down: f32,
             ) -> Result<(), String> {
-                self.$field.optimize_operation(id, up, down).await
+                let result = self.$field.optimize_operation(id, up, down).await;
+                if result.is_ok()
+                    && self
+                        .completed_optimization_calls
+                        .fetch_add(1, Ordering::AcqRel)
+                        % 6
+                        == 5
+                {
+                    crate::contracts::OPTIMIZED_STEPS.fetch_add(1, Ordering::Release);
+                }
+                result
             }
         }
         #[async_trait]
@@ -237,7 +256,17 @@ impl PerturbOps<StemOp> for CorgiJungle {
 #[async_trait]
 impl OptimizeOps<StemOp> for CorgiJungle {
     async fn optimize_operation(&self, id: ObjectId, up: f32, down: f32) -> Result<(), String> {
-        self.stem.optimize_operation(id, up, down).await
+        let result = self.stem.optimize_operation(id, up, down).await;
+        if result.is_ok()
+            && self
+                .completed_optimization_calls
+                .fetch_add(1, Ordering::AcqRel)
+                % 6
+                == 5
+        {
+            crate::contracts::OPTIMIZED_STEPS.fetch_add(1, Ordering::Release);
+        }
+        result
     }
 }
 #[async_trait]
@@ -294,6 +323,7 @@ pub fn capabilities() -> OperationCapabilities {
         reset: true,
         perturb: true,
         optimize: true,
+        checkpoint: true,
         ..OperationCapabilities::default()
     }
 }

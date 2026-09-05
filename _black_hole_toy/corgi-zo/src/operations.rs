@@ -11,8 +11,8 @@ use black_hole_sun::{
 use candle::{Device, Tensor, Var};
 use candle_nn::{Linear, Module, VarMap};
 use corgi_fwd::model::pool_stage4;
-use toy_common::dataset::SampleMetadata;
 use serde::Serialize;
+use toy_common::dataset::SampleMetadata;
 
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 
@@ -74,7 +74,10 @@ fn tensor_output<C: TensorContract<Metadata = SampleMetadata>>(
         .flatten_all()
         .and_then(|t| t.to_vec1::<f32>())
         .map_err(|error| error.to_string())?;
-    Ok(encode_output::<C>(&[C::output_f32(&shape, values)], metadata)?)
+    Ok(encode_output::<C>(
+        &[C::output_f32(&shape, values)],
+        metadata,
+    )?)
 }
 
 fn next_random(state: &mut u64) -> f32 {
@@ -105,7 +108,7 @@ fn perturb_up<M>(state: &mut ZoModel<M>, device: &Device, seed: u64) -> Result<(
         .map_err(|error| error.to_string())?;
         let updated = (var.as_tensor()
             + &(&direction * 1e-3).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?;
         var.set(&updated).map_err(|error| error.to_string())?;
         directions.push(direction);
     }

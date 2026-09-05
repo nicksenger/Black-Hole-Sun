@@ -19,6 +19,7 @@ use tracing::info;
 use typenum::consts::{U0, U1, U2, U3, U4, U5, U6};
 
 pub static OPTIMIZED_STEPS: AtomicUsize = AtomicUsize::new(0);
+static STEP_SEEDS: AtomicUsize = AtomicUsize::new(0);
 
 macro_rules! operation_cell {
     ($cell:ident, $id:ty, $op:ty) => {
@@ -232,7 +233,7 @@ impl<J: VoidInferOps> Effect<J> for ComputeLossEffect {
         async move {
             let loss_up = classification_loss(jungle, &up).await?;
             let loss_down = classification_loss(jungle, &down).await?;
-            let step = OPTIMIZED_STEPS.fetch_add(1, Ordering::AcqRel) + 1;
+            let step = STEP_SEEDS.fetch_add(1, Ordering::AcqRel) + 1;
             info!(step, loss_up, loss_down, "corgi-zo optimization losses");
             Ok(Potentiation {
                 loss_up,

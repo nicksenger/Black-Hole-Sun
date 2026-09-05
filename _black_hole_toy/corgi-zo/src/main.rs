@@ -1,5 +1,7 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use black_hole_sun::{MassClient, VoidClient};
 use candle::{DType, Device};
@@ -9,14 +11,14 @@ use corgi_fwd::model::{
     build_head, build_stage1, build_stage2, build_stage3, build_stage4, build_stem,
 };
 use corgi_zo::contracts::CorgiZo;
-use corgi_zo::jungle::{CorgiJungle, capabilities};
+use corgi_zo::jungle::{capabilities, CorgiJungle};
 use corgi_zo::operations::{
     HeadModel, HeadOperation, ModelOperation, Stage1Operation, Stage2Operation, Stage3Operation,
     Stage4Operation, StemOperation,
 };
 use jungle_sdk::FusedClient;
-use toy_common::dataset::{DATASET_SAMPLES, configure_hf_cache, model_path};
-use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
+use toy_common::dataset::{configure_hf_cache, model_path, DATASET_SAMPLES};
+use toy_common::runtime::{run_until, RunCheck, ServerSpecs};
 
 #[derive(Debug, Parser)]
 #[command(about = "Run two-sided zeroth-order optimization on ResNet-18")]
@@ -37,6 +39,8 @@ struct Args {
     #[arg(long)]
     cache_dir: Option<PathBuf>,
 }
+
+const OPERATION_COUNT: usize = 6;
 
 fn mutable_stage<C, F>(
     path: &Path,
@@ -96,10 +100,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let servers = ServerSpecs::new()
         .operation(StemOperation(mutable_stage(&path, &device, build_stem)?))
-        .operation(Stage1Operation(mutable_stage(&path, &device, build_stage1)?))
-        .operation(Stage2Operation(mutable_stage(&path, &device, build_stage2)?))
-        .operation(Stage3Operation(mutable_stage(&path, &device, build_stage3)?))
-        .operation(Stage4Operation(mutable_stage(&path, &device, build_stage4)?))
+        .operation(Stage1Operation(mutable_stage(
+            &path,
+            &device,
+            build_stage1,
+        )?))
+        .operation(Stage2Operation(mutable_stage(
+            &path,
+            &device,
+            build_stage2,
+        )?))
+        .operation(Stage3Operation(mutable_stage(
+            &path,
+            &device,
+            build_stage3,
+        )?))
+        .operation(Stage4Operation(mutable_stage(
+            &path,
+            &device,
+            build_stage4,
+        )?))
         .operation(HeadOperation(mutable_head(&path, &device)?))
         .start()
         .await?;
@@ -114,15 +134,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage3: MassClient::new_tcp_typed(servers.mass_addrs[3]).requiring(capabilities()),
         stage4: MassClient::new_tcp_typed(servers.mass_addrs[4]).requiring(capabilities()),
         head: MassClient::new_tcp_typed(servers.mass_addrs[5]).requiring(capabilities()),
+        completed_optimization_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
 
-    let result = run_until::<CorgiJungle, CorgiZo, _, _>(&jungle, &client, &(), 8, |_| {
-        async {
-            if corgi_zo::OPTIMIZED_STEPS.load(Ordering::Acquire) >= args.steps {
+    let result = run_until::<CorgiJungle, CorgiZo, _, _>(&jungle, &client, &(), 8, |_| async {
+        let optimized_steps = corgi_zo::OPTIMIZED_STEPS.load(Ordering::Acquire);
+        if optimized_steps >= args.steps {
+            let expected_checkpoints = checkpoint_dir
+                .as_ref()
+                .map(|_| args.steps / args.checkpoint_steps * OPERATION_COUNT)
+                .unwrap_or(0);
+            let checkpoints_ready = checkpoint_dir.as_ref().is_none_or(|dir| {
+                fs::read_dir(dir.path())
+                    .map(|entries| entries.flatten().count() >= expected_checkpoints)
+                    .unwrap_or(false)
+            });
+            if checkpoints_ready {
                 RunCheck::Done
             } else {
                 RunCheck::Continue
             }
+        } else {
+            RunCheck::Continue
         }
     })
     .await;
