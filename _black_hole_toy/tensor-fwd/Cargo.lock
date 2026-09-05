@@ -929,7 +929,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "black-hole-toys-common"
+name = "black-hole-toy-common"
 version = "0.1.0"
 dependencies = [
  "black-hole-sun",
@@ -6631,7 +6631,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "black-hole-sun",
- "black-hole-toys-common",
+ "black-hole-toy-common",
  "jungle-sdk",
  "postcard",
  "serde",

@@ -4,8 +4,8 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use black_hole_sun::black_hole_spec::{
-    glowstick::{Shape2, Shape4}, BackwardContract, SingleTensorSpec, TensorContract,
-    TensorPortSpec,
+    glowstick::{Shape2, Shape4},
+    BackwardContract, SingleTensorSpec, TensorContract, TensorPortSpec,
 };
 use black_hole_sun::cell::CellState;
 use black_hole_sun::compile::BlackHole;
@@ -17,15 +17,11 @@ use black_hole_sun::{
 };
 use jungle_sdk::list;
 use jungle_sdk::prelude::*;
-use toy_common::dataset::{BATCH_SIZE, SampleMetadata};
+use toy_common::dataset::{SampleMetadata, BATCH_SIZE};
 use tracing::warn;
-use typenum::consts::{
-    U0, U1, U128, U14, U2, U224, U256, U28, U3, U4, U5, U512, U56, U6, U64, U7,
-};
+use typenum::consts::{U0, U1, U128, U14, U2, U224, U256, U28, U3, U4, U5, U512, U56, U6, U64, U7};
 
 use crate::model::{CARDIGAN_LABEL, PEMBROKE_LABEL};
-
-const GENERATOR_MAX_IN_FLIGHT: usize = 1;
 
 pub struct ImagePort;
 impl TensorPortSpec for ImagePort {
@@ -259,9 +255,8 @@ impl<J: VoidOps> Effect<J> for LogPredictionEffect {
 }
 
 /// Keep only one image batch resident while the CPU pipeline consumes it.
-pub type CorgiSun = <CorgiGraph as BlackHole>::Sun<
-    ForwardOnlyWithPolicy<Generator, StemOp, HeadOp, LogPolicy, (), GENERATOR_MAX_IN_FLIGHT>,
->;
+pub type CorgiSun =
+    <CorgiGraph as BlackHole>::Sun<ForwardOnlyWithPolicy<Generator, StemOp, HeadOp, LogPolicy>>;
 
 pub struct CorgiForward;
 impl Animal for CorgiForward {

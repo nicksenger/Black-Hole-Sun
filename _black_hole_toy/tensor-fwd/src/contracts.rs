@@ -19,8 +19,6 @@ use jungle_sdk::prelude::*;
 use tracing::info;
 use typenum::{U0, U1, U2, U3, U4};
 
-const GENERATOR_MAX_IN_FLIGHT: usize = 1;
-
 /// The generator's 2x3 input matrix.
 pub struct InputMatrixPort;
 
@@ -205,9 +203,8 @@ impl<J: VoidOps> Effect<J> for LogTensorEffect {
 }
 
 /// The complete flow produced by the `BlackHole::Sun` compiler.
-pub type TensorSun = <TensorGraph as BlackHole>::Sun<
-    ForwardOnlyWithPolicy<Generator, Matmul, Relu, LogPolicy, (), GENERATOR_MAX_IN_FLIGHT>,
->;
+pub type TensorSun =
+    <TensorGraph as BlackHole>::Sun<ForwardOnlyWithPolicy<Generator, Matmul, Relu, LogPolicy>>;
 
 /// Top-level Jungle animal for the example Sun.
 pub struct MatmulForward;
