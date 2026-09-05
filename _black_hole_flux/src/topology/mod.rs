@@ -250,11 +250,15 @@ impl SunTopology {
     /// Records that a pipeline step has begun processing its stages.
     pub(crate) fn record_pipeline_started(&mut self, node_ids: impl IntoIterator<Item = u32>) {
         for node_id in node_ids {
+            let was_running = self.node_operational_states.get(&node_id)
+                == Some(&SunOperationalState::Running);
             self.node_operational_states
                 .insert(node_id, SunOperationalState::Running);
             self.node_phase_annotations
                 .insert(node_id, "pipeline".to_string());
-            *self.node_state_sequences.entry(node_id).or_default() += 1;
+            if !was_running {
+                *self.node_state_sequences.entry(node_id).or_default() += 1;
+            }
         }
     }
 

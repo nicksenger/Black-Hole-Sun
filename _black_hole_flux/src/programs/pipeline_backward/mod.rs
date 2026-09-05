@@ -173,6 +173,12 @@ pub struct RunPipelineInput {
     inboxes: HashMap<u32, ObjectId>,
     micro_batches: Vec<ArtifactDelivery<()>>,
     step: usize,
+    /// The live parent topology is available during local effect execution so
+    /// the scheduler can publish stage-level progress while it runs. It is
+    /// deliberately omitted from the wire request; replayed requests simply
+    /// run without live progress reporting.
+    #[serde(skip)]
+    progress: Option<Arc<Mutex<SunTopology>>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -244,6 +250,7 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
         input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
+            let progress = input.progress.clone();
             let nodes = input.nodes;
             if nodes.is_empty() {
                 return Err("pipeline graph has no stages".into());
@@ -307,6 +314,7 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
                                     }
                                 })
                                 .await?;
+                            record_pipeline_started(progress.as_ref(), nodes[s]);
                             busy[replica][s] = Some(PendingReply {
                                 kind: WorkKind::Backward,
                                 micro_batch: b,
@@ -339,6 +347,7 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
                                     }
                                 })
                                 .await?;
+                            record_pipeline_started(progress.as_ref(), nodes[s]);
                             busy[replica][s] = Some(PendingReply {
                                 kind: WorkKind::Forward,
                                 micro_batch: f,
@@ -389,6 +398,12 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
                             }
                         }
                         busy[replica][s] = None;
+                        if matches!(pending.kind, WorkKind::Backward)
+                            && (0..replicas).all(|replica| next_bwd[replica][s] >= m)
+                            && (0..replicas).all(|replica| busy[replica][s].is_none())
+                        {
+                            record_pipeline_completed(progress.as_ref(), nodes[s]);
+                        }
                         progressed = true;
                     }
                 }
@@ -442,6 +457,18 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
     }
 }
 
+fn record_pipeline_started(progress: Option<&Arc<Mutex<SunTopology>>>, node_id: u32) {
+    if let Some(topology) = progress {
+        topology.lock().unwrap().record_pipeline_started([node_id]);
+    }
+}
+
+fn record_pipeline_completed(progress: Option<&Arc<Mutex<SunTopology>>>, node_id: u32) {
+    if let Some(topology) = progress {
+        topology.lock().unwrap().record_pipeline_completed(node_id);
+    }
+}
+
 pub struct RunPipeline<Output, S>(PhantomData<fn() -> (Output, S)>);
 #[jungle::action]
 impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
@@ -449,7 +476,7 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
     type Input = ();
     type Output = PipelineStepResult;
     fn emit(state: &PipelineBackwardState<S>, _input: ()) -> RunPipelineInput {
-        let mut topology = state.topology.lock().unwrap();
+        let topology = state.topology.lock().unwrap();
         let mut nodes = topology.journey_ids.keys().copied().collect::<Vec<_>>();
         nodes.sort_unstable();
         let ports = nodes
@@ -476,8 +503,8 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
             inboxes: state.inboxes.clone(),
             micro_batches: state.micro_batches.clone(),
             step: state.step,
+            progress: Some(Arc::clone(&state.topology)),
         };
-        topology.record_pipeline_started(input.nodes.iter().copied());
         input
     }
     fn absorb(
@@ -487,10 +514,6 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
         let output = output.map_err(|e| Failure::Message(format!("pipeline step failed: {e}")))?;
         state.inboxes = output.inboxes;
         state.step += 1;
-        let mut topology = state.topology.lock().unwrap();
-        for node_id in topology.journey_ids.keys().copied().collect::<Vec<_>>() {
-            topology.record_pipeline_completed(node_id);
-        }
         Ok(PipelineStepResult {
             step: output.step,
             outputs: output
@@ -515,7 +538,7 @@ impl<Output: Send + 'static, S> Action for RunDataParallelPipeline<Output, S> {
     type Output = PipelineStepResult;
 
     fn emit(state: &PipelineBackwardState<S>, _input: ()) -> RunPipelineInput {
-        let mut topology = state.topology.lock().unwrap();
+        let topology = state.topology.lock().unwrap();
         let mut nodes = topology.journey_ids.keys().copied().collect::<Vec<_>>();
         nodes.sort_unstable();
         let ports = nodes
@@ -542,8 +565,8 @@ impl<Output: Send + 'static, S> Action for RunDataParallelPipeline<Output, S> {
             inboxes: state.inboxes.clone(),
             micro_batches: state.micro_batches.clone(),
             step: state.step,
+            progress: Some(Arc::clone(&state.topology)),
         };
-        topology.record_pipeline_started(input.nodes.iter().copied());
         input
     }
 
@@ -556,10 +579,6 @@ impl<Output: Send + 'static, S> Action for RunDataParallelPipeline<Output, S> {
         })?;
         state.inboxes = output.inboxes;
         state.step += 1;
-        let mut topology = state.topology.lock().unwrap();
-        for node_id in topology.journey_ids.keys().copied().collect::<Vec<_>>() {
-            topology.record_pipeline_completed(node_id);
-        }
         Ok(PipelineStepResult {
             step: output.step,
             outputs: output

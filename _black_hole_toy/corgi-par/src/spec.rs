@@ -1,10 +1,13 @@
 //! Fusion stages, hybrid topology, source, and training policy.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use black_hole_sun::compile::BlackHole;
-use black_hole_sun::topology::{BackwardTypedEdges, Binary, Edge, SunAppearance};
+use black_hole_sun::topology::{
+    BackwardTypedEdges, Binary, Edge, SunAppearance, SunEdgeAppearance,
+};
 use black_hole_sun::{
     ArtifactDelivery, DataParallelBackwardOperationPrimordium, DataParallelOperationState,
     DataParallelPipelineBackward, FusionSeed, OperationNode, PipelineBackwardState,
@@ -49,7 +52,8 @@ fusion_operation!(HeadFusion, U10, HeadOp);
 
 /// Two side-by-side six-stage pipelines. Each `Binary` is the vertical
 /// data-parallel group for one model depth; its two ports preserve lane
-/// identity while its Fusion-style cell joins the optimizer step.
+/// identity while its Fusion-style cell joins the optimizer step. The Beam
+/// appearance below expands those two lanes into separate display nodes.
 pub type CorgiParallelGraph = list![
     Binary<
         U0,
@@ -261,6 +265,136 @@ impl<const M: usize> Observe for CorgiParallel<M> {
     type Appearance = SunAppearance;
 
     fn observe(state: &Self::State) -> Self::Appearance {
-        state.appearance()
+        expand_replica_appearance(state.appearance())
+    }
+}
+
+/// The runtime uses one Fusion animal per stage to coordinate its two model
+/// replicas. Expose each lane as a node in Beam so the parallel topology is
+/// visible without changing the execution topology or journey identities.
+fn expand_replica_appearance(mut appearance: SunAppearance) -> SunAppearance {
+    let original_nodes = appearance.nodes.clone();
+    let replica_ids = original_nodes
+        .iter()
+        .filter_map(|node| {
+            (node.input_ports.len() == 2).then_some((node.id, [node.id, node.input_ports[1]]))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let mut nodes = Vec::with_capacity(original_nodes.len() + replica_ids.len());
+    for node in &original_nodes {
+        if let Some(ids) = replica_ids.get(&node.id) {
+            let mut first = node.clone();
+            first.input_ports = vec![node.input_ports[0]];
+            first.id = ids[0];
+            nodes.push(first);
+
+            let mut second = node.clone();
+            second.input_ports = vec![node.input_ports[1]];
+            second.id = ids[1];
+            nodes.push(second);
+        } else {
+            nodes.push(node.clone());
+        }
+    }
+
+    let original_by_id = original_nodes
+        .iter()
+        .map(|node| (node.id, node))
+        .collect::<HashMap<_, _>>();
+    let edges = appearance
+        .edges
+        .iter()
+        .map(|edge| {
+            let lane = original_by_id
+                .get(&edge.target)
+                .and_then(|node| {
+                    node.input_ports
+                        .iter()
+                        .position(|port| *port == edge.target_port)
+                })
+                .unwrap_or(0);
+            let source = replica_ids
+                .get(&edge.source)
+                .map(|ids| ids[lane.min(1)])
+                .unwrap_or(edge.source);
+            let target = replica_ids
+                .get(&edge.target)
+                .map(|ids| ids[lane.min(1)])
+                .unwrap_or(edge.target);
+            SunEdgeAppearance {
+                source,
+                target,
+                target_port: edge.target_port,
+            }
+        })
+        .collect();
+
+    appearance.nodes = nodes;
+    appearance.edges = edges;
+    appearance
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_replica_appearance;
+    use black_hole_sun::topology::{
+        SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState,
+    };
+    use uuid::Uuid;
+
+    #[test]
+    fn beam_appearance_exposes_both_data_parallel_lanes() {
+        let appearance = SunAppearance {
+            finalized: true,
+            nodes: vec![node(0, vec![0, 1]), node(2, vec![2, 3])],
+            edges: vec![
+                SunEdgeAppearance {
+                    source: 0,
+                    target: 2,
+                    target_port: 2,
+                },
+                SunEdgeAppearance {
+                    source: 0,
+                    target: 2,
+                    target_port: 3,
+                },
+            ],
+            ..SunAppearance::default()
+        };
+
+        let expanded = expand_replica_appearance(appearance);
+
+        assert_eq!(
+            expanded
+                .nodes
+                .iter()
+                .map(|node| node.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            expanded
+                .edges
+                .iter()
+                .map(|edge| (edge.source, edge.target))
+                .collect::<Vec<_>>(),
+            vec![(0, 2), (1, 3)]
+        );
+    }
+
+    fn node(id: u32, input_ports: Vec<u32>) -> SunNodeAppearance {
+        SunNodeAppearance {
+            id,
+            journey_id: Uuid::new_v4(),
+            warp_journey_id: Uuid::nil(),
+            label: format!("Stage{id}"),
+            input_ports,
+            state: SunNodeState::Idle,
+            state_sequence: 0,
+            grad_step: 1,
+            operational_state: Default::default(),
+            phase_annotation: None,
+        }
     }
 }
