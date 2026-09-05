@@ -92,6 +92,16 @@ impl<S, const M: usize> Predicate<(&PipelineBackwardState<S>, &())> for NeedsMic
     }
 }
 
+/// Collects one local set of micro-batches for each of two pipeline replicas.
+pub struct NeedsDataParallelMicroBatches<S, const M: usize>(PhantomData<fn() -> S>);
+impl<S, const M: usize> Predicate<(&PipelineBackwardState<S>, &())>
+    for NeedsDataParallelMicroBatches<S, M>
+{
+    fn eval((state, _): &(&PipelineBackwardState<S>, &())) -> bool {
+        state.micro_batches.len() < 2 * M.max(1)
+    }
+}
+
 pub struct BeginStep<S>(PhantomData<fn() -> S>);
 #[jungle::action]
 impl<S> Action for BeginStep<S> {
@@ -143,7 +153,9 @@ pub struct PipelineStepResult {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RunPipelineInput {
     nodes: Vec<u32>,
-    ports: Vec<u32>,
+    /// Input ports for each pipeline stage, ordered by data-parallel replica.
+    ports: Vec<Vec<u32>>,
+    replicas: usize,
     linear: bool,
     inboxes: HashMap<u32, ObjectId>,
     micro_batches: Vec<ArtifactDelivery<()>>,
@@ -227,123 +239,147 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
                 return Err("PipelineBackward currently requires one linear unary chain".into());
             }
             let ports = input.ports;
-            let m = input.micro_batches.len();
+            let replicas = input.replicas.max(1);
+            if input.micro_batches.len() % replicas != 0 {
+                return Err(format!(
+                    "{} micro-batches cannot be split across {replicas} pipeline replicas",
+                    input.micro_batches.len()
+                ));
+            }
+            let m = input.micro_batches.len() / replicas;
             let p = nodes.len();
             let mut inboxes = input.inboxes;
-            let mut forward = vec![vec![None::<ObjectId>; p]; m];
-            let mut backward = vec![vec![None::<ObjectId>; p]; m];
-            let mut next_fwd = vec![0usize; p];
-            let mut next_bwd = vec![0usize; p];
-            let mut busy = vec![None::<PendingReply>; p];
+            let mut forward = vec![vec![vec![None::<ObjectId>; p]; m]; replicas];
+            let mut backward = vec![vec![vec![None::<ObjectId>; p]; m]; replicas];
+            let mut next_fwd = vec![vec![0usize; p]; replicas];
+            let mut next_bwd = vec![vec![0usize; p]; replicas];
+            let mut busy = vec![vec![None::<PendingReply>; p]; replicas];
 
-            while next_bwd.iter().any(|&n| n < m) || busy.iter().any(Option::is_some) {
+            while next_bwd.iter().flatten().any(|&n| n < m)
+                || busy.iter().flatten().any(Option::is_some)
+            {
                 for s in 0..p {
-                    if busy[s].is_some() {
-                        continue;
-                    }
-                    let b = next_bwd[s];
-                    let warmup = (p - s).min(m);
-                    let backward_ready = b < m
-                        && next_fwd[s] >= warmup
-                        && forward[b][s].is_some()
-                        && (s + 1 == p || backward[b][s + 1].is_some());
-                    if backward_ready {
-                        let gradient = if s + 1 == p {
-                            forward[b][s].unwrap()
-                        } else {
-                            backward[b][s + 1].unwrap()
-                        };
-                        let reply = send_command(jungle, &mut inboxes, ports[s], |reply| {
-                            PipelineCommand::Backward {
+                    for replica in 0..replicas {
+                        if busy[replica][s].is_some() {
+                            continue;
+                        }
+                        let b = next_bwd[replica][s];
+                        let warmup = (p - s).min(m);
+                        let backward_ready = b < m
+                            && next_fwd[replica][s] >= warmup
+                            && forward[replica][b][s].is_some()
+                            && (s + 1 == p || backward[replica][b][s + 1].is_some());
+                        if backward_ready {
+                            let gradient = if s + 1 == p {
+                                forward[replica][b][s].unwrap()
+                            } else {
+                                backward[replica][b][s + 1].unwrap()
+                            };
+                            let reply =
+                                send_command(jungle, &mut inboxes, ports[s][replica], |reply| {
+                                    PipelineCommand::Backward {
+                                        micro_batch: b,
+                                        gradient_emission_id: gradient,
+                                        seed_from_forward: s + 1 == p,
+                                        reply,
+                                    }
+                                })
+                                .await?;
+                            busy[replica][s] = Some(PendingReply {
+                                kind: WorkKind::Backward,
                                 micro_batch: b,
-                                gradient_emission_id: gradient,
-                                seed_from_forward: s + 1 == p,
                                 reply,
-                            }
-                        })
-                        .await?;
-                        busy[s] = Some(PendingReply {
-                            kind: WorkKind::Backward,
-                            micro_batch: b,
-                            reply,
-                        });
-                        next_bwd[s] += 1;
-                        continue;
-                    }
-                    let f = next_fwd[s];
-                    let forward_ready = f < m && (s == 0 || forward[f][s - 1].is_some());
-                    if forward_ready {
-                        let emission = if s == 0 {
-                            input.micro_batches[f].emission_id.id()
-                        } else {
-                            forward[f][s - 1].unwrap()
-                        };
-                        let reply = send_command(jungle, &mut inboxes, ports[s], |reply| {
-                            PipelineCommand::Forward {
+                            });
+                            next_bwd[replica][s] += 1;
+                            continue;
+                        }
+                        let f = next_fwd[replica][s];
+                        let forward_ready =
+                            f < m && (s == 0 || forward[replica][f][s - 1].is_some());
+                        if forward_ready {
+                            let emission = if s == 0 {
+                                input.micro_batches[replica * m + f].emission_id.id()
+                            } else {
+                                forward[replica][f][s - 1].unwrap()
+                            };
+                            let reply =
+                                send_command(jungle, &mut inboxes, ports[s][replica], |reply| {
+                                    PipelineCommand::Forward {
+                                        micro_batch: f,
+                                        emission_id: emission,
+                                        reply,
+                                    }
+                                })
+                                .await?;
+                            busy[replica][s] = Some(PendingReply {
+                                kind: WorkKind::Forward,
                                 micro_batch: f,
-                                emission_id: emission,
                                 reply,
-                            }
-                        })
-                        .await?;
-                        busy[s] = Some(PendingReply {
-                            kind: WorkKind::Forward,
-                            micro_batch: f,
-                            reply,
-                        });
-                        next_fwd[s] += 1;
+                            });
+                            next_fwd[replica][s] += 1;
+                        }
                     }
                 }
 
                 let mut progressed = false;
                 for s in 0..p {
-                    let Some(pending) = busy[s] else { continue };
-                    let Some(response) = wait_response(jungle, pending.reply).await? else {
-                        continue;
-                    };
-                    let (micro_batch, emission_id) = match response {
-                        PipelineResponse::Artifact {
-                            micro_batch,
-                            emission_id,
-                        } => (micro_batch, emission_id),
-                        PipelineResponse::Failed {
-                            micro_batch,
-                            message,
-                        } => {
-                            return Err(format!(
-                                "pipeline stage {s} failed for micro-batch {micro_batch:?}: {message}"
-                            ));
+                    for replica in 0..replicas {
+                        let Some(pending) = busy[replica][s] else {
+                            continue;
+                        };
+                        let Some(response) = wait_response(jungle, pending.reply).await? else {
+                            continue;
+                        };
+                        let (micro_batch, emission_id) = match response {
+                            PipelineResponse::Artifact {
+                                micro_batch,
+                                emission_id,
+                            } => (micro_batch, emission_id),
+                            PipelineResponse::Failed {
+                                micro_batch,
+                                message,
+                            } => {
+                                return Err(format!(
+                                    "pipeline replica {replica}, stage {s} failed for micro-batch {micro_batch:?}: {message}"
+                                ));
+                            }
+                            PipelineResponse::Stepped => {
+                                return Err(
+                                    "stage returned step acknowledgement for tensor work".into()
+                                );
+                            }
+                        };
+                        if micro_batch != pending.micro_batch {
+                            return Err("stage returned the wrong micro-batch".into());
                         }
-                        PipelineResponse::Stepped => {
-                            return Err(
-                                "stage returned step acknowledgement for tensor work".into()
-                            );
+                        match pending.kind {
+                            WorkKind::Forward => {
+                                forward[replica][micro_batch][s] = Some(emission_id)
+                            }
+                            WorkKind::Backward => {
+                                backward[replica][micro_batch][s] = Some(emission_id)
+                            }
                         }
-                    };
-                    if micro_batch != pending.micro_batch {
-                        return Err("stage returned the wrong micro-batch".into());
+                        busy[replica][s] = None;
+                        progressed = true;
                     }
-                    match pending.kind {
-                        WorkKind::Forward => forward[micro_batch][s] = Some(emission_id),
-                        WorkKind::Backward => backward[micro_batch][s] = Some(emission_id),
-                    }
-                    busy[s] = None;
-                    progressed = true;
                 }
                 if !progressed {
                     tokio::task::yield_now().await;
                 }
             }
 
-            let mut steps = Vec::with_capacity(p);
-            for &port in ports.iter().take(p) {
-                let reply =
-                    send_command(jungle, &mut inboxes, port, |reply| PipelineCommand::Step {
-                        reply,
-                        step: input.step + 1,
-                    })
-                    .await?;
-                steps.push(reply);
+            let mut steps = Vec::with_capacity(p * replicas);
+            for stage_ports in ports.iter().take(p) {
+                for &port in stage_ports {
+                    let reply =
+                        send_command(jungle, &mut inboxes, port, |reply| PipelineCommand::Step {
+                            reply,
+                            step: input.step + 1,
+                        })
+                        .await?;
+                    steps.push(reply);
+                }
             }
             for reply in steps {
                 loop {
@@ -364,8 +400,13 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
             }
             Ok(RunPipelineOutput {
                 inboxes,
-                outputs: (0..m)
-                    .map(|mb| forward[mb][p - 1].expect("all forwards completed"))
+                outputs: (0..replicas)
+                    .flat_map(|replica| {
+                        let forward = &forward;
+                        (0..m).map(move |mb| {
+                            forward[replica][mb][p - 1].expect("all forwards completed")
+                        })
+                    })
                     .collect(),
                 step: input.step,
             })
@@ -392,6 +433,7 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
                     .and_then(|p| p.first())
                     .copied()
             })
+            .map(|port| vec![port])
             .collect::<Vec<_>>();
         let linear = ports.len() == nodes.len()
             && nodes.windows(2).all(|pair| {
@@ -401,6 +443,7 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
         RunPipelineInput {
             nodes,
             ports,
+            replicas: 1,
             linear,
             inboxes: state.inboxes.clone(),
             micro_batches: state.micro_batches.clone(),
@@ -412,6 +455,69 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         let output = output.map_err(|e| Failure::Message(format!("pipeline step failed: {e}")))?;
+        state.inboxes = output.inboxes;
+        state.step += 1;
+        Ok(PipelineStepResult {
+            step: output.step,
+            outputs: output
+                .outputs
+                .into_iter()
+                .map(|id| ArtifactDelivery {
+                    emission_id: ObjectRef::new(id),
+                    recv: ObjectId::nil(),
+                    send: ObjectId::nil(),
+                })
+                .collect(),
+        })
+    }
+}
+
+/// Runs two 1F1B lanes through a chain of two-port Fusion-style stages.
+pub struct RunDataParallelPipeline<Output, S>(PhantomData<fn() -> (Output, S)>);
+#[jungle::action]
+impl<Output: Send + 'static, S> Action for RunDataParallelPipeline<Output, S> {
+    type Effect = RunPipelineEffect;
+    type Input = ();
+    type Output = PipelineStepResult;
+
+    fn emit(state: &PipelineBackwardState<S>, _input: ()) -> RunPipelineInput {
+        let topology = state.topology.lock().unwrap();
+        let mut nodes = topology.journey_ids.keys().copied().collect::<Vec<_>>();
+        nodes.sort_unstable();
+        let ports = nodes
+            .iter()
+            .filter_map(|node| topology.vertex_ports.get(node).cloned())
+            .collect::<Vec<_>>();
+        let linear = ports.len() == nodes.len()
+            && ports.iter().all(|ports| ports.len() == 2)
+            && nodes.windows(2).all(|pair| {
+                let mut outgoing = topology.outgoing.get(&pair[0]).cloned().unwrap_or_default();
+                outgoing.sort_by_key(|target| target.port_id);
+                outgoing.len() == 2
+                    && outgoing.iter().all(|target| target.vertex_id == pair[1])
+                    && outgoing
+                        .iter()
+                        .map(|target| target.port_id)
+                        .eq(topology.vertex_ports[&pair[1]].iter().copied())
+            });
+        RunPipelineInput {
+            nodes,
+            ports,
+            replicas: 2,
+            linear,
+            inboxes: state.inboxes.clone(),
+            micro_batches: state.micro_batches.clone(),
+            step: state.step,
+        }
+    }
+
+    fn absorb(
+        state: &mut PipelineBackwardState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let output = output.map_err(|error| {
+            Failure::Message(format!("data-parallel pipeline step failed: {error}"))
+        })?;
         state.inboxes = output.inboxes;
         state.step += 1;
         Ok(PipelineStepResult {
@@ -448,6 +554,21 @@ pub struct PipelineStep<
 );
 
 #[derive(Flow)]
+pub struct DataParallelPipelineStep<
+    Source,
+    Input: Send + 'static,
+    Output: Send + 'static,
+    Policy,
+    S,
+    const M: usize,
+>(
+    Step<BeginStep<S>>,
+    While<NeedsDataParallelMicroBatches<S, M>, CollectOne<Source, Input, S>>,
+    Step<RunDataParallelPipeline<Output, S>>,
+    Policy,
+);
+
+#[derive(Flow)]
 pub struct PipelineBackwardFlow<
     Source,
     Input: Send + 'static,
@@ -458,6 +579,22 @@ pub struct PipelineBackwardFlow<
 >(
     Step<FinalizePipelineGraph<S>>,
     While<Always<PipelineBackwardState<S>, ()>, PipelineStep<Source, Input, Output, Policy, S, M>>,
+);
+
+#[derive(Flow)]
+pub struct DataParallelPipelineBackwardFlow<
+    Source,
+    Input: Send + 'static,
+    Output: Send + 'static,
+    Policy,
+    S,
+    const M: usize,
+>(
+    Step<FinalizePipelineGraph<S>>,
+    While<
+        Always<PipelineBackwardState<S>, ()>,
+        DataParallelPipelineStep<Source, Input, Output, Policy, S, M>,
+    >,
 );
 
 pub struct FinalizePipelineGraph<S>(PhantomData<fn() -> S>);
@@ -503,6 +640,70 @@ where
     type UnarySeed = Init;
     type BinarySeed = FusionSeed;
     type WarpSeed = BoundaryInit;
+    fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
+        Init {
+            recv_id: inbox,
+            grad_steps: M.max(1),
+        }
+    }
+    fn unary_inbox(seed: &Self::UnarySeed) -> ObjectId {
+        seed.recv_id
+    }
+    fn binary_seed([p1_recv_id, p2_recv_id]: [ObjectId; 2]) -> Self::BinarySeed {
+        FusionSeed {
+            p1_recv_id,
+            p2_recv_id,
+            grad_steps: M.max(1),
+        }
+    }
+    fn binary_inboxes(seed: &Self::BinarySeed) -> [ObjectId; 2] {
+        [seed.p1_recv_id, seed.p2_recv_id]
+    }
+    fn warp_seed(recv_id: ObjectId, warp_journey_id: Uuid) -> Self::WarpSeed {
+        BoundaryInit {
+            recv_id,
+            grad_steps: M.max(1),
+            warp_journey_id,
+        }
+    }
+    fn register_inboxes(state: &mut Self::State, ports: &[(u32, ObjectId)]) {
+        state.inboxes.extend(ports.iter().copied());
+    }
+}
+
+/// Backward program for two data-parallel replicas of one pipeline.
+///
+/// Every topology vertex must be [`Binary`](crate::topology::Binary): its P1
+/// and P2 ports are the corresponding stage in replicas 0 and 1. The node
+/// joins matching commands and steps its shared stage only after both replicas
+/// have completed all local micro-batches.
+pub struct DataParallelPipelineBackward<
+    Source,
+    InputOp,
+    OutputOp = InputOp,
+    Policy = (),
+    S = (),
+    const M: usize = 1,
+>(
+    PhantomData<(Source, InputOp, OutputOp, Policy)>,
+    PhantomData<fn() -> S>,
+);
+
+impl<Source, InputOp, OutputOp, Policy, S, const M: usize> SunProgram
+    for DataParallelPipelineBackward<Source, InputOp, OutputOp, Policy, S, M>
+where
+    InputOp: BackwardContract,
+    OutputOp: BackwardContract,
+    InputOp::Input: Send + 'static,
+    OutputOp::Output: Send + 'static,
+{
+    type State = PipelineBackwardState<S>;
+    type Driver =
+        DataParallelPipelineBackwardFlow<Source, InputOp::Input, OutputOp::Output, Policy, S, M>;
+    type UnarySeed = Init;
+    type BinarySeed = FusionSeed;
+    type WarpSeed = BoundaryInit;
+
     fn unary_seed(inbox: ObjectId) -> Self::UnarySeed {
         Init {
             recv_id: inbox,
@@ -774,3 +975,304 @@ pub struct BackwardOperationMicrostep<
 
 pub type BackwardOperationCell<Op, S = ()> = BackwardOperationCellWithState<Op, S>;
 pub type BackwardOperationPrimordium<Op, S = ()> = BackwardOperationCellWithState<Op, S>;
+
+/// State for a Fusion-style stage shared by two data-parallel pipeline lanes.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DataParallelOperationState {
+    pub model_ids: [ObjectId; 2],
+    pub recv_ids: [ObjectId; 2],
+}
+
+pub struct InitDataParallelOperation;
+#[jungle::action(carry = FusionSeed)]
+impl Action for InitDataParallelOperation {
+    type Effect = NoEffect;
+    type Input = FusionSeed;
+    type Output = ();
+
+    fn emit(_state: &DataParallelOperationState, seed: Self::Input) -> ((), FusionSeed) {
+        ((), seed)
+    }
+
+    fn absorb(
+        state: &mut DataParallelOperationState,
+        output: EffectCompletion<Self::Effect>,
+        seed: FusionSeed,
+    ) -> Result<(), Failure> {
+        output.map_err(|_| Failure::Message("initialize data-parallel stage failed".into()))?;
+        state.recv_ids = [seed.p1_recv_id, seed.p2_recv_id];
+        Ok(())
+    }
+}
+
+pub struct GenerateDataParallelModelIdsEffect;
+#[jungle::effect(id = 90)]
+impl<J> Effect<J> for GenerateDataParallelModelIdsEffect {
+    type In = ();
+    type Out = [ObjectId; 2];
+    type Err = AtomError;
+
+    fn effect(
+        _jungle: &J,
+        _input: (),
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async { Ok([Uuid::new_v4(), Uuid::new_v4()]) }
+    }
+}
+
+pub struct GenerateDataParallelModelIds;
+#[jungle::action]
+impl Action for GenerateDataParallelModelIds {
+    type Effect = GenerateDataParallelModelIdsEffect;
+    type Input = ();
+    type Output = ();
+
+    fn emit(_state: &DataParallelOperationState, _input: ()) {}
+
+    fn absorb(
+        state: &mut DataParallelOperationState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<(), Failure> {
+        state.model_ids = output.map_err(|error| {
+            Failure::Message(format!("generate data-parallel model IDs failed: {error}"))
+        })?;
+        Ok(())
+    }
+}
+
+pub struct StartDataParallelOperationEffect<Op>(PhantomData<fn() -> Op>);
+#[jungle::effect(id = 91)]
+impl<Op, J> Effect<J> for StartDataParallelOperationEffect<Op>
+where
+    Op: TensorContract + Send + Sync + 'static,
+    J: MassOps<Op>,
+{
+    type In = [ObjectId; 2];
+    type Out = ();
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        ids: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let left = MassOps::<Op>::start_operation(jungle, ids[0]);
+            let right = MassOps::<Op>::start_operation(jungle, ids[1]);
+            futures::future::try_join(left, right)
+                .await
+                .map(|_| ())
+                .map_err(AtomError::ModelStart)
+        }
+    }
+}
+
+pub struct StartDataParallelOperation<Op>(PhantomData<fn() -> Op>);
+#[jungle::action]
+impl<Op> Action for StartDataParallelOperation<Op>
+where
+    Op: TensorContract + Send + Sync + 'static,
+{
+    type Effect = StartDataParallelOperationEffect<Op>;
+    type Input = ();
+    type Output = ();
+
+    fn emit(state: &DataParallelOperationState, _input: ()) -> [ObjectId; 2] {
+        state.model_ids
+    }
+
+    fn absorb(
+        _state: &mut DataParallelOperationState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<(), Failure> {
+        output.map_err(|error| {
+            Failure::Message(format!("start data-parallel operation failed: {error}"))
+        })
+    }
+}
+
+pub struct WaitForDataParallelPipelineCommandsEffect;
+#[jungle::effect(id = 92)]
+impl<J: VoidOps> Effect<J> for WaitForDataParallelPipelineCommandsEffect {
+    type In = [ObjectId; 2];
+    type Out = [OperationalControl<PipelineCommand>; 2];
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        ids: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let left = jungle.wait_for_operational_control(ids[0]);
+            let right = jungle.wait_for_operational_control(ids[1]);
+            let (left, right) = futures::future::try_join(left, right)
+                .await
+                .map_err(AtomError::Transmission)?;
+            Ok([left, right])
+        }
+    }
+}
+
+pub struct WaitForDataParallelPipelineCommands;
+#[jungle::action]
+impl Action for WaitForDataParallelPipelineCommands {
+    type Effect = WaitForDataParallelPipelineCommandsEffect;
+    type Input = ();
+    type Output = [PipelineCommand; 2];
+
+    fn emit(state: &DataParallelOperationState, _input: ()) -> [ObjectId; 2] {
+        state.recv_ids
+    }
+
+    fn absorb(
+        state: &mut DataParallelOperationState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        let [left, right] = output.map_err(|error| {
+            Failure::Message(format!("wait for data-parallel commands failed: {error}"))
+        })?;
+        state.recv_ids = [left.recv, right.recv];
+        Ok([left.control, right.control])
+    }
+}
+
+fn matching_pipeline_commands(commands: &[PipelineCommand; 2]) -> bool {
+    match (&commands[0], &commands[1]) {
+        (
+            PipelineCommand::Forward { micro_batch: a, .. },
+            PipelineCommand::Forward { micro_batch: b, .. },
+        )
+        | (
+            PipelineCommand::Backward { micro_batch: a, .. },
+            PipelineCommand::Backward { micro_batch: b, .. },
+        ) => a == b,
+        (PipelineCommand::Step { step: a, .. }, PipelineCommand::Step { step: b, .. }) => a == b,
+        _ => false,
+    }
+}
+
+pub struct ExecuteDataParallelPipelineCommands<M, Op>(PhantomData<fn() -> (M, Op)>);
+#[jungle::effect(id = 93)]
+impl<M, Op, J> Effect<J> for ExecuteDataParallelPipelineCommands<M, Op>
+where
+    M: Serialize + DeserializeOwned + Send + Sync + 'static,
+    Op: BackwardContract<Metadata = M> + Send + Sync + 'static,
+    Op::Input: Send,
+    Op::Output: Send,
+    Op::OutputGrad: Send,
+    Op::InputGrad: Send,
+    J: VoidOps + MassOps<Op> + BackwardOps<Op> + StepOps<Op> + CheckpointOps<Op>,
+{
+    type In = ([ObjectId; 2], [PipelineCommand; 2]);
+    type Out = ();
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        (ids, commands): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            if !matching_pipeline_commands(&commands) {
+                return Err(AtomError::Inference(
+                    "data-parallel stage received mismatched lane commands".into(),
+                ));
+            }
+            if let [PipelineCommand::Step { reply: left, .. }, PipelineCommand::Step { reply: right, .. }] =
+                &commands
+            {
+                let response = match StepOps::<Op>::step(jungle, ids[0]).await {
+                    Ok(()) => PipelineResponse::Stepped,
+                    Err(message) => PipelineResponse::Failed {
+                        micro_batch: None,
+                        message,
+                    },
+                };
+                let bytes = postcard::to_allocvec(&response)?;
+                let left = jungle.upload_to_void_with(*left, bytes.clone());
+                let right = jungle.upload_to_void_with(*right, bytes);
+                futures::future::try_join(left, right)
+                    .await
+                    .map(|_| ())
+                    .map_err(AtomError::Transmission)
+            } else {
+                let [left_command, right_command] = commands;
+                let left = <ExecutePipelineCommand<M, Op> as Effect<J>>::effect(
+                    jungle,
+                    (ids[0], left_command, 0, None),
+                );
+                let right = <ExecutePipelineCommand<M, Op> as Effect<J>>::effect(
+                    jungle,
+                    (ids[1], right_command, 0, None),
+                );
+                futures::future::try_join(left, right).await.map(|_| ())
+            }
+        }
+    }
+}
+
+pub struct ExecuteDataParallelPipeline<M, Op>(PhantomData<fn() -> (M, Op)>);
+#[jungle::action]
+impl<M, Op> Action for ExecuteDataParallelPipeline<M, Op>
+where
+    M: Serialize + DeserializeOwned + Send + Sync + 'static,
+    Op: BackwardContract<Metadata = M> + Send + Sync + 'static,
+    Op::Input: Send,
+    Op::Output: Send,
+    Op::OutputGrad: Send,
+    Op::InputGrad: Send,
+{
+    type Effect = ExecuteDataParallelPipelineCommands<M, Op>;
+    type Input = [PipelineCommand; 2];
+    type Output = ();
+
+    fn emit(
+        state: &DataParallelOperationState,
+        commands: Self::Input,
+    ) -> ([ObjectId; 2], [PipelineCommand; 2]) {
+        (state.model_ids, commands)
+    }
+
+    fn absorb(
+        _state: &mut DataParallelOperationState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<(), Failure> {
+        output.map_err(|error| {
+            Failure::Message(format!("data-parallel pipeline operation failed: {error}"))
+        })
+    }
+}
+
+#[derive(Flow)]
+pub struct DataParallelBackwardOperationCell<
+    Op: BackwardContract<
+            Input: Send,
+            Output: Send,
+            OutputGrad: Send,
+            InputGrad: Send,
+            Metadata: Serialize + DeserializeOwned + Send + Sync + 'static,
+        > + Send
+        + Sync
+        + 'static,
+>(
+    Step<InitDataParallelOperation>,
+    Step<GenerateDataParallelModelIds>,
+    Step<StartDataParallelOperation<Op>>,
+    While<Always<DataParallelOperationState, ()>, DataParallelBackwardOperationMicrostep<Op>>,
+);
+
+#[derive(Flow)]
+pub struct DataParallelBackwardOperationMicrostep<
+    Op: BackwardContract<
+            Input: Send,
+            Output: Send,
+            OutputGrad: Send,
+            InputGrad: Send,
+            Metadata: Serialize + DeserializeOwned + Send + Sync + 'static,
+        > + Send
+        + Sync
+        + 'static,
+>(
+    Step<WaitForDataParallelPipelineCommands>,
+    Step<ExecuteDataParallelPipeline<<Op as TensorContract>::Metadata, Op>>,
+);
+
+pub type DataParallelBackwardOperationPrimordium<Op> = DataParallelBackwardOperationCell<Op>;

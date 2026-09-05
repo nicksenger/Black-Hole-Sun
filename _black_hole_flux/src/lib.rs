@@ -129,8 +129,10 @@ pub use forward::{
 pub use programs::checkpoint_evaluate::{CheckpointEvaluate, CheckpointEvaluateFlow};
 pub use programs::forward_only::{ForwardOnly, ForwardOnlyWithPolicy};
 pub use programs::pipeline_backward::{
-    BackwardOperationCell, BackwardOperationPrimordium, PipelineBackward, PipelineBackwardState,
-    PipelineCommand, PipelineResponse, PipelineStepResult,
+    BackwardOperationCell, BackwardOperationPrimordium, DataParallelBackwardOperationCell,
+    DataParallelBackwardOperationPrimordium, DataParallelOperationState,
+    DataParallelPipelineBackward, PipelineBackward, PipelineBackwardState, PipelineCommand,
+    PipelineResponse, PipelineStepResult,
 };
 pub use programs::two_sided_zo::action::{
     BroadcastPotentiation, BroadcastPotentiationInput, InitializePropagation, ProcessNextNode,

@@ -27,6 +27,7 @@ pub use tokenizer::{Tokenizer, TokenizerBuilder};
 pub use void_client::{PreparedTransfer, VoidClient};
 
 // Convenience re-exports — flux modules and core sun types
+pub use black_hole_flux::configure_checkpointing;
 pub use black_hole_flux::nodes::{atom, cell, fusion, warp};
 pub use black_hole_flux::ForwardOnlyWithPolicy;
 pub use black_hole_flux::{compile, forward, programs, topology};
@@ -39,10 +40,10 @@ pub use black_hole_flux::{
     OscillationSchedule, PerturbOps, QuzoFusion, QuzoFusionWithModelConfig, QwenAdapterOps, Ray,
     ResetOps, StepOps, VoidInferOps, VoidOps, Warp,
 };
-pub use black_hole_flux::configure_checkpointing;
 pub use black_hole_flux::{
-    BackwardOperationCell, BackwardOperationPrimordium, PipelineBackward, PipelineBackwardState,
-    PipelineStepResult,
+    BackwardOperationCell, BackwardOperationPrimordium, DataParallelBackwardOperationCell,
+    DataParallelBackwardOperationPrimordium, DataParallelOperationState,
+    DataParallelPipelineBackward, PipelineBackward, PipelineBackwardState, PipelineStepResult,
 };
 
 // Convenience re-exports — spec types

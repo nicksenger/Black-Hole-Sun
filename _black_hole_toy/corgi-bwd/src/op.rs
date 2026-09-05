@@ -1,6 +1,6 @@
 //! Server-side training operations: cached forward, backward, and step.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -22,6 +22,13 @@ use corgi_fwd::spec::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizerConfig {
     pub learning_rate: f64,
+    /// Number of replicas whose accumulated gradients are averaged per step.
+    #[serde(default = "one_replica")]
+    pub data_parallel_replicas: usize,
+}
+
+fn one_replica() -> usize {
+    1
 }
 
 struct CachedForward {
@@ -34,9 +41,10 @@ pub struct TrainOperation<C, M> {
     pub model: M,
     pub device: Device,
     varmap: candle_nn::VarMap,
-    pending: Mutex<VecDeque<CachedForward>>,
+    pending: Mutex<HashMap<uuid::Uuid, VecDeque<CachedForward>>>,
     gradients: Mutex<GradStore>,
     optimizer: Mutex<SGD>,
+    gradient_scale: Mutex<f64>,
     _contract: std::marker::PhantomData<C>,
 }
 
@@ -53,9 +61,10 @@ impl<C, M> TrainOperation<C, M> {
             model,
             device,
             varmap,
-            pending: Mutex::new(VecDeque::new()),
+            pending: Mutex::new(HashMap::new()),
             gradients: Mutex::new(GradStore::default()),
             optimizer: Mutex::new(optimizer),
+            gradient_scale: Mutex::new(1.0),
             _contract: std::marker::PhantomData,
         })
     }
@@ -84,7 +93,11 @@ fn start_config(config: Option<&OperationConfig>) -> Result<Option<OptimizerConf
         .transpose()
 }
 
-fn forward<C, M>(operation: &TrainOperation<C, M>, input: Vec<u8>) -> Result<Vec<u8>, String>
+fn forward<C, M>(
+    operation: &TrainOperation<C, M>,
+    id: uuid::Uuid,
+    input: Vec<u8>,
+) -> Result<Vec<u8>, String>
 where
     C: BackwardContract<Metadata = SampleMetadata>,
     M: Module,
@@ -109,6 +122,8 @@ where
         .pending
         .lock()
         .map_err(|_| "forward cache poisoned".to_owned())?
+        .entry(id)
+        .or_default()
         .push_back(CachedForward {
             input,
             output,
@@ -119,6 +134,7 @@ where
 
 fn backward<C, M>(
     operation: &TrainOperation<C, M>,
+    id: uuid::Uuid,
     gradient: Vec<u8>,
     is_head: bool,
 ) -> Result<Vec<u8>, String>
@@ -131,6 +147,8 @@ where
         .pending
         .lock()
         .map_err(|_| "forward cache poisoned".to_owned())?
+        .get_mut(&id)
+        .ok_or_else(|| "backward arrived for an unknown data-parallel replica".to_owned())?
         .pop_front()
         .ok_or_else(|| "backward arrived without a cached forward".to_owned())?;
     let objective = if is_head {
@@ -192,11 +210,12 @@ where
 }
 
 fn step<C, M>(operation: &TrainOperation<C, M>) -> Result<(), String> {
-    if !operation
+    if operation
         .pending
         .lock()
         .map_err(|_| "forward cache poisoned".to_owned())?
-        .is_empty()
+        .values()
+        .any(|pending| !pending.is_empty())
     {
         return Err("step arrived while forward graphs were still cached".into());
     }
@@ -204,11 +223,24 @@ fn step<C, M>(operation: &TrainOperation<C, M>) -> Result<(), String> {
         .gradients
         .lock()
         .map_err(|_| "gradient accumulator poisoned".to_owned())?;
+    let scale = *operation
+        .gradient_scale
+        .lock()
+        .map_err(|_| "gradient scale poisoned".to_owned())?;
+    let mut averaged = GradStore::default();
+    for variable in operation.varmap.all_vars() {
+        if let Some(gradient) = gradients.get(&variable) {
+            averaged.insert(
+                &variable,
+                gradient.affine(scale, 0.0).map_err(|e| e.to_string())?,
+            );
+        }
+    }
     operation
         .optimizer
         .lock()
         .map_err(|_| "optimizer poisoned".to_owned())?
-        .step(&gradients)
+        .step(&averaged)
         .map_err(|e| e.to_string())?;
     *gradients = GradStore::default();
     Ok(())
@@ -292,14 +324,20 @@ macro_rules! operation_impl {
                         .lock()
                         .map_err(|_| "optimizer poisoned".to_owned())?
                         .set_learning_rate(config.learning_rate);
+                    *self
+                        .0
+                        .gradient_scale
+                        .lock()
+                        .map_err(|_| "gradient scale poisoned".to_owned())? =
+                        1.0 / config.data_parallel_replicas.max(1) as f64;
                 }
                 Ok(())
             }
-            async fn forward(&self, _id: uuid::Uuid, input: Vec<u8>) -> Result<Vec<u8>, String> {
-                forward::<$contract, _>(&self.0, input)
+            async fn forward(&self, id: uuid::Uuid, input: Vec<u8>) -> Result<Vec<u8>, String> {
+                forward::<$contract, _>(&self.0, id, input)
             }
-            async fn backward(&self, _id: uuid::Uuid, grad: Vec<u8>) -> Result<Vec<u8>, String> {
-                backward::<$contract, _>(&self.0, grad, $head)
+            async fn backward(&self, id: uuid::Uuid, grad: Vec<u8>) -> Result<Vec<u8>, String> {
+                backward::<$contract, _>(&self.0, id, grad, $head)
             }
             async fn step(&self, _id: uuid::Uuid) -> Result<(), String> {
                 step(&self.0)

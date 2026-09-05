@@ -1,37 +1,31 @@
-use std::fs;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use black_hole_sun::{MassClient, VoidClient};
 use candle::{DType, Device};
 use candle_nn::{Module, VarBuilder, VarMap};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use corgi_bwd::flow::{required_capabilities, CorgiJungle};
 use corgi_bwd::op::{
     HeadOperation, OptimizerConfig, Stage1Operation, Stage2Operation, Stage3Operation,
     Stage4Operation, StemOperation, TrainOperation,
 };
-use corgi_bwd::spec::{CorgiBackward, COMPLETED_STEPS, MICRO_BATCHES};
 use corgi_fwd::model::{
     build_stage1, build_stage2, build_stage3, build_stage4, build_trainable_stem, pool_stage4,
 };
+use corgi_par::flow::CorgiParallelJungle;
+use corgi_par::spec::{CorgiParallel, COMPLETED_STEPS, DATA_PARALLEL_REPLICAS, MICRO_BATCHES};
 use jungle_sdk::{FusedClient, JourneyStatus, JungleClient};
 use toy_common::dataset::{configure_hf_cache, model_path, BATCH_SIZE, DATASET_SAMPLES};
 use toy_common::runtime::{run_until, RunCheck, ServerSpecs};
 
 #[derive(Debug, Parser)]
-#[command(about = "Train a pipeline-parallel ResNet-18 corgi identifier")]
+#[command(about = "Train a ResNet-18 corgi classifier with PP=6 and DP=2")]
 struct Args {
-    /// Number of optimizer steps (each consumes eight four-image micro-batches).
+    /// Number of synchronized optimizer steps (each replica consumes eight micro-batches).
     #[arg(long, default_value_t = 1)]
     steps: usize,
-    /// Save model checkpoints every N completed optimizer steps; disabled by default.
-    #[arg(long, default_value_t = 0)]
-    checkpoint_steps: usize,
-    /// Save unified model checkpoints by default, or one checkpoint per stage.
-    #[arg(long, value_enum, default_value_t = CheckpointMode::Unified)]
-    checkpoint_mode: CheckpointMode,
-    /// Learning rate used independently by every stage.
+    /// Learning rate applied after averaging the two replicas' gradients.
     #[arg(long, default_value_t = 1e-4)]
     learning_rate: f64,
     /// Optional local Candle ResNet-18 safetensors checkpoint.
@@ -41,14 +35,6 @@ struct Args {
     #[arg(long)]
     cache_dir: Option<std::path::PathBuf>,
 }
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum CheckpointMode {
-    Unified,
-    Sharded,
-}
-
-const OPERATION_COUNT: usize = 6;
 
 fn build_trainable<M>(
     path: &Path,
@@ -77,30 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.steps == 0 {
         return Ok(());
     }
-    let checkpoint_dir = if args.checkpoint_steps == 0 {
-        None
-    } else {
-        Some(tempfile::tempdir()?)
-    };
-    black_hole_sun::configure_checkpointing(
-        args.checkpoint_steps,
-        checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf()),
-    );
-    if let Some(dir) = &checkpoint_dir {
-        eprintln!("saving checkpoints to {}", dir.path().display());
-    }
-    let checkpoint_path = checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf());
-    corgi_bwd::spec::configure_unified_checkpointing(
-        if matches!(args.checkpoint_mode, CheckpointMode::Unified) {
-            args.checkpoint_steps
-        } else {
-            0
-        },
-        matches!(args.checkpoint_mode, CheckpointMode::Unified)
-            .then(|| checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf()))
-            .flatten(),
-    );
-    configure_hf_cache(args.cache_dir, "corgi-bwd")?;
+    black_hole_sun::configure_checkpointing(0, None);
+    configure_hf_cache(args.cache_dir, "corgi-par")?;
     let path = model_path(args.model)?;
     let device = Device::Cpu;
 
@@ -108,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         encoding: black_hole_sun::EncodingId::POSTCARD_V1,
         data: postcard::to_allocvec(&OptimizerConfig {
             learning_rate: args.learning_rate,
-            data_parallel_replicas: 1,
+            data_parallel_replicas: DATA_PARALLEL_REPLICAS,
         })?,
     };
 
@@ -165,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     let client = FusedClient::builder().build().await?;
-    let jungle = CorgiJungle {
+    let inner = CorgiJungle {
         client: client.clone(),
         void: VoidClient::new_tcp(servers.void_addr),
         stem: MassClient::new_tcp_typed(servers.mass_addrs[0]).requiring(required_capabilities()),
@@ -176,8 +140,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         head: MassClient::new_tcp_typed(servers.mass_addrs[5]).requiring(required_capabilities()),
         optimizer_config,
     };
+    let jungle = CorgiParallelJungle { inner };
 
-    let result = run_until::<CorgiJungle, CorgiBackward<MICRO_BATCHES>, _, _>(
+    let result = run_until::<CorgiParallelJungle, CorgiParallel<MICRO_BATCHES>, _, _>(
         &jungle,
         &client,
         &(),
@@ -185,50 +150,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         |handle| {
             let journey_id = handle.journey_id;
             let client = &client;
-            let checkpoint_path = checkpoint_path.clone();
             async move {
-                let completed_steps = COMPLETED_STEPS.load(Ordering::Acquire);
-                let expected_checkpoints = checkpoint_path
-                    .as_ref()
-                    .map(|_| {
-                        let steps = args.steps / args.checkpoint_steps;
-                        match args.checkpoint_mode {
-                            CheckpointMode::Unified => steps,
-                            CheckpointMode::Sharded => steps * OPERATION_COUNT,
-                        }
-                    })
-                    .unwrap_or(0);
-                let checkpoints_ready = checkpoint_path.as_ref().is_none_or(|path| {
-                    fs::read_dir(path)
-                        .map(|entries| {
-                            entries
-                                .flatten()
-                                .filter(|entry| {
-                                    entry.file_name().to_str().is_some_and(|name| {
-                                        let Some(id) = name
-                                            .strip_prefix("step-")
-                                            .and_then(|name| name.strip_suffix(".checkpoint"))
-                                        else {
-                                            return false;
-                                        };
-                                        match args.checkpoint_mode {
-                                            CheckpointMode::Unified => !id.contains('-'),
-                                            CheckpointMode::Sharded => id.contains('-'),
-                                        }
-                                    })
-                                })
-                                .count()
-                                >= expected_checkpoints
-                        })
-                        .unwrap_or(false)
-                });
-                if completed_steps >= args.steps && checkpoints_ready {
+                if COMPLETED_STEPS.load(Ordering::Acquire) >= args.steps {
                     return RunCheck::Done;
                 }
                 match client.journey_details(journey_id).await {
                     Ok(JourneyStatus::Dead | JourneyStatus::Stopped | JourneyStatus::Completed) => {
                         RunCheck::Failed(
-                            "corgi-bwd pipeline stopped before completing the requested steps"
+                            "corgi-par pipeline stopped before completing the requested steps"
                                 .to_owned(),
                         )
                     }
@@ -241,10 +170,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
 
     servers.shutdown();
-
     println!(
-        "corgi-bwd completed {} optimizer step(s), {} micro-batches of {} images each (source dataset contains {DATASET_SAMPLES})",
-        args.steps, MICRO_BATCHES, BATCH_SIZE
+        "corgi-par completed {} optimizer step(s), {DATA_PARALLEL_REPLICAS} replicas x {MICRO_BATCHES} micro-batches x {BATCH_SIZE} images (source dataset contains {DATASET_SAMPLES})",
+        args.steps
     );
     result
         .map(|_| ())
