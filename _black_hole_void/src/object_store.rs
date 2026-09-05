@@ -373,6 +373,18 @@ impl FilesystemObjectStore {
 
         Ok(self.root.join(key))
     }
+
+    /// Return a temporary sibling path used to make object replacement
+    /// atomic. A temporary file in the same directory can be renamed over
+    /// the destination without exposing a partially written object to
+    /// readers.
+    fn temporary_path(path: &Path) -> PathBuf {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("object");
+        path.with_file_name(format!(".{name}.tmp-{}", uuid::Uuid::new_v4()))
+    }
 }
 
 impl FilesystemObjectStore {
@@ -392,13 +404,23 @@ impl FilesystemObjectStore {
 impl ObjectStore for FilesystemObjectStore {
     async fn put(&self, key: String, data: Vec<u8>) -> Result<()> {
         let path = self.object_path(&key)?;
-        fs::write(&path, data).map_err(|e| {
-            ObjectStoreError::Message(format!(
-                "failed to write object {} to {}: {e}",
+        let temporary_path = Self::temporary_path(&path);
+        if let Err(error) = fs::write(&temporary_path, data) {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(ObjectStoreError::Message(format!(
+                "failed to write object {} to {}: {error}",
                 key,
                 path.display()
-            ))
-        })?;
+            )));
+        }
+        if let Err(error) = fs::rename(&temporary_path, &path) {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(ObjectStoreError::Message(format!(
+                "failed to publish object {} at {}: {error}",
+                key,
+                path.display()
+            )));
+        }
         Ok(())
     }
 
@@ -476,42 +498,58 @@ impl ObjectStore for FilesystemObjectStore {
             )));
         }
         let path = self.object_path(key)?;
+        let temporary_path = Self::temporary_path(&path);
 
         // Assemble the final object from part files in part-number order.
-        let mut out = fs::File::create(&path).map_err(|e| {
-            ObjectStoreError::Message(format!(
-                "failed to create object {} at {}: {e}",
-                key,
-                path.display()
-            ))
-        })?;
-        for (part_number, _) in parts {
-            let part_path = dir.join(format!("{part_number:08x}.part"));
-            let mut part = fs::File::open(&part_path).map_err(|e| match e.kind() {
-                io::ErrorKind::NotFound => ObjectStoreError::Message(format!(
-                    "missing multipart part file {} for session {session_id}",
-                    part_path.display()
-                )),
-                _ => ObjectStoreError::Message(format!(
-                    "failed to read multipart part {}: {e}",
-                    part_path.display()
-                )),
-            })?;
-            io::copy(&mut part, &mut out).map_err(|e| {
+        let result = (|| {
+            let mut out = fs::File::create(&temporary_path).map_err(|error| {
                 ObjectStoreError::Message(format!(
-                    "failed to assemble object {} from parts: {e}",
-                    key
+                    "failed to create object {} at {}: {error}",
+                    key,
+                    path.display()
                 ))
             })?;
-        }
+            for (part_number, _) in parts {
+                let part_path = dir.join(format!("{part_number:08x}.part"));
+                let mut part = fs::File::open(&part_path).map_err(|e| match e.kind() {
+                    io::ErrorKind::NotFound => ObjectStoreError::Message(format!(
+                        "missing multipart part file {} for session {session_id}",
+                        part_path.display()
+                    )),
+                    _ => ObjectStoreError::Message(format!(
+                        "failed to read multipart part {}: {e}",
+                        part_path.display()
+                    )),
+                })?;
+                io::copy(&mut part, &mut out).map_err(|e| {
+                    ObjectStoreError::Message(format!(
+                        "failed to assemble object {} from parts: {e}",
+                        key
+                    ))
+                })?;
+            }
+            drop(out);
 
-        if let Err(e) = fs::remove_dir_all(&dir) {
-            return Err(ObjectStoreError::Message(format!(
-                "failed to remove multipart directory {}: {e}",
-                dir.display()
-            )));
+            fs::rename(&temporary_path, &path).map_err(|error| {
+                ObjectStoreError::Message(format!(
+                    "failed to publish object {} at {}: {error}",
+                    key,
+                    path.display()
+                ))
+            })?;
+
+            fs::remove_dir_all(&dir).map_err(|e| {
+                ObjectStoreError::Message(format!(
+                    "failed to remove multipart directory {}: {e}",
+                    dir.display()
+                ))
+            })?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
         }
-        Ok(())
+        result
     }
 
     async fn abort_multipart(&self, _key: &str, session_id: &str) -> Result<()> {
