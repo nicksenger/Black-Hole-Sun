@@ -190,6 +190,7 @@ pub struct OperationInnerWithState<
     While<HasPendingGradientStep<S>, OperationZoPropagationMicrostepWithState<N, Op, S>>,
     Step<WaitForPotentiation_<S>>,
     Step<OptimizeOperation_<Op, S>>,
+    Step<action::CheckpointOperation<Op, S>>,
 );
 
 /// One typed delivery → operation → delivery microstep.

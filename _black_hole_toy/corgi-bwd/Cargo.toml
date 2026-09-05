@@ -19,6 +19,7 @@ jungle-sdk = { git = "https://github.com/nicksenger/Jungle.git", branch = "black
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tempfile = "3"
 tracing = "0.1"
 typenum = "1"
 uuid = { version = "1", features = ["v4"] }

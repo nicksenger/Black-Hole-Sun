@@ -1770,6 +1770,7 @@ dependencies = [
  "jungle-sdk",
  "postcard",
  "serde",
+ "tempfile",
  "tokio",
  "tracing",
  "typenum",

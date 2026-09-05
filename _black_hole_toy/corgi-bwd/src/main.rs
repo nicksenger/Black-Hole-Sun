@@ -24,6 +24,9 @@ struct Args {
     /// Number of optimizer steps (each consumes eight four-image micro-batches).
     #[arg(long, default_value_t = 1)]
     steps: usize,
+    /// Save model checkpoints every N completed optimizer steps; disabled by default.
+    #[arg(long, default_value_t = 0)]
+    checkpoint_steps: usize,
     /// Learning rate used independently by every stage.
     #[arg(long, default_value_t = 1e-4)]
     learning_rate: f64,
@@ -61,6 +64,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     if args.steps == 0 {
         return Ok(());
+    }
+    let checkpoint_dir = if args.checkpoint_steps == 0 {
+        None
+    } else {
+        Some(tempfile::tempdir()?)
+    };
+    black_hole_sun::configure_checkpointing(
+        args.checkpoint_steps,
+        checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf()),
+    );
+    if let Some(dir) = &checkpoint_dir {
+        eprintln!("saving checkpoints to {}", dir.path().display());
     }
     configure_hf_cache(args.cache_dir, "corgi-bwd")?;
     let path = model_path(args.model)?;

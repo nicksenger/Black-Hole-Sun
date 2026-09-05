@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::compile::SunProgram;
 use crate::nodes::cell::action::{CellState, Init};
 use crate::nodes::fusion::action::FusionSeed;
-use crate::ops::{BackwardOps, MassOps, StepOps, VoidOps};
+use crate::ops::{BackwardOps, CheckpointOps, MassOps, StepOps, VoidOps};
 use crate::topology::{BoundaryInit, SunTopology, SunTopologyState};
 use crate::AtomError;
 
@@ -40,6 +40,7 @@ pub enum PipelineCommand {
     },
     Step {
         reply: ObjectId,
+        step: usize,
     },
 }
 
@@ -337,7 +338,10 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
             let mut steps = Vec::with_capacity(p);
             for &port in ports.iter().take(p) {
                 let reply = send_command(jungle, &mut inboxes, port, |reply| {
-                    PipelineCommand::Step { reply }
+                    PipelineCommand::Step {
+                        reply,
+                        step: input.step + 1,
+                    }
                 })
                 .await?;
                 steps.push(reply);
@@ -561,14 +565,14 @@ where
     Op::Output: Send,
     Op::OutputGrad: Send,
     Op::InputGrad: Send,
-    J: VoidOps + MassOps<Op> + BackwardOps<Op> + StepOps<Op>,
+    J: VoidOps + MassOps<Op> + BackwardOps<Op> + StepOps<Op> + CheckpointOps<Op>,
 {
-    type In = (ObjectId, PipelineCommand);
+    type In = (ObjectId, PipelineCommand, usize, Option<std::path::PathBuf>);
     type Out = ();
     type Err = AtomError;
     fn effect(
         jungle: &J,
-        (instance_id, command): Self::In,
+        (instance_id, command, checkpoint_steps, checkpoint_dir): Self::In,
     ) -> impl Future<Output = Result<(), AtomError>> + Send {
         async move {
             let (reply, micro_batch) = match &command {
@@ -578,7 +582,7 @@ where
                 | PipelineCommand::Backward {
                     micro_batch, reply, ..
                 } => (*reply, Some(*micro_batch)),
-                PipelineCommand::Step { reply } => (*reply, None),
+                PipelineCommand::Step { reply, .. } => (*reply, None),
             };
             let response = async {
                 Ok::<PipelineResponse, AtomError>(match command {
@@ -662,10 +666,19 @@ where
                             emission_id: id,
                         }
                     }
-                    PipelineCommand::Step { .. } => {
+                    PipelineCommand::Step { step, .. } => {
                         StepOps::<Op>::step(jungle, instance_id)
                             .await
                             .map_err(AtomError::Optimize)?;
+                        crate::nodes::cell::effect::save_operation_checkpoint::<Op, J>(
+                            jungle,
+                            instance_id,
+                            step,
+                            checkpoint_steps,
+                            checkpoint_dir.as_deref(),
+                        )
+                        .await
+                        .map_err(AtomError::Optimize)?;
                         PipelineResponse::Stepped
                     }
                 })
@@ -705,8 +718,16 @@ where
     type Effect = ExecutePipelineCommand<M, Op>;
     type Input = PipelineCommand;
     type Output = ();
-    fn emit(state: &CellState<S>, command: Self::Input) -> (ObjectId, PipelineCommand) {
-        (state.model_id, command)
+    fn emit(
+        state: &CellState<S>,
+        command: Self::Input,
+    ) -> (ObjectId, PipelineCommand, usize, Option<std::path::PathBuf>) {
+        (
+            state.model_id,
+            command,
+            state.checkpoint_steps,
+            state.checkpoint_dir.clone(),
+        )
     }
     fn absorb(
         _state: &mut CellState<S>,

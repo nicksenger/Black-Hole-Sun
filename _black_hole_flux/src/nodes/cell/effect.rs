@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::marker::PhantomData;
+use std::path::Path;
 
 use jungle_sdk::prelude::*;
 use tracing::debug;
@@ -12,6 +13,7 @@ use black_hole_type::{ObjectId, Transmission};
 use super::action::{Potentiation, Propagation};
 use crate::mass::{DefaultConfig, ModelConfig};
 use crate::ops::{MassOps, OptimizeOps, PerturbOps, VoidInferOps, VoidOps};
+use crate::ops::CheckpointOps;
 use crate::AtomError;
 use black_hole_spec::TensorContract;
 
@@ -273,6 +275,67 @@ where
                 instance_id,
                 potentiation.loss_up,
                 potentiation.loss_down,
+            )
+            .await
+            .map_err(AtomError::Optimize)
+        }
+    }
+}
+
+/// Persist a typed operation checkpoint in the caller-provided local directory.
+pub async fn save_operation_checkpoint<Op, J>(
+    jungle: &J,
+    instance_id: ObjectId,
+    step: usize,
+    every: usize,
+    directory: Option<&Path>,
+) -> Result<(), String>
+where
+    Op: TensorContract + Send + Sync + 'static,
+    J: CheckpointOps<Op> + VoidOps,
+{
+    if every == 0 || step == 0 || step % every != 0 {
+        return Ok(());
+    }
+    let directory = directory.ok_or_else(|| {
+        "checkpointing is enabled but no checkpoint directory was configured".to_owned()
+    })?;
+    tokio::fs::create_dir_all(directory)
+        .await
+        .map_err(|error| format!("create checkpoint directory {}: {error}", directory.display()))?;
+    let checkpoint_id = CheckpointOps::<Op>::checkpoint_operation(jungle, instance_id).await?;
+    let bytes = VoidOps::download_raw(jungle, checkpoint_id).await?;
+    let path = directory.join(format!("step-{step}-{instance_id}.checkpoint"));
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|error| format!("write checkpoint {}: {error}", path.display()))?;
+    tracing::info!(step, %instance_id, path = %path.display(), "saved operation checkpoint");
+    Ok(())
+}
+
+pub struct OperationMassCheckpoint<Op>(PhantomData<fn() -> Op>);
+
+#[jungle::effect(id = 88)]
+impl<Op, J> Effect<J> for OperationMassCheckpoint<Op>
+where
+    Op: TensorContract + Send + Sync + 'static,
+    J: CheckpointOps<Op> + VoidOps,
+{
+    type In = (ObjectId, usize, usize, Option<std::path::PathBuf>);
+    type Out = ();
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        (instance_id, step, every, directory): Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            save_operation_checkpoint::<Op, J>(
+                jungle,
+                instance_id,
+                step,
+                every,
+                directory.as_deref(),
             )
             .await
             .map_err(AtomError::Optimize)

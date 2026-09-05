@@ -78,15 +78,16 @@ pub use mass::{
 pub use nodes::atom::effect::MassInfer;
 pub use nodes::cell::action::{
     AdvanceGradientStep, BeginGradientAccumulation, CellState, GenerateModelId, Init as CellInit,
-    InitRecvId, MassInferStep, Optimize, OptimizeOperation, PerturbDown, PerturbOperationDown,
+    CheckpointOperation, InitRecvId, MassInferStep, Optimize, OptimizeOperation, PerturbDown, PerturbOperationDown,
     PerturbOperationUp, PerturbUp, Potentiation, PrepareAtomInput, PrepareOperationInput,
     Propagation, ShutdownModel, StartModel, StartOperation, Transmit, TransmitArtifact,
     WaitForArtifact, WaitForOperationalControl, WaitForPotentiation, WaitForPropagation,
+    configure_checkpointing,
 };
 pub use nodes::cell::effect::{
     GenerateModelIdEffect, MassOptimize, MassPerturbDown, MassPerturbUp, MassShutdown, MassStart,
     OperationMassOptimize, OperationMassPerturbDown, OperationMassPerturbUp, OperationMassStart,
-    Transmit as TransmitEffect, TransmitArtifactEffect, WaitForArtifactDeliveryEffect,
+    OperationMassCheckpoint, Transmit as TransmitEffect, TransmitArtifactEffect, WaitForArtifactDeliveryEffect,
     WaitForOperationalControlEffect, WaitForPotentiationEffect, WaitForPropagationEffect,
 };
 pub use nodes::fusion::action::{FusionSeed, FusionState};

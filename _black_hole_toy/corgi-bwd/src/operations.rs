@@ -23,6 +23,17 @@ pub struct OptimizerConfig {
     pub learning_rate: f64,
 }
 
+#[derive(Serialize)]
+struct Checkpoint {
+    tensors: Vec<CheckpointTensor>,
+}
+
+#[derive(Serialize)]
+struct CheckpointTensor {
+    shape: Vec<usize>,
+    values: Vec<f32>,
+}
+
 struct CachedForward {
     input: Var,
     output: Tensor,
@@ -32,6 +43,7 @@ struct CachedForward {
 pub struct TrainOperation<C, M> {
     pub model: M,
     pub device: Device,
+    variables: Vec<Var>,
     pending: Mutex<VecDeque<CachedForward>>,
     gradients: Mutex<GradStore>,
     optimizer: Mutex<SGD>,
@@ -45,12 +57,14 @@ impl<C, M> TrainOperation<C, M> {
         variables: Vec<Var>,
         learning_rate: f64,
     ) -> candle::Result<Self> {
+        let optimizer = SGD::new(variables.clone(), learning_rate)?;
         Ok(Self {
             model,
             device,
+            variables,
             pending: Mutex::new(VecDeque::new()),
             gradients: Mutex::new(GradStore::default()),
-            optimizer: Mutex::new(SGD::new(variables, learning_rate)?),
+            optimizer: Mutex::new(optimizer),
             _contract: std::marker::PhantomData,
         })
     }
@@ -67,6 +81,7 @@ fn capability<C: BackwardContract>() -> OperationCapability {
         forward: true,
         backward: true,
         step: true,
+        checkpoint: true,
         ..OperationCapabilities::default()
     };
     capability
@@ -205,6 +220,25 @@ fn step<C, M>(operation: &TrainOperation<C, M>) -> Result<(), String> {
     Ok(())
 }
 
+fn checkpoint<C, M>(operation: &TrainOperation<C, M>) -> Result<Vec<u8>, String> {
+    let tensors = operation
+        .variables
+        .iter()
+        .map(|var| {
+            let values = var
+                .as_tensor()
+                .flatten_all()
+                .and_then(|tensor| tensor.to_vec1::<f32>())
+                .map_err(|error| error.to_string())?;
+            Ok(CheckpointTensor {
+                shape: var.shape().dims().to_vec(),
+                values,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    postcard::to_allocvec(&Checkpoint { tensors }).map_err(|error| error.to_string())
+}
+
 macro_rules! operation_impl {
     ($name:ident, $contract:ty, $model:ty, $head:expr) => {
         pub struct $name(pub TrainOperation<$contract, $model>);
@@ -235,6 +269,9 @@ macro_rules! operation_impl {
             }
             async fn step(&self, _id: uuid::Uuid) -> Result<(), String> {
                 step(&self.0)
+            }
+            async fn checkpoint(&self, _id: uuid::Uuid) -> Result<Vec<u8>, String> {
+                checkpoint(&self.0)
             }
             async fn shutdown(&self, _id: uuid::Uuid) -> Result<(), String> {
                 Ok(())

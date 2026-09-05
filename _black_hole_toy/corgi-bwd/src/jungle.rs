@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use black_hole_sun::black_hole_spec::BackwardContract;
-use black_hole_sun::ops::{BackwardOps, MassOps, StepOps, SunOps, VoidOps};
+use black_hole_sun::ops::{BackwardOps, CheckpointOps, MassOps, StepOps, SunOps, VoidOps};
 use black_hole_sun::{
     decode_input_gradient, decode_output, encode_input, encode_output_gradient, ArtifactRef,
     MassClient, ObjectId, OperationConfig, TensorContract, VoidClient,
@@ -139,6 +139,12 @@ macro_rules! jungle_ops {
                 self.$field.step(id).await
             }
         }
+        #[async_trait]
+        impl CheckpointOps<$contract> for CorgiJungle {
+            async fn checkpoint_operation(&self, id: ObjectId) -> Result<ObjectId, String> {
+                self.$field.checkpoint_operation(id).await
+            }
+        }
     };
 }
 
@@ -179,6 +185,12 @@ impl BackwardOps<StemOp> for CorgiJungle {
 impl StepOps<StemOp> for CorgiJungle {
     async fn step(&self, id: ObjectId) -> Result<(), String> {
         self.stem.step(id).await
+    }
+}
+#[async_trait]
+impl CheckpointOps<StemOp> for CorgiJungle {
+    async fn checkpoint_operation(&self, id: ObjectId) -> Result<ObjectId, String> {
+        self.stem.checkpoint_operation(id).await
     }
 }
 
@@ -228,6 +240,12 @@ impl StepOps<HeadOp> for CorgiJungle {
         self.head.step(id).await
     }
 }
+#[async_trait]
+impl CheckpointOps<HeadOp> for CorgiJungle {
+    async fn checkpoint_operation(&self, id: ObjectId) -> Result<ObjectId, String> {
+        self.head.checkpoint_operation(id).await
+    }
+}
 
 #[async_trait]
 impl SunOps for CorgiJungle {
@@ -269,6 +287,7 @@ pub fn required_capabilities() -> black_hole_sun::OperationCapabilities {
         forward: true,
         backward: true,
         step: true,
+        checkpoint: true,
         ..Default::default()
     }
 }

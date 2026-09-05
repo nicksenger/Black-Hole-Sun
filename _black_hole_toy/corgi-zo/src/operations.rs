@@ -12,6 +12,7 @@ use candle::{Device, Tensor, Var};
 use candle_nn::{Linear, Module, VarMap};
 use corgi_fwd::model::pool_stage4;
 use toy_common::dataset::SampleMetadata;
+use serde::Serialize;
 
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 
@@ -25,6 +26,17 @@ pub struct ModelOperation<C, M> {
     pub state: Arc<Mutex<ZoModel<M>>>,
     pub device: Device,
     _contract: std::marker::PhantomData<C>,
+}
+
+#[derive(Serialize)]
+struct Checkpoint {
+    tensors: Vec<CheckpointTensor>,
+}
+
+#[derive(Serialize)]
+struct CheckpointTensor {
+    shape: Vec<usize>,
+    values: Vec<f32>,
 }
 
 impl<C, M> ModelOperation<C, M> {
@@ -133,6 +145,25 @@ fn optimize<M>(state: &mut ZoModel<M>, loss_up: f32, loss_down: f32) -> Result<(
     Ok(())
 }
 
+fn checkpoint<M>(state: &ZoModel<M>) -> Result<Vec<u8>, String> {
+    let tensors = state
+        .vars
+        .iter()
+        .map(|var| {
+            let values = var
+                .as_tensor()
+                .flatten_all()
+                .and_then(|tensor| tensor.to_vec1::<f32>())
+                .map_err(|error| error.to_string())?;
+            Ok(CheckpointTensor {
+                shape: var.shape().dims().to_vec(),
+                values,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    postcard::to_allocvec(&Checkpoint { tensors }).map_err(|error| error.to_string())
+}
+
 macro_rules! operation_impl {
     ($operation:ident, $contract:ty, $model:ty) => {
         pub struct $operation(pub ModelOperation<$contract, $model>);
@@ -146,6 +177,7 @@ macro_rules! operation_impl {
                     reset: true,
                     perturb: true,
                     optimize: true,
+                    checkpoint: true,
                     ..OperationCapabilities::default()
                 };
                 capability
@@ -199,6 +231,11 @@ macro_rules! operation_impl {
             ) -> Result<(), String> {
                 let mut state = self.0.state.lock().map_err(|_| "model lock poisoned")?;
                 optimize(&mut *state, loss_up, loss_down)
+            }
+
+            async fn checkpoint(&self, _instance_id: uuid::Uuid) -> Result<Vec<u8>, String> {
+                let state = self.0.state.lock().map_err(|_| "model lock poisoned")?;
+                checkpoint(&*state)
             }
         }
     };

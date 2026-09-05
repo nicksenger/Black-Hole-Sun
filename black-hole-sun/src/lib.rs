@@ -39,6 +39,7 @@ pub use black_hole_flux::{
     OscillationSchedule, PerturbOps, QuzoFusion, QuzoFusionWithModelConfig, QwenAdapterOps, Ray,
     ResetOps, StepOps, VoidInferOps, VoidOps, Warp,
 };
+pub use black_hole_flux::configure_checkpointing;
 pub use black_hole_flux::{
     BackwardOperationCell, BackwardOperationPrimordium, PipelineBackward, PipelineBackwardState,
     PipelineStepResult,

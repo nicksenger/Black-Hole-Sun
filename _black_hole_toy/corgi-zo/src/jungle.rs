@@ -1,7 +1,7 @@
 //! Client-side jungle glue: the ecosystem and its capability impls.
 
 use async_trait::async_trait;
-use black_hole_sun::ops::{MassOps, OptimizeOps, PerturbOps, ResetOps, SunOps, VoidInferOps};
+use black_hole_sun::ops::{CheckpointOps, MassOps, OptimizeOps, PerturbOps, ResetOps, SunOps, VoidInferOps};
 use black_hole_sun::{
     decode_output, encode_input, ArtifactRef, DarkToken, EmissionId, InferenceRequest,
     MassClient, MassModelConfig, MassModelParams, ObjectId, OperationCapabilities,
@@ -194,6 +194,12 @@ macro_rules! mass_ops {
                 self.$field.optimize_operation(id, up, down).await
             }
         }
+        #[async_trait]
+        impl CheckpointOps<$contract> for CorgiJungle {
+            async fn checkpoint_operation(&self, id: ObjectId) -> Result<ObjectId, String> {
+                self.$field.checkpoint_operation(id).await
+            }
+        }
     };
 }
 
@@ -232,6 +238,12 @@ impl PerturbOps<StemOp> for CorgiJungle {
 impl OptimizeOps<StemOp> for CorgiJungle {
     async fn optimize_operation(&self, id: ObjectId, up: f32, down: f32) -> Result<(), String> {
         self.stem.optimize_operation(id, up, down).await
+    }
+}
+#[async_trait]
+impl CheckpointOps<StemOp> for CorgiJungle {
+    async fn checkpoint_operation(&self, id: ObjectId) -> Result<ObjectId, String> {
+        self.stem.checkpoint_operation(id).await
     }
 }
 mass_ops!(Stage1Op, stage1, StemOp, Stage1Op);

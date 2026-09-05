@@ -1,6 +1,8 @@
 //! Cell actions for perturbation, optimization, transmission, and waiting.
 
 use std::marker::PhantomData;
+use std::path::PathBuf;
+use std::sync::{OnceLock, RwLock};
 
 use jungle_sdk::prelude::*;
 use serde::de::DeserializeOwned;
@@ -40,9 +42,46 @@ pub struct CellState<S = ()> {
     /// Number of completed microsteps in the current propagation phase.
     #[serde(default)]
     pub grad_step: usize,
+    /// Number of completed optimization steps for this model instance.
+    #[serde(default)]
+    pub optimization_step: usize,
+    /// Save a checkpoint every this many optimization steps; zero disables it.
+    #[serde(default)]
+    pub checkpoint_steps: usize,
+    /// Local directory where checkpoints are written when enabled.
+    #[serde(default)]
+    pub checkpoint_dir: Option<PathBuf>,
     /// User-provided state threaded through all cell actions.
     #[serde(default)]
     pub inner: S,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CheckpointSettings {
+    steps: usize,
+    directory: Option<PathBuf>,
+}
+
+static CHECKPOINT_SETTINGS: OnceLock<RwLock<CheckpointSettings>> = OnceLock::new();
+
+/// Configure checkpointing for subsequently spawned cells in this process.
+///
+/// The local toy examples use this to pass their command-line setting through
+/// the type-level deployment flow into every operation cell.
+pub fn configure_checkpointing(steps: usize, directory: Option<PathBuf>) {
+    let settings = CHECKPOINT_SETTINGS.get_or_init(|| RwLock::new(CheckpointSettings::default()));
+    *settings.write().expect("checkpoint settings lock poisoned") = CheckpointSettings {
+        steps,
+        directory: (steps > 0).then_some(directory).flatten(),
+    };
+}
+
+fn checkpoint_settings() -> CheckpointSettings {
+    CHECKPOINT_SETTINGS
+        .get_or_init(|| RwLock::new(CheckpointSettings::default()))
+        .read()
+        .expect("checkpoint settings lock poisoned")
+        .clone()
 }
 
 fn default_gradient_accumulation_steps() -> usize {
@@ -108,6 +147,9 @@ impl<S> Action for InitRecvId<S> {
         state.recv_id = carry.recv_id;
         state.grad_steps = carry.grad_steps.max(1);
         state.grad_step = 0;
+        let settings = checkpoint_settings();
+        state.checkpoint_steps = settings.steps;
+        state.checkpoint_dir = settings.directory;
         Ok(())
     }
 }
@@ -468,6 +510,7 @@ impl<S> Action for Optimize<S> {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
         state.is_frozen = output.map_err(|e| Failure::Message(format!("optimize failed: {e}")))?;
+        state.optimization_step = state.optimization_step.saturating_add(1);
         Ok(())
     }
 }
@@ -488,10 +531,41 @@ where
     }
 
     fn absorb(
+        state: &mut CellState<S>,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("optimize operation failed: {error}")))?;
+        state.optimization_step = state.optimization_step.saturating_add(1);
+        Ok(())
+    }
+}
+
+/// Saves an operation checkpoint when the cell's configured interval is due.
+pub struct CheckpointOperation<Op, S = ()>(PhantomData<fn() -> (Op, S)>);
+
+#[jungle::action]
+impl<Op, S> Action for CheckpointOperation<Op, S>
+where
+    Op: TensorContract + Send + Sync + 'static,
+{
+    type Effect = super::effect::OperationMassCheckpoint<Op>;
+    type Input = ();
+    type Output = ();
+
+    fn emit(state: &CellState<S>, _input: Self::Input) -> (ObjectId, usize, usize, Option<PathBuf>) {
+        (
+            state.model_id,
+            state.optimization_step,
+            state.checkpoint_steps,
+            state.checkpoint_dir.clone(),
+        )
+    }
+
+    fn absorb(
         _state: &mut CellState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("optimize operation failed: {error}")))
+        output.map_err(|error| Failure::Message(format!("checkpoint operation failed: {error}")))
     }
 }
 

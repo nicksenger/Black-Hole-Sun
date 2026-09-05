@@ -25,6 +25,10 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     steps: usize,
 
+    /// Save model checkpoints every N completed ZO steps; disabled by default.
+    #[arg(long, default_value_t = 0)]
+    checkpoint_steps: usize,
+
     /// Optional local Candle ResNet-18 safetensors checkpoint.
     #[arg(long)]
     model: Option<PathBuf>,
@@ -72,6 +76,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     if args.steps == 0 {
         return Ok(());
+    }
+    let checkpoint_dir = if args.checkpoint_steps == 0 {
+        None
+    } else {
+        Some(tempfile::tempdir()?)
+    };
+    black_hole_sun::configure_checkpointing(
+        args.checkpoint_steps,
+        checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf()),
+    );
+    if let Some(dir) = &checkpoint_dir {
+        eprintln!("saving checkpoints to {}", dir.path().display());
     }
     let cache = configure_hf_cache(args.cache_dir, "corgi-zo")?;
     eprintln!("using Hugging Face cache {}", cache.display());
