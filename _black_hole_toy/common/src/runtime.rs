@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use black_hole_sun::{
-    MassServerBuilder, OperationImplementation, VoidServerBuilder, object_store, persist,
+    object_store, persist, MassServerBuilder, OperationImplementation, VoidServerBuilder,
 };
 use jungle_sdk::core::{JungleWorker, SupportedAnimalGenerations};
 use jungle_sdk::prelude::*;
@@ -33,11 +33,13 @@ impl ServerTask {
 
 /// In-process void server plus one mass server per registered operation.
 pub struct RunningServers {
-    /// Address of the in-memory void server.
+    /// Address of the filesystem-backed void server.
     pub void_addr: SocketAddr,
     /// Addresses of the mass servers, in registration order.
     pub mass_addrs: Vec<SocketAddr>,
     tasks: Vec<ServerTask>,
+    /// Keeps the per-run void storage isolated and removes it on shutdown.
+    _void_store_dir: tempfile::TempDir,
 }
 
 impl RunningServers {
@@ -66,19 +68,26 @@ impl ServerSpecs {
         self
     }
 
-    /// Start an in-memory void server and one mass server per registered
-    /// operation. The model path is unused by tensor operations; the builder
-    /// still requires one.
+    /// Start a filesystem-backed void server in a temporary directory and one
+    /// mass server per registered operation. The model path is unused by
+    /// tensor operations; the builder still requires one.
     pub async fn start(self) -> Result<RunningServers, String> {
-        let (void_addr, void_task) = VoidServerBuilder::new(
-            Box::new(object_store::InMemoryObjectStore::new()),
-            Box::new(persist::InMemoryStore::new()),
-        )
-        .tcp()
-        .listen(LOOPBACK.parse().expect("valid loopback address"))
-        .serve()
-        .await
-        .map_err(|error| error.to_string())?;
+        let void_store_dir = tempfile::tempdir()
+            .map_err(|error| format!("failed to create temporary void directory: {error}"))?;
+        let objects_path = void_store_dir.path().join("objects");
+        let relations_path = void_store_dir.path().join("relations");
+        let object_store = object_store::FilesystemObjectStore::new(&objects_path)
+            .map_err(|error| format!("failed to create filesystem void store: {error}"))?;
+        let store = persist::fjall::FjallStore::new(&relations_path)
+            .map_err(|error| format!("failed to create filesystem void metadata store: {error}"))?;
+
+        let (void_addr, void_task) =
+            VoidServerBuilder::new(Box::new(object_store), Box::new(store))
+                .tcp()
+                .listen(LOOPBACK.parse().expect("valid loopback address"))
+                .serve()
+                .await
+                .map_err(|error| error.to_string())?;
 
         let mut tasks = vec![ServerTask::Void(void_task)];
         let mut mass_addrs = Vec::with_capacity(self.operations.len());
@@ -99,6 +108,7 @@ impl ServerSpecs {
             void_addr,
             mass_addrs,
             tasks,
+            _void_store_dir: void_store_dir,
         })
     }
 }

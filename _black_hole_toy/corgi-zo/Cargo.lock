@@ -1042,6 +1042,7 @@ dependencies = [
  "parquet",
  "rand 0.10.2",
  "serde",
+ "tempfile",
  "tokio",
 ]
 
