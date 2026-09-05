@@ -1,6 +1,7 @@
 //! Server-side training operations: cached forward, backward, and step.
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -14,24 +15,13 @@ use candle::backprop::GradStore;
 use candle::{Device, Tensor, Var};
 use candle_nn::{Module, Optimizer, SGD};
 use serde::{Deserialize, Serialize};
-use toy_common::dataset::{BATCH_SIZE, SampleMetadata};
+use toy_common::dataset::{SampleMetadata, BATCH_SIZE};
 
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizerConfig {
     pub learning_rate: f64,
-}
-
-#[derive(Serialize)]
-struct Checkpoint {
-    tensors: Vec<CheckpointTensor>,
-}
-
-#[derive(Serialize)]
-struct CheckpointTensor {
-    shape: Vec<usize>,
-    values: Vec<f32>,
 }
 
 struct CachedForward {
@@ -43,7 +33,7 @@ struct CachedForward {
 pub struct TrainOperation<C, M> {
     pub model: M,
     pub device: Device,
-    variables: Vec<Var>,
+    varmap: candle_nn::VarMap,
     pending: Mutex<VecDeque<CachedForward>>,
     gradients: Mutex<GradStore>,
     optimizer: Mutex<SGD>,
@@ -54,14 +44,15 @@ impl<C, M> TrainOperation<C, M> {
     pub fn new(
         model: M,
         device: Device,
-        variables: Vec<Var>,
+        varmap: candle_nn::VarMap,
         learning_rate: f64,
     ) -> candle::Result<Self> {
+        let variables = varmap.all_vars();
         let optimizer = SGD::new(variables.clone(), learning_rate)?;
         Ok(Self {
             model,
             device,
-            variables,
+            varmap,
             pending: Mutex::new(VecDeque::new()),
             gradients: Mutex::new(GradStore::default()),
             optimizer: Mutex::new(optimizer),
@@ -99,8 +90,11 @@ where
     M: Module,
 {
     let decoded = decode_input::<C>(&input)?;
-    let input = Var::from_tensor(&tensor_from_raw(decoded.first_tensor()?, &operation.device)?)
-        .map_err(|e| e.to_string())?;
+    let input = Var::from_tensor(&tensor_from_raw(
+        decoded.first_tensor()?,
+        &operation.device,
+    )?)
+    .map_err(|e| e.to_string())?;
     let output = operation
         .model
         .forward(input.as_tensor())
@@ -220,23 +214,63 @@ fn step<C, M>(operation: &TrainOperation<C, M>) -> Result<(), String> {
     Ok(())
 }
 
-fn checkpoint<C, M>(operation: &TrainOperation<C, M>) -> Result<Vec<u8>, String> {
-    let tensors = operation
-        .variables
-        .iter()
-        .map(|var| {
-            let values = var
-                .as_tensor()
-                .flatten_all()
-                .and_then(|tensor| tensor.to_vec1::<f32>())
-                .map_err(|error| error.to_string())?;
-            Ok(CheckpointTensor {
-                shape: var.shape().dims().to_vec(),
-                values,
-            })
+fn checkpoint<C, M>(operation: &TrainOperation<C, M>, id: uuid::Uuid) -> Result<Vec<u8>, String> {
+    let _gradients = operation
+        .gradients
+        .lock()
+        .map_err(|_| "gradient accumulator poisoned")?;
+    let path = std::env::temp_dir().join(format!("corgi-bwd-checkpoint-{id}.safetensors"));
+    operation
+        .varmap
+        .save(&path)
+        .map_err(|error| format!("save checkpoint: {error}"))?;
+    let bytes = std::fs::read(&path).map_err(|error| format!("read checkpoint: {error}"));
+    let _ = std::fs::remove_file(path);
+    bytes
+}
+
+/// Reconstruct one unified model checkpoint from the trained stage shards.
+pub fn unify_checkpoint_shards(directory: &Path, step: usize) -> Result<bool, String> {
+    let prefix = format!("step-{step}-");
+    let mut paths = std::fs::read_dir(directory)
+        .map_err(|error| format!("read checkpoint directory: {error}"))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".checkpoint"))
         })
-        .collect::<Result<Vec<_>, String>>()?;
-    postcard::to_allocvec(&Checkpoint { tensors }).map_err(|error| error.to_string())
+        .collect::<Vec<_>>();
+    if paths.len() < 6 {
+        return Ok(false);
+    }
+    paths.sort();
+
+    let mut tensors = std::collections::HashMap::new();
+    for path in &paths {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("read checkpoint {}: {error}", path.display()))?;
+        let shard = candle::safetensors::load_buffer(&bytes, &Device::Cpu)
+            .map_err(|error| format!("decode checkpoint {}: {error}", path.display()))?;
+        for (name, tensor) in shard {
+            if tensors.insert(name.clone(), tensor).is_some() {
+                return Err(format!("duplicate tensor {name} in checkpoint shards"));
+            }
+        }
+    }
+
+    let output = directory.join(format!("step-{step}.checkpoint"));
+    let temporary = directory.join(format!("step-{step}.checkpoint.tmp"));
+    candle::safetensors::save(&tensors, &temporary)
+        .map_err(|error| format!("write unified checkpoint: {error}"))?;
+    std::fs::rename(&temporary, &output)
+        .map_err(|error| format!("publish unified checkpoint: {error}"))?;
+    for path in paths {
+        std::fs::remove_file(&path)
+            .map_err(|error| format!("remove checkpoint {}: {error}", path.display()))?;
+    }
+    Ok(true)
 }
 
 macro_rules! operation_impl {
@@ -270,8 +304,8 @@ macro_rules! operation_impl {
             async fn step(&self, _id: uuid::Uuid) -> Result<(), String> {
                 step(&self.0)
             }
-            async fn checkpoint(&self, _id: uuid::Uuid) -> Result<Vec<u8>, String> {
-                checkpoint(&self.0)
+            async fn checkpoint(&self, id: uuid::Uuid) -> Result<Vec<u8>, String> {
+                checkpoint(&self.0, id)
             }
             async fn shutdown(&self, _id: uuid::Uuid) -> Result<(), String> {
                 Ok(())

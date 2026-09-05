@@ -1,5 +1,6 @@
 //! Server-side ZO operations: forward plus perturb/optimize on shared vars.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -11,7 +12,6 @@ use black_hole_sun::{
 use candle::{Device, Tensor, Var};
 use candle_nn::{Linear, Module, VarMap};
 use corgi_fwd::model::pool_stage4;
-use serde::Serialize;
 use toy_common::dataset::SampleMetadata;
 
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
@@ -24,19 +24,9 @@ pub struct ZoModel<M> {
 
 pub struct ModelOperation<C, M> {
     pub state: Arc<Mutex<ZoModel<M>>>,
+    pub varmap: VarMap,
     pub device: Device,
     _contract: std::marker::PhantomData<C>,
-}
-
-#[derive(Serialize)]
-struct Checkpoint {
-    tensors: Vec<CheckpointTensor>,
-}
-
-#[derive(Serialize)]
-struct CheckpointTensor {
-    shape: Vec<usize>,
-    values: Vec<f32>,
 }
 
 impl<C, M> ModelOperation<C, M> {
@@ -47,6 +37,7 @@ impl<C, M> ModelOperation<C, M> {
                 vars: varmap.all_vars(),
                 direction: None,
             })),
+            varmap: varmap.clone(),
             device,
             _contract: std::marker::PhantomData,
         }
@@ -148,23 +139,63 @@ fn optimize<M>(state: &mut ZoModel<M>, loss_up: f32, loss_down: f32) -> Result<(
     Ok(())
 }
 
-fn checkpoint<M>(state: &ZoModel<M>) -> Result<Vec<u8>, String> {
-    let tensors = state
-        .vars
-        .iter()
-        .map(|var| {
-            let values = var
-                .as_tensor()
-                .flatten_all()
-                .and_then(|tensor| tensor.to_vec1::<f32>())
-                .map_err(|error| error.to_string())?;
-            Ok(CheckpointTensor {
-                shape: var.shape().dims().to_vec(),
-                values,
-            })
+fn checkpoint<M>(
+    operation: &ModelOperation<impl TensorContract, M>,
+    id: uuid::Uuid,
+) -> Result<Vec<u8>, String> {
+    let _state = operation.state.lock().map_err(|_| "model lock poisoned")?;
+    let path = std::env::temp_dir().join(format!("corgi-zo-checkpoint-{id}.safetensors"));
+    operation
+        .varmap
+        .save(&path)
+        .map_err(|error| format!("save checkpoint: {error}"))?;
+    let bytes = std::fs::read(&path).map_err(|error| format!("read checkpoint: {error}"));
+    let _ = std::fs::remove_file(path);
+    bytes
+}
+
+/// Reconstruct one unified model checkpoint from the trained stage shards.
+pub fn unify_checkpoint_shards(directory: &Path, step: usize) -> Result<bool, String> {
+    let prefix = format!("step-{step}-");
+    let mut paths = std::fs::read_dir(directory)
+        .map_err(|error| format!("read checkpoint directory: {error}"))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".checkpoint"))
         })
-        .collect::<Result<Vec<_>, String>>()?;
-    postcard::to_allocvec(&Checkpoint { tensors }).map_err(|error| error.to_string())
+        .collect::<Vec<_>>();
+    if paths.len() < 6 {
+        return Ok(false);
+    }
+    paths.sort();
+
+    let mut tensors = std::collections::HashMap::new();
+    for path in &paths {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("read checkpoint {}: {error}", path.display()))?;
+        let shard = candle::safetensors::load_buffer(&bytes, &Device::Cpu)
+            .map_err(|error| format!("decode checkpoint {}: {error}", path.display()))?;
+        for (name, tensor) in shard {
+            if tensors.insert(name.clone(), tensor).is_some() {
+                return Err(format!("duplicate tensor {name} in checkpoint shards"));
+            }
+        }
+    }
+
+    let output = directory.join(format!("step-{step}.checkpoint"));
+    let temporary = directory.join(format!("step-{step}.checkpoint.tmp"));
+    candle::safetensors::save(&tensors, &temporary)
+        .map_err(|error| format!("write unified checkpoint: {error}"))?;
+    std::fs::rename(&temporary, &output)
+        .map_err(|error| format!("publish unified checkpoint: {error}"))?;
+    for path in paths {
+        std::fs::remove_file(&path)
+            .map_err(|error| format!("remove checkpoint {}: {error}", path.display()))?;
+    }
+    Ok(true)
 }
 
 macro_rules! operation_impl {
@@ -236,9 +267,8 @@ macro_rules! operation_impl {
                 optimize(&mut *state, loss_up, loss_down)
             }
 
-            async fn checkpoint(&self, _instance_id: uuid::Uuid) -> Result<Vec<u8>, String> {
-                let state = self.0.state.lock().map_err(|_| "model lock poisoned")?;
-                checkpoint(&*state)
+            async fn checkpoint(&self, instance_id: uuid::Uuid) -> Result<Vec<u8>, String> {
+                checkpoint(&self.0, instance_id)
             }
         }
     };

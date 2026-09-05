@@ -6,7 +6,7 @@ use std::sync::Arc;
 use black_hole_sun::{MassClient, VoidClient};
 use candle::{DType, Device};
 use candle_nn::{VarBuilder, VarMap};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use corgi_fwd::model::{
     build_head, build_stage1, build_stage2, build_stage3, build_stage4, build_stem,
 };
@@ -31,6 +31,10 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     checkpoint_steps: usize,
 
+    /// Save unified model checkpoints by default, or one checkpoint per stage.
+    #[arg(long, value_enum, default_value_t = CheckpointMode::Unified)]
+    checkpoint_mode: CheckpointMode,
+
     /// Optional local Candle ResNet-18 safetensors checkpoint.
     #[arg(long)]
     model: Option<PathBuf>,
@@ -38,6 +42,12 @@ struct Args {
     /// Writable Hugging Face cache directory for model and dataset files.
     #[arg(long)]
     cache_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CheckpointMode {
+    Unified,
+    Sharded,
 }
 
 const OPERATION_COUNT: usize = 6;
@@ -64,9 +74,13 @@ fn mutable_head(
     let source = unsafe { VarBuilder::from_mmaped_safetensors(&[path], DType::F32, device)? };
     let original = build_head(source)?;
     let mut varmap = VarMap::new();
-    let model = candle_nn::linear(512, 2, VarBuilder::from_varmap(&varmap, DType::F32, device))?;
-    varmap.set_one("weight", original.weight())?;
-    varmap.set_one("bias", original.bias().expect("corgi head has a bias"))?;
+    let model = candle_nn::linear(
+        512,
+        2,
+        VarBuilder::from_varmap(&varmap, DType::F32, device).pp("fc"),
+    )?;
+    varmap.set_one("fc.weight", original.weight())?;
+    varmap.set_one("fc.bias", original.bias().expect("corgi head has a bias"))?;
     Ok(ModelOperation::new(
         HeadModel(model),
         &varmap,
@@ -93,6 +107,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(dir) = &checkpoint_dir {
         eprintln!("saving checkpoints to {}", dir.path().display());
     }
+    let checkpoint_path = checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf());
+    corgi_zo::contracts::configure_unified_checkpointing(
+        if matches!(args.checkpoint_mode, CheckpointMode::Unified) {
+            args.checkpoint_steps
+        } else {
+            0
+        },
+        matches!(args.checkpoint_mode, CheckpointMode::Unified)
+            .then(|| checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf()))
+            .flatten(),
+    );
     let cache = configure_hf_cache(args.cache_dir, "corgi-zo")?;
     eprintln!("using Hugging Face cache {}", cache.display());
     let path = model_path(args.model)?;
@@ -137,16 +162,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         completed_optimization_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
 
-    let result = run_until::<CorgiJungle, CorgiZo, _, _>(&jungle, &client, &(), 8, |_| async {
-        let optimized_steps = corgi_zo::OPTIMIZED_STEPS.load(Ordering::Acquire);
-        if optimized_steps >= args.steps {
-            let expected_checkpoints = checkpoint_dir
+    let result = run_until::<CorgiJungle, CorgiZo, _, _>(&jungle, &client, &(), 8, |_| {
+        let checkpoint_path = checkpoint_path.clone();
+        async move {
+            let optimized_steps = corgi_zo::OPTIMIZED_STEPS.load(Ordering::Acquire);
+            if optimized_steps < args.steps {
+                return RunCheck::Continue;
+            }
+            let expected_checkpoints = checkpoint_path
                 .as_ref()
-                .map(|_| args.steps / args.checkpoint_steps * OPERATION_COUNT)
+                .map(|_| {
+                    let steps = args.steps / args.checkpoint_steps;
+                    match args.checkpoint_mode {
+                        CheckpointMode::Unified => steps,
+                        CheckpointMode::Sharded => steps * OPERATION_COUNT,
+                    }
+                })
                 .unwrap_or(0);
-            let checkpoints_ready = checkpoint_dir.as_ref().is_none_or(|dir| {
-                fs::read_dir(dir.path())
-                    .map(|entries| entries.flatten().count() >= expected_checkpoints)
+            let checkpoints_ready = checkpoint_path.as_ref().is_none_or(|path| {
+                fs::read_dir(path)
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .filter(|entry| {
+                                entry.file_name().to_str().is_some_and(|name| {
+                                    let Some(id) = name
+                                        .strip_prefix("step-")
+                                        .and_then(|name| name.strip_suffix(".checkpoint"))
+                                    else {
+                                        return false;
+                                    };
+                                    match args.checkpoint_mode {
+                                        CheckpointMode::Unified => !id.contains('-'),
+                                        CheckpointMode::Sharded => id.contains('-'),
+                                    }
+                                })
+                            })
+                            .count()
+                            >= expected_checkpoints
+                    })
                     .unwrap_or(false)
             });
             if checkpoints_ready {
@@ -154,8 +208,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 RunCheck::Continue
             }
-        } else {
-            RunCheck::Continue
         }
     })
     .await;

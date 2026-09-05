@@ -1,7 +1,9 @@
 //! Cells, the TwoSidedZo Sun flow, and the loss policy.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{OnceLock, RwLock};
 
 use black_hole_sun::cell::CellState;
 use black_hole_sun::compile::BlackHole;
@@ -20,6 +22,31 @@ use typenum::consts::{U0, U1, U2, U3, U4, U5, U6};
 
 pub static OPTIMIZED_STEPS: AtomicUsize = AtomicUsize::new(0);
 static STEP_SEEDS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Default)]
+struct UnifiedCheckpointSettings {
+    every: usize,
+    directory: Option<PathBuf>,
+}
+
+static UNIFIED_CHECKPOINT_SETTINGS: OnceLock<RwLock<UnifiedCheckpointSettings>> = OnceLock::new();
+
+pub fn configure_unified_checkpointing(every: usize, directory: Option<PathBuf>) {
+    let settings = UNIFIED_CHECKPOINT_SETTINGS
+        .get_or_init(|| RwLock::new(UnifiedCheckpointSettings::default()));
+    *settings
+        .write()
+        .expect("unified checkpoint settings lock poisoned") =
+        UnifiedCheckpointSettings { every, directory };
+}
+
+fn unified_checkpoint_settings() -> UnifiedCheckpointSettings {
+    UNIFIED_CHECKPOINT_SETTINGS
+        .get_or_init(|| RwLock::new(UnifiedCheckpointSettings::default()))
+        .read()
+        .expect("unified checkpoint settings lock poisoned")
+        .clone()
+}
 
 macro_rules! operation_cell {
     ($cell:ident, $id:ty, $op:ty) => {
@@ -197,7 +224,7 @@ impl<J: VoidInferOps> Effect<J> for MakePropagationPairEffect {
 }
 
 #[derive(Flow)]
-pub struct Policy(Step<ComputeLoss>);
+pub struct Policy(Step<ComputeLoss>, Step<UnifiedCheckpoint>);
 
 pub struct ComputeLoss;
 #[jungle::action]
@@ -240,6 +267,65 @@ impl<J: VoidInferOps> Effect<J> for ComputeLossEffect {
                 loss_down,
                 seed: step as u64,
             })
+        }
+    }
+}
+
+/// Reconstructs the previous completed ZO step after its operation shards exist.
+pub struct UnifiedCheckpoint;
+#[jungle::action]
+impl Action for UnifiedCheckpoint {
+    type Effect = UnifiedCheckpointEffect;
+    type Input = Potentiation;
+    type Output = Potentiation;
+
+    fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("unified checkpoint failed: {error}")))
+    }
+}
+
+pub struct UnifiedCheckpointEffect;
+#[jungle::effect(id = 208)]
+impl<J> Effect<J> for UnifiedCheckpointEffect {
+    type In = Potentiation;
+    type Out = Potentiation;
+    type Err = String;
+
+    fn effect(
+        _jungle: &J,
+        input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let settings = unified_checkpoint_settings();
+            let completed_step = (input.seed as usize).saturating_sub(1);
+            if settings.every == 0 || completed_step == 0 || completed_step % settings.every != 0 {
+                return Ok(input);
+            }
+            let directory = settings
+                .directory
+                .ok_or_else(|| "unified checkpoint directory is not configured".to_owned())?;
+            for _ in 0..1_000 {
+                let attempt_directory = directory.clone();
+                let unified = tokio::task::spawn_blocking(move || {
+                    crate::operations::unify_checkpoint_shards(&attempt_directory, completed_step)
+                })
+                .await
+                .map_err(|error| format!("unified checkpoint task failed: {error}"))??;
+                if unified {
+                    return Ok(input);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(format!(
+                "timed out waiting for operation shards for step {completed_step}"
+            ))
         }
     }
 }

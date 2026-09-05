@@ -552,7 +552,10 @@ where
     type Input = ();
     type Output = ();
 
-    fn emit(state: &CellState<S>, _input: Self::Input) -> (ObjectId, usize, usize, Option<PathBuf>) {
+    fn emit(
+        state: &CellState<S>,
+        _input: Self::Input,
+    ) -> (ObjectId, usize, usize, Option<PathBuf>) {
         (
             state.model_id,
             state.optimization_step,

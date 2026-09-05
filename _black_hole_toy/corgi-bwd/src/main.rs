@@ -1,12 +1,13 @@
+use std::fs;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use black_hole_sun::{MassClient, VoidClient};
-use candle::{DType, Device, Var};
+use candle::{DType, Device};
 use candle_nn::{Module, VarBuilder, VarMap};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use corgi_bwd::contracts::{CorgiBackward, COMPLETED_STEPS, MICRO_BATCHES};
-use corgi_bwd::jungle::{CorgiJungle, required_capabilities};
+use corgi_bwd::jungle::{required_capabilities, CorgiJungle};
 use corgi_bwd::operations::{
     HeadOperation, OptimizerConfig, Stage1Operation, Stage2Operation, Stage3Operation,
     Stage4Operation, StemOperation, TrainOperation,
@@ -15,8 +16,8 @@ use corgi_fwd::model::{
     build_stage1, build_stage2, build_stage3, build_stage4, build_trainable_stem, pool_stage4,
 };
 use jungle_sdk::{FusedClient, JourneyStatus, JungleClient};
-use toy_common::dataset::{BATCH_SIZE, DATASET_SAMPLES, configure_hf_cache, model_path};
-use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
+use toy_common::dataset::{configure_hf_cache, model_path, BATCH_SIZE, DATASET_SAMPLES};
+use toy_common::runtime::{run_until, RunCheck, ServerSpecs};
 
 #[derive(Debug, Parser)]
 #[command(about = "Train a pipeline-parallel ResNet-18 corgi identifier")]
@@ -27,6 +28,9 @@ struct Args {
     /// Save model checkpoints every N completed optimizer steps; disabled by default.
     #[arg(long, default_value_t = 0)]
     checkpoint_steps: usize,
+    /// Save unified model checkpoints by default, or one checkpoint per stage.
+    #[arg(long, value_enum, default_value_t = CheckpointMode::Unified)]
+    checkpoint_mode: CheckpointMode,
     /// Learning rate used independently by every stage.
     #[arg(long, default_value_t = 1e-4)]
     learning_rate: f64,
@@ -38,24 +42,32 @@ struct Args {
     cache_dir: Option<std::path::PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CheckpointMode {
+    Unified,
+    Sharded,
+}
+
+const OPERATION_COUNT: usize = 6;
+
 fn build_trainable<M>(
     path: &Path,
     device: &Device,
     build: impl FnOnce(VarBuilder<'_>) -> candle::Result<M>,
-) -> candle::Result<(M, Vec<Var>)> {
+) -> candle::Result<(M, VarMap)> {
     let mut variables = VarMap::new();
     let model = build(VarBuilder::from_varmap(&variables, DType::F32, device))?;
     variables.load(path)?;
-    Ok((model, variables.all_vars()))
+    Ok((model, variables))
 }
 
 fn build_random<M>(
     device: &Device,
     build: impl FnOnce(VarBuilder<'_>) -> candle::Result<M>,
-) -> candle::Result<(M, Vec<Var>)> {
+) -> candle::Result<(M, VarMap)> {
     let variables = VarMap::new();
     let model = build(VarBuilder::from_varmap(&variables, DType::F32, device))?;
-    Ok((model, variables.all_vars()))
+    Ok((model, variables))
 }
 
 #[tokio::main]
@@ -77,6 +89,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(dir) = &checkpoint_dir {
         eprintln!("saving checkpoints to {}", dir.path().display());
     }
+    let checkpoint_path = checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf());
+    corgi_bwd::contracts::configure_unified_checkpointing(
+        if matches!(args.checkpoint_mode, CheckpointMode::Unified) {
+            args.checkpoint_steps
+        } else {
+            0
+        },
+        matches!(args.checkpoint_mode, CheckpointMode::Unified)
+            .then(|| checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf()))
+            .flatten(),
+    );
     configure_hf_cache(args.cache_dir, "corgi-bwd")?;
     let path = model_path(args.model)?;
     let device = Device::Cpu;
@@ -94,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (stage3_model, stage3_vars) = build_trainable(&path, &device, build_stage3)?;
     let (stage4_model, stage4_vars) = build_trainable(&path, &device, build_stage4)?;
     let (head_model, head_vars) = build_random(&device, |vb| {
-        let linear = candle_nn::linear(512, 2, vb.pp("binary_head"))?;
+        let linear = candle_nn::linear(512, 2, vb.pp("fc"))?;
         Ok(candle_nn::Func::new(move |xs| {
             linear.forward(&pool_stage4(xs)?)
         }))
@@ -161,16 +184,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         |handle| {
             let journey_id = handle.journey_id;
             let client = &client;
+            let checkpoint_path = checkpoint_path.clone();
             async move {
-                if COMPLETED_STEPS.load(Ordering::Acquire) >= args.steps {
+                let completed_steps = COMPLETED_STEPS.load(Ordering::Acquire);
+                let expected_checkpoints = checkpoint_path
+                    .as_ref()
+                    .map(|_| {
+                        let steps = args.steps / args.checkpoint_steps;
+                        match args.checkpoint_mode {
+                            CheckpointMode::Unified => steps,
+                            CheckpointMode::Sharded => steps * OPERATION_COUNT,
+                        }
+                    })
+                    .unwrap_or(0);
+                let checkpoints_ready = checkpoint_path.as_ref().is_none_or(|path| {
+                    fs::read_dir(path)
+                        .map(|entries| {
+                            entries
+                                .flatten()
+                                .filter(|entry| {
+                                    entry.file_name().to_str().is_some_and(|name| {
+                                        let Some(id) = name
+                                            .strip_prefix("step-")
+                                            .and_then(|name| name.strip_suffix(".checkpoint"))
+                                        else {
+                                            return false;
+                                        };
+                                        match args.checkpoint_mode {
+                                            CheckpointMode::Unified => !id.contains('-'),
+                                            CheckpointMode::Sharded => id.contains('-'),
+                                        }
+                                    })
+                                })
+                                .count()
+                                >= expected_checkpoints
+                        })
+                        .unwrap_or(false)
+                });
+                if completed_steps >= args.steps && checkpoints_ready {
                     return RunCheck::Done;
                 }
                 match client.journey_details(journey_id).await {
-                    Ok(JourneyStatus::Dead | JourneyStatus::Stopped | JourneyStatus::Completed) =>
+                    Ok(JourneyStatus::Dead | JourneyStatus::Stopped | JourneyStatus::Completed) => {
                         RunCheck::Failed(
                             "corgi-bwd pipeline stopped before completing the requested steps"
                                 .to_owned(),
-                        ),
+                        )
+                    }
                     Ok(_) => RunCheck::Continue,
                     Err(error) => RunCheck::Failed(error.to_string()),
                 }

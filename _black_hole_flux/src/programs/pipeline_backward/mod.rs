@@ -337,13 +337,12 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
 
             let mut steps = Vec::with_capacity(p);
             for &port in ports.iter().take(p) {
-                let reply = send_command(jungle, &mut inboxes, port, |reply| {
-                    PipelineCommand::Step {
+                let reply =
+                    send_command(jungle, &mut inboxes, port, |reply| PipelineCommand::Step {
                         reply,
                         step: input.step + 1,
-                    }
-                })
-                .await?;
+                    })
+                    .await?;
                 steps.push(reply);
             }
             for reply in steps {

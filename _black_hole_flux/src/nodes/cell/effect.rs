@@ -12,8 +12,8 @@ use black_hole_type::{ObjectId, Transmission};
 
 use super::action::{Potentiation, Propagation};
 use crate::mass::{DefaultConfig, ModelConfig};
-use crate::ops::{MassOps, OptimizeOps, PerturbOps, VoidInferOps, VoidOps};
 use crate::ops::CheckpointOps;
+use crate::ops::{MassOps, OptimizeOps, PerturbOps, VoidInferOps, VoidOps};
 use crate::AtomError;
 use black_hole_spec::TensorContract;
 
@@ -302,13 +302,22 @@ where
     })?;
     tokio::fs::create_dir_all(directory)
         .await
-        .map_err(|error| format!("create checkpoint directory {}: {error}", directory.display()))?;
+        .map_err(|error| {
+            format!(
+                "create checkpoint directory {}: {error}",
+                directory.display()
+            )
+        })?;
     let checkpoint_id = CheckpointOps::<Op>::checkpoint_operation(jungle, instance_id).await?;
     let bytes = VoidOps::download_raw(jungle, checkpoint_id).await?;
     let path = directory.join(format!("step-{step}-{instance_id}.checkpoint"));
-    tokio::fs::write(&path, bytes)
+    let temporary = directory.join(format!(".step-{step}-{instance_id}.checkpoint.tmp"));
+    tokio::fs::write(&temporary, bytes)
         .await
-        .map_err(|error| format!("write checkpoint {}: {error}", path.display()))?;
+        .map_err(|error| format!("write checkpoint {}: {error}", temporary.display()))?;
+    tokio::fs::rename(&temporary, &path)
+        .await
+        .map_err(|error| format!("publish checkpoint {}: {error}", path.display()))?;
     tracing::info!(step, %instance_id, path = %path.display(), "saved operation checkpoint");
     Ok(())
 }

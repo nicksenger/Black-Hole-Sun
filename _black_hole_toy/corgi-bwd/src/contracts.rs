@@ -1,7 +1,9 @@
 //! Cells, the backward Sun flow, and the training policy.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{OnceLock, RwLock};
 
 use black_hole_sun::cell::CellState;
 use black_hole_sun::compile::BlackHole;
@@ -18,6 +20,31 @@ use typenum::consts::{U0, U1, U2, U3, U4, U5, U6};
 
 /// Micro-batches per pipeline step.
 pub const MICRO_BATCHES: usize = 8;
+
+#[derive(Clone, Default)]
+struct UnifiedCheckpointSettings {
+    every: usize,
+    directory: Option<PathBuf>,
+}
+
+static UNIFIED_CHECKPOINT_SETTINGS: OnceLock<RwLock<UnifiedCheckpointSettings>> = OnceLock::new();
+
+pub fn configure_unified_checkpointing(every: usize, directory: Option<PathBuf>) {
+    let settings = UNIFIED_CHECKPOINT_SETTINGS
+        .get_or_init(|| RwLock::new(UnifiedCheckpointSettings::default()));
+    *settings
+        .write()
+        .expect("unified checkpoint settings lock poisoned") =
+        UnifiedCheckpointSettings { every, directory };
+}
+
+fn unified_checkpoint_settings() -> UnifiedCheckpointSettings {
+    UNIFIED_CHECKPOINT_SETTINGS
+        .get_or_init(|| RwLock::new(UnifiedCheckpointSettings::default()))
+        .read()
+        .expect("unified checkpoint settings lock poisoned")
+        .clone()
+}
 
 macro_rules! operation_cell {
     ($cell:ident, $id:ty, $op:ty) => {
@@ -126,24 +153,84 @@ pub struct StepMetrics {
 }
 
 #[derive(Flow)]
-pub struct LogPolicy(Step<LogStep>);
+pub struct LogPolicy(Step<LogStep>, Step<UnifiedCheckpoint>);
 
 pub struct LogStep;
 #[jungle::action]
 impl Action for LogStep {
     type Effect = LogStepEffect;
     type Input = PipelineStepResult;
-    type Output = ();
+    type Output = StepMetrics;
     fn emit(_state: &PipelineBackwardState, input: Self::Input) -> Self::Input {
         input
     }
     fn absorb(
         _state: &mut PipelineBackwardState,
         output: EffectCompletion<Self::Effect>,
-    ) -> Result<(), Failure> {
-        output.map_err(|e| Failure::Message(format!("training policy failed: {e}")))?;
+    ) -> Result<StepMetrics, Failure> {
+        let metrics =
+            output.map_err(|e| Failure::Message(format!("training policy failed: {e}")))?;
         COMPLETED_STEPS.fetch_add(1, Ordering::Release);
-        Ok(())
+        Ok(metrics)
+    }
+}
+
+/// Reconstructs a unified checkpoint from all six stage checkpoints.
+pub struct UnifiedCheckpoint;
+#[jungle::action]
+impl Action for UnifiedCheckpoint {
+    type Effect = UnifiedCheckpointEffect;
+    type Input = StepMetrics;
+    type Output = StepMetrics;
+
+    fn emit(_state: &PipelineBackwardState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut PipelineBackwardState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("unified checkpoint failed: {error}")))
+    }
+}
+
+pub struct UnifiedCheckpointEffect;
+#[jungle::effect(id = 214)]
+impl<J> Effect<J> for UnifiedCheckpointEffect {
+    type In = StepMetrics;
+    type Out = StepMetrics;
+    type Err = String;
+
+    fn effect(
+        _jungle: &J,
+        input: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            let settings = unified_checkpoint_settings();
+            if settings.every == 0 || input.step == 0 || input.step % settings.every != 0 {
+                return Ok(input);
+            }
+            let directory = settings
+                .directory
+                .ok_or_else(|| "unified checkpoint directory is not configured".to_owned())?;
+            for _ in 0..1_000 {
+                let attempt_directory = directory.clone();
+                let unified = tokio::task::spawn_blocking(move || {
+                    crate::operations::unify_checkpoint_shards(&attempt_directory, input.step)
+                })
+                .await
+                .map_err(|error| format!("unified checkpoint task failed: {error}"))??;
+                if unified {
+                    return Ok(input);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(format!(
+                "timed out waiting for operation shards for step {}",
+                input.step
+            ))
+        }
     }
 }
 

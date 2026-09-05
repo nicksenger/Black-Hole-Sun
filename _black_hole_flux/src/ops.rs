@@ -17,8 +17,8 @@ pub use black_hole_type::{
 };
 
 use black_hole_spec::{
-    BackwardContract, DecodedTensorBundle, QwenDarkInference, RawTensor, TensorContract,
-    decode_output, encode_input,
+    decode_output, encode_input, BackwardContract, DecodedTensorBundle, QwenDarkInference,
+    RawTensor, TensorContract,
 };
 
 use crate::AtomError;
@@ -293,7 +293,8 @@ pub trait VoidOps: Send + Sync {
         C::Output: Send,
         C::Metadata: DeserializeOwned + Send,
     {
-        self.receive_emission::<C, C::Output>(delivery.emission_id).await
+        self.receive_emission::<C, C::Output>(delivery.emission_id)
+            .await
     }
 
     /// Resolve the emission at `emission_id` and decode it as `C`'s output
