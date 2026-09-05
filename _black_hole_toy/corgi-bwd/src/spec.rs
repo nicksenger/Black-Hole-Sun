@@ -176,12 +176,16 @@ impl Action for LogStep {
 }
 
 /// Reconstructs a unified checkpoint from all six stage checkpoints.
+///
+/// Emits `()` so the policy (the last step of the pipeline-step loop body)
+/// keeps emitting the loop's `()` carry; jungle re-decodes the body's final
+/// emission as the while-loop control input on every iteration.
 pub struct UnifiedCheckpoint;
 #[jungle::action]
 impl Action for UnifiedCheckpoint {
     type Effect = UnifiedCheckpointEffect;
     type Input = StepMetrics;
-    type Output = StepMetrics;
+    type Output = ();
 
     fn emit(_state: &PipelineBackwardState, input: Self::Input) -> Self::Input {
         input
@@ -190,8 +194,9 @@ impl Action for UnifiedCheckpoint {
     fn absorb(
         _state: &mut PipelineBackwardState,
         output: EffectCompletion<Self::Effect>,
-    ) -> Result<Self::Output, Failure> {
-        output.map_err(|error| Failure::Message(format!("unified checkpoint failed: {error}")))
+    ) -> Result<(), Failure> {
+        output.map_err(|error| Failure::Message(format!("unified checkpoint failed: {error}")))?;
+        Ok(())
     }
 }
 
@@ -199,7 +204,7 @@ pub struct UnifiedCheckpointEffect;
 #[jungle::effect(id = 214)]
 impl<J> Effect<J> for UnifiedCheckpointEffect {
     type In = StepMetrics;
-    type Out = StepMetrics;
+    type Out = ();
     type Err = String;
 
     fn effect(
@@ -209,7 +214,7 @@ impl<J> Effect<J> for UnifiedCheckpointEffect {
         async move {
             let settings = unified_checkpoint_settings();
             if settings.every == 0 || input.step == 0 || input.step % settings.every != 0 {
-                return Ok(input);
+                return Ok(());
             }
             let directory = settings
                 .directory
@@ -222,7 +227,7 @@ impl<J> Effect<J> for UnifiedCheckpointEffect {
                 .await
                 .map_err(|error| format!("unified checkpoint task failed: {error}"))??;
                 if unified {
-                    return Ok(input);
+                    return Ok(());
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
