@@ -33,7 +33,7 @@ pub(super) const PROGENITOR_NODE_COUNT: usize = 3;
 const DARK_STAR_MODEL_NODE_COUNT: usize = 3;
 const DARK_STAR_VERTEX_COUNT: usize = 10;
 const DARK_STAR_PORT_COUNT: usize = 13;
-const DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH: usize = 6;
+const DARK_STAR_FUSION_TRANSFORMS_PER_STEP: usize = 6;
 
 pub(super) const SPACE_PROBE_DISTANCE_PROMPT: &str = "A space probe in a decaying orbit measures its distance to the event horizon of a black hole. At point A, it is 3,600 kilometers away. Strong gravitational attraction pulls the probe inward, closing 2/3 of its initial distance. Orbital decay then pulls the probe another 450 kilometers closer to the event horizon. How many kilometers is the probe from the event horizon now?";
 
@@ -64,10 +64,10 @@ pub(super) type ThreeUnary1 = Unary<U1, Progenitor, list![U2]>;
 pub(super) type ThreeUnary2 = Unary<U2, Progenitor, list![]>;
 pub(super) type ThreeProgenitorSun = list![ThreeUnary0, ThreeUnary1, ThreeUnary2];
 
-pub(super) struct FinishDarkStarTestCellEpoch;
+pub(super) struct FinishDarkStarTestCellStep;
 
 #[derive(Flow)]
-pub(super) struct DarkStarTestCellEpoch<Transform>(
+pub(super) struct DarkStarTestCellStep<Transform>(
     Step<WaitForPropagation>,
     Transform,
     Step<Transmit>,
@@ -75,12 +75,12 @@ pub(super) struct DarkStarTestCellEpoch<Transform>(
     Transform,
     Step<Transmit>,
     Step<WaitForPotentiation>,
-    Step<FinishDarkStarTestCellEpoch>,
+    Step<FinishDarkStarTestCellStep>,
 );
 
-pub(super) struct AlwaysDarkStarEpoch;
+pub(super) struct AlwaysDarkStarStep;
 
-impl Predicate<(&CellState, &())> for AlwaysDarkStarEpoch {
+impl Predicate<(&CellState, &())> for AlwaysDarkStarStep {
     fn eval(_input: &(&CellState, &())) -> bool {
         true
     }
@@ -89,13 +89,13 @@ impl Predicate<(&CellState, &())> for AlwaysDarkStarEpoch {
 #[derive(Flow)]
 pub(super) struct DarkStarTestCellFlow<Transform>(
     Step<InitRecvId>,
-    While<AlwaysDarkStarEpoch, DarkStarTestCellEpoch<Transform>>,
+    While<AlwaysDarkStarStep, DarkStarTestCellStep<Transform>>,
 );
 
 pub(super) struct PassDarkStarEmission;
 
 #[jungle::action]
-impl Action for FinishDarkStarTestCellEpoch {
+impl Action for FinishDarkStarTestCellStep {
     type Effect = NoEffect;
     type Input = Potentiation;
     type Output = ();
@@ -106,7 +106,7 @@ impl Action for FinishDarkStarTestCellEpoch {
         _state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_| Failure::Message("finish dark_star test-cell epoch failed".to_string()))
+        output.map_err(|_| Failure::Message("finish dark_star test-cell step failed".to_string()))
     }
 }
 
@@ -567,7 +567,7 @@ impl SunOps for SpaceJungle {
 }
 
 #[cfg(test)]
-pub(super) async fn exercise_epoch<A>(
+pub(super) async fn exercise_step<A>(
     test_name: &str,
     model_path: &str,
     model_cell_count: usize,
@@ -666,7 +666,7 @@ pub(super) async fn exercise_epoch<A>(
                         }
                         None => {
                             return Err(format!(
-                                "step update stream ended before {test_name} completed an epoch"
+                                "step update stream ended before {test_name} completed a step"
                             ));
                         }
                     }
@@ -700,7 +700,7 @@ pub(super) async fn exercise_epoch<A>(
                 .await
                 .expect("parent journey details should be available");
             panic!(
-                "timeout waiting for {test_name} epoch (240s): {error}; inferences={}, perturb_up={}, perturb_down={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
+                "timeout waiting for {test_name} step (240s): {error}; inferences={}, perturb_up={}, perturb_down={}, potentiations={}, optimized_cells={}, fusion_concats={}, status={status:?}",
                 inference_calls.load(Ordering::SeqCst),
                 perturb_up_calls.load(Ordering::SeqCst),
                 perturb_down_calls.load(Ordering::SeqCst),
@@ -732,13 +732,13 @@ async fn dark_star() {
         None => return,
     };
 
-    exercise_epoch::<DarkStarBlackHole>(
+    exercise_step::<DarkStarBlackHole>(
         "dark_star Sun",
         &model_path,
         DARK_STAR_MODEL_NODE_COUNT,
         DARK_STAR_VERTEX_COUNT,
         DARK_STAR_PORT_COUNT,
-        DARK_STAR_FUSION_TRANSFORMS_PER_EPOCH,
+        DARK_STAR_FUSION_TRANSFORMS_PER_STEP,
         None,
     )
     .await;

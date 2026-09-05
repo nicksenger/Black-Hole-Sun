@@ -91,7 +91,7 @@ pub use nodes::cell::effect::{
 };
 pub use nodes::fusion::action::{FusionSeed, FusionState};
 pub use nodes::fusion::{
-    Fusion, FusionEpoch, FusionFlow, QuzoFusion, QuzoFusionEpoch, QuzoFusionWithModelConfig,
+    Fusion, FusionFlow, FusionStep, QuzoFusion, QuzoFusionStep, QuzoFusionWithModelConfig,
 };
 pub use nodes::warp::action::{InitRecvId as InitBoundaryRecvId, ObserveWarp, PerturbWarp};
 pub use nodes::warp::effect::{ObserveWarpEffect, PerturbWarpEffect};
@@ -128,7 +128,7 @@ pub use programs::checkpoint_evaluate::{CheckpointEvaluate, CheckpointEvaluateFl
 pub use programs::forward_only::{ForwardOnly, ForwardOnlyWithPolicy};
 pub use programs::pipeline_backward::{
     BackwardOperationCell, BackwardOperationPrimordium, PipelineBackward, PipelineBackwardState,
-    PipelineCommand, PipelineEpochResult, PipelineResponse,
+    PipelineCommand, PipelineResponse, PipelineStepResult,
 };
 pub use programs::two_sided_zo::action::{
     BroadcastPotentiation, BroadcastPotentiationInput, InitializePropagation, ProcessNextNode,
@@ -140,9 +140,9 @@ pub use programs::two_sided_zo::effect::{
     WaitForNodeTransmissionInput,
 };
 pub use programs::two_sided_zo::{
-    Epoch, LegacySun, Manifest, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow,
-    PropagationFlows, PropagationLoop, StatelessManifest, SunInner, SunState, TwoSidedZo,
-    TwoSidedZoManifest, TwoSidedZoState, TwoSidedZoWithState,
+    LegacySun, Manifest, PendingNotEmpty, PropA, PropAFlow, PropB, PropBFlow, PropagationFlows,
+    PropagationLoop, StatelessManifest, Step, SunInner, SunState, TwoSidedZo, TwoSidedZoManifest,
+    TwoSidedZoState, TwoSidedZoWithState,
 };
 pub use topology::{
     BackwardTypedEdges, Binary, BoundaryInit, DeclaredEdge, DeclaredEdges, Edge, NodeIdsFromList,

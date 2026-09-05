@@ -51,7 +51,7 @@ const JUNGLE_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 #[derive(Default)]
 pub struct WhiteDwarfStateInner {
-    _seen_epoch_count: usize,
+    _seen_step_count: usize,
 }
 
 type WhiteDwarfState = SunState<WhiteDwarfStateInner>;

@@ -45,9 +45,9 @@ pub struct FusionPropagationMicrostep<Transform>(
     Step<AdvanceFusionGradientStep>,
 );
 
-/// One complete model-free accumulation epoch.
+/// One complete model-free accumulation step.
 #[derive(Flow)]
-pub struct FusionEpoch<Transform>(
+pub struct FusionStep<Transform>(
     Step<BeginFusionGradientAccumulation>,
     While<HasPendingFusionGradientStep, FusionPropagationMicrostep<Transform>>,
     Step<BeginFusionGradientAccumulation>,
@@ -60,7 +60,7 @@ pub struct FusionEpoch<Transform>(
 pub struct Fusion<Transform>(
     Step<InitFusion>,
     Step<GenerateTransformId>,
-    While<Always<FusionState, ()>, FusionEpoch<Transform>>,
+    While<Always<FusionState, ()>, FusionStep<Transform>>,
 );
 
 /// One single-pass model-aware fusion microstep.
@@ -77,9 +77,9 @@ pub struct QuzoFusionPropagationMicrostep<
     Step<AdvanceFusionGradientStep>,
 );
 
-/// One complete model-aware accumulation epoch.
+/// One complete model-aware accumulation step.
 #[derive(Flow)]
-pub struct QuzoFusionEpoch<
+pub struct QuzoFusionStep<
     Transform,
     M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
 >(
@@ -103,7 +103,7 @@ pub struct QuzoFusionWithModelConfig<
     Step<InitFusion>,
     Step<GenerateTransformId>,
     Step<FusionStartModel<H>>,
-    While<Always<FusionState, ()>, QuzoFusionEpoch<Transform, M>>,
+    While<Always<FusionState, ()>, QuzoFusionStep<Transform, M>>,
 );
 
 pub type QuzoFusion<Transform, M, H = DefaultConfig> = QuzoFusionWithModelConfig<Transform, M, H>;

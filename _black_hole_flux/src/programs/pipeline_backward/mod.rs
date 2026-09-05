@@ -63,7 +63,7 @@ pub struct PipelineBackwardState<S = ()> {
     /// Current command inbox for each operation input port.
     pub inboxes: HashMap<u32, ObjectId>,
     pub micro_batches: Vec<ArtifactDelivery<()>>,
-    pub epoch: usize,
+    pub step: usize,
 }
 
 impl<S: Default> Default for PipelineBackwardState<S> {
@@ -73,7 +73,7 @@ impl<S: Default> Default for PipelineBackwardState<S> {
             inner: S::default(),
             inboxes: HashMap::new(),
             micro_batches: Vec::new(),
-            epoch: 0,
+            step: 0,
         }
     }
 }
@@ -91,9 +91,9 @@ impl<S, const M: usize> Predicate<(&PipelineBackwardState<S>, &())> for NeedsMic
     }
 }
 
-pub struct BeginEpoch<S>(PhantomData<fn() -> S>);
+pub struct BeginStep<S>(PhantomData<fn() -> S>);
 #[jungle::action]
-impl<S> Action for BeginEpoch<S> {
+impl<S> Action for BeginStep<S> {
     type Effect = NoEffect;
     type Input = ();
     type Output = ();
@@ -102,7 +102,7 @@ impl<S> Action for BeginEpoch<S> {
         state: &mut PipelineBackwardState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<(), Failure> {
-        output.map_err(|_| Failure::Message("begin pipeline epoch failed".into()))?;
+        output.map_err(|_| Failure::Message("begin pipeline step failed".into()))?;
         state.micro_batches.clear();
         Ok(())
     }
@@ -134,8 +134,8 @@ impl<Input: Send + 'static, S> Action for StoreMicroBatch<Input, S> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PipelineEpochResult {
-    pub epoch: usize,
+pub struct PipelineStepResult {
+    pub step: usize,
     pub outputs: Vec<ArtifactDelivery<()>>,
 }
 
@@ -146,14 +146,14 @@ pub struct RunPipelineInput {
     linear: bool,
     inboxes: HashMap<u32, ObjectId>,
     micro_batches: Vec<ArtifactDelivery<()>>,
-    epoch: usize,
+    step: usize,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct RunPipelineOutput {
     inboxes: HashMap<u32, ObjectId>,
     outputs: Vec<ObjectId>,
-    epoch: usize,
+    step: usize,
 }
 
 pub struct RunPipelineEffect;
@@ -364,7 +364,7 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
                 outputs: (0..m)
                     .map(|mb| forward[mb][p - 1].expect("all forwards completed"))
                     .collect(),
-                epoch: input.epoch,
+                step: input.step,
             })
         }
     }
@@ -375,7 +375,7 @@ pub struct RunPipeline<Output, S>(PhantomData<fn() -> (Output, S)>);
 impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
     type Effect = RunPipelineEffect;
     type Input = ();
-    type Output = PipelineEpochResult;
+    type Output = PipelineStepResult;
     fn emit(state: &PipelineBackwardState<S>, _input: ()) -> RunPipelineInput {
         let topology = state.topology.lock().unwrap();
         let mut nodes = topology.journey_ids.keys().copied().collect::<Vec<_>>();
@@ -401,18 +401,18 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
             linear,
             inboxes: state.inboxes.clone(),
             micro_batches: state.micro_batches.clone(),
-            epoch: state.epoch,
+            step: state.step,
         }
     }
     fn absorb(
         state: &mut PipelineBackwardState<S>,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let output = output.map_err(|e| Failure::Message(format!("pipeline epoch failed: {e}")))?;
+        let output = output.map_err(|e| Failure::Message(format!("pipeline step failed: {e}")))?;
         state.inboxes = output.inboxes;
-        state.epoch += 1;
-        Ok(PipelineEpochResult {
-            epoch: output.epoch,
+        state.step += 1;
+        Ok(PipelineStepResult {
+            step: output.step,
             outputs: output
                 .outputs
                 .into_iter()
@@ -430,7 +430,7 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
 pub struct CollectOne<Source, Input: Send + 'static, S>(Source, Step<StoreMicroBatch<Input, S>>);
 
 #[derive(Flow)]
-pub struct PipelineEpoch<
+pub struct PipelineStep<
     Source,
     Input: Send + 'static,
     Output: Send + 'static,
@@ -438,7 +438,7 @@ pub struct PipelineEpoch<
     S,
     const M: usize,
 >(
-    Step<BeginEpoch<S>>,
+    Step<BeginStep<S>>,
     While<NeedsMicroBatches<S, M>, CollectOne<Source, Input, S>>,
     Step<RunPipeline<Output, S>>,
     Policy,
@@ -454,7 +454,7 @@ pub struct PipelineBackwardFlow<
     const M: usize,
 >(
     Step<FinalizePipelineGraph<S>>,
-    While<Always<PipelineBackwardState<S>, ()>, PipelineEpoch<Source, Input, Output, Policy, S, M>>,
+    While<Always<PipelineBackwardState<S>, ()>, PipelineStep<Source, Input, Output, Policy, S, M>>,
 );
 
 pub struct FinalizePipelineGraph<S>(PhantomData<fn() -> S>);

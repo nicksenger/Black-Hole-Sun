@@ -1,6 +1,6 @@
 //! The two-sided zeroth-order training strategy ("Sun").
 //!
-//! Owns the epoch driver ([`SunFlow`]), the propagation branch states
+//! Owns the step driver ([`SunFlow`]), the propagation branch states
 //! ([`PropA`] / [`PropB`]), the shared bookkeeping ([`TwoSidedZoInner`]), and
 //! the program entrypoints (`TwoSidedZo*`). Pipeline actions and effects live
 //! in [`action`](self::action) / [`effect`](self::effect).
@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use black_hole_type::{ObjectId, Transmission};
+use jungle_sdk::prelude::Step as FlowStep;
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 use uuid::Uuid;
@@ -87,9 +88,9 @@ pub struct SunStateWithInner<S> {
     pub root_p1_sent: HashMap<u32, usize>,
     /// Second-pass root microsteps already seeded per root node.
     pub root_p2_sent: HashMap<u32, usize>,
-    /// Number of node phase-microsteps completed in the current epoch.
+    /// Number of node phase-microsteps completed in the current step.
     pub pipeline_completions: usize,
-    /// Total node phase-microsteps expected in the current epoch.
+    /// Total node phase-microsteps expected in the current step.
     pub pipeline_target_completions: usize,
     /// Cached sink node id for the currently finalized graph.
     pub sink_id: Option<u32>,
@@ -233,13 +234,13 @@ pub struct TwoSidedZoInner {
     pub node_states: HashMap<u32, SunNodeState>,
     /// 1-based gradient accumulation step currently associated with each vertex.
     pub node_grad_steps: HashMap<u32, usize>,
-    /// Nodes whose first-pass output has been received in the current epoch.
+    /// Nodes whose first-pass output has been received in the current step.
     pub p1_completed: HashSet<u32>,
-    /// Nodes whose second pass has been sent in the current epoch.
+    /// Nodes whose second pass has been sent in the current step.
     pub p2_sent: HashSet<u32>,
-    /// Number of propagation microsteps per optimization epoch.
+    /// Number of propagation microsteps per optimization step.
     pub grad_steps: usize,
-    /// Current microstep index (0-based) inside the accumulation epoch.
+    /// Current microstep index (0-based) inside the accumulation step.
     pub active_micro_step: usize,
     /// First-pass input endpoints keyed by port id.
     pub p1_tx: HashMap<u32, ObjectId>,
@@ -563,25 +564,25 @@ where
 //
 /// Processes the next ready node in propagation branch B.
 #[derive(Flow)]
-pub struct PropBLoop(Step<action::ProcessNextNode<PropB>>);
+pub struct PropBLoop(FlowStep<action::ProcessNextNode<PropB>>);
 
 /// Processes the next ready node in propagation branch A.
 #[derive(Flow)]
-pub struct PropALoop(Step<action::ProcessNextNode<PropA>>);
+pub struct PropALoop(FlowStep<action::ProcessNextNode<PropA>>);
 
 #[derive(Flow)]
 #[jungle(focus = PropB)]
 pub struct PropBFlow(
-    Step<action::InitializePropagation<PropB>>,
-    Step<action::SendRootPropagation<PropB>>,
+    FlowStep<action::InitializePropagation<PropB>>,
+    FlowStep<action::SendRootPropagation<PropB>>,
     While<FocusedLoopCondition<PendingNotEmpty<PropB>, PropB>, PropBLoop>,
 );
 
 #[derive(Flow)]
 #[jungle(focus = PropA)]
 pub struct PropAFlow(
-    Step<action::InitializePropagation<PropA>>,
-    Step<action::SendRootPropagation<PropA>>,
+    FlowStep<action::InitializePropagation<PropA>>,
+    FlowStep<action::SendRootPropagation<PropA>>,
     While<FocusedLoopCondition<PendingNotEmpty<PropA>, PropA>, PropALoop>,
 );
 
@@ -613,46 +614,46 @@ impl<S> Predicate<(&SunState<S>, &())> for PendingPipelineWork<S> {
 #[derive(Flow)]
 pub struct CollectPropagationInputsStep<Generator, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
     Generator,
-    Step<action::StorePropagationInputPair<S, GRADIENT_ACCUMULATION_STEPS>>,
+    FlowStep<action::StorePropagationInputPair<S, GRADIENT_ACCUMULATION_STEPS>>,
 );
 
 /// One scheduler tick: seed ready roots, then process one ready node output.
 #[derive(Flow)]
 pub struct PipelineProgressStep<S, const GRADIENT_ACCUMULATION_STEPS: usize>(
-    Step<action::SendReadyRootTasks<S, GRADIENT_ACCUMULATION_STEPS>>,
-    Step<action::ProcessReadyPipelineNode<S, GRADIENT_ACCUMULATION_STEPS>>,
+    FlowStep<action::SendReadyRootTasks<S, GRADIENT_ACCUMULATION_STEPS>>,
+    FlowStep<action::ProcessReadyPipelineNode<S, GRADIENT_ACCUMULATION_STEPS>>,
 );
 
 // ---------------------------------------------------------------------------
 // BlackHole — the top-level orchestration flow
 // ---------------------------------------------------------------------------
 
-/// One complete training epoch: generate → propagate → apply policy → broadcast potentiation.
+/// One complete training step: generate → propagate → apply policy → broadcast potentiation.
 #[derive(Flow)]
-pub struct EpochWithState<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
-    Step<action::BeginGradientAccumulation<S, GRADIENT_ACCUMULATION_STEPS>>,
+pub struct StepWithState<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
+    FlowStep<action::BeginGradientAccumulation<S, GRADIENT_ACCUMULATION_STEPS>>,
     While<
         PendingGeneratedPropagationInputs<GRADIENT_ACCUMULATION_STEPS, S>,
         CollectPropagationInputsStep<Generator, S, GRADIENT_ACCUMULATION_STEPS>,
     >,
-    Step<action::PreparePropagationPipeline<S, GRADIENT_ACCUMULATION_STEPS>>,
+    FlowStep<action::PreparePropagationPipeline<S, GRADIENT_ACCUMULATION_STEPS>>,
     While<PendingPipelineWork<S>, PipelineProgressStep<S, GRADIENT_ACCUMULATION_STEPS>>,
-    Step<action::CollectedPropagationPairs<S, GRADIENT_ACCUMULATION_STEPS>>,
+    FlowStep<action::CollectedPropagationPairs<S, GRADIENT_ACCUMULATION_STEPS>>,
     Policy,
-    Step<action::BroadcastPotentiation<S>>,
+    FlowStep<action::BroadcastPotentiation<S>>,
 );
 
-pub type Epoch<Generator, Policy, S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
-    EpochWithState<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>;
+pub type Step<Generator, Policy, S = (), const GRADIENT_ACCUMULATION_STEPS: usize = 1> =
+    StepWithState<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>;
 
 /// Top-level orchestration flow that drives all underlying Cell flows
 /// associated with the BlackHoleSun graph.
 #[derive(Flow)]
 pub struct SunFlow<Generator, Policy, S, const GRADIENT_ACCUMULATION_STEPS: usize>(
-    Step<action::BuildAddrs<S, GRADIENT_ACCUMULATION_STEPS>>,
+    FlowStep<action::BuildAddrs<S, GRADIENT_ACCUMULATION_STEPS>>,
     While<
         Always<SunState<S>, ()>,
-        EpochWithState<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>,
+        StepWithState<Generator, Policy, S, GRADIENT_ACCUMULATION_STEPS>,
     >,
 );
 

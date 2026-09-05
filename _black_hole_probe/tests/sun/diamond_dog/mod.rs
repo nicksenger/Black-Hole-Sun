@@ -46,7 +46,7 @@ enum VoidTransportMode {
     Tcp,
 }
 
-// ─── Multi-epoch diamond graph ───────────────────────────────────────────────
+// ─── Multi-step diamond graph ────────────────────────────────────────────────
 
 type Root = Unary<U0, RootAnimal, list![U1, U2]>;
 type Left = Unary<U1, LeftAnimal, list![U3]>;
@@ -82,8 +82,8 @@ type ExpandedDiamondSun = list![
 
 // ─── Lightweight unary animals ───────────────────────────────────────────────
 
-/// Completes one test-cell epoch after consuming its potentiation.
-pub(super) struct FinishEpoch;
+/// Completes one test-cell step after consuming its potentiation.
+pub(super) struct FinishStep;
 
 #[derive(Flow)]
 pub(super) struct TestCellMicrostep<Transform>(
@@ -102,18 +102,18 @@ impl Predicate<(&CellState, &())> for PendingGradientStep {
 }
 
 #[derive(Flow)]
-pub(super) struct TestCellEpoch<Transform>(
+pub(super) struct TestCellStep<Transform>(
     Step<BeginGradientAccumulation>,
     While<PendingGradientStep, TestCellMicrostep<Transform>>,
     Step<BeginGradientAccumulation>,
     While<PendingGradientStep, TestCellMicrostep<Transform>>,
     Step<WaitForPotentiation>,
-    Step<FinishEpoch>,
+    Step<FinishStep>,
 );
 
-pub(super) struct AlwaysEpoch;
+pub(super) struct AlwaysStep;
 
-impl Predicate<(&CellState, &())> for AlwaysEpoch {
+impl Predicate<(&CellState, &())> for AlwaysStep {
     fn eval(_input: &(&CellState, &())) -> bool {
         true
     }
@@ -122,7 +122,7 @@ impl Predicate<(&CellState, &())> for AlwaysEpoch {
 #[derive(Flow)]
 pub(super) struct TestCellFlow<Transform>(
     Step<InitRecvId>,
-    While<AlwaysEpoch, TestCellEpoch<Transform>>,
+    While<AlwaysStep, TestCellStep<Transform>>,
 );
 
 pub(super) struct PassEmission;
@@ -520,7 +520,7 @@ pub(super) async fn exercise_diamond_dog<A>(
     name: &str,
     vertex_count: usize,
     port_count: usize,
-    epochs: usize,
+    steps: usize,
     expected_grad_steps: usize,
 ) -> Vec<FusionObservation>
 where
@@ -533,7 +533,7 @@ where
         VoidTransportMode::Quic,
         vertex_count,
         port_count,
-        epochs,
+        steps,
         expected_grad_steps,
     )
     .await
@@ -544,7 +544,7 @@ pub(super) async fn exercise_diamond_dog_tcp<A>(
     name: &str,
     vertex_count: usize,
     port_count: usize,
-    epochs: usize,
+    steps: usize,
     expected_grad_steps: usize,
 ) -> Vec<FusionObservation>
 where
@@ -557,7 +557,7 @@ where
         VoidTransportMode::Tcp,
         vertex_count,
         port_count,
-        epochs,
+        steps,
         expected_grad_steps,
     )
     .await
@@ -569,7 +569,7 @@ async fn exercise_diamond_dog_with_transport<A>(
     transport_mode: VoidTransportMode,
     vertex_count: usize,
     port_count: usize,
-    epochs: usize,
+    steps: usize,
     expected_grad_steps: usize,
 ) -> Vec<FusionObservation>
 where
@@ -611,7 +611,7 @@ where
         })
         .collect();
 
-    let expected_potentiation_writes = epochs * port_count;
+    let expected_potentiation_writes = steps * port_count;
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if potentiation_writes.load(Ordering::SeqCst) >= expected_potentiation_writes {
@@ -637,7 +637,7 @@ where
                         }
                         None => {
                             return Err(format!(
-                                "step update stream ended before {epochs} epochs"
+                                "step update stream ended before {steps} steps"
                             ));
                         }
                     }
@@ -649,7 +649,7 @@ where
     .await;
 
     match result {
-        Ok(Ok(())) => println!("{name} completed {epochs} epochs"),
+        Ok(Ok(())) => println!("{name} completed {steps} steps"),
         Ok(Err(error)) => {
             let status = client
                 .journey_details(journey_id)
@@ -663,7 +663,7 @@ where
                 .await
                 .expect("journey_details should succeed");
             panic!(
-                "timeout waiting for {name} to complete {epochs} epochs (60s): {error}, \
+                "timeout waiting for {name} to complete {steps} steps (60s): {error}, \
                  potentiation writes: {}, status: {status:?}",
                 potentiation_writes.load(Ordering::SeqCst),
             );
@@ -706,7 +706,7 @@ where
             .nodes
             .iter()
             .all(|node| node.state != SunNodeState::Idle),
-        "every node should expose an orchestration phase after completed epochs"
+        "every node should expose an orchestration phase after completed steps"
     );
     assert!(
         !appearance.edges.is_empty(),
@@ -724,7 +724,7 @@ where
     observed
 }
 
-/// Exercises a multi-epoch unary diamond feeding one binary fusion vertex.
+/// Exercises a multi-step unary diamond feeding one binary fusion vertex.
 ///
 /// The left and right unary branches stamp distinct emission IDs, with the P1
 /// branch deliberately delayed so P2 arrives first. The explicit fusion
@@ -733,22 +733,22 @@ where
 #[cfg(test)]
 #[tokio::test]
 async fn diamond_dog() {
-    const EPOCHS: usize = 3;
+    const STEPS: usize = 3;
     const PROPAGATION_PASSES: usize = 2;
-    const FUSION_TRANSFORMS_PER_EPOCH: usize =
+    const FUSION_TRANSFORMS_PER_STEP: usize =
         PROPAGATION_PASSES * DIAMOND_GRADIENT_ACCUMULATION_STEPS;
     let observed = exercise_diamond_dog::<BlackHoleAnimal>(
         "diamond_dog",
         5,
         6,
-        EPOCHS,
+        STEPS,
         DIAMOND_GRADIENT_ACCUMULATION_STEPS,
     )
     .await;
 
     assert!(
-        observed.len() >= EPOCHS * FUSION_TRANSFORMS_PER_EPOCH,
-        "expected {FUSION_TRANSFORMS_PER_EPOCH} fusion transforms per epoch, observed {observed:?}"
+        observed.len() >= STEPS * FUSION_TRANSFORMS_PER_STEP,
+        "expected {FUSION_TRANSFORMS_PER_STEP} fusion transforms per step, observed {observed:?}"
     );
     let expected_transform_id = observed[0].0;
     assert_ne!(
@@ -756,26 +756,26 @@ async fn diamond_dog() {
         Uuid::nil(),
         "fusion transform ID should be generated"
     );
-    for epoch in 0..EPOCHS {
+    for step in 0..STEPS {
         for pass in 0..PROPAGATION_PASSES {
             for microstep in 0..DIAMOND_GRADIENT_ACCUMULATION_STEPS {
-                let index = epoch * FUSION_TRANSFORMS_PER_EPOCH
+                let index = step * FUSION_TRANSFORMS_PER_STEP
                     + pass * DIAMOND_GRADIENT_ACCUMULATION_STEPS
                     + microstep;
                 let (transform_id, p1, p2) = observed[index];
                 assert_eq!(
                     transform_id, expected_transform_id,
-                    "fusion transform ID changed in epoch {epoch} propagation pass {pass} microstep {microstep}"
+                    "fusion transform ID changed in step {step} propagation pass {pass} microstep {microstep}"
                 );
                 assert_eq!(
                     p1,
                     Uuid::from_u128(LEFT_EMISSION),
-                    "epoch {epoch} propagation pass {pass} microstep {microstep} did not preserve P1"
+                    "step {step} propagation pass {pass} microstep {microstep} did not preserve P1"
                 );
                 assert_eq!(
                     p2,
                     Uuid::from_u128(RIGHT_EMISSION),
-                    "epoch {epoch} propagation pass {pass} microstep {microstep} did not preserve P2"
+                    "step {step} propagation pass {pass} microstep {microstep} did not preserve P2"
                 );
             }
         }
@@ -785,22 +785,22 @@ async fn diamond_dog() {
 #[cfg(test)]
 #[tokio::test]
 async fn tcp_diamond_dog() {
-    const EPOCHS: usize = 3;
+    const STEPS: usize = 3;
     const PROPAGATION_PASSES: usize = 2;
-    const FUSION_TRANSFORMS_PER_EPOCH: usize =
+    const FUSION_TRANSFORMS_PER_STEP: usize =
         PROPAGATION_PASSES * DIAMOND_GRADIENT_ACCUMULATION_STEPS;
     let observed = exercise_diamond_dog_tcp::<BlackHoleAnimal>(
         "tcp_diamond_dog",
         5,
         6,
-        EPOCHS,
+        STEPS,
         DIAMOND_GRADIENT_ACCUMULATION_STEPS,
     )
     .await;
 
     assert!(
-        observed.len() >= EPOCHS * FUSION_TRANSFORMS_PER_EPOCH,
-        "expected {FUSION_TRANSFORMS_PER_EPOCH} fusion transforms per epoch, observed {observed:?}"
+        observed.len() >= STEPS * FUSION_TRANSFORMS_PER_STEP,
+        "expected {FUSION_TRANSFORMS_PER_STEP} fusion transforms per step, observed {observed:?}"
     );
     let expected_transform_id = observed[0].0;
     assert_ne!(
@@ -808,26 +808,26 @@ async fn tcp_diamond_dog() {
         Uuid::nil(),
         "fusion transform ID should be generated"
     );
-    for epoch in 0..EPOCHS {
+    for step in 0..STEPS {
         for pass in 0..PROPAGATION_PASSES {
             for microstep in 0..DIAMOND_GRADIENT_ACCUMULATION_STEPS {
-                let index = epoch * FUSION_TRANSFORMS_PER_EPOCH
+                let index = step * FUSION_TRANSFORMS_PER_STEP
                     + pass * DIAMOND_GRADIENT_ACCUMULATION_STEPS
                     + microstep;
                 let (transform_id, p1, p2) = observed[index];
                 assert_eq!(
                     transform_id, expected_transform_id,
-                    "fusion transform ID changed in epoch {epoch} propagation pass {pass} microstep {microstep}"
+                    "fusion transform ID changed in step {step} propagation pass {pass} microstep {microstep}"
                 );
                 assert_eq!(
                     p1,
                     Uuid::from_u128(LEFT_EMISSION),
-                    "epoch {epoch} propagation pass {pass} microstep {microstep} did not preserve P1"
+                    "step {step} propagation pass {pass} microstep {microstep} did not preserve P1"
                 );
                 assert_eq!(
                     p2,
                     Uuid::from_u128(RIGHT_EMISSION),
-                    "epoch {epoch} propagation pass {pass} microstep {microstep} did not preserve P2"
+                    "step {step} propagation pass {pass} microstep {microstep} did not preserve P2"
                 );
             }
         }

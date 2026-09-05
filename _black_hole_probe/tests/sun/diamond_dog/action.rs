@@ -1,7 +1,7 @@
 use super::*;
 
 #[jungle::action]
-impl Action for FinishEpoch {
+impl Action for FinishStep {
     type Effect = NoEffect;
     type Input = Potentiation;
     type Output = ();
@@ -12,7 +12,7 @@ impl Action for FinishEpoch {
         _state: &mut CellState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        output.map_err(|_| Failure::Message("finish epoch failed".to_string()))
+        output.map_err(|_| Failure::Message("finish step failed".to_string()))
     }
 }
 

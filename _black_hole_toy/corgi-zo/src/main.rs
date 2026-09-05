@@ -21,9 +21,9 @@ use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
 #[derive(Debug, Parser)]
 #[command(about = "Run two-sided zeroth-order optimization on ResNet-18")]
 struct Args {
-    /// Number of ZO epochs to run before exiting.
+    /// Number of ZO steps to run before exiting.
     #[arg(long, default_value_t = 10)]
-    epochs: usize,
+    steps: usize,
 
     /// Optional local Candle ResNet-18 safetensors checkpoint.
     #[arg(long)]
@@ -70,7 +70,7 @@ fn mutable_head(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     black_hole_sun::init_tracing()?;
     let args = Args::parse();
-    if args.epochs == 0 {
+    if args.steps == 0 {
         return Ok(());
     }
     let cache = configure_hf_cache(args.cache_dir, "corgi-zo")?;
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = run_until::<CorgiJungle, CorgiZo, _, _>(&jungle, &client, &(), 8, |_| {
         async {
-            if corgi_zo::OPTIMIZED_EPOCHS.load(Ordering::Acquire) >= args.epochs {
+            if corgi_zo::OPTIMIZED_STEPS.load(Ordering::Acquire) >= args.steps {
                 RunCheck::Done
             } else {
                 RunCheck::Continue
@@ -114,8 +114,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     servers.shutdown();
 
     println!(
-        "corgi-zo completed {} epoch(s) (source dataset contains {DATASET_SAMPLES})",
-        args.epochs
+        "corgi-zo completed {} step(s) (source dataset contains {DATASET_SAMPLES})",
+        args.steps
     );
     result
         .map(|_| ())

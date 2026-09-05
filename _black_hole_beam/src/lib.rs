@@ -1742,7 +1742,7 @@ loop_ticks 19200
     }
 
     #[test]
-    fn replays_an_epoch_when_snapshots_repeat_the_same_phase() {
+    fn replays_a_step_when_snapshots_repeat_the_same_phase() {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
 
@@ -1776,7 +1776,7 @@ loop_ticks 19200
     }
 
     #[test]
-    fn bounds_pending_phases_when_epochs_outpace_the_animation() {
+    fn bounds_pending_phases_when_steps_outpace_the_animation() {
         let start = Instant::now();
         let mut visual = CellVisualState::default();
         for (sequence, phase) in [

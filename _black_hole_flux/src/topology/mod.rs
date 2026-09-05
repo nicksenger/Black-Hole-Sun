@@ -142,7 +142,7 @@ pub enum SunNodeState {
     Propagation1,
     /// The first pass has emitted and the second pass has been sent to the node.
     Propagation2,
-    /// The epoch's loss has been sent to the node.
+    /// The step's loss has been sent to the node.
     Optimization,
 }
 
@@ -197,7 +197,7 @@ pub struct SunEdgeAppearance {
 pub struct SunAppearance {
     /// True after the runtime graph has been resolved and validated.
     pub finalized: bool,
-    /// Number of gradient accumulation microsteps per optimization epoch.
+    /// Number of gradient accumulation microsteps per optimization step.
     #[serde(default = "default_gradient_accumulation_steps")]
     pub grad_steps: usize,
     pub nodes: Vec<SunNodeAppearance>,

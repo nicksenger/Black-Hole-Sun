@@ -5,7 +5,7 @@ use black_hole_sun::{MassClient, VoidClient};
 use candle::{DType, Device, Var};
 use candle_nn::{Module, VarBuilder, VarMap};
 use clap::Parser;
-use corgi_bwd::contracts::{CorgiBackward, COMPLETED_EPOCHS, MICRO_BATCHES};
+use corgi_bwd::contracts::{CorgiBackward, COMPLETED_STEPS, MICRO_BATCHES};
 use corgi_bwd::jungle::{CorgiJungle, required_capabilities};
 use corgi_bwd::operations::{
     HeadOperation, OptimizerConfig, Stage1Operation, Stage2Operation, Stage3Operation,
@@ -23,7 +23,7 @@ use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
 struct Args {
     /// Number of optimizer steps (each consumes eight four-image micro-batches).
     #[arg(long, default_value_t = 1)]
-    epochs: usize,
+    steps: usize,
     /// Learning rate used independently by every stage.
     #[arg(long, default_value_t = 1e-4)]
     learning_rate: f64,
@@ -59,7 +59,7 @@ fn build_random<M>(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     black_hole_sun::init_tracing()?;
     let args = Args::parse();
-    if args.epochs == 0 {
+    if args.steps == 0 {
         return Ok(());
     }
     configure_hf_cache(args.cache_dir, "corgi-bwd")?;
@@ -147,13 +147,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let journey_id = handle.journey_id;
             let client = &client;
             async move {
-                if COMPLETED_EPOCHS.load(Ordering::Acquire) >= args.epochs {
+                if COMPLETED_STEPS.load(Ordering::Acquire) >= args.steps {
                     return RunCheck::Done;
                 }
                 match client.journey_details(journey_id).await {
                     Ok(JourneyStatus::Dead | JourneyStatus::Stopped | JourneyStatus::Completed) =>
                         RunCheck::Failed(
-                            "corgi-bwd pipeline stopped before completing the requested epochs"
+                            "corgi-bwd pipeline stopped before completing the requested steps"
                                 .to_owned(),
                         ),
                     Ok(_) => RunCheck::Continue,
@@ -168,7 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "corgi-bwd completed {} optimizer step(s), {} micro-batches of {} images each (source dataset contains {DATASET_SAMPLES})",
-        args.epochs, MICRO_BATCHES, BATCH_SIZE
+        args.steps, MICRO_BATCHES, BATCH_SIZE
     );
     result
         .map(|_| ())

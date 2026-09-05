@@ -16,7 +16,7 @@ use toy_common::dataset::BATCH_SIZE;
 use tracing::info;
 use typenum::consts::{U0, U1, U2, U3, U4, U5, U6};
 
-pub static OPTIMIZED_EPOCHS: AtomicUsize = AtomicUsize::new(0);
+pub static OPTIMIZED_STEPS: AtomicUsize = AtomicUsize::new(0);
 
 macro_rules! operation_cell {
     ($cell:ident, $id:ty, $op:ty) => {
@@ -152,12 +152,12 @@ impl<J: VoidInferOps> Effect<J> for ComputeLossEffect {
         async move {
             let loss_up = classification_loss(jungle, &up).await?;
             let loss_down = classification_loss(jungle, &down).await?;
-            let epoch = OPTIMIZED_EPOCHS.fetch_add(1, Ordering::AcqRel) + 1;
-            info!(epoch, loss_up, loss_down, "corgi-zo optimization losses");
+            let step = OPTIMIZED_STEPS.fetch_add(1, Ordering::AcqRel) + 1;
+            info!(step, loss_up, loss_down, "corgi-zo optimization losses");
             Ok(Potentiation {
                 loss_up,
                 loss_down,
-                seed: epoch as u64,
+                seed: step as u64,
             })
         }
     }

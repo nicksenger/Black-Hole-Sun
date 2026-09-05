@@ -24,25 +24,25 @@ use black_hole_sun::TestVoidServer;
 /// `[L1, R1] -> F0`, `[L2, R2] -> F1`, and `[F0, F1] -> F2`.
 #[cfg(test)]
 async fn assert_sun_dog(use_tcp: bool) {
-    const EPOCHS: usize = 3;
+    const STEPS: usize = 3;
     const PROPAGATION_PASSES: usize = 2;
     const FIRST_LAYER_FUSIONS: usize = 2;
     const FINAL_LAYER_FUSIONS: usize = 1;
     const FUSION_TRANSFORMS: usize =
-        EPOCHS * PROPAGATION_PASSES * (FIRST_LAYER_FUSIONS + FINAL_LAYER_FUSIONS);
+        STEPS * PROPAGATION_PASSES * (FIRST_LAYER_FUSIONS + FINAL_LAYER_FUSIONS);
 
     // Ten vertices own thirteen input ports: seven unary and six binary.
     let observed = if use_tcp {
-        exercise_diamond_dog_tcp::<ExpandedBlackHoleAnimal>("tcp_sun_dog", 10, 13, EPOCHS, 1).await
+        exercise_diamond_dog_tcp::<ExpandedBlackHoleAnimal>("tcp_sun_dog", 10, 13, STEPS, 1).await
     } else {
-        exercise_diamond_dog::<ExpandedBlackHoleAnimal>("sun_dog", 10, 13, EPOCHS, 1).await
+        exercise_diamond_dog::<ExpandedBlackHoleAnimal>("sun_dog", 10, 13, STEPS, 1).await
     };
     assert!(
         observed.len() >= FUSION_TRANSFORMS,
         "expected {FUSION_TRANSFORMS} fusion transforms, observed {observed:?}"
     );
 
-    let completed_epochs = &observed[..FUSION_TRANSFORMS];
+    let completed_steps = &observed[..FUSION_TRANSFORMS];
     let first_layer_pair = (
         Uuid::from_u128(LEFT_EMISSION),
         Uuid::from_u128(RIGHT_EMISSION),
@@ -52,25 +52,25 @@ async fn assert_sun_dog(use_tcp: bool) {
         Uuid::from_u128(FUSED_EMISSION),
     );
     assert!(
-        completed_epochs
+        completed_steps
             .iter()
             .all(|(_, p1, p2)| (*p1, *p2) == first_layer_pair || (*p1, *p2) == final_layer_pair),
-        "unexpected fusion inputs in completed epochs: {completed_epochs:?}"
+        "unexpected fusion inputs in completed steps: {completed_steps:?}"
     );
     assert_eq!(
-        completed_epochs
+        completed_steps
             .iter()
             .filter(|(_, p1, p2)| (*p1, *p2) == first_layer_pair)
             .count(),
-        EPOCHS * PROPAGATION_PASSES * FIRST_LAYER_FUSIONS,
+        STEPS * PROPAGATION_PASSES * FIRST_LAYER_FUSIONS,
         "both first-layer fusions should run on every pass"
     );
     assert_eq!(
-        completed_epochs
+        completed_steps
             .iter()
             .filter(|(_, p1, p2)| (*p1, *p2) == final_layer_pair)
             .count(),
-        EPOCHS * PROPAGATION_PASSES * FINAL_LAYER_FUSIONS,
+        STEPS * PROPAGATION_PASSES * FINAL_LAYER_FUSIONS,
         "the final fusion should run on every pass"
     );
 

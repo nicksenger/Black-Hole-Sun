@@ -229,14 +229,14 @@ impl<J: VoidInferOps> Effect<J> for WaitForNodeTransmissionEffect {
 // ---------------------------------------------------------------------------
 
 /// Output from [`BroadcastPotentiationEffect`]: each port's first inbox for
-/// the next epoch.
+/// the next step.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BroadcastPotentiationResult {
     pub next_p1_tx_map: Vec<(u32, ObjectId)>,
 }
 
 /// Effect that broadcasts `Transmission::Potentiation` payloads to all input
-/// ports. Each transmission gives that port a fresh inbox for the next epoch.
+/// ports. Each transmission gives that port a fresh inbox for the next step.
 pub struct BroadcastPotentiationEffect;
 
 #[jungle::effect(id = 57)]

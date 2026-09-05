@@ -1,4 +1,4 @@
-//! Two-sided zeroth-order pipeline actions — epoch bookkeeping, per-node
+//! Two-sided zeroth-order pipeline actions — step bookkeeping, per-node
 //! propagation scheduling, and potentiation broadcast.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -254,7 +254,7 @@ fn task_output_id<S>(
     }
 }
 
-fn reset_epoch_mailboxes(topology: &crate::topology::SunTopology, inner: &mut super::SunInner) {
+fn reset_step_mailboxes(topology: &crate::topology::SunTopology, inner: &mut super::SunInner) {
     let port_ids = port_ids(topology);
     let vertex_ids = vertex_ids(topology);
 
@@ -552,7 +552,7 @@ impl<S, const GRADIENT_ACCUMULATION_STEPS: usize> Action
         for port_id in port_ids(&topology) {
             inner.po_tx.insert(port_id, Uuid::new_v4());
         }
-        reset_epoch_mailboxes(&topology, &mut inner);
+        reset_step_mailboxes(&topology, &mut inner);
         topology.finalized = true;
 
         Ok(())
@@ -1423,7 +1423,7 @@ impl<S> Action for BroadcastPotentiation<S> {
             inner.po_tx.insert(port_id, Uuid::new_v4());
         }
         inner.active_micro_step = 0;
-        reset_epoch_mailboxes(&topology, &mut inner);
+        reset_step_mailboxes(&topology, &mut inner);
         inner.record_optimization_sent(&mut topology, optimized_node_ids);
         drop(inner);
         state.propagation_down_inputs.clear();
@@ -1922,7 +1922,7 @@ mod tests {
         assert_eq!(
             state.appearance().nodes[0].state,
             crate::topology::SunNodeState::Propagation1,
-            "the prior epoch's completion must not expose propagation 2 early"
+            "the prior step's completion must not expose propagation 2 early"
         );
         assert_eq!(state.appearance().nodes[0].state_sequence, 4);
 

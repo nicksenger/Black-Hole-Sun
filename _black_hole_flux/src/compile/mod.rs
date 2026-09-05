@@ -117,7 +117,7 @@ pub struct SunNode<S, U>(S, U);
 /// `<Topology as BlackHole>::Sun<Program>` is the canonical application
 /// point. The recursive fold still emits the topology-specific deployment
 /// steps; the terminal case now attaches `Program::Driver` instead of a fixed
-/// QuZO epoch.
+/// QuZO step.
 pub trait BlackHole {
     type Sun<P: SunProgram>
     where

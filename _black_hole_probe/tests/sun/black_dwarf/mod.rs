@@ -9,7 +9,7 @@ use jungle_sdk::JungleClient;
 use super::common::require_model_path;
 use super::common::{init_tracing, make_client_endpoint};
 #[cfg(test)]
-use super::dark_star::{exercise_epoch, ProgenitorBlackHole};
+use super::dark_star::{exercise_step, ProgenitorBlackHole};
 use super::dark_star::{BlackDwarfBlackHole, SpaceJungle, PROGENITOR_NODE_COUNT};
 use black_hole_sun::{TestMassServer, TestVoidServer};
 
@@ -27,7 +27,7 @@ async fn primordia() {
         Some(path) => path,
         None => return,
     };
-    exercise_epoch::<ProgenitorBlackHole>(
+    exercise_step::<ProgenitorBlackHole>(
         "Progenitor Sun",
         &model_path,
         PROGENITOR_NODE_COUNT,
@@ -51,7 +51,7 @@ async fn test_black_dwarf() {
         None => return,
     };
 
-    exercise_epoch::<BlackDwarfBlackHole>(
+    exercise_step::<BlackDwarfBlackHole>(
         "black_dwarf Sun",
         &model_path,
         PROGENITOR_NODE_COUNT,

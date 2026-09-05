@@ -8,7 +8,7 @@ use black_hole_sun::compile::BlackHole;
 use black_hole_sun::topology::{BackwardTypedEdges, Edge, Unary};
 use black_hole_sun::{
     ArtifactDelivery, BackwardOperationPrimordium, OperationNode, PipelineBackward,
-    PipelineBackwardState, PipelineEpochResult, VoidOps,
+    PipelineBackwardState, PipelineStepResult, VoidOps,
 };
 use corgi_fwd::contracts::{HeadOp, Image, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 use jungle_sdk::list;
@@ -16,7 +16,7 @@ use jungle_sdk::prelude::*;
 use toy_common::dataset::BATCH_SIZE;
 use typenum::consts::{U0, U1, U2, U3, U4, U5, U6};
 
-/// Micro-batches per pipeline epoch.
+/// Micro-batches per pipeline step.
 pub const MICRO_BATCHES: usize = 8;
 
 macro_rules! operation_cell {
@@ -85,20 +85,20 @@ impl<J: VoidOps> Effect<J> for GenerateImageEffect {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct EpochMetrics {
-    pub epoch: usize,
+pub struct StepMetrics {
+    pub step: usize,
     pub mean_loss: f32,
     pub accuracy: f32,
 }
 
 #[derive(Flow)]
-pub struct LogPolicy(Step<LogEpoch>);
+pub struct LogPolicy(Step<LogStep>);
 
-pub struct LogEpoch;
+pub struct LogStep;
 #[jungle::action]
-impl Action for LogEpoch {
-    type Effect = LogEpochEffect;
-    type Input = PipelineEpochResult;
+impl Action for LogStep {
+    type Effect = LogStepEffect;
+    type Input = PipelineStepResult;
     type Output = ();
     fn emit(_state: &PipelineBackwardState, input: Self::Input) -> Self::Input {
         input
@@ -108,27 +108,27 @@ impl Action for LogEpoch {
         output: EffectCompletion<Self::Effect>,
     ) -> Result<(), Failure> {
         output.map_err(|e| Failure::Message(format!("training policy failed: {e}")))?;
-        COMPLETED_EPOCHS.fetch_add(1, Ordering::Release);
+        COMPLETED_STEPS.fetch_add(1, Ordering::Release);
         Ok(())
     }
 }
 
-pub struct LogEpochEffect;
-pub static COMPLETED_EPOCHS: AtomicUsize = AtomicUsize::new(0);
+pub struct LogStepEffect;
+pub static COMPLETED_STEPS: AtomicUsize = AtomicUsize::new(0);
 
 #[jungle::effect(id = 212)]
-impl<J: VoidOps> Effect<J> for LogEpochEffect {
-    type In = PipelineEpochResult;
-    type Out = EpochMetrics;
+impl<J: VoidOps> Effect<J> for LogStepEffect {
+    type In = PipelineStepResult;
+    type Out = StepMetrics;
     type Err = String;
     fn effect(
         jungle: &J,
-        epoch: Self::In,
+        step: Self::In,
     ) -> impl Future<Output = Result<Self::Out, String>> + Send {
         async move {
             let mut loss = 0f32;
             let mut correct = 0usize;
-            for delivery in &epoch.outputs {
+            for delivery in &step.outputs {
                 let decoded = jungle
                     .receive_emission::<HeadOp, ()>(delivery.emission_id.clone())
                     .await?;
@@ -157,17 +157,17 @@ impl<J: VoidOps> Effect<J> for LogEpochEffect {
                         usize::from(usize::from(logits[offset + 1] > logits[offset]) == target);
                 }
             }
-            let n = (epoch.outputs.len() * BATCH_SIZE).max(1) as f32;
-            let metrics = EpochMetrics {
-                epoch: epoch.epoch,
+            let n = (step.outputs.len() * BATCH_SIZE).max(1) as f32;
+            let metrics = StepMetrics {
+                step: step.step,
                 mean_loss: loss / n,
                 accuracy: correct as f32 / n,
             };
             tracing::warn!(
-                epoch = metrics.epoch,
+                step = metrics.step,
                 mean_loss = metrics.mean_loss,
                 accuracy = metrics.accuracy,
-                "corgi-bwd training epoch"
+                "corgi-bwd training step"
             );
             Ok(metrics)
         }

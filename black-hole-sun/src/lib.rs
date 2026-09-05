@@ -41,7 +41,7 @@ pub use black_hole_flux::{
 };
 pub use black_hole_flux::{
     BackwardOperationCell, BackwardOperationPrimordium, PipelineBackward, PipelineBackwardState,
-    PipelineEpochResult,
+    PipelineStepResult,
 };
 
 // Convenience re-exports — spec types

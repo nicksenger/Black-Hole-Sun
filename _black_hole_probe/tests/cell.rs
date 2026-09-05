@@ -408,7 +408,7 @@ async fn connect_client_with_retry(remote: SocketAddr) -> jungle_sdk::Client {
 
 /// Runs Flux's typed two-sided operation-cell loop against a tiny optimizing
 /// backend. Reaching the third propagation proves that start, perturb up,
-/// invoke, reset, perturb down, invoke, optimize, and the next epoch all ran
+/// invoke, reset, perturb down, invoke, optimize, and the next step all ran
 /// through the generic capability traits.
 #[tokio::test]
 async fn operation_cell_optimizes_without_a_model() {
