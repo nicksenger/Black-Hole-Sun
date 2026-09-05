@@ -247,6 +247,23 @@ impl SunTopology {
             .insert(node_id, SunOperationalState::Succeeded);
     }
 
+    /// Records that a pipeline step has begun processing its stages.
+    pub(crate) fn record_pipeline_started(&mut self, node_ids: impl IntoIterator<Item = u32>) {
+        for node_id in node_ids {
+            self.node_operational_states
+                .insert(node_id, SunOperationalState::Running);
+            self.node_phase_annotations
+                .insert(node_id, "pipeline".to_string());
+            *self.node_state_sequences.entry(node_id).or_default() += 1;
+        }
+    }
+
+    /// Records that a pipeline step completed processing a stage.
+    pub(crate) fn record_pipeline_completed(&mut self, node_id: u32) {
+        self.node_operational_states
+            .insert(node_id, SunOperationalState::Succeeded);
+    }
+
     /// Build a deterministic, serializable view of the resolved graph.
     ///
     /// Node phase and gradient-step detail is strategy-specific and lives in
@@ -586,4 +603,35 @@ pub(crate) fn root_vertex_ids(topology: &SunTopology) -> Vec<u32> {
         .collect();
     roots.sort_unstable();
     roots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SunNodeState, SunOperationalState, SunTopology};
+    use uuid::Uuid;
+
+    #[test]
+    fn pipeline_status_is_published_in_appearance() {
+        let mut topology = SunTopology::default();
+        topology.journey_ids.insert(4, Uuid::new_v4());
+
+        topology.record_pipeline_started([4]);
+        let appearance = topology.appearance();
+        assert_eq!(appearance.nodes[0].state, SunNodeState::Idle);
+        assert_eq!(
+            appearance.nodes[0].operational_state,
+            SunOperationalState::Running
+        );
+        assert_eq!(
+            appearance.nodes[0].phase_annotation.as_deref(),
+            Some("pipeline")
+        );
+        assert_eq!(appearance.nodes[0].state_sequence, 1);
+
+        topology.record_pipeline_completed(4);
+        assert_eq!(
+            topology.appearance().nodes[0].operational_state,
+            SunOperationalState::Succeeded
+        );
+    }
 }

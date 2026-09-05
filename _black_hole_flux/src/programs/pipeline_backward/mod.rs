@@ -449,7 +449,7 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
     type Input = ();
     type Output = PipelineStepResult;
     fn emit(state: &PipelineBackwardState<S>, _input: ()) -> RunPipelineInput {
-        let topology = state.topology.lock().unwrap();
+        let mut topology = state.topology.lock().unwrap();
         let mut nodes = topology.journey_ids.keys().copied().collect::<Vec<_>>();
         nodes.sort_unstable();
         let ports = nodes
@@ -468,7 +468,7 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
                 let outgoing = topology.outgoing.get(&pair[0]).cloned().unwrap_or_default();
                 outgoing.len() == 1 && outgoing[0].vertex_id == pair[1]
             });
-        RunPipelineInput {
+        let input = RunPipelineInput {
             nodes,
             ports,
             replicas: 1,
@@ -476,7 +476,9 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
             inboxes: state.inboxes.clone(),
             micro_batches: state.micro_batches.clone(),
             step: state.step,
-        }
+        };
+        topology.record_pipeline_started(input.nodes.iter().copied());
+        input
     }
     fn absorb(
         state: &mut PipelineBackwardState<S>,
@@ -485,6 +487,10 @@ impl<Output: Send + 'static, S> Action for RunPipeline<Output, S> {
         let output = output.map_err(|e| Failure::Message(format!("pipeline step failed: {e}")))?;
         state.inboxes = output.inboxes;
         state.step += 1;
+        let mut topology = state.topology.lock().unwrap();
+        for node_id in topology.journey_ids.keys().copied().collect::<Vec<_>>() {
+            topology.record_pipeline_completed(node_id);
+        }
         Ok(PipelineStepResult {
             step: output.step,
             outputs: output
@@ -509,7 +515,7 @@ impl<Output: Send + 'static, S> Action for RunDataParallelPipeline<Output, S> {
     type Output = PipelineStepResult;
 
     fn emit(state: &PipelineBackwardState<S>, _input: ()) -> RunPipelineInput {
-        let topology = state.topology.lock().unwrap();
+        let mut topology = state.topology.lock().unwrap();
         let mut nodes = topology.journey_ids.keys().copied().collect::<Vec<_>>();
         nodes.sort_unstable();
         let ports = nodes
@@ -528,7 +534,7 @@ impl<Output: Send + 'static, S> Action for RunDataParallelPipeline<Output, S> {
                         .map(|target| target.port_id)
                         .eq(topology.vertex_ports[&pair[1]].iter().copied())
             });
-        RunPipelineInput {
+        let input = RunPipelineInput {
             nodes,
             ports,
             replicas: 2,
@@ -536,7 +542,9 @@ impl<Output: Send + 'static, S> Action for RunDataParallelPipeline<Output, S> {
             inboxes: state.inboxes.clone(),
             micro_batches: state.micro_batches.clone(),
             step: state.step,
-        }
+        };
+        topology.record_pipeline_started(input.nodes.iter().copied());
+        input
     }
 
     fn absorb(
@@ -548,6 +556,10 @@ impl<Output: Send + 'static, S> Action for RunDataParallelPipeline<Output, S> {
         })?;
         state.inboxes = output.inboxes;
         state.step += 1;
+        let mut topology = state.topology.lock().unwrap();
+        for node_id in topology.journey_ids.keys().copied().collect::<Vec<_>>() {
+            topology.record_pipeline_completed(node_id);
+        }
         Ok(PipelineStepResult {
             step: output.step,
             outputs: output
