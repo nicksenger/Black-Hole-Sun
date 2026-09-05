@@ -155,7 +155,7 @@ pub type CorgiGraph = list![
 ];
 
 #[derive(Flow)]
-pub struct Generator(Step<GenerateImage>);
+pub struct Generator(Step<GenerateImage>, Step<AugmentImage>);
 
 pub struct GenerateImage;
 #[jungle::action]
@@ -187,6 +187,41 @@ impl<J: VoidOps> Effect<J> for GenerateImageEffect {
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         toy_common::dataset::generate_image::<J, StemOp>(jungle)
+    }
+}
+
+pub struct AugmentImage;
+#[jungle::action]
+impl Action for AugmentImage {
+    type Effect = AugmentImageEffect;
+    type Input = ArtifactDelivery<Image>;
+    type Output = ArtifactDelivery<Image>;
+
+    fn emit(_state: &ForwardSunState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut ForwardSunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("image augmentation failed: {error}")))
+    }
+}
+
+pub struct AugmentImageEffect;
+
+#[jungle::effect(id = 205)]
+impl<J: VoidOps> Effect<J> for AugmentImageEffect {
+    type In = ArtifactDelivery<Image>;
+    type Out = ArtifactDelivery<Image>;
+    type Err = String;
+
+    fn effect(
+        jungle: &J,
+        delivery: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        toy_common::dataset::augment_image::<J, StemOp>(jungle, delivery)
     }
 }
 

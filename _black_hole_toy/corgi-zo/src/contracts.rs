@@ -8,7 +8,9 @@ use black_hole_sun::compile::BlackHole;
 use black_hole_sun::ops::{VoidInferOps, VoidOps};
 use black_hole_sun::programs::two_sided_zo::{SunState, TwoSidedZo};
 use black_hole_sun::topology::{Edge, TypedEdges, Unary};
-use black_hole_sun::{AtomError, InferenceOutput, OperationNode, Potentiation, Transmission};
+use black_hole_sun::{
+    ArtifactDelivery, AtomError, InferenceOutput, OperationNode, Potentiation, Transmission,
+};
 use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 use jungle_sdk::list;
 use jungle_sdk::prelude::*;
@@ -70,14 +72,18 @@ pub type CorgiGraph = list![
 ];
 
 #[derive(Flow)]
-pub struct Generator(Step<GenerateImage>);
+pub struct Generator(
+    Step<GenerateImage>,
+    Step<AugmentImage>,
+    Step<MakePropagationPair>,
+);
 
 pub struct GenerateImage;
 #[jungle::action]
 impl Action for GenerateImage {
     type Effect = GenerateImageEffect;
     type Input = ();
-    type Output = (Transmission, Transmission);
+    type Output = ArtifactDelivery<corgi_fwd::contracts::Image>;
 
     fn emit(_state: &SunState, _input: Self::Input) {}
 
@@ -93,7 +99,7 @@ pub struct GenerateImageEffect;
 #[jungle::effect(id = 203)]
 impl<J: VoidInferOps> Effect<J> for GenerateImageEffect {
     type In = ();
-    type Out = (Transmission, Transmission);
+    type Out = ArtifactDelivery<corgi_fwd::contracts::Image>;
     type Err = AtomError;
 
     #[allow(clippy::manual_async_fn)]
@@ -102,9 +108,83 @@ impl<J: VoidInferOps> Effect<J> for GenerateImageEffect {
         _input: Self::In,
     ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
         async move {
-            let delivery = toy_common::dataset::generate_training_image::<J, StemOp>(jungle)
+            toy_common::dataset::generate_training_image::<J, StemOp>(jungle)
                 .await
-                .map_err(AtomError::Upload)?;
+                .map_err(AtomError::Upload)
+        }
+    }
+}
+
+pub struct AugmentImage;
+#[jungle::action]
+impl Action for AugmentImage {
+    type Effect = AugmentImageEffect;
+    type Input = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type Output = ArtifactDelivery<corgi_fwd::contracts::Image>;
+
+    fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output.map_err(|error| Failure::Message(format!("image augmentation failed: {error}")))
+    }
+}
+
+pub struct AugmentImageEffect;
+#[jungle::effect(id = 206)]
+impl<J: VoidInferOps> Effect<J> for AugmentImageEffect {
+    type In = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type Out = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type Err = AtomError;
+
+    fn effect(
+        jungle: &J,
+        delivery: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
+            toy_common::dataset::augment_image::<J, StemOp>(jungle, delivery)
+                .await
+                .map_err(AtomError::Upload)
+        }
+    }
+}
+
+pub struct MakePropagationPair;
+#[jungle::action]
+impl Action for MakePropagationPair {
+    type Effect = MakePropagationPairEffect;
+    type Input = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type Output = (Transmission, Transmission);
+
+    fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
+        input
+    }
+
+    fn absorb(
+        _state: &mut SunState,
+        output: EffectCompletion<Self::Effect>,
+    ) -> Result<Self::Output, Failure> {
+        output
+            .map_err(|error| Failure::Message(format!("image propagation pairing failed: {error}")))
+    }
+}
+
+pub struct MakePropagationPairEffect;
+#[jungle::effect(id = 207)]
+impl<J: VoidInferOps> Effect<J> for MakePropagationPairEffect {
+    type In = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type Out = (Transmission, Transmission);
+    type Err = AtomError;
+
+    fn effect(
+        _jungle: &J,
+        delivery: Self::In,
+    ) -> impl Future<Output = Result<Self::Out, Self::Err>> + Send {
+        async move {
             let propagation = Transmission::Propagation {
                 emission_id: black_hole_sun::ObjectRef::new(delivery.emission_id.id()),
                 recv: black_hole_sun::ObjectId::nil(),

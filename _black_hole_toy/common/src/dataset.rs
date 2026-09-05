@@ -5,11 +5,12 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use black_hole_sun::{ArtifactDelivery, TensorContract, VoidOps};
+use black_hole_sun::{decode_input, ArtifactDelivery, RawTensor, TensorContract, VoidOps};
 use candle_datasets::hub::from_hub;
 use hf_hub::HFClientSync;
 use parquet::record::{Field, Row};
 use rand::seq::{IndexedRandom, SliceRandom};
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 /// Target image size for the ResNet-18 toys.
@@ -24,6 +25,9 @@ const VALIDATION_PERCENT: usize = 15;
 
 const PEMBROKE_LABEL: u32 = 111;
 const CARDIGAN_LABEL: u32 = 112;
+
+const IMAGE_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+const IMAGE_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Metadata attached to every corgi input emission, in batch order.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -293,17 +297,132 @@ pub fn image_tensor(bytes: &[u8]) -> Result<Vec<f32>, String> {
         )
         .to_rgb8();
     let mut output = vec![0.0; 3 * IMAGE_SIZE * IMAGE_SIZE];
-    let mean = [0.485, 0.456, 0.406];
-    let std = [0.229, 0.224, 0.225];
     for (index, pixel) in image.pixels().enumerate() {
         let y = index / IMAGE_SIZE;
         let x = index % IMAGE_SIZE;
         for channel in 0..3 {
             output[channel * IMAGE_SIZE * IMAGE_SIZE + y * IMAGE_SIZE + x] =
-                (f32::from(pixel[channel]) / 255.0 - mean[channel]) / std[channel];
+                (f32::from(pixel[channel]) / 255.0 - IMAGE_MEAN[channel]) / IMAGE_STD[channel];
         }
     }
     Ok(output)
+}
+
+/// Download a generated image batch, apply the training augmentations, and
+/// upload a new typed input artifact. The image tensor is denormalized before
+/// the spatial transforms and normalized again afterward.
+pub async fn augment_image<J, C>(
+    jungle: &J,
+    delivery: ArtifactDelivery<C::Input>,
+) -> Result<ArtifactDelivery<C::Input>, String>
+where
+    J: VoidOps,
+    C: TensorContract<Metadata = SampleMetadata>,
+    C::Input: Send,
+{
+    let emission = jungle
+        .download_emission::<SampleMetadata, C::Input>(delivery.emission_id)
+        .await?;
+    let frame = jungle.receive_artifact_raw(&emission.output_id).await?;
+    let decoded =
+        decode_input::<C>(&frame).map_err(|error| format!("decode image batch: {error}"))?;
+    let input = decoded
+        .first_tensor()
+        .map_err(|error| format!("read image batch: {error}"))?;
+    let values = augment_tensor(input)?;
+    let tensor = C::input_f32(&input.shape, values);
+    jungle.emit::<C>(&[tensor], &decoded.metadata).await
+}
+
+fn augment_tensor(input: &RawTensor) -> Result<Vec<f32>, String> {
+    let expected_shape = [BATCH_SIZE, 3, IMAGE_SIZE, IMAGE_SIZE];
+    if input.shape != expected_shape {
+        return Err(format!(
+            "image tensor has shape {:?}, expected {:?}",
+            input.shape, expected_shape
+        ));
+    }
+    let values = input
+        .to_f32()
+        .map_err(|error| format!("decode image tensor values: {error}"))?;
+    let expected_values = BATCH_SIZE * 3 * IMAGE_SIZE * IMAGE_SIZE;
+    if values.len() != expected_values {
+        return Err(format!(
+            "image tensor has {} values, expected {expected_values}",
+            values.len()
+        ));
+    }
+
+    let mut rng = rand::rng();
+    let mut augmented = Vec::with_capacity(values.len());
+    for batch in 0..BATCH_SIZE {
+        let mut image = image::RgbImage::new(IMAGE_SIZE as u32, IMAGE_SIZE as u32);
+        for y in 0..IMAGE_SIZE {
+            for x in 0..IMAGE_SIZE {
+                let mut pixel = [0; 3];
+                for channel in 0..3 {
+                    let index = channel * IMAGE_SIZE * IMAGE_SIZE + y * IMAGE_SIZE + x;
+                    let value = values[batch * 3 * IMAGE_SIZE * IMAGE_SIZE + index]
+                        * IMAGE_STD[channel]
+                        + IMAGE_MEAN[channel];
+                    pixel[channel] = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+                image.put_pixel(x as u32, y as u32, image::Rgb(pixel));
+            }
+        }
+
+        let image = random_resized_crop(&image, &mut rng);
+        let image = if rng.random_bool(0.5) {
+            image::imageops::flip_horizontal(&image)
+        } else {
+            image
+        };
+        for channel in 0..3 {
+            for y in 0..IMAGE_SIZE {
+                for x in 0..IMAGE_SIZE {
+                    let pixel = image.get_pixel(x as u32, y as u32);
+                    augmented.push(
+                        (f32::from(pixel[channel]) / 255.0 - IMAGE_MEAN[channel])
+                            / IMAGE_STD[channel],
+                    );
+                }
+            }
+        }
+    }
+    Ok(augmented)
+}
+
+fn random_resized_crop(image: &image::RgbImage, rng: &mut impl RngExt) -> image::RgbImage {
+    let (width, height) = image.dimensions();
+    let area = f64::from(width) * f64::from(height);
+    for _ in 0..10 {
+        let target_area = area * f64::from(rng.random_range(0.08f32..=1.0));
+        let aspect_ratio = f64::from(rng.random_range((3.0f32 / 4.0)..=(4.0f32 / 3.0)));
+        let crop_width = (target_area * aspect_ratio).sqrt().round() as u32;
+        let crop_height = (target_area / aspect_ratio).sqrt().round() as u32;
+        if crop_width > 0 && crop_width <= width && crop_height > 0 && crop_height <= height {
+            let x = rng.random_range(0..=width - crop_width);
+            let y = rng.random_range(0..=height - crop_height);
+            let crop = image::imageops::crop_imm(image, x, y, crop_width, crop_height).to_image();
+            return image::imageops::resize(
+                &crop,
+                IMAGE_SIZE as u32,
+                IMAGE_SIZE as u32,
+                image::imageops::FilterType::Triangle,
+            );
+        }
+    }
+
+    let size = width.min(height);
+    let x = (width - size) / 2;
+    let y = (height - size) / 2;
+    let crop = image::imageops::crop_imm(image, x, y, size, size).to_image();
+    image::imageops::resize(
+        &crop,
+        IMAGE_SIZE as u32,
+        IMAGE_SIZE as u32,
+        image::imageops::FilterType::Triangle,
+    )
 }
 
 /// Generate a batch of normalized Stanford Dogs images as a typed input emission for
