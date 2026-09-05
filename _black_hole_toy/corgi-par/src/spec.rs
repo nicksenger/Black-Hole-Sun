@@ -4,7 +4,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use black_hole_sun::compile::BlackHole;
-use black_hole_sun::topology::{BackwardTypedEdges, Binary, Edge};
+use black_hole_sun::topology::{BackwardTypedEdges, Binary, Edge, SunAppearance};
 use black_hole_sun::{
     ArtifactDelivery, DataParallelBackwardOperationPrimordium, DataParallelOperationState,
     DataParallelPipelineBackward, FusionSeed, OperationNode, PipelineBackwardState,
@@ -251,8 +251,17 @@ impl<const M: usize> Animal for CorgiParallel<M> {
     type Flow = CorgiParallelSun<M>;
 }
 impl<const M: usize> Observable for CorgiParallel<M> {
-    type Observation = NoopObservation;
+    type Observation = ObserveObservation;
 }
 impl<const M: usize> Perturbable for CorgiParallel<M> {
     type Perturbation = NoopPerturbation;
+}
+
+/// Live Black Hole Beam view of the training Sun.
+impl<const M: usize> Observe for CorgiParallel<M> {
+    type Appearance = SunAppearance;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        state.appearance()
+    }
 }

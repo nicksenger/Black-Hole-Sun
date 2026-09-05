@@ -1742,6 +1742,7 @@ name = "corgi-bwd"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "black-hole-beam",
  "black-hole-sun",
  "black-hole-toy-common",
  "candle-core",
@@ -1763,6 +1764,7 @@ name = "corgi-fwd"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "black-hole-beam",
  "black-hole-sun",
  "black-hole-toy-common",
  "candle-core",
@@ -1782,6 +1784,7 @@ name = "corgi-par"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "black-hole-beam",
  "black-hole-sun",
  "black-hole-toy-common",
  "candle-core",
