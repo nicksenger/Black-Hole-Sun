@@ -14,7 +14,7 @@ use candle_nn::{Linear, Module, VarMap};
 use corgi_fwd::model::pool_stage4;
 use toy_common::dataset::SampleMetadata;
 
-use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
+use corgi_fwd::spec::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 
 pub struct ZoModel<M> {
     pub model: M,

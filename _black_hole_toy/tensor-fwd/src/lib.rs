@@ -12,6 +12,6 @@
 //! graph definition, while the enclosing flow is assembled through the
 //! canonical `<Topology as BlackHole>::Sun<Program>` entrypoint.
 
-pub mod contracts;
-pub mod jungle;
-pub mod operations;
+pub mod spec;
+pub mod flow;
+pub mod op;

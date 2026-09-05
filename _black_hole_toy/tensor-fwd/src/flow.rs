@@ -10,7 +10,7 @@ use jungle_sdk::prelude::*;
 use jungle_sdk::{FusedClient, JungleClient};
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::contracts::{Matmul, MatmulCell, MatmulForward, Relu, ReluCell, Scale, ScaleCell};
+use crate::spec::{Matmul, MatmulCell, MatmulForward, Relu, ReluCell, Scale, ScaleCell};
 
 #[derive(Clone)]
 pub struct TensorJungle {

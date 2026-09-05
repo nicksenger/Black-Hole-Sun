@@ -12,7 +12,7 @@ use black_hole_sun::{
     ArtifactDelivery, BackwardOperationPrimordium, OperationNode, PipelineBackward,
     PipelineBackwardState, PipelineStepResult, VoidOps,
 };
-use corgi_fwd::contracts::{HeadOp, Image, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
+use corgi_fwd::spec::{HeadOp, Image, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 use jungle_sdk::list;
 use jungle_sdk::prelude::*;
 use toy_common::dataset::BATCH_SIZE;
@@ -217,7 +217,7 @@ impl<J> Effect<J> for UnifiedCheckpointEffect {
             for _ in 0..1_000 {
                 let attempt_directory = directory.clone();
                 let unified = tokio::task::spawn_blocking(move || {
-                    crate::operations::unify_checkpoint_shards(&attempt_directory, input.step)
+                    crate::op::unify_checkpoint_shards(&attempt_directory, input.step)
                 })
                 .await
                 .map_err(|error| format!("unified checkpoint task failed: {error}"))??;

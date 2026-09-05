@@ -7,7 +7,7 @@ use black_hole_sun::{
     TensorContract,
 };
 
-use crate::contracts::{Matmul, Relu, Scale};
+use crate::spec::{Matmul, Relu, Scale};
 
 pub struct MatmulOperation;
 

@@ -13,7 +13,7 @@ use black_hole_sun::topology::{Edge, TypedEdges, Unary};
 use black_hole_sun::{
     ArtifactDelivery, AtomError, InferenceOutput, OperationNode, Potentiation, Transmission,
 };
-use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
+use corgi_fwd::spec::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 use jungle_sdk::list;
 use jungle_sdk::prelude::*;
 use toy_common::dataset::BATCH_SIZE;
@@ -111,7 +111,7 @@ pub struct GenerateImage;
 impl Action for GenerateImage {
     type Effect = GenerateImageEffect;
     type Input = ();
-    type Output = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type Output = ArtifactDelivery<corgi_fwd::spec::Image>;
 
     fn emit(_state: &SunState, _input: Self::Input) {}
 
@@ -127,7 +127,7 @@ pub struct GenerateImageEffect;
 #[jungle::effect(id = 203)]
 impl<J: VoidInferOps> Effect<J> for GenerateImageEffect {
     type In = ();
-    type Out = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type Out = ArtifactDelivery<corgi_fwd::spec::Image>;
     type Err = AtomError;
 
     #[allow(clippy::manual_async_fn)]
@@ -147,8 +147,8 @@ pub struct AugmentImage;
 #[jungle::action]
 impl Action for AugmentImage {
     type Effect = AugmentImageEffect;
-    type Input = ArtifactDelivery<corgi_fwd::contracts::Image>;
-    type Output = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type Input = ArtifactDelivery<corgi_fwd::spec::Image>;
+    type Output = ArtifactDelivery<corgi_fwd::spec::Image>;
 
     fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
         input
@@ -165,8 +165,8 @@ impl Action for AugmentImage {
 pub struct AugmentImageEffect;
 #[jungle::effect(id = 206)]
 impl<J: VoidInferOps> Effect<J> for AugmentImageEffect {
-    type In = ArtifactDelivery<corgi_fwd::contracts::Image>;
-    type Out = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type In = ArtifactDelivery<corgi_fwd::spec::Image>;
+    type Out = ArtifactDelivery<corgi_fwd::spec::Image>;
     type Err = AtomError;
 
     fn effect(
@@ -185,7 +185,7 @@ pub struct MakePropagationPair;
 #[jungle::action]
 impl Action for MakePropagationPair {
     type Effect = MakePropagationPairEffect;
-    type Input = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type Input = ArtifactDelivery<corgi_fwd::spec::Image>;
     type Output = (Transmission, Transmission);
 
     fn emit(_state: &SunState, input: Self::Input) -> Self::Input {
@@ -204,7 +204,7 @@ impl Action for MakePropagationPair {
 pub struct MakePropagationPairEffect;
 #[jungle::effect(id = 207)]
 impl<J: VoidInferOps> Effect<J> for MakePropagationPairEffect {
-    type In = ArtifactDelivery<corgi_fwd::contracts::Image>;
+    type In = ArtifactDelivery<corgi_fwd::spec::Image>;
     type Out = (Transmission, Transmission);
     type Err = AtomError;
 
@@ -314,7 +314,7 @@ impl<J> Effect<J> for UnifiedCheckpointEffect {
             for _ in 0..1_000 {
                 let attempt_directory = directory.clone();
                 let unified = tokio::task::spawn_blocking(move || {
-                    crate::operations::unify_checkpoint_shards(&attempt_directory, completed_step)
+                    crate::op::unify_checkpoint_shards(&attempt_directory, completed_step)
                 })
                 .await
                 .map_err(|error| format!("unified checkpoint task failed: {error}"))??;

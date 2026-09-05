@@ -17,7 +17,7 @@ use candle_nn::{Module, Optimizer, SGD};
 use serde::{Deserialize, Serialize};
 use toy_common::dataset::{SampleMetadata, BATCH_SIZE};
 
-use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
+use corgi_fwd::spec::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizerConfig {

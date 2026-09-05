@@ -12,9 +12,9 @@ use jungle_sdk::{FusedClient, JungleClient};
 use serde::{de::DeserializeOwned, Serialize};
 use toy_common::dataset::SampleMetadata;
 
-use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
+use corgi_fwd::spec::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 
-use crate::contracts::{
+use crate::spec::{
     CorgiBackward, HeadCell, Stage1Cell, Stage2Cell, Stage3Cell, Stage4Cell, StemCell,
     MICRO_BATCHES,
 };

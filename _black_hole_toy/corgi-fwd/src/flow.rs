@@ -11,7 +11,7 @@ use jungle_sdk::{FusedClient, JungleClient};
 use serde::{Serialize, de::DeserializeOwned};
 use toy_common::dataset::SampleMetadata;
 
-use crate::contracts::{
+use crate::spec::{
     CorgiForward, HeadCell, HeadOp, Stage1Cell, Stage1Op, Stage2Cell, Stage2Op, Stage3Cell,
     Stage3Op, Stage4Cell, Stage4Op, StemCell, StemOp,
 };

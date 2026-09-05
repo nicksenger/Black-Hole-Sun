@@ -5,12 +5,12 @@ use black_hole_sun::{MassClient, VoidClient};
 use candle::{DType, Device};
 use candle_nn::VarBuilder;
 use clap::Parser;
-use corgi_fwd::contracts::{CorgiForward, LOGGED_OUTPUTS};
-use corgi_fwd::jungle::{CorgiJungle, capabilities};
+use corgi_fwd::spec::{CorgiForward, LOGGED_OUTPUTS};
+use corgi_fwd::flow::{CorgiJungle, capabilities};
 use corgi_fwd::model::{
     build_head, build_stage1, build_stage2, build_stage3, build_stage4, build_stem,
 };
-use corgi_fwd::operations::{
+use corgi_fwd::op::{
     HeadOperation, Stage1Operation, Stage2Operation, Stage3Operation, Stage4Operation,
     StemOperation, ModelOperation,
 };

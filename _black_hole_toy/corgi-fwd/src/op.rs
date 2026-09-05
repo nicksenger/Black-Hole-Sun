@@ -10,7 +10,7 @@ use candle::{Device, Tensor};
 use candle_nn::Module;
 use toy_common::dataset::SampleMetadata;
 
-use crate::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
+use crate::spec::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 use crate::model::pool_stage4;
 
 #[derive(Clone)]

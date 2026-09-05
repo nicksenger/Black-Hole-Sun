@@ -16,10 +16,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use toy_common::dataset::SampleMetadata;
 
-use crate::contracts::{
+use crate::spec::{
     CorgiZo, HeadCell, Stage1Cell, Stage2Cell, Stage3Cell, Stage4Cell, StemCell,
 };
-use corgi_fwd::contracts::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
+use corgi_fwd::spec::{HeadOp, Stage1Op, Stage2Op, Stage3Op, Stage4Op, StemOp};
 
 #[derive(Clone)]
 pub struct CorgiJungle {
@@ -208,7 +208,7 @@ macro_rules! mass_ops {
                         % 6
                         == 5
                 {
-                    crate::contracts::OPTIMIZED_STEPS.fetch_add(1, Ordering::Release);
+                    crate::spec::OPTIMIZED_STEPS.fetch_add(1, Ordering::Release);
                 }
                 result
             }
@@ -264,7 +264,7 @@ impl OptimizeOps<StemOp> for CorgiJungle {
                 % 6
                 == 5
         {
-            crate::contracts::OPTIMIZED_STEPS.fetch_add(1, Ordering::Release);
+            crate::spec::OPTIMIZED_STEPS.fetch_add(1, Ordering::Release);
         }
         result
     }

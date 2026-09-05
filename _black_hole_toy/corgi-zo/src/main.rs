@@ -10,9 +10,9 @@ use clap::{Parser, ValueEnum};
 use corgi_fwd::model::{
     build_head, build_stage1, build_stage2, build_stage3, build_stage4, build_stem,
 };
-use corgi_zo::contracts::CorgiZo;
-use corgi_zo::jungle::{capabilities, CorgiJungle};
-use corgi_zo::operations::{
+use corgi_zo::spec::CorgiZo;
+use corgi_zo::flow::{capabilities, CorgiJungle};
+use corgi_zo::op::{
     HeadModel, HeadOperation, ModelOperation, Stage1Operation, Stage2Operation, Stage3Operation,
     Stage4Operation, StemOperation,
 };
@@ -70,7 +70,7 @@ where
 fn mutable_head(
     path: &Path,
     device: &Device,
-) -> Result<ModelOperation<corgi_fwd::contracts::HeadOp, HeadModel>, Box<dyn std::error::Error>> {
+) -> Result<ModelOperation<corgi_fwd::spec::HeadOp, HeadModel>, Box<dyn std::error::Error>> {
     let source = unsafe { VarBuilder::from_mmaped_safetensors(&[path], DType::F32, device)? };
     let original = build_head(source)?;
     let mut varmap = VarMap::new();
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("saving checkpoints to {}", dir.path().display());
     }
     let checkpoint_path = checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf());
-    corgi_zo::contracts::configure_unified_checkpointing(
+    corgi_zo::spec::configure_unified_checkpointing(
         if matches!(args.checkpoint_mode, CheckpointMode::Unified) {
             args.checkpoint_steps
         } else {

@@ -6,12 +6,12 @@
 //! dataset generator -> stem -> stage1 -> stage2 -> stage3 -> stage4 -> binary head -> policy
 //! ```
 
-pub mod contracts;
-pub mod jungle;
+pub mod spec;
+pub mod flow;
 pub mod model;
-pub mod operations;
+pub mod op;
 
-pub use contracts::*;
+pub use spec::*;
 pub use model::*;
 
 /// Re-exported so the other corgi examples can share one dataset definition.

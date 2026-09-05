@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use black_hole_sun::{MassClient, VoidClient};
 use jungle_sdk::FusedClient;
-use tensor_fwd::contracts::{MatmulForward, LOGGED_OUTPUTS};
-use tensor_fwd::jungle::{TensorJungle, forward_reset_capabilities};
-use tensor_fwd::operations::{MatmulOperation, ReluOperation, ScaleOperation};
+use tensor_fwd::spec::{MatmulForward, LOGGED_OUTPUTS};
+use tensor_fwd::flow::{TensorJungle, forward_reset_capabilities};
+use tensor_fwd::op::{MatmulOperation, ReluOperation, ScaleOperation};
 use toy_common::runtime::{RunCheck, ServerSpecs, run_until};
 
 const TARGET_PASSES: usize = 4;

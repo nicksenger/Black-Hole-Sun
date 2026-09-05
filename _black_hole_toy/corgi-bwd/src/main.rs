@@ -6,9 +6,9 @@ use black_hole_sun::{MassClient, VoidClient};
 use candle::{DType, Device};
 use candle_nn::{Module, VarBuilder, VarMap};
 use clap::{Parser, ValueEnum};
-use corgi_bwd::contracts::{CorgiBackward, COMPLETED_STEPS, MICRO_BATCHES};
-use corgi_bwd::jungle::{required_capabilities, CorgiJungle};
-use corgi_bwd::operations::{
+use corgi_bwd::spec::{CorgiBackward, COMPLETED_STEPS, MICRO_BATCHES};
+use corgi_bwd::flow::{required_capabilities, CorgiJungle};
+use corgi_bwd::op::{
     HeadOperation, OptimizerConfig, Stage1Operation, Stage2Operation, Stage3Operation,
     Stage4Operation, StemOperation, TrainOperation,
 };
@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("saving checkpoints to {}", dir.path().display());
     }
     let checkpoint_path = checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf());
-    corgi_bwd::contracts::configure_unified_checkpointing(
+    corgi_bwd::spec::configure_unified_checkpointing(
         if matches!(args.checkpoint_mode, CheckpointMode::Unified) {
             args.checkpoint_steps
         } else {

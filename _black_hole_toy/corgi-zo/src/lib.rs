@@ -9,8 +9,8 @@
 //!       +---------------- TwoSidedZo losses and updates ----------------+
 //! ```
 
-pub mod contracts;
-pub mod jungle;
-pub mod operations;
+pub mod spec;
+pub mod flow;
+pub mod op;
 
-pub use contracts::*;
+pub use spec::*;
