@@ -52,14 +52,30 @@ impl RunningServers {
 }
 
 /// Builder that registers operation implementations and starts local servers.
-#[derive(Default)]
 pub struct ServerSpecs {
     operations: Vec<Arc<dyn OperationImplementation>>,
+    max_instances: usize,
+}
+
+impl Default for ServerSpecs {
+    fn default() -> Self {
+        Self {
+            operations: Vec::new(),
+            max_instances: 1,
+        }
+    }
 }
 
 impl ServerSpecs {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Allow each local mass server to host multiple concurrent model
+    /// instances, as required by data-parallel examples.
+    pub fn max_instances(mut self, max_instances: usize) -> Self {
+        self.max_instances = max_instances.max(1);
+        self
     }
 
     /// Register one tensor operation for its own mass server.
@@ -96,6 +112,7 @@ impl ServerSpecs {
                 .tcp()
                 .listen(LOOPBACK.parse().expect("valid loopback address"))
                 .void_addr(void_addr)
+                .max_instances(self.max_instances)
                 .operation_shared(operation)
                 .serve()
                 .await

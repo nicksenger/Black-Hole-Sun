@@ -181,6 +181,7 @@ async fn setup(
     })?;
 
     let servers = ServerSpecs::new()
+        .max_instances(DATA_PARALLEL_REPLICAS)
         .operation(StemOperation(TrainOperation::new(
             stem_model,
             device.clone(),
