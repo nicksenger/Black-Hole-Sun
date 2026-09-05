@@ -161,7 +161,7 @@ pub struct LogStep;
 impl Action for LogStep {
     type Effect = LogStepEffect;
     type Input = PipelineStepResult;
-    type Output = StepMetrics;
+    type Output = ();
     fn emit(_state: &PipelineBackwardState, input: Self::Input) -> Self::Input {
         input
     }
@@ -169,10 +169,9 @@ impl Action for LogStep {
         _state: &mut PipelineBackwardState,
         output: EffectCompletion<Self::Effect>,
     ) -> Result<Self::Output, Failure> {
-        let metrics =
-            output.map_err(|error| Failure::Message(format!("training policy failed: {error}")))?;
+        output.map_err(|error| Failure::Message(format!("training policy failed: {error}")))?;
         COMPLETED_STEPS.fetch_add(1, Ordering::Release);
-        Ok(metrics)
+        Ok(())
     }
 }
 
@@ -182,7 +181,7 @@ pub static COMPLETED_STEPS: AtomicUsize = AtomicUsize::new(0);
 #[jungle::effect(id = 223)]
 impl<J: VoidOps> Effect<J> for LogStepEffect {
     type In = PipelineStepResult;
-    type Out = StepMetrics;
+    type Out = ();
     type Err = String;
     fn effect(
         jungle: &J,
@@ -233,7 +232,7 @@ impl<J: VoidOps> Effect<J> for LogStepEffect {
                 replicas = DATA_PARALLEL_REPLICAS,
                 "corgi-par training step"
             );
-            Ok(metrics)
+            Ok(())
         }
     }
 }
