@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use black_hole_beam::BeamBuilder;
 use black_hole_sun::{MassClient, VoidClient};
 use candle::{DType, Device};
 use candle_nn::{VarBuilder, VarMap};
@@ -10,15 +11,15 @@ use clap::{Parser, ValueEnum};
 use corgi_fwd::model::{
     build_head, build_stage1, build_stage2, build_stage3, build_stage4, build_stem,
 };
-use corgi_zo::spec::CorgiZo;
 use corgi_zo::flow::{capabilities, CorgiJungle};
 use corgi_zo::op::{
     HeadModel, HeadOperation, ModelOperation, Stage1Operation, Stage2Operation, Stage3Operation,
     Stage4Operation, StemOperation,
 };
+use corgi_zo::spec::{CorgiZo, HeadCell, Stage1Cell, Stage2Cell, Stage3Cell, Stage4Cell, StemCell};
 use jungle_sdk::FusedClient;
 use toy_common::dataset::{configure_hf_cache, model_path, DATASET_SAMPLES};
-use toy_common::runtime::{run_until, RunCheck, ServerSpecs};
+use toy_common::runtime::{launch, run_until, RunCheck, RunningServers, ServerSpecs};
 
 #[derive(Debug, Parser)]
 #[command(about = "Run two-sided zeroth-order optimization on ResNet-18")]
@@ -34,6 +35,12 @@ struct Args {
     /// Save unified model checkpoints by default, or one checkpoint per stage.
     #[arg(long, value_enum, default_value_t = CheckpointMode::Unified)]
     checkpoint_mode: CheckpointMode,
+
+    /// Open a live Black Hole Beam viewer of the pipeline instead of running
+    /// until `steps` ZO steps complete; the journey keeps optimizing until
+    /// the window is closed.
+    #[arg(long)]
+    beam: bool,
 
     /// Optional local Candle ResNet-18 safetensors checkpoint.
     #[arg(long)]
@@ -88,11 +95,10 @@ fn mutable_head(
     ))
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     black_hole_sun::init_tracing()?;
     let args = Args::parse();
-    if args.steps == 0 {
+    if !args.beam && args.steps == 0 {
         return Ok(());
     }
     let checkpoint_dir = if args.checkpoint_steps == 0 {
@@ -118,9 +124,116 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .then(|| checkpoint_dir.as_ref().map(|dir| dir.path().to_path_buf()))
             .flatten(),
     );
-    let cache = configure_hf_cache(args.cache_dir, "corgi-zo")?;
+    // The runtime hosts the servers, client, and worker pool. In beam mode it
+    // keeps running in the background while the Black Hole Beam event loop
+    // blocks the main thread; dropping it tears everything down.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let (servers, client, jungle) = runtime.block_on(setup(&args))?;
+
+    if args.beam {
+        // Keep a worker available for the parent and every one of the six
+        // operation cells.
+        let (parent, workers) = launch::<CorgiJungle, CorgiZo>(&runtime, &jungle, &client, &(), 8)?;
+        println!(
+            "Spawned journey {}. Opening Black Hole Beam.",
+            parent.journey_id
+        );
+
+        let beam = BeamBuilder::new()
+            .title("Black Hole Sun: corgi-zo")
+            .register_subpanel_animal::<StemCell>()
+            .register_subpanel_animal::<Stage1Cell>()
+            .register_subpanel_animal::<Stage2Cell>()
+            .register_subpanel_animal::<Stage3Cell>()
+            .register_subpanel_animal::<Stage4Cell>()
+            .register_subpanel_animal::<HeadCell>()
+            .microdot_layout();
+        beam.view_live::<CorgiZo>(client, parent.journey_id)
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+
+        for worker in workers {
+            worker.abort();
+        }
+        servers.shutdown();
+        return Ok(());
+    }
+
+    let result = runtime.block_on(run_until::<CorgiJungle, CorgiZo, _, _>(
+        &jungle,
+        &client,
+        &(),
+        8,
+        |_| {
+            let checkpoint_path = checkpoint_path.clone();
+            async move {
+                let optimized_steps = corgi_zo::OPTIMIZED_STEPS.load(Ordering::Acquire);
+                if optimized_steps < args.steps {
+                    return RunCheck::Continue;
+                }
+                let expected_checkpoints = checkpoint_path
+                    .as_ref()
+                    .map(|_| {
+                        let steps = args.steps / args.checkpoint_steps;
+                        match args.checkpoint_mode {
+                            CheckpointMode::Unified => steps,
+                            CheckpointMode::Sharded => steps * OPERATION_COUNT,
+                        }
+                    })
+                    .unwrap_or(0);
+                let checkpoints_ready = checkpoint_path.as_ref().is_none_or(|path| {
+                    fs::read_dir(path)
+                        .map(|entries| {
+                            entries
+                                .flatten()
+                                .filter(|entry| {
+                                    entry.file_name().to_str().is_some_and(|name| {
+                                        let Some(id) = name
+                                            .strip_prefix("step-")
+                                            .and_then(|name| name.strip_suffix(".checkpoint"))
+                                        else {
+                                            return false;
+                                        };
+                                        match args.checkpoint_mode {
+                                            CheckpointMode::Unified => !id.contains('-'),
+                                            CheckpointMode::Sharded => id.contains('-'),
+                                        }
+                                    })
+                                })
+                                .count()
+                                >= expected_checkpoints
+                        })
+                        .unwrap_or(false)
+                });
+                if checkpoints_ready {
+                    RunCheck::Done
+                } else {
+                    RunCheck::Continue
+                }
+            }
+        },
+    ));
+
+    servers.shutdown();
+
+    println!(
+        "corgi-zo completed {} step(s) (source dataset contains {DATASET_SAMPLES})",
+        args.steps
+    );
+    result
+        .map(|_| ())
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+}
+
+/// Start the void + mass servers, the fused jungle client, and the corgi
+/// jungle wired over them.
+async fn setup(
+    args: &Args,
+) -> Result<(RunningServers, FusedClient, CorgiJungle), Box<dyn std::error::Error>> {
+    let cache = configure_hf_cache(args.cache_dir.clone(), "corgi-zo")?;
     eprintln!("using Hugging Face cache {}", cache.display());
-    let path = model_path(args.model)?;
+    let path = model_path(args.model.clone())?;
     let device = Device::Cpu;
 
     let servers = ServerSpecs::new()
@@ -162,63 +275,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         completed_optimization_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
 
-    let result = run_until::<CorgiJungle, CorgiZo, _, _>(&jungle, &client, &(), 8, |_| {
-        let checkpoint_path = checkpoint_path.clone();
-        async move {
-            let optimized_steps = corgi_zo::OPTIMIZED_STEPS.load(Ordering::Acquire);
-            if optimized_steps < args.steps {
-                return RunCheck::Continue;
-            }
-            let expected_checkpoints = checkpoint_path
-                .as_ref()
-                .map(|_| {
-                    let steps = args.steps / args.checkpoint_steps;
-                    match args.checkpoint_mode {
-                        CheckpointMode::Unified => steps,
-                        CheckpointMode::Sharded => steps * OPERATION_COUNT,
-                    }
-                })
-                .unwrap_or(0);
-            let checkpoints_ready = checkpoint_path.as_ref().is_none_or(|path| {
-                fs::read_dir(path)
-                    .map(|entries| {
-                        entries
-                            .flatten()
-                            .filter(|entry| {
-                                entry.file_name().to_str().is_some_and(|name| {
-                                    let Some(id) = name
-                                        .strip_prefix("step-")
-                                        .and_then(|name| name.strip_suffix(".checkpoint"))
-                                    else {
-                                        return false;
-                                    };
-                                    match args.checkpoint_mode {
-                                        CheckpointMode::Unified => !id.contains('-'),
-                                        CheckpointMode::Sharded => id.contains('-'),
-                                    }
-                                })
-                            })
-                            .count()
-                            >= expected_checkpoints
-                    })
-                    .unwrap_or(false)
-            });
-            if checkpoints_ready {
-                RunCheck::Done
-            } else {
-                RunCheck::Continue
-            }
-        }
-    })
-    .await;
-
-    servers.shutdown();
-
-    println!(
-        "corgi-zo completed {} step(s) (source dataset contains {DATASET_SAMPLES})",
-        args.steps
-    );
-    result
-        .map(|_| ())
-        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+    Ok((servers, client, jungle))
 }

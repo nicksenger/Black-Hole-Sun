@@ -20,7 +20,7 @@ use crate::compile::SunProgram;
 use crate::nodes::cell::action::{CellState, Init};
 use crate::nodes::fusion::action::FusionSeed;
 use crate::ops::{BackwardOps, CheckpointOps, MassOps, StepOps, VoidOps};
-use crate::topology::{BoundaryInit, SunTopology, SunTopologyState};
+use crate::topology::{BoundaryInit, SunAppearance, SunStateView, SunTopology, SunTopologyState};
 use crate::AtomError;
 
 /// Strategy-owned command envelope. Micro-batch identity stays on the
@@ -82,6 +82,19 @@ impl<S: Default> Default for PipelineBackwardState<S> {
 impl<S> SunTopologyState for PipelineBackwardState<S> {
     fn topology(&self) -> &Arc<Mutex<SunTopology>> {
         &self.topology
+    }
+}
+
+impl<S> PipelineBackwardState<S> {
+    /// Build a deterministic, serializable view of the resolved graph.
+    pub fn appearance(&self) -> SunAppearance {
+        self.topology.lock().unwrap().appearance()
+    }
+}
+
+impl<S> SunStateView for PipelineBackwardState<S> {
+    fn sun_appearance(&self) -> SunAppearance {
+        self.appearance()
     }
 }
 

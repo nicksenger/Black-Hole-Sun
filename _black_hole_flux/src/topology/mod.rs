@@ -246,6 +246,68 @@ impl SunTopology {
         self.node_operational_states
             .insert(node_id, SunOperationalState::Succeeded);
     }
+
+    /// Build a deterministic, serializable view of the resolved graph.
+    ///
+    /// Node phase and gradient-step detail is strategy-specific and lives in
+    /// each program's state; this view carries only what every Sun shares: the
+    /// resolved nodes, their labels and ports, whatever operational state has
+    /// been recorded on the topology, and the edges.
+    pub fn appearance(&self) -> SunAppearance {
+        let mut nodes = self
+            .journey_ids
+            .keys()
+            .copied()
+            .map(|id| SunNodeAppearance {
+                id,
+                journey_id: self.journey_ids[&id],
+                warp_journey_id: self
+                    .warp_journey_ids
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_default(),
+                label: self
+                    .node_labels
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("cell {id}")),
+                input_ports: self.vertex_ports.get(&id).cloned().unwrap_or_default(),
+                state: SunNodeState::Idle,
+                state_sequence: self
+                    .node_state_sequences
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_default(),
+                grad_step: 1,
+                operational_state: self
+                    .node_operational_states
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_default(),
+                phase_annotation: self.node_phase_annotations.get(&id).cloned(),
+            })
+            .collect::<Vec<_>>();
+        nodes.sort_by_key(|node| node.id);
+        let mut edges = self
+            .outgoing
+            .iter()
+            .flat_map(|(&source, targets)| {
+                targets.iter().map(move |target| SunEdgeAppearance {
+                    source,
+                    target: target.vertex_id,
+                    target_port: target.port_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        edges.sort_by_key(|edge| (edge.source, edge.target, edge.target_port));
+        edges.dedup();
+        SunAppearance {
+            finalized: self.finalized,
+            grad_steps: 1,
+            nodes,
+            edges,
+        }
+    }
 }
 
 /// Access to the neutral topology shared by every Sun program state.

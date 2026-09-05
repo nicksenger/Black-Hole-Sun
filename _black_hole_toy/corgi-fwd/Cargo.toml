@@ -9,6 +9,7 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1"
+black-hole-beam = { path = "../../_black_hole_beam" }
 black-hole-sun = { path = "../../black-hole-sun" }
 black-hole-toy-common = { path = "../common", features = ["dataset"] }
 candle = { path = "../../../candle/candle-core", package = "candle-core", version = "0.11.0" }

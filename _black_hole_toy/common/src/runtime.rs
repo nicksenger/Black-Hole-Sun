@@ -124,6 +124,87 @@ pub enum RunCheck {
     Failed(String),
 }
 
+/// Spawn the top-level animal and a pool of workers, returning the parent
+/// journey handle and the worker tasks without waiting for completion.
+///
+/// Every live journey needs its own runner task, so `workers` should be at
+/// least as large as the number of animals that can be alive at once (the
+/// top-level animal plus every cell it spawns.
+///
+/// The returned `Arc` slot records the first worker error, if any, so a
+/// caller that polls for completion can fail fast on a dead worker.
+async fn spawn_with_pool<J, A>(
+    jungle: &J,
+    client: &FusedClient,
+    seed: &A::Seed,
+    workers: usize,
+) -> Result<
+    (
+        JourneyHandle,
+        Vec<tokio::task::JoinHandle<()>>,
+        Arc<Mutex<Option<String>>>,
+    ),
+    String,
+>
+where
+    J: Ecosystem + Clone + Send + Sync + 'static,
+    J::Animals: Animals,
+    <J::Animals as Animals>::List: FlattenNodes,
+    SPFlatten<<J::Animals as Animals>::List>: StripAnimalHeaders,
+    AnimalSet<J::Animals>: SupportedAnimalGenerations<J>,
+    A: SpawnableAnimal,
+    A::Seed: Sync + Send,
+{
+    let parent = client.spawn::<A>(seed).await.map_err(|error| error.to_string())?;
+
+    let worker_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let mut handles = Vec::with_capacity(workers);
+    for _ in 0..workers {
+        let jungle = jungle.clone();
+        let client = client.clone();
+        let worker_error = Arc::clone(&worker_error);
+        handles.push(tokio::spawn(async move {
+            let worker = JungleWorker::new(jungle, client);
+            if let Err(error) = worker.spawn().await {
+                if let Ok(mut slot) = worker_error.lock() {
+                    slot.get_or_insert(error.to_string());
+                }
+            }
+        }));
+    }
+
+    Ok((parent, handles, worker_error))
+}
+
+/// Spawn the top-level animal and a pool of workers on `runtime` without
+/// waiting for completion.
+///
+/// Unlike [`run_until`], this returns immediately with the parent journey
+/// handle and the worker tasks. The workers keep progressing on `runtime`
+/// until they are aborted, so a caller can hold the current thread doing
+/// something else (for example running a GUI event loop on the main thread)
+/// while the journey stays alive, then tear everything down afterwards.
+pub fn launch<J, A>(
+    runtime: &tokio::runtime::Runtime,
+    jungle: &J,
+    client: &FusedClient,
+    seed: &A::Seed,
+    workers: usize,
+) -> Result<(JourneyHandle, Vec<tokio::task::JoinHandle<()>>), String>
+where
+    J: Ecosystem + Clone + Send + Sync + 'static,
+    J::Animals: Animals,
+    <J::Animals as Animals>::List: FlattenNodes,
+    SPFlatten<<J::Animals as Animals>::List>: StripAnimalHeaders,
+    AnimalSet<J::Animals>: SupportedAnimalGenerations<J>,
+    A: SpawnableAnimal,
+    A::Seed: Sync + Send,
+{
+    let (parent, handles, _worker_error) =
+        runtime.block_on(spawn_with_pool::<J, A>(jungle, client, seed, workers))?;
+    Ok((parent, handles))
+}
+
 /// Spawn the top-level animal, run a pool of workers until `check` reports
 /// completion, then abort the workers and return the parent journey handle.
 ///
@@ -149,23 +230,8 @@ where
     F: FnMut(&JourneyHandle) -> Fut,
     Fut: Future<Output = RunCheck>,
 {
-    let parent = client.spawn::<A>(seed).await.map_err(|error| error.to_string())?;
-
-    let worker_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let mut handles = Vec::with_capacity(workers);
-    for _ in 0..workers {
-        let jungle = jungle.clone();
-        let client = client.clone();
-        let worker_error = Arc::clone(&worker_error);
-        handles.push(tokio::spawn(async move {
-            let worker = JungleWorker::new(jungle, client);
-            if let Err(error) = worker.spawn().await {
-                if let Ok(mut slot) = worker_error.lock() {
-                    slot.get_or_insert(error.to_string());
-                }
-            }
-        }));
-    }
+    let (parent, handles, worker_error) =
+        spawn_with_pool::<J, A>(jungle, client, seed, workers).await?;
 
     let result = loop {
         match check(&parent).await {

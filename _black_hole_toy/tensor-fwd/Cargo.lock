@@ -6631,8 +6631,10 @@ name = "tensor-fwd"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "black-hole-beam",
  "black-hole-sun",
  "black-hole-toy-common",
+ "clap",
  "jungle-sdk",
  "postcard",
  "serde",

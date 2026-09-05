@@ -16,10 +16,7 @@ use black_hole_type::ObjectId;
 use jungle_sdk::prelude::*;
 use jungle_zoo::predicate::Always;
 
-use crate::topology::{
-    SunAppearance, SunEdgeAppearance, SunNodeAppearance, SunNodeState, SunStateView, SunTopology,
-    SunTopologyState,
-};
+use crate::topology::{SunAppearance, SunStateView, SunTopology, SunTopologyState};
 
 /// Neutral scheduler state used by [`ForwardPass`].
 #[derive(Clone, Default, Debug)]
@@ -75,7 +72,7 @@ impl<S> SunTopologyState for ForwardSunState<S> {
 
 impl<S> ForwardSunState<S> {
     pub fn appearance(&self) -> SunAppearance {
-        neutral_appearance(&self.topology.lock().unwrap())
+        self.topology.lock().unwrap().appearance()
     }
 }
 
@@ -109,69 +106,14 @@ impl<S> SunTopologyState for NeutralSunState<S> {
 
 impl<S> NeutralSunState<S> {
     pub fn appearance(&self) -> SunAppearance {
-        neutral_appearance(&self.topology.lock().unwrap())
+        self.topology.lock().unwrap().appearance()
     }
 }
+
 
 impl<S> SunStateView for NeutralSunState<S> {
     fn sun_appearance(&self) -> SunAppearance {
         self.appearance()
-    }
-}
-
-fn neutral_appearance(topology: &SunTopology) -> SunAppearance {
-    let mut nodes = topology
-        .journey_ids
-        .keys()
-        .copied()
-        .map(|id| SunNodeAppearance {
-            id,
-            journey_id: topology.journey_ids[&id],
-            warp_journey_id: topology
-                .warp_journey_ids
-                .get(&id)
-                .copied()
-                .unwrap_or_default(),
-            label: topology
-                .node_labels
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(|| format!("cell {id}")),
-            input_ports: topology.vertex_ports.get(&id).cloned().unwrap_or_default(),
-            state: SunNodeState::Idle,
-            state_sequence: topology
-                .node_state_sequences
-                .get(&id)
-                .copied()
-                .unwrap_or_default(),
-            grad_step: 1,
-            operational_state: topology
-                .node_operational_states
-                .get(&id)
-                .copied()
-                .unwrap_or_default(),
-            phase_annotation: topology.node_phase_annotations.get(&id).cloned(),
-        })
-        .collect::<Vec<_>>();
-    nodes.sort_by_key(|node| node.id);
-    let mut edges = topology
-        .outgoing
-        .iter()
-        .flat_map(|(&source, targets)| {
-            targets.iter().map(move |target| SunEdgeAppearance {
-                source,
-                target: target.vertex_id,
-                target_port: target.port_id,
-            })
-        })
-        .collect::<Vec<_>>();
-    edges.sort_by_key(|edge| (edge.source, edge.target, edge.target_port));
-    edges.dedup();
-    SunAppearance {
-        finalized: topology.finalized,
-        grad_steps: 1,
-        nodes,
-        edges,
     }
 }
 

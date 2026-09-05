@@ -10,7 +10,7 @@ use black_hole_sun::black_hole_spec::{
 use black_hole_sun::cell::CellState;
 use black_hole_sun::compile::BlackHole;
 use black_hole_sun::forward::ForwardSunState;
-use black_hole_sun::topology::{Edge, TypedEdges, Unary};
+use black_hole_sun::topology::{Edge, SunAppearance, TypedEdges, Unary};
 use black_hole_sun::{
     ArtifactDelivery, CellInit, ContractId, DtypeConstraint, ForwardOnlyWithPolicy,
     ForwardOperationPrimordium, OperationNode, TensorDtype, VoidOps,
@@ -302,8 +302,17 @@ impl Animal for CorgiForward {
     type Flow = CorgiSun;
 }
 impl Observable for CorgiForward {
-    type Observation = NoopObservation;
+    type Observation = ObserveObservation;
 }
 impl Perturbable for CorgiForward {
     type Perturbation = NoopPerturbation;
+}
+
+/// Live Black Hole Beam view of the pipeline Sun.
+impl Observe for CorgiForward {
+    type Appearance = SunAppearance;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        state.appearance()
+    }
 }

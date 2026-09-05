@@ -7,7 +7,7 @@ use std::sync::{OnceLock, RwLock};
 
 use black_hole_sun::cell::CellState;
 use black_hole_sun::compile::BlackHole;
-use black_hole_sun::topology::{BackwardTypedEdges, Edge, Unary};
+use black_hole_sun::topology::{BackwardTypedEdges, Edge, SunAppearance, Unary};
 use black_hole_sun::{
     ArtifactDelivery, BackwardOperationPrimordium, OperationNode, PipelineBackward,
     PipelineBackwardState, PipelineStepResult, VoidOps,
@@ -312,8 +312,17 @@ impl<const M: usize> Animal for CorgiBackward<M> {
     type Flow = CorgiSun<M>;
 }
 impl<const M: usize> Observable for CorgiBackward<M> {
-    type Observation = NoopObservation;
+    type Observation = ObserveObservation;
 }
 impl<const M: usize> Perturbable for CorgiBackward<M> {
     type Perturbation = NoopPerturbation;
+}
+
+/// Live Black Hole Beam view of the training Sun.
+impl<const M: usize> Observe for CorgiBackward<M> {
+    type Appearance = SunAppearance;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        state.appearance()
+    }
 }

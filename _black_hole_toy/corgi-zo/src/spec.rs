@@ -9,7 +9,7 @@ use black_hole_sun::cell::CellState;
 use black_hole_sun::compile::BlackHole;
 use black_hole_sun::ops::{VoidInferOps, VoidOps};
 use black_hole_sun::programs::two_sided_zo::{SunState, TwoSidedZo};
-use black_hole_sun::topology::{Edge, TypedEdges, Unary};
+use black_hole_sun::topology::{Edge, SunAppearance, TypedEdges, Unary};
 use black_hole_sun::{
     ArtifactDelivery, AtomError, InferenceOutput, OperationNode, Potentiation, Transmission,
 };
@@ -391,8 +391,17 @@ impl Animal for CorgiZo {
     type Flow = CorgiSun;
 }
 impl Observable for CorgiZo {
-    type Observation = NoopObservation;
+    type Observation = ObserveObservation;
 }
 impl Perturbable for CorgiZo {
     type Perturbation = NoopPerturbation;
+}
+
+/// Live Black Hole Beam view of the two-sided ZO Sun.
+impl Observe for CorgiZo {
+    type Appearance = SunAppearance;
+
+    fn observe(state: &Self::State) -> Self::Appearance {
+        state.appearance()
+    }
 }
