@@ -272,17 +272,26 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
                 || busy.iter().flatten().any(Option::is_some)
             {
                 for s in 0..p {
-                    for replica in 0..replicas {
-                        if busy[replica][s].is_some() {
-                            continue;
-                        }
-                        let b = next_bwd[replica][s];
-                        let warmup = (p - s).min(m);
-                        let backward_ready = b < m
-                            && next_fwd[replica][s] >= warmup
-                            && forward[replica][b][s].is_some()
-                            && (s + 1 == p || backward[replica][b][s + 1].is_some());
-                        if backward_ready {
+                    // A binary data-parallel stage consumes both lane commands
+                    // together. Do not let a faster lane advance independently:
+                    // around the 1F1B turn it could otherwise send backward while
+                    // its peer still sends forward, killing the stage without a
+                    // reply and leaving this driver waiting forever.
+                    if (0..replicas).any(|replica| busy[replica][s].is_some()) {
+                        continue;
+                    }
+
+                    let b = next_bwd[0][s];
+                    let warmup = (p - s).min(m);
+                    let backward_ready = b < m
+                        && (0..replicas).all(|replica| {
+                            next_bwd[replica][s] == b
+                                && next_fwd[replica][s] >= warmup
+                                && forward[replica][b][s].is_some()
+                                && (s + 1 == p || backward[replica][b][s + 1].is_some())
+                        });
+                    if backward_ready {
+                        for replica in 0..replicas {
                             let gradient = if s + 1 == p {
                                 forward[replica][b][s].unwrap()
                             } else {
@@ -304,12 +313,18 @@ impl<J: VoidOps> Effect<J> for RunPipelineEffect {
                                 reply,
                             });
                             next_bwd[replica][s] += 1;
-                            continue;
                         }
-                        let f = next_fwd[replica][s];
-                        let forward_ready =
-                            f < m && (s == 0 || forward[replica][f][s - 1].is_some());
-                        if forward_ready {
+                        continue;
+                    }
+
+                    let f = next_fwd[0][s];
+                    let forward_ready = f < m
+                        && (0..replicas).all(|replica| {
+                            next_fwd[replica][s] == f
+                                && (s == 0 || forward[replica][f][s - 1].is_some())
+                        });
+                    if forward_ready {
+                        for replica in 0..replicas {
                             let emission = if s == 0 {
                                 input.micro_batches[replica * m + f].emission_id.id()
                             } else {
